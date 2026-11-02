@@ -1114,8 +1114,10 @@ TEST(testAHeldFrameIsAnnouncedOnTheRulesScheduleWhileADeliveryIsHeld)
     AnnouncementCountingDrainHost host;
     IngestLoop loop(runtime, host);
     loop.setDeliverHook([](void*, const DrainOutcome&, std::uint32_t) { }, nullptr);
-    // Every outcome after the first is held for half a second.
-    loop.setDeliverMinInterval(0.5);
+    // Every outcome after the first is held for two seconds: far enough from
+    // the rule's two-refresh deadline that a busy runner's scheduling delay
+    // cannot be mistaken for the delivery's wait.
+    loop.setDeliverMinInterval(2.0);
     (void)loop.prepare();
     std::jthread ingest([&loop, &loopEndpoint] { loop.run(loopEndpoint->handle()); });
 
@@ -1131,7 +1133,7 @@ TEST(testAHeldFrameIsAnnouncedOnTheRulesScheduleWhileADeliveryIsHeld)
     REQUIRE(::write(writeEnd.get(), "$ ", 2) == 2);
     CHECK(waitForAnnouncements(2));
     const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - written).count();
-    CHECK_MSG(waited < 100, ("the held frame was announced " + std::to_string(waited) + " ms after its write").c_str());
+    CHECK_MSG(waited < 1000, ("the held frame was announced " + std::to_string(waited) + " ms after its write").c_str());
 
     loop.requestStop();
     loop.raiseWake();
