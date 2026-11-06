@@ -643,6 +643,9 @@ TEST(testPlaceholderCellsDrawTheTilesTheyName)
     in.clusterResolverContext = t.get();
     in.images = t->images.stored.data();
     in.imageCount = Ubiquitty::Image::maxTerminalImageCount;
+    // A square published cell, so the image's aspect matches its box and each
+    // tile fills its screen cell.
+    in.publishedCellPixels = { renderCellWidth, renderCellWidth };
 
     SoftwareRenderer renderer(renderCellWidth, renderCellHeight);
     std::vector<std::uint8_t> rgba;
@@ -711,6 +714,9 @@ TEST(testPlaceholderQuadsStopAtTheSharedImageLimit)
     in.clusterResolverContext = t.get();
     in.images = t->images.stored.data();
     in.imageCount = Ubiquitty::Image::maxTerminalImageCount;
+    // A square published cell, so the image's aspect matches its box and each
+    // tile fills its screen cell.
+    in.publishedCellPixels = { renderCellWidth, renderCellWidth };
 
     SoftwareRenderer renderer(renderCellWidth, renderCellHeight);
     std::vector<std::uint8_t> rgba;

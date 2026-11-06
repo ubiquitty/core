@@ -95,6 +95,9 @@ static std::string placeholderCell(std::initializer_list<uint32_t> diacritics)
 TEST(testSinglePlaceholderPlacement)
 {
     auto t = makeTerm(24, 80);
+    // A square published cell: the square image fills its 2x2 box, so the
+    // tile covers its whole screen cell.
+    Ubiquitty::publishPixelGeometry(*t, { { 10, 10 }, { 800, 240 }, { 800, 240 } });
     // Transmit + virtual-place a 2x2 RGB image, id 31, no grid placement.
     feedz(*t, "\033_Ga=T,U=1,i=31,f=24,s=2,v=2,c=2,r=2;AAAAAAAAAAAAAAAA\033\\");
     CHECK(Ubiquitty::Image::placementCount(t.get()) == 0); // virtual: no grid placement
@@ -131,6 +134,7 @@ TEST(testSinglePlaceholderPlacement)
 TEST(testPlaceholderQuadsCarryTheGridOrigin)
 {
     auto t = makeTerm(24, 80);
+    Ubiquitty::publishPixelGeometry(*t, { { 10, 10 }, { 800, 240 }, { 800, 240 } }); // the square image fills its box
     feedz(*t, "\033_Ga=T,U=1,i=31,f=24,s=2,v=2,c=2,r=2;AAAAAAAAAAAAAAAA\033\\");
     feedz(*t, "\033[H\033[38;5;31m");
     std::string cell = placeholderCell({ 0x0305, 0x0305 });
@@ -812,4 +816,44 @@ TEST(testACapturedGridMeasuresTheBoxInThePublishedCellItCarries)
 
     grid.publishedCellPixels = {};
     CHECK(Ubiquitty::Kitty::resolvePlaceholders(grid, t->images.stored, { 10.0f, 20.0f }, {}, { captured, std::size(captured) }) == 2);
+}
+
+// c and r both given: kitty fits the image into the box they name with its
+// aspect kept, centred on the axis it does not fill, rather than stretching it
+// across the box. An 8x4 image in a 2x2 box of 4x4 cells fills the width and
+// sits half a cell down from the box's top.
+TEST(testVirtualPlacementWithCAndRFitsAWideImageAndCentresItDown)
+{
+    const auto t = makeVirtualPlacementScene(8, 4, ",c=2,r=2", { 4, 4 }, 2, 2);
+    checkQuads(*t, {
+                       { 0.0f, 10.0f, 10.0f, 20.0f, 0.0f, 0.0f, 0.5f, 0.5f },
+                       { 10.0f, 10.0f, 20.0f, 20.0f, 0.5f, 0.0f, 1.0f, 0.5f },
+                       { 0.0f, 20.0f, 10.0f, 30.0f, 0.0f, 0.5f, 0.5f, 1.0f },
+                       { 10.0f, 20.0f, 20.0f, 30.0f, 0.5f, 0.5f, 1.0f, 1.0f },
+                   });
+}
+
+// The tall case: a 4x8 image in the same box fills the height and sits half a
+// cell in from the box's left.
+TEST(testVirtualPlacementWithCAndRFitsATallImageAndCentresItAcross)
+{
+    const auto t = makeVirtualPlacementScene(4, 8, ",c=2,r=2", { 4, 4 }, 2, 2);
+    checkQuads(*t, {
+                       { 5.0f, 0.0f, 10.0f, 20.0f, 0.0f, 0.0f, 0.5f, 0.5f },
+                       { 10.0f, 0.0f, 15.0f, 20.0f, 0.5f, 0.0f, 1.0f, 0.5f },
+                       { 5.0f, 20.0f, 10.0f, 40.0f, 0.0f, 0.5f, 0.5f, 1.0f },
+                       { 10.0f, 20.0f, 15.0f, 40.0f, 0.5f, 0.5f, 1.0f, 1.0f },
+                   });
+}
+
+// A box cell the fitted image does not reach draws nothing: an 8x4 image in a
+// 2x3 box of 4x4 cells is one cell tall, centred on the middle row, so only
+// the middle row's placeholders draw.
+TEST(testVirtualPlacementWithCAndRDrawsNothingInTheLetterbox)
+{
+    const auto t = makeVirtualPlacementScene(8, 4, ",c=2,r=3", { 4, 4 }, 3, 2);
+    checkQuads(*t, {
+                       { 0.0f, 20.0f, 10.0f, 40.0f, 0.0f, 0.0f, 0.5f, 1.0f },
+                       { 10.0f, 20.0f, 20.0f, 40.0f, 0.5f, 0.0f, 1.0f, 1.0f },
+                   });
 }

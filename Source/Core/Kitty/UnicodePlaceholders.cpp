@@ -204,9 +204,10 @@ struct VirtualBox {
     double imageHeight;
 };
 
-// The box of an image with an axis left to it. The image is fitted to the box
-// with its aspect kept, filling one axis and centred on the other.
-VirtualBox fittedVirtualBox(const Image::TerminalImage& image, IntSize cell)
+// The box of a virtual placement's image. The image is fitted to the box with
+// its aspect kept, filling one axis and centred on the other, whether c and r
+// named the box or the image did.
+VirtualBox virtualBox(const Image::TerminalImage& image, IntSize cell)
 {
     const double imageWidth = image.width;
     const double imageHeight = image.height;
@@ -329,55 +330,18 @@ int resolveRows(GridSize grid, const RowAt& rowAt, const ReadCluster& readCluste
             const float destinationX = originX + static_cast<float>(col) * cellWidth;
             const float destinationY = originY + static_cast<float>(screenRow) * cellHeight;
 
-            // An image with an axis left to it is fitted into its box of
-            // cells; cell (d.row, d.column) shows that box cell's part of it.
-            if (image->virtualRows == 0 || image->virtualColumns == 0) {
-                const VirtualBox box = fittedVirtualBox(*image, boxCell);
-                if (d.row >= box.rows || d.column >= box.columns)
-                    continue; // cell outside the box — ignore
-                std::optional<Image::ImageQuad> tile = fittedTileQuad(box, d.row, d.column, { destinationX, destinationY }, cellSizeInPixels);
-                if (!tile)
-                    continue;
-                tile->zIndex = 0;
-                tile->straightAlpha = true;
-                tile->filter = Image::imageFilterForScale(static_cast<float>(box.imageWidth) * cellWidth, static_cast<float>(box.imageHeight) * cellHeight, image->width, image->height);
-                tile->imageID = imageID;
-                out[static_cast<std::size_t>(count++)] = *tile;
+            // Cell (d.row, d.column) shows that box cell's part of the image.
+            const VirtualBox box = virtualBox(*image, boxCell);
+            if (d.row >= box.rows || d.column >= box.columns)
+                continue; // cell outside the box — ignore
+            std::optional<Image::ImageQuad> tile = fittedTileQuad(box, d.row, d.column, { destinationX, destinationY }, cellSizeInPixels);
+            if (!tile)
                 continue;
-            }
-
-            // Partition the image into a virtualRows x virtualColumns grid; cell
-            // (d.row, d.column) shows that grid cell.
-            const int gridRows = image->virtualRows;
-            const int gridColumns = image->virtualColumns;
-            if (d.row >= gridRows || d.column >= gridColumns)
-                continue; // cell outside the declared grid — ignore
-
-            // Source sub-rectangle for grid cell (d.row, d.column). Use rounded
-            // boundaries so adjacent cells tile the image without gaps/overlap.
-            const int imageWidth = image->width;
-            const int imageHeight = image->height;
-            const int sx0 = static_cast<int>(static_cast<int64_t>(d.column) * imageWidth / gridColumns);
-            const int sx1 = static_cast<int>(static_cast<int64_t>(d.column + 1) * imageWidth / gridColumns);
-            const int sy0 = static_cast<int>(static_cast<int64_t>(d.row) * imageHeight / gridRows);
-            const int sy1 = static_cast<int>(static_cast<int64_t>(d.row + 1) * imageHeight / gridRows);
-            if (sx1 <= sx0 || sy1 <= sy0)
-                continue;
-
-            Image::ImageQuad q {};
-            q.minXInPixels = destinationX;
-            q.minYInPixels = destinationY;
-            q.maxXInPixels = destinationX + cellWidth;
-            q.maxYInPixels = destinationY + cellHeight;
-            q.u0 = static_cast<float>(sx0) / static_cast<float>(imageWidth);
-            q.v0 = static_cast<float>(sy0) / static_cast<float>(imageHeight);
-            q.u1 = static_cast<float>(sx1) / static_cast<float>(imageWidth);
-            q.v1 = static_cast<float>(sy1) / static_cast<float>(imageHeight);
-            q.zIndex = 0;
-            q.straightAlpha = true;
-            q.filter = Image::imageFilterForScale(cellWidth, cellHeight, sx1 - sx0, sy1 - sy0);
-            q.imageID = imageID;
-            out[static_cast<std::size_t>(count++)] = q;
+            tile->zIndex = 0;
+            tile->straightAlpha = true;
+            tile->filter = Image::imageFilterForScale(static_cast<float>(box.imageWidth) * cellWidth, static_cast<float>(box.imageHeight) * cellHeight, image->width, image->height);
+            tile->imageID = imageID;
+            out[static_cast<std::size_t>(count++)] = *tile;
         }
     }
     return count;

@@ -50,7 +50,7 @@ constexpr uint32_t placeholderCodePoint = 0x10EEEE;
 ///
 /// Scans the visible grid, decodes each placeholder cell's (row, column,
 /// imageID, placementID), matches it to a virtual-placement image, and appends
-/// one quad per cell sampling that grid cell's sub-rectangle. The geometry
+/// one quad per cell the image reaches, sampling that box cell's part of it. The geometry
 /// arguments mirror `Rendering::collectImageQuads`, the caller that combines
 /// this with the grid placements.
 ///
