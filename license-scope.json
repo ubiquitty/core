@@ -469,6 +469,7 @@
     },
     {
       "paths": [
+        ".swift-format",
         "Docs/other-repositories.txt",
         "Docs/third-party-inventory.json",
         "Resources/fonts/manifest.json",
