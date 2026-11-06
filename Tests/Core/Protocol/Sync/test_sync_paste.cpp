@@ -322,6 +322,38 @@ TEST(theLegacyControlCharacterOfAChord)
     CHECK(!legacyControlCharacterOf(controlKey('1')).has_value());
 }
 
+// The base layout key names a chord only where the key encoder reads it: on a
+// key whose own character is beyond ASCII. A frontend reports the key's US
+// position for every printable key, and an ASCII key is its own chord.
+TEST(theLegacyControlCharacterOfAChordTakesTheBaseOnlyForAKeyBeyondASCII)
+{
+    // Dvorak Ctrl+; sits on the US z key; the encoder sends ';', not VSUSP.
+    KeyEvent semicolon = controlKey(';');
+    semicolon.baseLayoutCodePoint = 'z';
+    CHECK(!legacyControlCharacterOf(semicolon).has_value());
+    // German Ctrl+# sits on the US backslash key; the encoder sends '#', not VQUIT.
+    KeyEvent number = controlKey('#');
+    number.baseLayoutCodePoint = '\\';
+    CHECK(!legacyControlCharacterOf(number).has_value());
+    // A Latin key beyond ASCII folds through its position, as the encoder does.
+    KeyEvent cedilla = controlKey('c');
+    cedilla.unshiftedCodePoint = 0x00E7;
+    cedilla.shiftedCodePoint = 0x00E7;
+    cedilla.baseLayoutCodePoint = '\\';
+    CHECK(legacyControlCharacterOf(cedilla) == std::optional<std::uint8_t> { 0x1c });
+    // A key with no character, a dead key, has no chord to fold.
+    KeyEvent dead = controlKey('c');
+    dead.unshiftedCodePoint = 0;
+    dead.shiftedCodePoint = 0;
+    dead.baseLayoutCodePoint = 'c';
+    CHECK(!legacyControlCharacterOf(dead).has_value());
+    // A position that is no Latin letter or backslash names no control byte.
+    KeyEvent bracket = controlKey('c');
+    bracket.unshiftedCodePoint = 0x00FC;
+    bracket.baseLayoutCodePoint = '[';
+    CHECK(!legacyControlCharacterOf(bracket).has_value());
+}
+
 // Through the attachment: the interrupt gives the paste up ahead of itself,
 // and the program reads the bracket's end, then the interrupt.
 TEST(anAttachmentAbortsThePasteAtAnInterrupt)

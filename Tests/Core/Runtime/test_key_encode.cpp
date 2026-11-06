@@ -330,8 +330,8 @@ TEST(aLatinLayoutKeyOnAnotherPositionKeepsItsLetterAndReportsThePosition)
 /// kitty/key_encoding.c encodes a Ctrl press whose key is not a legacy ASCII
 /// key through its alternate (base-layout) key when that one is. German ü sits
 /// on the US `[` key, so Ctrl+ü is Ctrl+[, 0x1B; ö folds to `;`, which has no
-/// control byte and is sent as itself. With no position
-/// reported nothing says the chord, and nothing is sent.
+/// control byte and is sent as itself. With no position reported nothing says
+/// the chord, and nothing is sent.
 TEST(aControlChordOnALatinNonASCIIKeyFoldsThroughTheUSPosition)
 {
     Rt::ModeSnapshot modes;

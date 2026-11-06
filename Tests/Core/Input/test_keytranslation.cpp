@@ -422,8 +422,7 @@ TEST(testKittyAlternateSubparamsGateOnFlag4Only)
 
 /// A non-US layout carries a base-layout key distinct from the primary, so a
 /// client can match a shortcut layout-independently: the physical `[` key on a
-/// German layout yields primary U+00FC with base `[` (91). The base==primary
-/// case above never exercises these shapes.
+/// German layout yields primary U+00FC with base `[` (91).
 TEST(testKittyBaseLayoutKeyDistinctFromPrimary)
 {
     char outputBuffer[64] = { 0 };
