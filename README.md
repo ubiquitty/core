@@ -45,7 +45,7 @@ included. Renderers, terminal views and apps live in the repositories above.
 
 ## Build
 
-Needs Git, Python 3, CMake 3.13 or newer, Ninja or Make, Bash and a C++23
+Needs Git, Python 3, CMake with C++23 support, Ninja or Make, Bash and a C++23
 compiler. The first QUIC-enabled build of the host fetches and builds its QUIC
 dependencies, which needs network access, Go and Perl.
 
