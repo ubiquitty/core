@@ -658,8 +658,8 @@ TEST(testACapturedGridWithoutAClusterReaderPlacesNoGuessedTile)
 // An axis c or r leaves out is the whole cells the image covers on it at the
 // published cell, the one CSI 16 t reports and the program lays its cells out
 // by. The image is fitted into the box with its aspect kept and centred on the
-// axis it does not fill. Every case renders at a 10x20 cell, unlike the 4x4
-// published one, so the box can only have come from the published cell.
+// axis it does not fill. Each case that publishes a 4x4 cell renders at a
+// 10x20 one, so its box can only have come from the published cell.
 
 // A terminal holding image 1, `width` x `height` RGBA, as a virtual placement
 // with the given keys, published at `cell` (nothing published when zero), with

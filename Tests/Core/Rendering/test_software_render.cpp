@@ -14,6 +14,7 @@
 
 #include "Core/Rendering/SizedMaster.h"
 #include "Core/Rendering/SoftwareRenderer.h"
+#include "Core/Rendering/TerminalFrameInputs.h"
 #include "Core/Rendering/UnifontRasterizer.h"
 
 #include "Core/Image/TerminalImage.h"
@@ -730,6 +731,62 @@ TEST(testPlaceholderQuadsStopAtTheSharedImageLimit)
             drawn += isSamePixel(at(rgba, width, column * renderCellWidth + 3, row * renderCellHeight + 3), red) ? 1 : 0;
     CHECK_MSG(isSamePixel(at(rgba, width, 3, 3), red), "the block's first cell shows its tile");
     CHECK_MSG(drawn > 0 && drawn <= Ubiquitty::Image::maxTerminalImagePlacementCount, "no more cells draw than the frame has quads for");
+}
+
+// A frame captured through TerminalFrameInputs carries the terminal's published
+// cell to the renderer, which measures a virtual placement's box in it. The
+// terminal publishes a 4x4 cell and the frame renders at 8x16. A 4x8 image,
+// red over green, with c=2 is then two published rows tall: the first
+// placeholder row shows the red half and the second the green. Measured in the
+// renderer's cell instead, the box is one row: the first row shows the whole
+// image at half the height and the second lies outside the box.
+TEST(testACapturedFrameMeasuresTheBoxInThePublishedCell)
+{
+    auto t = std::make_unique<Ubiquitty::Terminal>();
+    Ubiquitty::resize(*t, 2, 8);
+    REQUIRE(t->rows == 2 && t->columns == 8);
+    Ubiquitty::publishPixelGeometry(*t, { { 4, 4 }, { 32, 8 }, { 32, 8 } });
+    REQUIRE(t->cellPixelWidth == 4 && t->cellPixelHeight == 4);
+    // Image 7: 4x8 RGB, four rows of red (/wAA = FF 00 00) over four of green
+    // (AP8A = 00 FF 00).
+    std::string transmit = "\x1b_Ga=T,U=1,i=7,f=24,s=4,v=8,c=2,q=2;";
+    for (int texel = 0; texel < 16; ++texel)
+        transmit += "/wAA";
+    for (int texel = 0; texel < 16; ++texel)
+        transmit += "AP8A";
+    transmit += "\x1b\\";
+    Ubiquitty::processBytes(t.get(), transmit);
+    // Placeholder rows 0 (U+0305) and 1 (U+030D), each naming column 0 and
+    // leaving its second cell to inherit column 1.
+    Ubiquitty::processBytes(t.get(), "\x1b[H\x1b[38;5;7m\xF4\x8E\xBB\xAE\xCC\x85\xCC\x85\xF4\x8E\xBB\xAE"
+                                     "\x1b[2;1H\xF4\x8E\xBB\xAE\xCC\x8D\xCC\x85\xF4\x8E\xBB\xAE\x1b[0m");
+
+    UnifontRasterizer rasterizer(1, 0);
+    TerminalFrameInputs frame;
+    REQUIRE(frame.capture(*t, TerminalSnapshotOptions {}, rasterizer.cellMetrics(), GlyphSlotGeometry {}));
+
+    SoftwareRenderer renderer(renderCellWidth, renderCellHeight);
+    std::vector<std::uint8_t> rgba;
+    int width = 0;
+    int height = 0;
+    REQUIRE(renderer.render(frame.inputs(), rgba, width, height));
+    REQUIRE(width == 8 * renderCellWidth && height == 2 * renderCellHeight);
+
+    // The 8x8 published box is 16x32 on screen. The image fills its height and
+    // is centred across it, x 4 to 12; each sample sits inside a tile, off its
+    // edges.
+    const Pixel red { 255, 0, 0, 255 };
+    const Pixel green { 0, 255, 0, 255 };
+    for (const int x : { 6, 10 }) {
+        for (const int y : { 4, 12 }) {
+            const std::string message = "the first row shows the red half at " + std::to_string(x) + "," + std::to_string(y);
+            CHECK_MSG(isSamePixel(at(rgba, width, x, y), red), message.c_str());
+        }
+        for (const int y : { 20, 28 }) {
+            const std::string message = "the second row shows the green half at " + std::to_string(x) + "," + std::to_string(y);
+            CHECK_MSG(isSamePixel(at(rgba, width, x, y), green), message.c_str());
+        }
+    }
 }
 
 // Selection-overlay draw: a single 'A' (red foreground, default background) with a translucent

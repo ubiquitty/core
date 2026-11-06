@@ -169,8 +169,12 @@ struct TerminalImage {
     // grid placement is created; the image is positioned by U+10EEEE placeholder
     // cells whose diacritics carry (row, column) and foreground color the image id.
     // virtualColumns/virtualRows are the requested c/r; 0 is the whole cells the
-    // image covers on that axis at the cell size the program reads (kitty's
-    // grman_put_cell_image). The resolver tiles that box of cells and shows box
+    // image covers on that axis at the terminal's published cell, the one the
+    // program reads (kitty's grman_put_cell_image). A terminal nothing published
+    // to measures it in the renderer's cell as a frontend rounds it to publish,
+    // which need not be the cell the program reads: CSI 16 t on such a local
+    // terminal reports a nominal 8x16, and a Sync replica's program reads its
+    // host's cell. The resolver tiles that box of cells and shows box
     // cell (row, col) in the matching placeholder. virtualPlacementID mirrors p=
     // for matching from the placeholder's underline color.
     bool virtualPlacement;
