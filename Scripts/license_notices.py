@@ -15,9 +15,10 @@ import sys
 # The notices ubiquitty-core carries for what it ships: its sources, fonts and
 # process icons, and the third-party texts other than the covenant every
 # checkout carries and those of what only the application ships. Every other
-# notice is read from the project's own checkout.
+# notice belongs to the project, except the Kit's Phosphor resources below.
 CORE_NOTICES = re.compile(
     r"^(Source/Core|Source/ThirdParty|Resources/fonts|Resources/process-icons|Docs/third-party-licenses)/")
+KIT_NOTICES = re.compile(r"^Resources/phosphor/")
 APPLICATION_NOTICES = re.compile(
     r"^Docs/third-party-licenses/(Contributor-Covenant-|AppImage-|appimagetool-|Sparkle-|swift-)")
 
@@ -44,19 +45,24 @@ def notice_names(source):
     return sorted(names)
 
 
-def notice_files(source, core=None):
+def notice_files(source, core=None, kit=None):
     """Returns each notice name with the file it is read from.
 
     A project that compiles ubiquitty-core from its own checkout names it, and
-    reads the notices core carries from there; one that names none is a single
-    checkout. A file outside the checkout it is read from is refused.
+    reads the notices Core carries from there; the Kit carries its Phosphor
+    notices. Without those roots the project is a single checkout. A file
+    outside the checkout it is read from is refused.
     """
     source = Path(source).resolve()
     core = Path(core).resolve() if core else None
+    kit = Path(kit).resolve() if kit else None
     files = {}
     for name in notice_names(source):
         owned = CORE_NOTICES.match(name) and not APPLICATION_NOTICES.match(name)
-        root = core if core and owned else source
+        if kit and KIT_NOTICES.match(name):
+            root = kit
+        else:
+            root = core if core and owned else source
         path = root / name
         if not path.resolve().is_relative_to(root) or not path.is_file():
             raise ValueError(f"missing or external notice: {name}")
@@ -64,15 +70,15 @@ def notice_files(source, core=None):
     return files
 
 
-def notice_paths(source, core=None):
+def notice_paths(source, core=None, kit=None):
     """Returns the sorted notice names, each backed by an existing file."""
-    return sorted(notice_files(source, core))
+    return sorted(notice_files(source, core, kit))
 
 
-def copy_notices(source, destination, core=None):
+def copy_notices(source, destination, core=None, kit=None):
     """Copies the complete validated set before a package is archived or installed."""
     destination = Path(destination).resolve()
-    for name, path in notice_files(source, core).items():
+    for name, path in notice_files(source, core, kit).items():
         target = destination / name
         if not target.resolve().is_relative_to(destination):
             raise ValueError(f"external notice destination: {name}")
@@ -80,11 +86,11 @@ def copy_notices(source, destination, core=None):
         shutil.copyfile(path, target)
 
 
-def verify_notices(source, destination, core=None):
+def verify_notices(source, destination, core=None, kit=None):
     """Returns the notices a staged bundle or package lacks or carries altered."""
     destination = Path(destination).resolve()
     problems = []
-    for name, path in notice_files(source, core).items():
+    for name, path in notice_files(source, core, kit).items():
         target = destination / name
         if not target.is_file():
             problems.append(f"missing {name}")
@@ -97,6 +103,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--core", type=Path, help="the ubiquitty-core checkout, when it is not --source")
+    parser.add_argument("--kit", type=Path, help="the ubiquitty-kit checkout, when it is not --source")
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--list", action="store_true")
     action.add_argument("--files", action="store_true", help="each notice and the file it is read from, tab-separated")
@@ -105,17 +112,17 @@ def main():
     arguments = parser.parse_args()
     try:
         if arguments.list:
-            print("\n".join(notice_paths(arguments.source, arguments.core)))
+            print("\n".join(notice_paths(arguments.source, arguments.core, arguments.kit)))
         elif arguments.files:
-            for name, path in notice_files(arguments.source, arguments.core).items():
+            for name, path in notice_files(arguments.source, arguments.core, arguments.kit).items():
                 print(f"{name}\t{path}")
         elif arguments.verify:
-            problems = verify_notices(arguments.source, arguments.verify, arguments.core)
+            problems = verify_notices(arguments.source, arguments.verify, arguments.core, arguments.kit)
             for problem in problems:
                 print(f"license notices: {arguments.verify}: {problem}", file=sys.stderr)
             return 1 if problems else 0
         else:
-            copy_notices(arguments.source, arguments.copy, arguments.core)
+            copy_notices(arguments.source, arguments.copy, arguments.core, arguments.kit)
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"license notices: {error}", file=sys.stderr)
         return 1
