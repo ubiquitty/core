@@ -775,9 +775,9 @@ TEST(testTerminalEncoding)
 
     // The stored string resolves to an Encoding via the Unicode helper.
     auto eSjis = Ubiquitty::Unicode::encodingFromName(sjis.encoding->c_str());
-    CHECK(eSjis && *eSjis == Ubiquitty::Unicode::Encoding::ShiftJis);
+    CHECK(eSjis && *eSjis == Ubiquitty::Unicode::Encoding::ShiftJIS);
     auto eKoi = Ubiquitty::Unicode::encodingFromName(koi.encoding->c_str());
-    CHECK(eKoi && *eKoi == Ubiquitty::Unicode::Encoding::Koi8R);
+    CHECK(eKoi && *eKoi == Ubiquitty::Unicode::Encoding::KOI8R);
     auto eDef = Ubiquitty::Unicode::encodingFromName(def.encoding->c_str());
     CHECK(eDef && *eDef == Ubiquitty::Unicode::Encoding::UTF8);
 }

@@ -84,7 +84,7 @@ constexpr bool isKnown(Ubiquitty::Unicode::Width::AmbiguousWidth value)
     return value == Ubiquitty::Unicode::Width::AmbiguousWidth::Narrow || value == Ubiquitty::Unicode::Width::AmbiguousWidth::Wide;
 }
 constexpr bool isKnown(CharacterTabAlignment value) { return std::to_underlying(value) <= std::to_underlying(CharacterTabAlignment::TargetCharacter); }
-constexpr bool isKnown(Ubiquitty::VT::Emulation value) { return std::to_underlying(value) <= std::to_underlying(Ubiquitty::VT::Emulation::Hp); }
+constexpr bool isKnown(Ubiquitty::VT::Emulation value) { return std::to_underlying(value) <= std::to_underlying(Ubiquitty::VT::Emulation::HP); }
 constexpr bool isKnown(Ubiquitty::VT::ConformanceLevel value)
 {
     return std::to_underlying(value) >= std::to_underlying(Ubiquitty::VT::ConformanceLevel::VT100)

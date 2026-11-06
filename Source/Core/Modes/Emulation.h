@@ -32,8 +32,8 @@ namespace Modes {
 /// Select the sequence grammar ([terminal] emulation).
 ///
 /// `Emulation::VT` — the default — keeps the native DEC/ANSI path unchanged,
-/// codegen-identical to a build that never knew the others existed. Linux and Sco
-/// layer console extensions on top of it; Wyse, Televideo, Adm, Heath and Hp
+/// codegen-identical to a build that never knew the others existed. Linux and SCO
+/// layer console extensions on top of it; Wyse, TeleVideo, ADM, Heath and HP
 /// switch the byte driver to a non-ANSI grammar entirely.
 ///
 /// Apply once at session start, before the host produces output: it resets the

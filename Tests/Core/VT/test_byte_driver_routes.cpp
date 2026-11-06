@@ -281,10 +281,10 @@ TEST(testNonANSIEmulationDivertsBothDrivers)
 {
     const Ubiquitty::VT::Emulation legacies[] = {
         Ubiquitty::VT::Emulation::Wyse,
-        Ubiquitty::VT::Emulation::Televideo,
-        Ubiquitty::VT::Emulation::Adm,
+        Ubiquitty::VT::Emulation::TeleVideo,
+        Ubiquitty::VT::Emulation::ADM,
         Ubiquitty::VT::Emulation::Heath,
-        Ubiquitty::VT::Emulation::Hp,
+        Ubiquitty::VT::Emulation::HP,
     };
     for (const Ubiquitty::VT::Emulation emulation : legacies) {
         // (a) One byte at a time.

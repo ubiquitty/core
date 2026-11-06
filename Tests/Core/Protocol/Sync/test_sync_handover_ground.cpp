@@ -79,11 +79,11 @@ TEST(parserGroundIsNotSufficientForIncompleteCharacterOrLegacyGrammar)
     CHECK_EQ(model->parser.utf8.need, 1u);
     processBytes(model.get(), "\xa9");
     CHECK(!terminalHandoverBlockers(*model).contains(HandoverBlocker::IncompleteCharacter));
-    Unicode::encReset(&model->parser.inputEncoding, Unicode::Encoding::ShiftJis);
+    Unicode::encReset(&model->parser.inputEncoding, Unicode::Encoding::ShiftJIS);
     std::uint32_t scalar = 0;
     REQUIRE(Unicode::encFeed(&model->parser.inputEncoding, 0x82, &scalar) == Unicode::EncStatus::Need);
     CHECK(terminalHandoverBlockers(*model).contains(HandoverBlocker::IncompleteCharacter));
-    CHECK(model->parser.inputEncoding.enc == Unicode::Encoding::ShiftJis);
+    CHECK(model->parser.inputEncoding.enc == Unicode::Encoding::ShiftJIS);
     CHECK_EQ(model->parser.inputEncoding.need, 1u);
     model->legacyState = 2;
     model->legacyAddrRow = 7;

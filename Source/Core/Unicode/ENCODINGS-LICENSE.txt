@@ -15,7 +15,7 @@ Reference and modifications
 The complete generated payload, from the first struct declaration through
 end of file, matches enumeration of the codecs in CPython 3.13.15:
 https://github.com/python/cpython/tree/4061bc4c35f7c26f25264666d4ba083b93d2f6f9
-SHA-256: 2fae0fad9138ea893f6a5381e0beb8d51c585ddc2458cc7b130b3ebbf45848aa
+SHA-256: 2cecdc01dd10e603096a254ca813d78f7ceacda3a84790f3e8c3cd7dca58aabb
 
 This reference establishes reproducibility, not the version of the
 interpreter originally used to generate the tables, which was unrecorded.

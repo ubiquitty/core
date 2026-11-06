@@ -490,13 +490,13 @@ TEST(testMultibyteLeadBytesNotStolenAsC1)
 {
     Ubiquitty::Terminal t;
     Ubiquitty::hardReset(t);
-    Ubiquitty::Unicode::encReset(&t.parser.inputEncoding, Ubiquitty::Unicode::Encoding::ShiftJis);
+    Ubiquitty::Unicode::encReset(&t.parser.inputEncoding, Ubiquitty::Unicode::Encoding::ShiftJIS);
     unsigned char sjis[] = { 0x82, 0xA0 }; // あ U+3042 — 0x82 is a lead byte
     feed(t, sjis);
     CHECK(cell(t, 0, 0)->codePoint == 0x3042);
 
     Ubiquitty::hardReset(t);
-    Ubiquitty::Unicode::encReset(&t.parser.inputEncoding, Ubiquitty::Unicode::Encoding::EucJp);
+    Ubiquitty::Unicode::encReset(&t.parser.inputEncoding, Ubiquitty::Unicode::Encoding::EUCJP);
     unsigned char kana[] = { 0x8E, 0xB1 }; // ｱ U+FF71 — 0x8E is EUC SS2
     feed(t, kana);
     CHECK(cell(t, 0, 0)->codePoint == 0xFF71);
@@ -1027,7 +1027,7 @@ TEST(testC1StringTerminatorsPerByteMultibyte)
     // (not a UTF-8 continuation), delivered through the per-byte driver.
     Ubiquitty::Terminal primary;
     Ubiquitty::hardReset(primary);
-    Ubiquitty::Unicode::encReset(&primary.parser.inputEncoding, Ubiquitty::Unicode::Encoding::EucJp);
+    Ubiquitty::Unicode::encReset(&primary.parser.inputEncoding, Ubiquitty::Unicode::Encoding::EUCJP);
     Ubiquitty::Protocol::Tmux::configure(&primary.integration.tmux, Ubiquitty::Protocol::Tmux::IntegrationMode::Enabled, Ubiquitty::Protocol::Tmux::AutoDetectMode::Automatic);
     feed(primary, "%begin 1 1 0\r\n");
 
@@ -1076,7 +1076,7 @@ TEST(testTranscodeLoopBreakAndSyncStopVariant)
     // trailing byte (a lone lead) — the non-stop and stop variants alike.
     Ubiquitty::Terminal t;
     Ubiquitty::hardReset(t);
-    Ubiquitty::Unicode::encReset(&t.parser.inputEncoding, Ubiquitty::Unicode::Encoding::EucJp);
+    Ubiquitty::Unicode::encReset(&t.parser.inputEncoding, Ubiquitty::Unicode::Encoding::EUCJP);
     feed(t, "\x8E"); // EUC SS2 lead with no trail — nothing emitted
     CHECK(cell(t, 0, 0)->codePoint == 0);
 
@@ -1084,7 +1084,7 @@ TEST(testTranscodeLoopBreakAndSyncStopVariant)
     // (fresh terminal so no prior mid-sequence carries into the call).
     Ubiquitty::Terminal fresh;
     Ubiquitty::hardReset(fresh);
-    Ubiquitty::Unicode::encReset(&fresh.parser.inputEncoding, Ubiquitty::Unicode::Encoding::EucJp);
+    Ubiquitty::Unicode::encReset(&fresh.parser.inputEncoding, Ubiquitty::Unicode::Encoding::EUCJP);
     const int consumed = Ubiquitty::processBytesUpToSyncClear(&fresh, std::string_view("\x8E", 1));
     CHECK(consumed == 1);
     CHECK(cell(fresh, 0, 0)->codePoint == 0);
@@ -1092,7 +1092,7 @@ TEST(testTranscodeLoopBreakAndSyncStopVariant)
     // A trailing byte after the clear keeps the stop observable: the frame
     // returns exactly up to (and including) the 2026-clear.
     Ubiquitty::hardReset(t);
-    Ubiquitty::Unicode::encReset(&t.parser.inputEncoding, Ubiquitty::Unicode::Encoding::EucJp);
+    Ubiquitty::Unicode::encReset(&t.parser.inputEncoding, Ubiquitty::Unicode::Encoding::EUCJP);
     const char frame[] = "\033[?2026hA\033[?2026lZ";
     const int first = Ubiquitty::processBytesUpToSyncClear(&t, std::string_view(frame, sizeof(frame) - 1));
     CHECK(first < static_cast<int>(sizeof(frame) - 1)); // stopped at the clear

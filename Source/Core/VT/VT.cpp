@@ -3811,7 +3811,7 @@ static void legacyEscapeFinal(Ubiquitty::Terminal& t, uint8_t c)
         return;
     case 'G': // Wyse/Televideo: ESC G n display-attribute region. The
               // attribute byte follows; stash a sub-state to grab it.
-        if (t.emulation == VT::Emulation::Wyse || t.emulation == VT::Emulation::Televideo) {
+        if (t.emulation == VT::Emulation::Wyse || t.emulation == VT::Emulation::TeleVideo) {
             t.legacyState = 4; // await attribute byte
             return;
         }
@@ -3886,16 +3886,16 @@ static void legacyProcessByte(Ubiquitty::Terminal& t, uint8_t c)
 }
 
 // True when the emulation routes through legacyProcessByte rather than the
-// DEC DFA. Linux/Sco stay on the VT path (they are ANSI); only the
+// DEC DFA. Linux/SCO stay on the VT path (they are ANSI); only the
 // non-ANSI grammars divert here.
 static inline bool emulationIsNonANSI(const Ubiquitty::Terminal& t)
 {
     switch (t.emulation) {
     case VT::Emulation::Wyse:
-    case VT::Emulation::Televideo:
-    case VT::Emulation::Adm:
+    case VT::Emulation::TeleVideo:
+    case VT::Emulation::ADM:
     case VT::Emulation::Heath:
-    case VT::Emulation::Hp:
+    case VT::Emulation::HP:
         return true;
     default:
         return false;

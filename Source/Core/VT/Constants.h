@@ -392,25 +392,25 @@ static_assert((PenGuardedField::mask & (PenTextBandField::mask | PenFontStyleFie
 //
 //   VT        DEC VT100..VT520 + xterm/ECMA-48 (the default, hot path).
 //   Linux     Linux console: ANSI base + console privates layered on VT.
-//   Sco       SCO ANSI console: ANSI base + SCO sequences on VT.
+//   SCO       SCO ANSI console: ANSI base + SCO sequences on VT.
 //   Wyse      Wyse 50/60 — non-ANSI (ESC = row col, ESC G attr regions).
-//   Televideo Televideo 925/950 — non-ANSI (ESC = row col, ESC G attrs).
-//   Adm       Lear-Siegler ADM-3A/5 — non-ANSI (ESC = row col, control-only).
+//   TeleVideo TeleVideo 925/950 — non-ANSI (ESC = row col, ESC G attrs).
+//   ADM       Lear-Siegler ADM-3A/5 — non-ANSI (ESC = row col, control-only).
 //   Heath     Heath/Zenith H19/H29 — non-ANSI (Heath ESC grammar).  [partial]
-//   Hp        HP 2392A / 700 — non-ANSI (HP ESC& grammar).            [partial]
+//   HP        HP 2392A / 700 — non-ANSI (HP ESC& grammar).            [partial]
 //
-// Wyse/Televideo/Adm share an ESC= cursor-addressing core; the driver routes
+// Wyse/TeleVideo/ADM share an ESC= cursor-addressing core; the driver routes
 // to the legacy grammar for the non-ANSI values, else stays on the VT DFA.
 
 namespace Ubiquitty::VT {
 enum class Emulation : uint8_t {
     VT = 0,
     Linux,
-    Sco,
+    SCO,
     Wyse,
-    Televideo,
-    Adm,
+    TeleVideo,
+    ADM,
     Heath,
-    Hp,
+    HP,
 };
 } // namespace Ubiquitty::VT

@@ -70,7 +70,7 @@
     "name": "CPython encoding mappings",
     "category": "generated",
     "sourceURL": "https://github.com/python/cpython/tree/4061bc4c35f7c26f25264666d4ba083b93d2f6f9",
-    "pinnedRev": "CPython 3.13.15 (4061bc4c35f7c26f25264666d4ba083b93d2f6f9); complete generated payload SHA-256 2fae0fad9138ea893f6a5381e0beb8d51c585ddc2458cc7b130b3ebbf45848aa",
+    "pinnedRev": "CPython 3.13.15 (4061bc4c35f7c26f25264666d4ba083b93d2f6f9); complete generated payload SHA-256 2cecdc01dd10e603096a254ca813d78f7ceacda3a84790f3e8c3cd7dca58aabb",
     "licenseSPDX": "PSF-2.0 AND Unicode-3.0 AND ICU AND LicenseRef-Unicode-GB2312-1999",
     "distributionSurface": [
       "source-repo",
