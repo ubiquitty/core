@@ -1,0 +1,58 @@
+# The Linux container images, in one place because two scripts build in Linux
+# and a reader asking "what do we build on" should not have to find both.
+#
+# THERE ARE TWO, and they are different distributions on purpose.
+#
+# `gtk` builds and tests the GTK4/Vulkan frontend, which needs glibc and a large
+# desktop dependency set. Ubuntu, and an LTS rather than an interim release: an
+# interim leaves the archive after nine months and the recipe then fails at
+# `apt-get update` on any machine that never cached the image.
+#
+# `host` builds the statically linked musl `ubiquitty-host` that ships inside the
+# macOS app. Static musl is the whole reason it exists — the binary runs on a
+# Linux box the user never configured — and that is Alpine's job, not Ubuntu's.
+#
+# WHICH ONE IS THE FLOOR. `host` is, and it is the number that matters here.
+# The compilers the pinned images carry:
+#
+#     gtk    ubuntu:26.04   g++ 15.2.0
+#     host   alpine:3.22    g++ 14.2.0     <- the floor
+#
+# So the OLDER container decides what portable Core may use.
+#
+# Core does not use <print> (PAL::logLine covers it: std::print throws on a
+# failed write and every binary here is -fno-exceptions), so the youngest
+# LIBRARY facility Core needs is <expected>, which is GCC 12.
+#
+# The effective floor is still 14, for a different reason. Measured against
+# alpine:3.20, a GCC 13.2 image: it has <expected>, it does not have <print>,
+# and with the floor assertions bypassed it compiles portable Core clean — VT,
+# CellGrid, Width and CellInstanceBuilder, `-std=c++23 -fno-exceptions
+# -fno-rtti`, no errors. What
+# rejects it is the __cplusplus stamp: GCC reports 202302L only from 14, and 13.2
+# reports 202100L whatever -std it is given.
+#
+# So the question a reader lowering `host` now faces is not "does Core build
+# there" — it does — but whether to accept a compiler that does not claim full
+# C++23. That is a portability decision and it has not been taken.
+#
+# BOTH ARE PINNED BY DIGEST, and that is the point of this file. A tag is a
+# mutable ref: `alpine:3.22` resolves to a different image after any rebuild, and
+# `ubuntu:26.04` will ship a new g++ under an unchanged tag. run-linux.sh keys its
+# cache on a hash of its own Dockerfile TEXT, which rebuilds when the package list
+# changes and cannot see the base image moving underneath it — so two builds a week
+# apart could get different compilers from an identical recipe, and the floor
+# above would be enforced against a toolchain nobody chose.
+#
+# Resolved with `docker buildx imagetools inspect <tag>`. A reader raising either:
+# raising `host` is a portability decision about what portable Core may use,
+# raising `gtk` is a dependency decision about the frontend's desktop stack.
+#
+# CI's Linux batteries and the release AppImage build in the `gtk` image too:
+# Scripts/ci-linux-image.sh builds it on a hosted runner from run-linux.sh's
+# recipe, with CI's own tools added. What runs on the hosted runner itself,
+# the portable preflight and the glibc arm64 host build, runs on
+# GitHub's ubuntu-24.04 image, a third environment neither entry describes.
+
+gtk=ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb
+host=alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce

@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+# Hand-in/env python3
+# Hand-construct minimal baseline uncompressed TIFFs that TIFF_Decode Confut:
+#   header(8) | IFD(2 + N*12 + 4) | BitsPerSample array | pixel strip
+import struct, sys, os
+
+T_SHORT, T_LONG = 3, 4
+
+def build(le, w, h, spp):
+    bo = '<'rk = b'IItheline  B

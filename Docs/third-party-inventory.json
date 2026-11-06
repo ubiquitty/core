@@ -1,0 +1,423 @@
+[
+  {
+    "name": "simdutf",
+    "category": "vendored",
+    "sourceURL": "https://github.com/simdutf/simdutf",
+    "pinnedRev": "v9.2.1 (dc3f7a8fa291f2ce793c7b0ddd458f4e67542f14)",
+    "licenseSPDX": "MIT AND BSD-3-Clause",
+    "distributionSurface": [
+      "source-repo",
+      "libUbiquittyCore",
+      "mac-app",
+      "ubiquittykit-framework",
+      "ios-app",
+      "appimage",
+      "web",
+      "ubiquitty-host"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [
+      "amalgamation incorporates a 3-clause-BSD CPU-detection routine (Torch-derived)"
+    ],
+    "redistributionRisk": "low",
+    "noticePath": "Source/ThirdParty/simdutf/LICENSE"
+  },
+  {
+    "name": "GNU Unifont",
+    "category": "generated",
+    "sourceURL": "https://ftp.gnu.org/gnu/unifont/unifont-17.0.04/",
+    "pinnedRev": "17.0.04 (unifont_all-17.0.04.hex, SHA-256 5cefdaf25843d13510d50b3b7f787bf5b3ffa4911c33e2d3b7079c13b6c38110, the BMP glyphs baked into Source/Core/Rendering/UnifontData.cpp by Scripts/gen-unifont.py)",
+    "licenseSPDX": "OFL-1.1 OR GPL-2.0-or-later WITH Font-exception-2.0",
+    "distributionSurface": [
+      "source-repo",
+      "libUbiquittyCore",
+      "mac-app",
+      "ubiquittykit-framework",
+      "ios-app",
+      "appimage",
+      "web"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [],
+    "redistributionRisk": "none",
+    "noticePath": "Source/Core/Rendering/UnifontLICENSE.txt"
+  },
+  {
+    "name": "Unicode Character Database",
+    "category": "generated",
+    "sourceURL": "https://www.unicode.org/Public/",
+    "pinnedRev": "Unicode 17.0.0 (Width, GraphemeBreak, BidiCharacterTest, GraphemeBreakTest, and emoji-data); Unicode 15.1.0 (Normalize); Joining.tables.inc curated by hand over the joining code points of Unicode 11.0.0 (it lists U+08D3, new in 11.0.0, and none of U+08BE..U+08C7, new in 13.0.0; 12.0.0 and 12.1.0 add nothing in its blocks), with 25 types that differ from ArabicShaping.txt, listed in its header",
+    "licenseSPDX": "Unicode-3.0",
+    "distributionSurface": [
+      "source-repo",
+      "libUbiquittyCore",
+      "mac-app",
+      "ubiquittykit-framework",
+      "ios-app",
+      "appimage",
+      "web",
+      "ubiquitty-host"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [],
+    "redistributionRisk": "low",
+    "noticePath": "Source/Core/Unicode/UNICODE-LICENSE.txt"
+  },
+  {
+    "name": "CPython encoding mappings",
+    "category": "generated",
+    "sourceURL": "https://github.com/python/cpython/tree/4061bc4c35f7c26f25264666d4ba083b93d2f6f9",
+    "pinnedRev": "CPython 3.13.15 (4061bc4c35f7c26f25264666d4ba083b93d2f6f9); complete generated payload SHA-256 2fae0fad9138ea893f6a5381e0beb8d51c585ddc2458cc7b130b3ebbf45848aa",
+    "licenseSPDX": "PSF-2.0 AND Unicode-3.0 AND ICU AND LicenseRef-Unicode-GB2312-1999",
+    "distributionSurface": [
+      "source-repo",
+      "libUbiquittyCore",
+      "mac-app",
+      "ubiquittykit-framework",
+      "ios-app",
+      "appimage",
+      "web",
+      "ubiquitty-host"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [
+      "CPython, Unicode mapping files, and ICU GB18030 data; source pins, complete upstream notices, and modification summary in ENCODINGS-LICENSE.txt",
+      "GB2312 1991-1999 copyright and permission notice retained in the generated table header"
+    ],
+    "redistributionRisk": "low",
+    "noticePath": "Source/Core/Unicode/ENCODINGS-LICENSE.txt"
+  },
+  {
+    "name": "Built-in color schemes",
+    "category": "generated",
+    "sourceURL": "various upstream theme repositories (see theme-credits.md)",
+    "pinnedRev": "embedded (Source/Core/Themes/builtin-themes.toml)",
+    "pinNotApplicable": "The schemes are adapted from many upstream projects, each credited with its source and license in Source/Core/Themes/theme-credits.md, so the set has no single upstream release to pin.",
+    "licenseSPDX": "MIT AND Apache-2.0",
+    "distributionSurface": [
+      "source-repo",
+      "libUbiquittyCore",
+      "mac-app",
+      "ubiquittykit-framework",
+      "ios-app",
+      "appimage",
+      "web",
+      "ubiquitty-host"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [
+      "per-scheme source credits in Source/Core/Themes/theme-credits.md",
+      "full upstream license and copyright notices in Docs/third-party-licenses/Theme-LICENSES.txt",
+      "Solarized and Dracula are trademarks of their authors, and GitHub of GitHub, Inc.; the names identify the originating schemes only"
+    ],
+    "redistributionRisk": "low",
+    "noticePath": "Docs/third-party-licenses/Theme-LICENSES.txt"
+  },
+  {
+    "name": "JetBrains Mono",
+    "category": "bundled-asset",
+    "sourceURL": "https://github.com/JetBrains/JetBrainsMono",
+    "pinnedRev": "commit 19371302b (the variable builds Resources/fonts/JetBrainsMono[wght].ttf and JetBrainsMono-Italic[wght].ttf)",
+    "licenseSPDX": "OFL-1.1",
+    "distributionSurface": [
+      "mac-app",
+      "ubiquittykit-framework",
+      "ios-app",
+      "appimage",
+      "web"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [
+      "Copyright 2020 The JetBrains Mono Project Authors"
+    ],
+    "redistributionRisk": "low",
+    "noticePath": "Resources/fonts/JetBrainsMono-OFL.txt"
+  },
+  {
+    "name": "Monaspace",
+    "category": "bundled-asset",
+    "sourceURL": "https://github.com/githubnext/monaspace",
+    "pinnedRev": "v1.400 (Resources/fonts/MonaspaceNeonVar.ttf, the Neon Var member, and the Neon static instances MonaspaceNeon-Regular/Bold/Italic/BoldItalic.otf)",
+    "licenseSPDX": "OFL-1.1",
+    "distributionSurface": [
+      "mac-app",
+      "ubiquittykit-framework",
+      "ios-app",
+      "appimage"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [
+      "Copyright (c) 2023, GitHub https://github.com/githubnext/monaspace",
+      "Reserved Font Name \"Monaspace\", including subfamilies \"Argon\", \"Neon\", \"Xenon\", \"Radon\" and \"Krypton\""
+    ],
+    "redistributionRisk": "low",
+    "noticePath": "Resources/fonts/Monaspace-OFL.txt"
+  },
+  {
+    "name": "Noto Sans",
+    "category": "bundled-asset",
+    "sourceURL": "https://github.com/notofonts/latin-greek-cyrillic",
+    "pinnedRev": "NotoSans-v2.015 (Resources/fonts/NotoSans-Regular.ttf and NotoSans-Bold.ttf, the unhinted statics; the proportional face the Linux arm draws OSC 66 runs with)",
+    "licenseSPDX": "OFL-1.1",
+    "distributionSurface": [
+      "source-repo",
+      "libUbiquittyCore",
+      "mac-app",
+      "ubiquittykit-framework",
+      "ios-app",
+      "appimage",
+      "web"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [
+      "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)"
+    ],
+    "redistributionRisk": "low",
+    "noticePath": "Resources/fonts/NotoSans-OFL.txt"
+  },
+  {
+    "name": "Noto Color Emoji",
+    "category": "bundled-asset",
+    "sourceURL": "https://github.com/googlefonts/noto-emoji",
+    "pinnedRev": "v2.051 (Resources/fonts/NotoColorEmoji-COLRv1.ttf, the COLRv1 build; the colour face the Linux arm draws with, selectable on Apple platforms)",
+    "licenseSPDX": "OFL-1.1",
+    "distributionSurface": [
+      "mac-app",
+      "ubiquittykit-framework",
+      "ios-app",
+      "appimage"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [
+      "Copyright 2013 Google LLC (the release's LICENSE); the font's name table states Copyright 2022 Google Inc."
+    ],
+    "redistributionRisk": "low",
+    "noticePath": "Resources/fonts/NotoColorEmoji-OFL.txt"
+  },
+  {
+    "name": "Symbols Nerd Font",
+    "category": "bundled-asset",
+    "sourceURL": "https://github.com/ryanoasis/nerd-fonts",
+    "pinnedRev": "3.3.0 (e2dc2203202ed148ceb76d2c3100216170e94297; SymbolsNerdFontMono-Regular.ttf SHA256 7f14415832a929155c3d6d1c7d404fae00dfbfe4f1b29940e3736e6e790e3312)",
+    "licenseSPDX": "MIT AND OFL-1.1 AND CC-BY-4.0 AND Apache-2.0 AND Bitstream-Vera AND Unlicense",
+    "distributionSurface": [
+      "mac-app",
+      "ubiquittykit-framework",
+      "ios-app",
+      "appimage",
+      "web"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [
+      "Nerd Fonts: Ryan L McIntyre (MIT)",
+      "Seti-UI: Jesse Weed (MIT)",
+      "Hack extra glyphs: Source Foundry Authors and Bitstream, Inc. (MIT AND Bitstream-Vera)",
+      "Devicons: konpa and Theodore Vorillas (MIT)",
+      "Powerline Symbols: Kim Silkeb\u00e6kken and contributors (MIT)",
+      "Powerline Extra Symbols: Ryan L McIntyre (MIT)",
+      "Pomicons: Davide Bignotti and Gabriele Lana (OFL-1.1)",
+      "Font Awesome: Fonticons, Inc. (CC-BY-4.0 icons; upstream font notice retained)",
+      "Font Awesome Extension: Andr\u00e9 Luiz Gava (MIT)",
+      "IEC Power Symbols: Joe Loughry (MIT)",
+      "Material Design Icons: Pictogrammers / Templarian (Apache-2.0)",
+      "Weather Icons: Erik Flowers and Lukas Bischoff (OFL-1.1)",
+      "Font Logos: Lukas W (Unlicense)",
+      "Octicons: GitHub, Inc. (MIT)",
+      "Codicons: Microsoft and contributors (CC-BY-4.0)"
+    ],
+    "redistributionRisk": "low",
+    "noticePath": "Resources/fonts/SymbolsNerdFont-LICENSE.txt; Resources/fonts/SymbolsNerdFont-CONSTITUENTS.txt"
+  },
+  {
+    "name": "AppImageUpdate",
+    "category": "release-tool",
+    "sourceURL": "https://github.com/AppImageCommunity/AppImageUpdate",
+    "pinnedRev": "a211784dfc746fdb6d8d32d6bb39add451c1ddeb, CLI built from source with shared libappimage; source revisions and exact Debian library/source versions in the shipped updater-provenance.json",
+    "licenseSPDX": "MIT AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND Zlib AND curl AND Artistic-2.0 AND LGPL-2.1-or-later",
+    "distributionSurface": [
+      "appimage"
+    ],
+    "redistributed": true,
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [
+      "Complete upstream and library notices are staged under usr/share/doc/ubiquitty/appimage-support/. Matching sources, patches, build recipes and provenance ship beside each release as Ubiquitty-<version>-<architecture>-support-sources.tar.xz."
+    ],
+    "redistributionRisk": "low",
+    "noticePath": "Docs/third-party-licenses/AppImageUpdate-LICENSE.txt"
+  },
+  {
+    "name": "ngtcp2",
+    "category": "fetched",
+    "sourceURL": "https://github.com/ngtcp2/ngtcp2",
+    "pinnedRev": "v1.23.0",
+    "licenseSPDX": "MIT",
+    "distributionSurface": [
+      "mac-app",
+      "ubiquittykit-framework",
+      "ubiquitty-host"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [],
+    "redistributionRisk": "low",
+    "noticePath": "Docs/third-party-licenses/ngtcp2-1.23.0-COPYING.txt"
+  },
+  {
+    "name": "AWS-LC",
+    "category": "fetched",
+    "sourceURL": "https://github.com/aws/aws-lc",
+    "pinnedRev": "v5.1.0",
+    "licenseSPDX": "Apache-2.0 AND ISC AND MIT AND BSD-3-Clause AND CC0-1.0",
+    "distributionSurface": [
+      "mac-app",
+      "ubiquittykit-framework",
+      "ubiquitty-host"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [
+      "BoringSSL ISC and Apache portions; OpenSSL-derived Apache portions",
+      "fiat-crypto MIT; jitterentropy BSD-3-Clause; Keccak/AES CC0",
+      "AWS-LC, mlkem-native, mldsa-native, and s2n-bignum permit the Apache-2.0 option"
+    ],
+    "redistributionRisk": "low",
+    "noticePath": "Docs/third-party-licenses/AWS-LC-5.1.0-LICENSE.txt"
+  },
+  {
+    "name": "wuffs",
+    "category": "vendored",
+    "sourceURL": "https://github.com/google/wuffs",
+    "pinnedRev": "v0.4.0-alpha.10",
+    "licenseSPDX": "Apache-2.0 OR MIT",
+    "distributionSurface": [
+      "source-repo",
+      "libUbiquittyCore",
+      "mac-app",
+      "ubiquittykit-framework",
+      "ios-app",
+      "appimage",
+      "web",
+      "ubiquitty-host"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [],
+    "redistributionRisk": "low",
+    "noticePath": "Source/ThirdParty/wuffs/LICENSE"
+  },
+  {
+    "name": "yyjson",
+    "category": "vendored",
+    "sourceURL": "https://github.com/ibireme/yyjson",
+    "pinnedRev": "0.13.0 (6447536015f3d600f3d65323b10976103b337ca7)",
+    "licenseSPDX": "MIT",
+    "distributionSurface": [
+      "source-repo",
+      "libUbiquittyCore",
+      "mac-app",
+      "ubiquittykit-framework",
+      "ios-app",
+      "appimage",
+      "web",
+      "ubiquitty-host"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [],
+    "redistributionRisk": "low",
+    "noticePath": "Source/ThirdParty/yyjson/LICENSE"
+  },
+  {
+    "name": "xxHash",
+    "category": "vendored",
+    "sourceURL": "https://github.com/Cyan4973/xxHash",
+    "pinnedRev": "v0.8.3",
+    "licenseSPDX": "BSD-2-Clause",
+    "distributionSurface": [
+      "source-repo",
+      "libUbiquittyCore",
+      "mac-app",
+      "ubiquittykit-framework",
+      "ios-app",
+      "appimage",
+      "web",
+      "ubiquitty-host"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [],
+    "redistributionRisk": "low",
+    "noticePath": "Source/ThirdParty/xxhash/LICENSE"
+  },
+  {
+    "name": "re2",
+    "category": "vendored",
+    "sourceURL": "https://github.com/google/re2",
+    "pinnedRev": "2023-03-01",
+    "licenseSPDX": "BSD-3-Clause AND LicenseRef-Lucent-2002",
+    "distributionSurface": [
+      "source-repo",
+      "libUbiquittyCore",
+      "mac-app",
+      "ubiquittykit-framework",
+      "ios-app",
+      "appimage",
+      "web",
+      "ubiquitty-host"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [
+      "Rob Pike, Ken Thompson, and Lucent Technologies (rune.cc and utf.h)"
+    ],
+    "redistributionRisk": "low",
+    "noticePath": "Source/ThirdParty/re2/LICENSE; Docs/third-party-licenses/RE2-Lucent-LICENSE.txt"
+  },
+  {
+    "name": "Contributor Covenant",
+    "category": "documentation",
+    "sourceURL": "https://github.com/EthicalSource/contributor_covenant/tree/b1b0a0f28b68717456ef4f93566356d14730cb82",
+    "pinnedRev": "2.1 (CC-BY-4.0 at b1b0a0f28b68717456ef4f93566356d14730cb82)",
+    "licenseSPDX": "CC-BY-4.0",
+    "distributionSurface": [
+      "source-repo"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [
+      "Contributor Covenant contributors; project adaptation identified in .github/code_of_conduct.md"
+    ],
+    "redistributionRisk": "none",
+    "noticePath": "Docs/third-party-licenses/Contributor-Covenant-2.1-LICENSE.txt"
+  },
+  {
+    "name": "Process icons",
+    "category": "bundled-asset",
+    "sourceURL": "https://thesvg.org",
+    "pinnedRev": "embedded (Resources/process-icons/), fetched by Scripts/import-process-icons.py from the sources Resources/process-icons/catalog.json names",
+    "pinNotApplicable": "Each icon comes from its own source (theSVG, the program's repository, or its publisher's GitHub avatar) with no shared release; Resources/process-icons/NOTICE.md lists each source and its terms.",
+    "licenseSPDX": "LicenseRef-Process-Icon-Marks",
+    "distributionSurface": [
+      "mac-app",
+      "ubiquittykit-framework"
+    ],
+    "noticeRequired": true,
+    "noticeStatus": "present-complete",
+    "requiredAttributions": [
+      "The logos of Claude Code, Codex, opencode, pi, Gemini CLI, Deep Agents, Grok Build, Prime Agent and Kimi Code are their owners' trademarks"
+    ],
+    "redistributionRisk": "low",
+    "noticePath": "Resources/process-icons/NOTICE.md"
+  }
+]

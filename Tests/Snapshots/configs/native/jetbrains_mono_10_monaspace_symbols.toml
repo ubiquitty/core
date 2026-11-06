@@ -1,0 +1,9 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+
+# A native font profile: the [font] block a case names through `native`. The
+# symbol family is a shipped face with none of the private-use icons.
+[font]
+family = "JetBrains Mono"
+size = 10
+symbol_fallback = "Monaspace Neon Var"

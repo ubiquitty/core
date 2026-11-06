@@ -1,0 +1,5 @@
+%begin 1 1 0
+%end 1 1 0
+%n%begi  
+01%end 1 1 0
+%output %0 \033[A uôput %0 \033[A

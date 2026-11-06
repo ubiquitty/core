@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+#
+# Runs the repository's push checks. Branch protection belongs in GitHub repository settings.
+# UBIQUITTY_SKIP_PRE_PUSH_HOOK=1 is a per-invocation override for an explicitly
+# accepted check limitation; it does not alter installed hooks.
+set -uo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+# The hook body is ubiquitty-core's whichever repository it gates: the gates it
+# names live beside it, and the tree they judge is $ROOT.
+CORE_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Tests create repositories of their own. Hook-local Git paths must not
+# redirect their index or repository operations into the checkout being pushed.
+while IFS= read -r variable; do
+    unset "$variable"
+done < <(git rev-parse --local-env-vars)
+cd "$ROOT" || exit 1
+
+# The bypass lives at the call site for one push, rather than mutating the clone's
+# installed hooks and leaving later pushes ungated.
+[ -n "${UBIQUITTY_SKIP_PRE_PUSH_HOOK:-}" ] && exit 0
+
+REFS="$(cat)"
+
+# The gates the CI workflow runs, run here. A deleted branch pushes no commits
+# and has nothing to check.
+if [ -n "$(printf '%s' "$REFS" | grep -v '^(delete)' || true)" ]; then
+    "$ROOT/Scripts/pre-push-gates.sh" || exit 1
+fi
+
+# Checks the clone's owner added for this clone (Scripts/run-local-hooks.sh),
+# given the hook's arguments and the refs it read.
+printf '%s\n' "$REFS" | "$CORE_SCRIPTS/run-local-hooks.sh" pre-push "$@" || exit 1
+exit 0

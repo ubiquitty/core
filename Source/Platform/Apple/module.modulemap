@@ -1,0 +1,264 @@
+// Copyright (C) 2026 Stanislav Yaglo
+// SPDX-License-Identifier: Apache-2.0
+
+module UbiquittyAppleCallbacks {
+    requires objc, cplusplus
+    header "OwnedCallback.h"
+    export *
+}
+
+// Core, as Swift imports it.
+//
+// One module, not one per subject. A Clang module is an import name, and
+// splitting Core across eleven of them bought nothing while costing the thing
+// that actually bites: a header belongs to exactly one module, so any two that
+// reached the same Core header — the palette, the key translation, the
+// preferences enums — defined its types twice, and the diagnostic named the
+// standard library rather than the map. Every attempt to move a header between
+// the pieces hit that, and each was paid for in a comment explaining why the
+// header could not live where it belonged.
+//
+// Here rather than beside one frontend: both Apple shells and the shared layer
+// between them import this, and a map inside a platform directory made the
+// shared code depend on that platform's path. Paths are relative to this file.
+module UbiquittyCore {
+    header "../../PAL/DropFiles.h"
+    header "../../PAL/ReceivedDropFiles.h"
+    header "../../PAL/ProcessSignal.h"
+    header "../../Core/OSC/ClipboardStore.h"
+    header "../../Core/Rendering/OpenTypeShapingFilter.h"
+    // Which families ship and their style files, so a shipped family is drawn
+    // from its own files and never from a copy the machine has installed.
+    header "../../Core/Rendering/BundledFonts.h"
+    header "MetalTextureLimits.h"
+    // The main queue as the loop a session's posted work runs on, which every
+    // Apple drive hands its sessions.
+    header "MainQueueLoop.h"
+    // The showcase host an Apple UI-test launch draws in place of a dialled
+    // one; defined beside the shell that seeds it.
+    header "ShowcaseHostSeed.h"
+    // The QUIC bootstrap, for a frontend that must run it itself. A phone
+    // cannot fork the `ssh <host> '...'` the desktop clients use, so it runs the
+    // inner command over its own SSH channel and parses the reply with the same
+    // Core grammar the daemon writes.
+    header "../../Core/Session/RemoteBootstrap.h"
+    // A failed connect's sentence, for a frontend that dials with a network
+    // stack of its own and reports the error code it failed with.
+    header "../../Core/Transport/ConnectFailure.h"
+    // What a saved session keeps of each tab, which the macOS app's capture
+    // walk reads from either shell's windows and hands to this one rule.
+    header "../../Core/Session/RestorePlan.h"
+    // Where "Share This Window" finds the local daemon a bundled host starts.
+    header "../../Core/Session/SessionShare.h"
+    header "../../Core/Session/SessionOrigin.h"
+    header "../../Core/OSC/Notification.h"
+    header "../../Core/Session/SessionLocation.h"
+    header "../../Core/Security/CapabilityConsentText.h"
+    // The control socket's server; the macOS shell is its host.
+    header "../../Core/Protocol/Control/Server.h"
+    header "../../Core/Protocol/Sync/QUICBootstrap.h"
+    header "../../Core/Protocol/Sync/QUICBootstrapReader.h"
+    header "../../Core/Rendering/GlyphSlotCache.h"
+    header "../../Core/Rendering/AtlasConfiguration.h"
+    header "../../Core/Rendering/GlyphTiling.h"
+    header "../../Core/Rendering/GlyphRasterizer.h"
+    // The sized-window placement and cut every arm shares, which the Apple
+    // rasteriser reads for where a master's glyph stands and which texel its
+    // window begins at.
+    header "../../Core/Rendering/SizedMaster.h"
+    header "../../Core/Rendering/UnifontRasterizer.h"
+    header "../../Core/Rendering/SoftwareRenderer.h"
+    header "../../Core/Rendering/PNGEncoder.h"
+    header "../../Core/Rendering/ProportionalStripRaster.h"
+    header "../../Core/Diagnostics/EscapeDecode.h"
+    header "../../Core/Diagnostics/SnapshotArguments.h"
+    header "../../Core/App/SnapshotRequest.h"
+    header "../../Core/Diagnostics/RenderScenes.h"
+    header "../../Core/CommandPalette/PaletteScope.h"
+    header "../../Core/CommandPalette/PaletteCommand.h"
+    header "../../Core/CommandPalette/FuzzyMatcher.h"
+    header "../../Core/CommandPalette/PaletteRegistry.h"
+    header "../../Core/CommandPalette/PaletteEngine.h"
+    header "../../Core/CommandPalette/PaletteFrecency.h"
+    header "../../Core/CommandPalette/SettingsCommands.h"
+    header "../../Core/Input/ArrowDrag.h"
+    header "../../Core/Input/DragAutoScroll.h"
+    header "../../Core/Input/ShellEscape.h"
+    header "../../Core/Input/PointerReportingPolicy.h"
+    header "../../Core/Attributes/LinkRun.h"
+    // The Welcome screen's action vocabulary and the shell wrapper one of its
+    // buttons installs, for the shells that dispatch a click on one.
+    header "../../Core/App/WelcomeScreen.h"
+    // What the macOS application delegate reads and writes beside one key:
+    // its runtime, its launch words, the control directory the session store
+    // lives in, the terminfo entry it offers remote hosts, the version its
+    // About panel shows, and the settings window's block editors.
+    header "../../Core/App/AppRuntime.h"
+    header "../../Core/App/AppRuntimeCallbacks.h"
+    header "../../Core/Preferences/AppearanceMode.h"
+    header "../../Core/Runtime/LaunchArguments.h"
+    header "../../Core/Session/ControlPaths.h"
+    header "../../Core/Terminfo.h"
+    header "../../Core/Protocol/Sync/WireVersion.h"
+    header "../../Core/Preferences/RangeMapWrite.h"
+    header "../../Core/Preferences/CodePointRange.h"
+    header "../../Core/Preferences/LanguageFallbackWrite.h"
+    header "../../Core/Themes/ThemeDocumentEdit.h"
+    header "../../Core/Themes/ThemePreferences.h"
+    header "../../Core/App/ShellIntegrationInstall.h"
+    header "../../Core/Terminfo/UbiquittyTerminfo.h"
+    header "../../Core/Session/WindowPlacement.h"
+    header "../../Core/Input/Keybindings.h"
+    header "../../Core/Clipboard/Scope.h"
+    header "../../Core/Security/SecureInputPolicy.h"
+    header "../../Core/Preferences/Preferences.h"
+    header "../../Core/Preferences/PreferencesDefaults.h"
+    header "../../Core/Preferences/FontRoutePreferences.h"
+    header "../../Core/Preferences/SelfWriteGuard.h"
+    // The configuration door and the renderer fold, which the Kit's renderer
+    // adapter reads by value.
+    header "../../Core/Preferences/Configuration.h"
+    // The snapshot drivers' configuration flags, which the iOS snapshot
+    // launch states into the case's document as the other drivers do.
+    header "../../Core/Preferences/SnapshotConfigurationFlags.h"
+    // The by-key reader and writer a settings surface edits one key through.
+    header "../../Core/Preferences/Key.h"
+    header "../../Core/Preferences/EffectiveValue.h"
+    // The bounds and the closed vocabulary a settings row builds its control from.
+    header "../../Core/Preferences/Schema.h"
+    header "../../Core/Preferences/Vocabulary.h"
+    header "../../Core/Preferences/TitleComposition.h"
+    // Where the stored document lives, for a shell that shows or checks it.
+    header "../../Core/Preferences/PreferencesPaths.h"
+    header "../../Core/Preferences/RenderConfigurationFold.h"
+    header "../../Core/Rendering/RenderConfiguration.h"
+    header "../../Core/TerminalOperations.h"
+    header "../../Core/VT/Constants.h"
+    header "../../Core/Screen/ScrollSearch.h"
+    header "../../Core/Triggers/Triggers.h"
+    header "../../Core/Screen/LinkResolver.h"
+    header "../../Core/Screen/Addressing.h"
+    header "../../Core/Screen/RowSignature.h"
+    header "../../Core/Screen/CommandBlocks.h"
+    header "../../Core/Screen/Marks.h"
+    header "../../Core/Terminal.h"
+    header "../../Core/Themes/ThemeApply.h"
+    header "../../Core/Selection/CopyStyle.h"
+    header "../../Core/Selection/StyledClipboard.h"
+    header "../../Core/Selection/TerminalSelection.h"
+    header "../../Core/Rendering/OverlaySpanGather.h"
+    header "../../Core/Network/FileTransferLaunch.h"
+    header "../../Core/Rendering/GridSnap.h"
+    header "../../Core/Title/Format.h"
+    header "../../Core/Title/Directory.h"
+    header "../../Core/Title/ProcessIcons.h"
+    header "../../Core/Title/Fit.h"
+    header "../../Core/App/StatusRollup.h"
+    header "../../Core/App/TitleCompose.h"
+    header "../../Core/App/ProcessIconPlate.h"
+    header "../../Core/App/BannerTitle.h"
+    header "../../Core/Themes/TabBand.h"
+    header "../../Core/Themes/Themes.h"
+    header "../../Core/Themes/Contrast.h"
+    header "../../Core/Rendering/TerminalSnapshot.h"
+    header "../../Core/RichText/ParagraphMetrics.h"
+    header "../../Core/Rendering/SubpixelPhase.h"
+    header "../../Core/Diagnostics/PaintHeatmap.h"
+    header "../../Core/Diagnostics/DrawingDebug.h"
+    header "../../Core/Diagnostics/FramePerfLog.h"
+    header "../../Core/Runtime/PresentLegMeter.h"
+    header "../../Core/Rendering/TerminalFrameInputs.h"
+    header "../../Core/Rendering/FrameCapture.h"
+    header "../../Core/Rendering/FrameDamage.h"
+    header "../../Core/Rendering/AnimationSchedule.h"
+    header "../../Core/Runtime/ScrollerChrome.h"
+    header "../../Core/Runtime/SearchCounterText.h"
+    header "../../Core/Runtime/SurfaceFocus.h"
+    header "../../Core/Runtime/ProcessPreferences.h"
+    header "../../Core/Runtime/TabStripChrome.h"
+    header "../../Core/Runtime/TmuxSessionBadge.h"
+    header "../../Core/Session/TabShortcuts.h"
+    header "../../Core/Session/Tags.h"
+    header "../../Core/Session/QuarantinePolicy.h"
+    header "../../Core/Runtime/TerminalSession.h"
+    header "../../Core/Image/TerminalImage.h"
+    header "../../Core/Kitty/UnicodePlaceholders.h"
+    header "../../Core/Rendering/ImageLayerCarry.h"
+    header "../../Core/Rendering/ImageQuads.h"
+    header "../../Core/Runtime/WorkspaceSession.h"
+    header "../../Core/Session/RememberedSessions.h"
+    header "../../Core/Session/BackgroundRefreshState.h"
+    header "../../Core/Session/HealthBadge.h"
+    header "../../Core/Runtime/HostDirectory.h"
+    header "../../Core/Runtime/HostDirectoryClient.h"
+    header "../../Core/Session/ConnectRemedy.h"
+    header "../../Core/Rendering/CellDecisions.h"
+    header "../../Base/FractionalAccumulator.h"
+    header "../../Core/Screen/ScrollTuning.h"
+    header "../../Core/Screen/Scrollback.h"
+    header "../../Core/Modes/Scroll.h"
+    header "../../Core/Modes/SyncOutput.h"
+    header "../../Core/Input/PointerInput.h"
+    header "../../Core/Input/PointerShape.h"
+    header "../../Core/Rendering/StatusRow.h"
+    header "../../Core/Accessibility/TextProjection.h"
+    header "../../Core/Accessibility/Palette.h"
+    header "../../Core/Tek/ColorPreference.h"
+    header "../../Core/Tek/Colors.h"
+    header "../../Core/Screen/ViewPlacement.h"
+    header "../../Core/Panes/PaneTree.h"
+    header "../../Core/Protocol/Tmux/LayoutNode.h"
+    header "../../Core/Network/TmuxLaunch.h"
+    header "../../Core/Network/RemoteOptionsFromValues.h"
+    header "../../Core/Protocol/Tmux/PaneLock.h"
+    header "../../Core/Rendering/PaddingGeometry.h"
+    header "../../Core/Rendering/CellMetrics.h"
+    header "../../Core/Rendering/FontMetrics.h"
+    header "../../Core/Rendering/RuleGeometry.h"
+    header "../../Core/Rendering/CellLayout.h"
+    header "../../Core/Rendering/CursorMotion.h"
+    header "../../Core/Rendering/BoxEdgeStretch.h"
+    header "../../Core/Rendering/BoxDrawing.h"
+    header "../../Core/Rendering/BackgroundImageLayout.h"
+    header "../../Core/Rendering/Font/FontInventoryTable.h"
+    header "../../Core/Rendering/Font/FontFallbackPolicy.h"
+    header "../../Core/Rendering/Font/ScriptClassifier.h"
+    header "../../Core/Rendering/Font/FontRoutingSession.h"
+    header "../../Core/Rendering/FontFeatureSpecification.h"
+    header "../../Core/Rendering/FontVariationSpecification.h"
+    header "../../Core/Rendering/ShapedCellCache.h"
+    header "../../Core/Rendering/Font/FontRoute.h"
+    header "../../Core/Rendering/LigatureClassification.h"
+    header "../../Core/Keys/KeyEvent.h"
+    header "../../Core/Keys/KeyTranslation.h"
+    header "../../Core/Keys/Keymap.h"
+    header "../../Core/Kitty/KeyboardFlags.h"
+    header "../../Core/Input/PointerLockBreakout.h"
+    header "../../Core/Input/PointerLockLifecycle.h"
+    header "../../Core/Input/PasteNormalize.h"
+    header "../../Core/Input/CompositionRange.h"
+    header "../../Core/Input/ModifierPolicy.h"
+    header "../macOS/UBKeyCodeMap.h"
+    header "../../Core/Mouse/Mouse.h"
+    header "../../Core/Mouse/MouseEvent.h"
+    requires cplusplus
+    export *
+}
+
+// The descriptor handoff "Share This Window" performs: the one step of a share
+// that crosses a native handle, so it lives behind the POSIX seam rather than
+// in Core, and this shell names it by the address a session's share takes.
+module UbiquittySessionHandoff {
+    header "../POSIX/SessionHandoff.h"
+    requires cplusplus
+    export *
+}
+
+// Bringing this Mac's host up to the build the app bundles: the file and
+// socket work behind the POSIX seam, which the app runs at launch and when a
+// person asks to update This Mac's host.
+module UbiquittyLocalHostInstall {
+    header "../POSIX/LocalHostInstall.h"
+    requires cplusplus
+    export *
+}

@@ -1,0 +1,4 @@
+%begin 7 1 0
+ re%end 7 1 0
+%et %e%nd : hello
+%exit

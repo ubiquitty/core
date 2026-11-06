@@ -1,0 +1,44 @@
+# less paging, line scrolling, a search with highlighted matches, end and start of file (recorded at 24x80)
+# Each read: <microseconds> <length> <block|more>.
+#   block — a zero-timeout poll after the read found the PTY empty.
+#   more  — bytes were already waiting; a host keeps draining.
+0 23 more
+162 1024 block
+1341 245 block
+595101 1024 block
+595600 271 block
+910600 1024 block
+913408 276 block
+1008491 81 block
+1096443 44 block
+1212762 53 block
+1295399 4 block
+1298515 59 block
+1419388 61 block
+1491450 68 block
+1593550 77 block
+1694077 78 block
+1790282 41 block
+1896508 53 block
+1992405 62 block
+2092353 59 block
+2190714 66 block
+2292301 78 block
+2386908 4 more
+2386922 70 block
+2696523 1024 block
+2696548 53 block
+2701113 1024 block
+2708404 14 block
+2708452 1024 block
+2708554 35 block
+2996887 9 block
+2997097 202 block
+3298737 230 block
+3737368 4 block
+3928496 1024 block
+4000459 448 block
+4160830 1024 block
+4402980 361 block
+4616191 1024 block
+4861097 455 block

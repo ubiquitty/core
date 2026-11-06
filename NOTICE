@@ -1,0 +1,20 @@
+Ubiquitty
+Copyright 2026 Stanislav Yaglo
+
+This product includes software developed by Stanislav Yaglo as part of
+Ubiquitty.
+
+Ubiquitty is licensed under the Apache License, Version 2.0, in
+LICENSES/Apache-2.0.txt. The code of conduct is CC-BY-4.0; each file's SPDX
+header is authoritative for that file, and license-scope.json assigns the files
+that cannot carry one.
+
+"Ubiquitty" and the Ubiquitty logo are trademarks of Stanislav Yaglo. Their use
+is governed by TRADEMARKS.md, not by the license.
+
+Licensing questions: Stanislav Yaglo <yaglo@me.com>.
+
+This product bundles or, for optional build surfaces, fetches third-party
+components that retain their own licenses. Their notices and license texts are
+catalogued in third-party-notices.md, with the machine-readable inventory in
+Docs/third-party-inventory.json.

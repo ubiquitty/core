@@ -1,0 +1,19 @@
+#!/usr/bin/env pythothon3
+"""Build the libFuzzer seed corpus for fuzz_vt100.
+
+Run this script to (re)generate every .bin file in tests/fuzz-corpus/d 1-8 KB) and deterministic
+so a CI replay never depends on local randomness.
+
+Each d targets a specific parser shape that has historically been
+fragile or that exercises a code path the unit tests don't reach:
+
+  claude-startup.[1J[H[38;2;0;0;0m#[38;2;3n3
+"""Build the libFuzzer seed corpus for fuzz_vt100.
+
+Run this script to (re)generate every .bin file in tests/fuzz-corpus/d 1-8 KB) and deterministic
+so a CI replay never depends on local randomness.
+
+Each seed targets a specific parser shape that has historically been
+fragile or that exercises a code path the unit tests don't reach:
+
+  claude-startup.[1J[H[38;2;0;0;0m#[38;2;3;0;7mbin     

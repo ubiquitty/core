@@ -1,0 +1,5 @@
+%begin 0
+%output æ`begin 0
+%output %0 0
+%output æ`begin 0
+%output %0 \03\033[A£

@@ -1,0 +1,31 @@
+# The macOS version floors, in one place because seven build steps need them and
+# five are not CMake: the app's LSMinimumSystemVersion, the Metal shader's
+# -mmacosx-version-min, both vendored QUIC dependency builds, and the generated
+# Xcode workspace.
+#
+# THERE ARE TWO, and they are not the same number.
+#
+# `cxx` is what the C++ is compiled against — the portable Core, the bundled
+# ubiquitty-host and ubq helpers, the vendored QUIC libraries, and
+# UbiquittyKit. That last one is why this floor is the binding constraint rather
+# than a formality: the kit is meant to be embedded in someone else's
+# application, and a framework cannot be adopted by a host whose deployment
+# target is below its own. Raising `cxx` to meet `app` would narrow who can
+# adopt the kit to whoever already ships for the newest OS.
+#
+# It is 13.3 rather than 13: libc++ annotates std::to_chars as introduced there,
+# <format> instantiates the floating-point formatter whatever the arguments are,
+# so every std::print in the tree is rejected below it even when no float is
+# formatted.
+#
+# `app` is what the app bundle declares in LSMinimumSystemVersion, and it is the
+# higher of the two because the frontend's Swift uses APIs that are newer than
+# the C++ floor. Declaring the C++ floor here instead would ship a bundle that
+# installs on a machine its own Swift cannot run on — the failure arrives at
+# launch, after the install has succeeded.
+#
+# A reader changing either: `cxx` moving is a portability decision about
+# helpers, `app` moving is a product decision about who can install.
+
+cxx=13.3
+app=26.0

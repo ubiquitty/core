@@ -1,0 +1,14 @@
+# top refreshing every second, filtered to one scratch process (stands in for htop, which this host lacks) (recorded at 24x80)
+# Each read: <microseconds> <length> <block|more>.
+#   block — a zero-timeout poll after the read found the PTY empty.
+#   more  — bytes were already waiting; a host keeps draining.
+0 45 block
+1077742 723 block
+2290830 273 block
+3729722 234 block
+4922675 199 block
+6127638 175 block
+7336876 250 block
+8529830 289 block
+9868061 307 block
+10501960 23 block

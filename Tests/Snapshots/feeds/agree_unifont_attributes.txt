@@ -1,0 +1,2 @@
+[1;31mred, no bold face[0m [4mrule under the text[0m [9mline across the text[0m [7mswapped fg and bg[0m
+[34mblue fg[0m then default fg, cursor at the end 

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+#
+# Scripts/hooks-dispatch — installed as a COPY under each hook name in the
+# clone's common hooks directory, and run under that name.
+#
+# Linked worktrees share one hooks directory ($GIT_COMMON_DIR/hooks), so a hook
+# symlinked into a particular worktree gates every other worktree with that
+# worktree's copy — stale, or dangling once it is removed. Git skips a dangling
+# hook silently, so that failure is indistinguishable from a hook that ran and
+# passed. This resolves the hook from whichever tree git is operating on, so a
+# push is gated by the code being pushed.
+#
+# A repository that carries ubiquitty-core as a library has no hook bodies of its
+# own to run for the shared gates: the body is the library's, found at
+# $UBQ_CORE_ROOT or Libraries/ubiquitty-core, and it judges the tree git is
+# operating on. A repository's own Scripts/hooks/<name> wins when it has one.
+set -uo pipefail
+
+name="$(basename "$0")"
+top="$(git rev-parse --show-toplevel 2>/dev/null)"
+
+# No working tree (bare operation) means no hook to find and nothing to gate.
+[ -n "$top" ] || exit 0
+
+target="$top/Scripts/hooks/$name"
+if [ ! -f "$target" ]; then
+    core="${UBQ_CORE_ROOT:-$top/Libraries/ubiquitty-core}"
+    [ -f "$core/Scripts/hooks/$name" ] && target="$core/Scripts/hooks/$name"
+fi
+if [ ! -f "$target" ]; then
+    # Fail closed. A gate that cannot find its body must not be mistaken for a
+    # gate that passed, which is the property the whole install exists for.
+    echo "hook: $name is installed but $target does not exist." >&2
+    echo "  This tree predates the hook, or the checkout is incomplete." >&2
+    echo "  Re-run Scripts/install-hooks.sh." >&2
+    exit 1
+fi
+
+exec bash "$target" "$@"

@@ -1,0 +1,20 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+#
+# Inherits the root .clang-tidy and turns off one check for this directory.
+#
+# modernize-use-std-print, 967 sites here against 54 in Source/. A test prints a
+# line per case for the log rather than asserting on it, and the conversion is
+# not mechanical the way it is in Source/: `printf("%s", x.c_str())` is one call,
+# while std::println needs the argument formattable. A std::string is, a
+# const char* is, and a CellGrid or a CommandBlockList is not without a formatter
+# nobody has written. A sweep would work until it met the first test printing a
+# domain type and then either grow formatters for test-only types or stop
+# halfway, and a half-swept directory is worse than an unswept one.
+#
+# Off rather than left failing: 967 findings nobody is going to clear is a gate
+# that gets skipped, and a skipped gate hides the checks beside it that do hold.
+# The rest of the root list applies here unchanged.
+
+InheritParentConfig: true
+Checks: '-modernize-use-std-print'

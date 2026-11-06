@@ -1,0 +1,8 @@
+%begin 1 1 0
+%end 1
+%window-add D4
+%sessio 1 0
+%wd  0
+%window-add D5
+%sessio0
+%window-add D5indow

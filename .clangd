@@ -1,0 +1,62 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+
+# clangd LSP configuration for the ubiquitty tree.
+#
+# The primary flag source is the compile database the build emits
+# (-DCMAKE_EXPORT_COMPILE_COMMANDS=ON). It is written under the build root,
+# outside the checkout, where clangd does not look: clangd searches the source
+# file's directory and its parents, and their build/ subdirectories. So
+# Scripts/build-macos.sh and Scripts/build-linux-gtk.sh link
+# compile_commands.json in the checkout's root to their build's database when
+# that name is free; .gitignore keeps the link out of the tree. With the
+# database, every -I / -isysroot / -F matches the compiler exactly, so project
+# headers ("Settings/Settings.h", AppKit, …) resolve. The Add/Remove flags and
+# per-language sections are the fallback for a file not yet in the database (a
+# freshly created file, or before the first build). Per-file standard: .c → c99;
+# .cpp/.h → c++23 -fno-exceptions -fno-rtti.
+
+CompileFlags:
+  Add:
+    - -ISource
+    - -Wall
+    - -Wextra
+    - -Wno-unused-parameter
+  Remove:
+    # Drop any inherited flags that contradict per-language defaults.
+    - -std=*
+
+---
+# C++ — .cpp / .cc / .cxx / .h++ files.
+If:
+  PathMatch: .*\.(cpp|cc|cxx|hxx|hpp|h\+\+)$
+CompileFlags:
+  Add:
+    - -std=c++23
+    - -fno-exceptions
+    - -fno-rtti
+    - -x
+    - c++
+
+---
+# C — .c files use the production C99 dialect.
+If:
+  PathMatch: .*\.c$
+CompileFlags:
+  Add:
+    - -std=c99
+    - -x
+    - c
+
+---
+# Headers (.h) — default to C++ when clangd can't infer from an including TU.
+If:
+  PathMatch: .*\.h$
+CompileFlags:
+  Add:
+    - -std=c++23
+    - -fno-exceptions
+    - -fno-rtti
+    - -x
+    - c++-header
+

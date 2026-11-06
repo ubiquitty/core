@@ -1,0 +1,770 @@
+#!/usr/bin/env bash
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+
+# Pre-commit hook — staged-file WebKit naming gate + module-boundary tripwire.
+# Installed by Scripts/install-hooks.sh (symlinked into the git hooks dir).
+#
+#   - check-acronyms.py --staged  : BLOCKS on acronym/abbreviation violations
+#     (Gpu→GPU, Attr/Attrs→Attribute, Msg→Message, …).
+#   - check-boundaries.py         : BLOCKS on a module-boundary breach — Cocoa/
+#     Metal/POSIX leaking into Core or a portable module Only when
+#     the commit touches Source/; scans the whole tree (the invariant is a
+#     property of the tree, not just the staged hunk).
+#   - check-quic-mandatory.py     : BLOCKS a build that turns the QUIC transport
+#     off. QUIC is how a native frontend reaches a host and the daemon that
+#     terminates it ships in the app, so a build without it runs, answers, and
+#     cannot reach a host the way the product does — correct for a transport
+#     nobody ships, which no test of behaviour catches. Only the two wasm
+#     configures may, because a browser gives ngtcp2 no UDP socket.
+#   - check-build-dirs.py         : BLOCKS one build directory configured as two
+#     build types across Scripts/. A CMake cache holds one, so the two never
+#     conflict — the last run wins and the binary at that path is silently the
+#     other person's. Scans the whole tree; the property is a pair of scripts.
+#   - check-showcase-goldens.py   : BLOCKS a showcase entry and its golden that
+#     do not name each other. Tools/showcase is upstream of both the snapshot
+#     goldens and Docs/feature_test_matrix.md, and each of those gates reads one
+#     end — so a removed entry leaves an orphan golden that neither can see.
+#     Unconditional, because the change it catches is usually a deletion.
+#   - check-stale-cmake-cache.py  : BLOCKS a build directory whose cached value for
+#     a guarded CACHE default no longer matches what the CMake build would
+#     choose. The value is written once at configure and kept forever, so raising
+#     a default strands every existing directory and CMake never mentions it —
+#     one such move surfaces as different symptoms in different directories,
+#     none naming the cache.
+#   - check-file-content-loss.py  : BLOCKS a tracked source file with no content
+#                                   — the one defect no content check can see.
+#   - check-slop.py               : BLOCKS prose that performs understanding
+#                                   instead of carrying it — six rules, zero each.
+#   - check-conformance-claims.py : BLOCKS a conformance-table row that disagrees
+#                                   with csiHandlers[], in either direction.
+#   - check-empty-array-expansion.py : BLOCKS a bare "${arr[@]}" that aborts on
+#                                   the bash macOS ships, which shellcheck
+#                                   reports at no severity.
+#   - check-glyph-backend-claims.py : BLOCKS a glyph backend that leaves a lossy
+#                                   entry null without naming it, so a frontend's
+#                                   prose and its table cannot disagree unwatched.
+#   - check-pgo-commit-shape.py : BLOCKS a profile change bundled into an
+#                                   unrelated commit, or one whose sidecar did
+#                                   not move with it. A retrain rewrites a
+#                                   binary every checkout builds from; inside
+#                                   another commit it is unfindable by subject
+#                                   and invalidates other worktrees' in-flight
+#                                   measurements with nothing announcing it.
+#   - check-name-collisions.py    : BLOCKS one name declared in two namespaces
+#     with different values. Which one an unqualified use means depends on the
+#     enclosing scope, which is exactly what a textual rewrite discards — so a
+#     sweep can repoint a use at the other value and nothing fails to compile.
+#     --aliases BLOCKS a nested namespace redeclaring an ancestor's type alias:
+#     agreeing targets compile either spelling until the first edit that
+#     changes one of them, and that edit compiles at every use site too.
+#   - check-profile-orphans.py    : BLOCKS a namespace path the PGO profile is
+#     keyed on that the tree no longer declares. A move renames the mangled
+#     symbol and orphans its counters, which is codegen-neutral and therefore
+#     invisible to every other gate. Scans Source/ and Tests/; a locally
+#     modified profile yields no verdict rather than judging someone's A/B arm.
+#     Stands down, by name, where no llvm-profdata can read the profile.
+#   - check-core-subset-paths.sh  : BLOCKS a ubiquitty_core_subset() path absent
+#                                  from the portable-core SSOT
+#   - check-enums.sh --staged     : BLOCKS newly-added bool/enum violations (bool
+#     param not an enum, bool name not predicate-led, k-prefix); backlog advisory.
+#   - check-enum-switches.py --staged : BLOCKS a switch with no default: that does
+#     not name every enumerator. Attributed to a change when either the switch's
+#     file or the file declaring the enum is staged, because adding an enumerator breaks
+#     switches in frontends the author never opened. Pre-existing findings print
+#     without blocking.
+#   - check-interface-docs.py --staged : BLOCKS an interface declared without a
+#     DocC comment, and any comment that narrates a change rather than stating an
+#     invariant. Prints the naming, documentation and one-implementation rules on
+#     failure, so the reminder lands where it is actionable.
+#   - run-local-hooks.sh pre-commit : BLOCKS when a check the clone's owner
+#     placed in $GIT_COMMON_DIR/hooks.d/pre-commit/ exits non-zero. A clone with
+#     nothing there runs nothing.
+#
+# No bypass line. A gate that prints its own escape hatch teaches the escape
+# hatch, and an author under time pressure reads the last line first.
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT" || exit 1
+# The hook body is ubiquitty-core's, whichever repository's commit it gates: the
+# gates it names live beside it, and the tree they judge is $ROOT. A repository's
+# own gates are the files of its Scripts/hooks/pre-commit-parts/, sourced at the end.
+CORE_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=Scripts/ubq-roots.sh
+. "$CORE_SCRIPTS/ubq-roots.sh"
+
+# Whether the checkout holds files of any repository named. A gate for the files
+# of a repository this checkout does not hold has nothing to judge, so it is not
+# run; a checkout that holds every repository runs it.
+ubqHolds() {
+    local wanted held
+    for wanted in "$@"; do
+        for held in $UBQ_REPOSITORIES; do
+            [ "$wanted" = "$held" ] && return 0
+        done
+    done
+    return 1
+}
+# Shared-checkout protection is an explicit local setting. A clone's name and
+# neighboring directories do not determine whether its owner can commit.
+if [ -n "${UBIQUITTY_SHARED_CHECKOUT:-}" ] \
+    && [ "$ROOT" = "$UBIQUITTY_SHARED_CHECKOUT" ] \
+    && [ -z "${UBIQUITTY_MAIN_COMMIT_OK:-}" ]; then
+    echo "pre-commit: this checkout is pull-only (UBIQUITTY_SHARED_CHECKOUT)." >&2
+    echo "  Commit from an isolated branch or linked worktree." >&2
+    exit 1
+fi
+
+# --- The rules this hook enforces, printed when one of them rejects a commit ---
+# A reader who has been stopped needs the rule in front of them; a reader whose
+# commit passes needs nothing. Five rules restated over a passing commit are
+# skipped by eye, which costs them the attention they need when one fires.
+printCommitRules() {
+    cat >&2 <<'REMINDER'
+── ubiquitty commit rules ──────────────────────────────────────────────────────
+  NO SLOP        A comment states a constraint, an invariant, or a failure mode
+                 the code cannot show. Not what the diff did, not a note to a
+                 reviewer, not "simply"/"just"/"obviously".
+  NO TEMPORAL    "used to", "previously", "now returns" describe one commit. The
+                 test is whether the sentence is true after the next ten.
+  DOCC           Every declared interface carries /// — one third-person sentence
+                 ending in a period, the discussion, then - Parameters: and
+                 - Returns: last. An inline definition in a header is an
+                 interface too, and a summary alone is not documentation.
+  WEBKIT NAMING  UpperCamelCase types, lowerCamelCase functions, m_ members,
+                 s_ statics, no k-prefix, acronyms ALL-CAPS by position, words
+                 spelled out.
+  ONE IMPL       Portable policy lives in Core and every frontend routes through
+                 it. A private fast path in a frontend is a fork.
+────────────────────────────────────────────────────────────────────────────────
+REMINDER
+}
+# The status arrives as an argument rather than through a variable the trap
+# assigns: a name assigned inside the trap string is invisible to shellcheck,
+# which reads it as a consumer naming what no producer wrote.
+printCommitRulesIfRejected() {
+    [ "$1" -eq 0 ] || printCommitRules
+}
+trap 'printCommitRulesIfRejected $?' EXIT
+
+STAGED="$(git diff --cached --name-only --diff-filter=ACMR)"
+staged_matching() { printf '%s\n' "$STAGED" | grep -E "$1" || true; }
+
+# A gate that passes says nothing. Thirty-five gates each reciting what they
+# examined bury the one line asking for a change, so a gate's output is held
+# until its exit code is known and released only when there is something to
+# answer for. Both streams are held: a gate is free to report on either, and
+# which one it picked is not a signal about whether it found anything.
+# UBQ_GATE_VERBOSE=1 releases everything, which is what a reader auditing the
+# scope a gate covered needs.
+#
+# A gate that stood down did not pass: it exits 0 having checked nothing, and
+# says so in a `<gate>: SKIPPED` line. That line is released on a zero exit too,
+# so a check this machine cannot run is never read as one that found nothing.
+runGate() {
+    if [ -n "${UBQ_GATE_VERBOSE:-}" ]; then
+        "$@"
+        return $?
+    fi
+    local gateLog gateStatus
+    gateLog="$(mktemp "${TMPDIR:-/tmp}/ubq-gate.XXXXXX" 2>/dev/null)" || gateLog=""
+    if [ -z "$gateLog" ]; then
+        # Nowhere to hold the output -- a full or read-only TMPDIR. Redirecting
+        # into the empty string fails before the gate is reached, and the caller
+        # would then print the message for a violation nothing looked for: a
+        # commit refused by a gate that never ran, naming a defect that may not
+        # be there. The gate runs with its output visible instead, which costs
+        # the quiet and keeps the verdict.
+        "$@"
+        return $?
+    fi
+    "$@" >"$gateLog" 2>&1
+    gateStatus=$?
+    if [ "$gateStatus" -eq 0 ]; then
+        grep -E '^[a-z][a-z0-9.-]*: SKIPPED' "$gateLog" >&2
+    else
+        cat "$gateLog" >&2
+    fi
+    rm -f "$gateLog"
+    return $gateStatus
+}
+
+# clang-format on the staged C/C++ only, against the pinned major. A different
+# major reflows differently, so an unpinned run would fight CI rather than match
+# it; absent or mismatched, skip rather than block on a toolchain. The pin is
+# Scripts/clang-format-pin, which format-code.sh and check-style.py read too.
+CF_PIN="$(tr -d '[:space:]' < "$CORE_SCRIPTS/clang-format-pin")"
+CF=""
+for cand in "clang-format-$CF_PIN" clang-format; do
+    command -v "$cand" >/dev/null 2>&1 && { CF="$cand"; break; }
+done
+# xcrun as well as PATH, matching Scripts/format-code.sh. A stock macOS box has
+# the Xcode toolchain and no Homebrew LLVM, so a PATH-only search finds nothing
+# there — which is the default machine, not an unusual one.
+if [ -z "$CF" ] && xcrun -f clang-format >/dev/null 2>&1; then
+    CF="$(xcrun -f clang-format)"
+fi
+CF_FILES="$(staged_matching '\.(c|cpp|h|hpp|mm)$' | grep -vE '^Source/ThirdParty/' || true)"
+# An off-pin or absent formatter skips the check, and says so. Skipping is the
+# right call — a major reflows differently and an unpinned run would fight CI —
+# but a skip that prints nothing is indistinguishable from a pass, and the author
+# reads the rest of the battery as covering formatting. It also costs
+# discoverability: the drift path ends by naming format-code.sh, so an author who
+# never trips it never learns the gate exists.
+if [ -n "$CF_FILES" ] && { [ -z "$CF" ] || ! "$CF" --version | grep -qE "version $CF_PIN\."; }; then
+    echo "pre-commit: clang-format $CF_PIN not found (have: ${CF:-none}$([ -n "$CF" ] && printf ' %s' "$("$CF" --version 2>/dev/null | head -1)")) — formatting NOT checked" >&2
+    echo "  Install it (pip install 'clang-format==$CF_PIN.*'), then run ./Scripts/format-code.sh." >&2
+fi
+if [ -n "$CF" ] && [ -n "$CF_FILES" ] && "$CF" --version | grep -qE "version $CF_PIN\."; then
+    CF_BAD=""
+    while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        "$CF" --dry-run -Werror "$f" >/dev/null 2>&1 || CF_BAD="$CF_BAD  $f
+"
+    done <<EOF
+$CF_FILES
+EOF
+    if [ -n "$CF_BAD" ]; then
+        {
+            echo "pre-commit: clang-format $CF_PIN drift in staged files:"
+            printf '%s' "$CF_BAD"
+            echo "  Run ./Scripts/format-code.sh."
+        } >&2
+        exit 1
+    fi
+fi
+
+# Syntax gates on what is staged, so a broken script cannot reach CI.
+while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    bash -n "$f" || { echo "pre-commit: shell syntax error in $f" >&2; exit 1; }
+done <<EOF
+$(staged_matching '\.sh$')
+EOF
+while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    python3 -m py_compile "$f" >/dev/null 2>&1 || { echo "pre-commit: python syntax error in $f" >&2; exit 1; }
+done <<EOF
+$(staged_matching '\.py$')
+EOF
+
+# The three identifier greps that check-style runs tree-wide, scoped to staged
+# files so a new violation is caught at the commit rather than at CI.
+#
+# -H on every one of them. grep prefixes the filename only when given two or
+# more files, and the comment-skipping filters below anchor on `:<line>:` — so
+# with exactly ONE file staged the prefix is absent, nothing is recognised as a
+# comment, and every comment in that file reads as code. The gate's verdict then
+# depends on how many files are in the commit, and the way people discover that
+# is --no-verify, which turns off all of them.
+CXX_STAGED="$(staged_matching '\.(cpp|h|mm)$' | grep -vE '^Source/ThirdParty/' || true)"
+if [ -n "$CXX_STAGED" ]; then
+    # shellcheck disable=SC2086
+    if grep -nHE '\((const +)?[A-Za-z_][A-Za-z0-9_:<> ]*\*+\)[A-Za-z_&(]' $CXX_STAGED 2>/dev/null \
+        | grep -vE ':[0-9]+:[[:space:]]*(//|\*)' | grep -E '^(Source/Core|Source/Image)/'; then
+        echo "pre-commit: C-style pointer cast — use static_cast/reinterpret_cast" >&2
+        exit 1
+    fi
+    # shellcheck disable=SC2086
+    if grep -nHE '[A-Za-z_]*(Cap|Cid)[A-Za-z_0-9]*' $CXX_STAGED 2>/dev/null \
+        | grep -vE ':[0-9]+:[[:space:]]*(//|\*)' \
+        | grep -ivE 'Capabilit|Capable|Capacit|Captur|Capit|Capsule|(line|stroke|miter|join|round|butt|square|flat|corner|end|pill)Cap|CALineCap|Caps_?Lock|Capp|CapHeight|escape|ngtcp2_cid|NGTCP2_'; then
+        echo "pre-commit: Cap/Cid abbreviation — spell out Capacity/Capability/ConnectionID" >&2
+        exit 1
+    fi
+fi
+
+# This file and the gates it names are read out of different trees. The hook is
+# a symlink into the checkout that owns the repository, so its body is whatever
+# that checkout has pulled; $ROOT is the worktree being committed from, so the
+# scripts are whatever the branch carries. A branch created before a gate landed
+# reaches an invocation naming a file it does not have, and the shape of every
+# invocation here — `if ! python3 …; then <explain the defect>` — turns that into
+# an interpreter error followed by a paragraph about the code. The block is
+# right and its reason is wrong, which sends the reader to a file where nothing
+# is the matter.
+#
+# So the absence is reported as itself. Derived from this file rather than
+# listed, because a hand list is a second place to add a gate to and the one
+# that gets forgotten is always the one that would have caught this.
+# git invokes the hook by the path in the hooks directory, which is the symlink
+# rather than the file, so the target is resolved here — both to read the right
+# body and to name it in the message. A clone that copied the hook instead of
+# linking it reports itself, which is the truth there.
+hook_file="${BASH_SOURCE[0]}"
+hook_link="$(readlink "$hook_file" 2>/dev/null)"
+[ -n "$hook_link" ] && hook_file="$hook_link"
+
+missing_gates=""
+# shellcheck disable=SC2013
+for gate in $(grep -ohE '\$(ROOT/Scripts|CORE_SCRIPTS)/check-[a-z0-9-]+\.(sh|py)' \
+        "$hook_file" "$ROOT"/Scripts/hooks/pre-commit-parts/* 2>/dev/null \
+    | sed -E 's#^\$(ROOT/Scripts|CORE_SCRIPTS)/##' | sort -u); do
+    [ -f "$ROOT/Scripts/$gate" ] || [ -f "$UBQ_CORE_ROOT/Scripts/$gate" ] \
+        || [ -f "$UBQ_KIT_ROOT/Scripts/$gate" ] || missing_gates="$missing_gates Scripts/$gate"
+done
+if [ -n "$missing_gates" ]; then
+    {
+        echo
+        echo "pre-commit: this hook names gate(s) your branch does not carry:"
+        for gate in $missing_gates; do echo "    $gate"; done
+        echo
+        echo "  Not a finding about your change. The hook that ran is"
+        echo "    $hook_file"
+        echo "  and it has pulled a commit that added them; this worktree is on a branch"
+        echo "  from before that. Rebase onto origin/main and the gates arrive with it."
+    } >&2
+    exit 1
+fi
+
+if ! runGate "$CORE_SCRIPTS/check-acronyms.py" --staged; then
+    {
+        echo
+        echo "pre-commit: acronym/abbreviation violations in staged files (above)."
+        echo "  Spell the name out."
+    } >&2
+    exit 1
+fi
+
+# Staged shell scripts only. The whole-tree pass is 1.7s and lives in
+# check-style; here it is the handful of files being committed, which is the
+# difference between catching a broken script now and catching it in CI.
+# Extension or shebang, for the reason check-shell.sh enumerates both: the hooks
+# in this directory carry no .sh, so an extension filter here would skip exactly
+# the file being edited when someone edits a hook.
+STAGED_SHELL=$(git diff --cached --name-only --diff-filter=ACM \
+    | grep -vE '(^|/)ThirdParty/' \
+    | while IFS= read -r staged; do
+        [ -f "$staged" ] || continue
+        if [ "${staged%.sh}" != "$staged" ]; then
+            echo "$staged"
+        elif head -1 "$staged" 2>/dev/null | grep -qE '^#!.*(sh|bash|dash|ksh|zsh)'; then
+            echo "$staged"
+        fi
+      done || true)
+if [ -n "$STAGED_SHELL" ]; then
+    # shellcheck disable=SC2086
+    if ! runGate "$CORE_SCRIPTS/check-shell.sh" $STAGED_SHELL; then
+        {
+            echo
+            echo "pre-commit: shellcheck findings in staged shell scripts (above)."
+            echo "  An unused variable is usually a consumer reading a different name than"
+            echo "  the producer wrote; an unguarded cd leaves the script running elsewhere."
+        } >&2
+        exit 1
+    fi
+
+    # Whole-tree rather than staged, because it costs 0.07s and an array is
+    # expanded in a different file from the one that fills it often enough that
+    # a staged-only pass would report the defect to whoever touched the wrong
+    # half. Runs only when a shell script is staged.
+    if ! runGate python3 "$CORE_SCRIPTS/check-empty-array-expansion.py"; then
+        {
+            echo
+            echo "pre-commit: an empty array aborts the script on the bash macOS ships (above)."
+            echo "  bash 3.2 treats \"\${arr[@]}\" on an EMPTY array as unbound, and set -u"
+            echo "  then kills the script at the expansion. shellcheck reports this at no"
+            echo "  severity, so this is the only pass in the tree that sees it."
+        } >&2
+        exit 1
+    fi
+fi
+
+if ! runGate "$CORE_SCRIPTS/check-comments.sh" --staged; then
+    {
+        echo
+        echo "pre-commit: comment hygiene — internal ticket/PR refs in staged comments (above)."
+        echo "  A comment states a present-tense invariant, never a ticket number (it's"
+        echo "  temporal). State what the code does."
+    } >&2
+    exit 1
+fi
+
+if ! runGate "$CORE_SCRIPTS/check-personal-paths.py" --staged; then
+    {
+        echo
+        echo "pre-commit: personal identifiers in staged files (above) — must not ship in the"
+        echo "  public tree. Use a neutral synthetic value (/Users/user, user@host); the public"
+        echo "  remote is github.com/yaglo/ubiquitty."
+    } >&2
+    exit 1
+fi
+
+if ! runGate "$CORE_SCRIPTS/check-docs.py" --staged; then
+    {
+        echo
+        echo "pre-commit: doc hygiene — TODO markers / internal ticket refs in staged docs (above)."
+        echo "  A doc states a present-tense invariant, not scaffolding or a tracker id."
+    } >&2
+    exit 1
+fi
+
+# BLOCKS on an interface declared without a DocC comment, and on a comment that
+# narrates a change instead of stating an invariant. Ratcheted on ADDED lines,
+# so the existing backlog is tolerated and a commit cannot grow it. The script
+# prints the rules it enforced, so the reminder arrives when it is actionable.
+if ! runGate python3 "$CORE_SCRIPTS/check-interface-docs.py" --staged; then
+    {
+        echo
+        echo "pre-commit: an interface was added without documentation, or a comment"
+        echo "  states history (above). A declaration is the API someone reads instead"
+    } >&2
+    exit 1
+fi
+
+# Module-boundary tripwire — only when this commit touches Source/.
+if ubqHolds core kit app; then
+if git diff --cached --name-only --diff-filter=ACMR | grep -q '^Source/'; then
+    if ! runGate "$CORE_SCRIPTS/check-boundaries.py"; then
+        {
+            echo
+            echo "pre-commit: module-boundary violation (above)."
+            echo "  Keep Cocoa/Metal/POSIX out of Core + portable modules; route the OS"
+            echo "  through Platform/PAL or a Transport carrier. Bypass once with:"
+        } >&2
+        exit 1
+    fi
+fi
+fi
+
+# BLOCKS on newly-added bool/enum violations (bool param not an enum; bool name
+# not led by a predicate; k-prefixed constant) — the existing backlog stays
+# advisory (full scan), chipped by the boy-scout rule. Annotate: // bool-ok: <why>.
+if ! runGate "$CORE_SCRIPTS/check-test-reporting.py" --staged; then
+    {
+        echo
+        echo "pre-commit: a test that cannot fail (above)."
+        echo "  UBIQUITTY_TEST_MAIN() returns the harness's count, so a private failure"
+        echo "  counter is never read — every assertion can fail and the process exits 0."
+    } >&2
+    exit 1
+fi
+
+if ! runGate python3 "$CORE_SCRIPTS/check-literal-qualifiers.py" "$ROOT" --staged; then
+    {
+        echo
+        echo "pre-commit: a C++ qualifier appears inside a string literal (above)."
+        echo "  A textual rename rewrites identifiers, and a protocol token spelled as a"
+        echo "  string looks exactly like one: \"CursorShape=\" becomes"
+        echo "  \"Cursor::CursorShape=\", compiles, and silently stops matching."
+    } >&2
+    exit 1
+fi
+
+if ! runGate python3 "$CORE_SCRIPTS/check-enum-switches.py" "$ROOT" --staged; then
+    {
+        echo
+        echo "pre-commit: an exhaustive switch is missing a case (above)."
+        echo "  A switch with no default: must name every enumerator, which is what"
+        echo "  -Werror,-Wswitch enforces in a build someone runs — and the frontend that"
+        echo "  switches on your enum is the slowest to build and the easiest to skip."
+        echo "  Add the case, or a default: if the switch handles a subset."
+    } >&2
+    exit 1
+fi
+
+if ubqHolds core app; then
+if ! runGate python3 "$CORE_SCRIPTS/check-quic-mandatory.py"; then
+    {
+        echo
+        echo "pre-commit: a build turns the QUIC transport off (above)."
+        echo "  QUIC is how a native frontend reaches a host, and the daemon that"
+        echo "  terminates it is bundled into the shipped app. A build without it runs,"
+        echo "  answers, and cannot reach a host the way the product does — which no test"
+        echo "  of behaviour catches, because the binary is correct for a transport"
+        echo "  nobody ships. Only the wasm configures may, and only because a browser"
+        echo "  has no UDP socket to give ngtcp2."
+    } >&2
+    exit 1
+fi
+fi
+
+if ! runGate python3 "$CORE_SCRIPTS/check-build-dirs.py" "$ROOT"; then
+    {
+        echo
+        echo "pre-commit: one build directory is configured as two build types (above)."
+        echo "  A CMake cache holds one. Whichever script ran last decides what the binary"
+        echo "  at that path is, and a -O0 daemon is indistinguishable from a slow one"
+        echo "  across the wire — the cost lands as frame rate, not as a wrong binary."
+        echo "  Give the variant its own directory, as build/host-noquic does."
+    } >&2
+    exit 1
+fi
+
+# Unconditional rather than scoped to staged paths: the change this catches is
+# usually a DELETION, and the staged-file filter above lists added, copied,
+# modified and renamed. A commit that only removes a showcase entry would match
+# nothing and skip the one gate that can see it. 0.1s.
+# Unconditional: the failure is an ABSENT bit, so the change that introduces it
+# is usually a new enumerator in a file no client touches. Scoping this to
+# staged paths would ask the commit that adds a capability to also be the commit
+# that omits it. 0.1s.
+# Cheap (a few file reads) and unconditional: the change that strands a build
+# directory is an edit to the CMake build that the directory never sees, so
+# scoping this to staged paths would ask the commit that MOVES a default to also
+# be the commit that fails on it.
+if ! runGate python3 "$CORE_SCRIPTS/check-stale-cmake-cache.py" --self-test >/dev/null; then
+    echo "pre-commit: check-stale-cmake-cache's own self-test failed — the check cannot judge" >&2
+    python3 "$CORE_SCRIPTS/check-stale-cmake-cache.py" --self-test >&2
+    exit 1
+fi
+if ! runGate python3 "$CORE_SCRIPTS/check-stale-cmake-cache.py"; then
+    {
+        echo
+        echo "pre-commit: a build directory holds a CMake default the tree has moved past (above)."
+        echo "  CMake keeps a cached value forever and never says so, so this surfaces as a"
+        echo "  compile error in a header nobody edited, or a binary that merely looks stale."
+        echo "  Delete the directories named and let them reconfigure."
+    } >&2
+    exit 1
+fi
+
+if ubqHolds core; then
+if ! runGate python3 "$CORE_SCRIPTS/check-pgo-commit-shape.py"; then
+    {
+        echo
+        echo "pre-commit: a profile change is bundled, or its sidecar did not move."
+        echo "  Support/pgo/*.profdata is a tracked binary every checkout builds from, and"
+        echo "  a retrain inside another commit cannot be found by reading subjects."
+        echo "  It also invalidates every other worktree's in-flight measurements."
+        echo "  Split the profile and its .trained-at sidecar into their own commit."
+    } >&2
+    exit 1
+fi
+fi
+
+if ! runGate python3 "$CORE_SCRIPTS/check-glyph-backend-claims.py"; then
+    {
+        echo
+        echo "pre-commit: a backend leaves a lossy glyph entry null and names it nowhere."
+        echo "  Those three entries drop information the cell carried while leaving it"
+        echo "  inked, so no count downstream can report the loss and only the picture"
+        echo "  is wrong. Name the entry in a comment where the table is built, with"
+        echo "  what the frontend draws instead — or supply it."
+    } >&2
+    exit 1
+fi
+
+if ! runGate python3 "$CORE_SCRIPTS/check-gate-coverage.py"; then
+    {
+        echo
+        echo "pre-commit: a gate runs here and not at push (above)."
+        echo "  --no-verify is one flag, and a rule enforced at commit alone is a"
+        echo "  rule that flag retires. Push is where work stops being local, so"
+        echo "  every gate here has to be reachable from pre-push-gates.sh too."
+    } >&2
+    exit 1
+fi
+
+if ! runGate python3 "$CORE_SCRIPTS/check-file-content-loss.py"; then
+    {
+        echo
+        echo "pre-commit: a tracked source file has no content (above)."
+        echo "  No other check here can see this. Every one of them reads what a file"
+        echo "  says, and a file with no content violates no rule about content — so a"
+        echo "  truncated source passes every gate and surfaces later as a link error"
+        echo "  naming a symbol the change never mentioned."
+        echo "  The usual cause is a rewrite that opened the file for writing before"
+        echo "  reading it. Read the whole file into a variable first, then write."
+    } >&2
+    exit 1
+fi
+
+# --staged, because the tree sits at zero and a commit can only introduce a
+# violation through a file it stages. The full-tree walk is 7.4s on every commit
+# against 0.05s here, and check-style still scans everything — which is where a
+# rule gaining a new word gets validated against prose nobody is touching.
+if ! runGate python3 "$CORE_SCRIPTS/check-slop.py" --staged; then
+    {
+        echo
+        echo "pre-commit: prose that performs understanding instead of carrying it (above)."
+        echo "  Six rules, each blocking at zero. The one to read twice is deferral:"
+        echo "  a sentence recording work as postponed names no change and no owner,"
+        echo "  and the reader who needs it cannot act on it either way. Do the work,"
+        echo "  or delete the sentence."
+        echo "  A term inside backticks is a mention, not a use — that is how a rules"
+        echo "  document names what it forbids."
+    } >&2
+    exit 1
+fi
+
+if ubqHolds core; then
+if ! runGate python3 "$CORE_SCRIPTS/check-conformance-claims.py"; then
+    {
+        echo
+        echo "pre-commit: the ECMA-48 conformance table and the CSI dispatch table disagree (above)."
+        echo "  Docs/ecma48_conformance.md scores this terminal control by control and"
+        echo "  nothing else reads it, so a row and its handler drift apart in silence."
+        echo "  A stale \xe2\x9d\x8c is the costly direction: it hides shipped work, and the next"
+        echo "  person to read the table plans it again."
+    } >&2
+    exit 1
+fi
+fi
+
+if ubqHolds core; then
+if ! runGate python3 "$CORE_SCRIPTS/check-showcase-goldens.py"; then
+    {
+        echo
+        echo "pre-commit: a showcase entry and its golden disagree (above)."
+        echo "  Tools/showcase feeds two checked artefacts and neither can see the other:"
+        echo "  the PNG goldens the snapshot tier renders against, and the rows of"
+        echo "  Docs/feature_test_matrix.md. Removing an entry leaves a golden nothing"
+        echo "  renders, and both of those gates stay green."
+        echo "  Delete or add the golden, then: python3 Tests/Snapshots/gen_matrix.py"
+    } >&2
+    exit 1
+fi
+fi
+
+if ubqHolds core; then
+if ! runGate "$CORE_SCRIPTS/check-snapshot-harness.py"; then
+    {
+        echo
+        echo "pre-commit: the snapshot catalog and its harness disagree (above)."
+        echo "  test_harness.py checks the showcase-vs-cases count balance, the"
+        echo "  per-frame arm accounting, and the case schema — invariants of the"
+        echo "  loader (run.py) and the catalog (cases.json) the golden-pairing gate"
+        echo "  does not read. A ctest, so the lint pre-push tier never runs it."
+        echo "  Reproduce: (cd Tests/Snapshots && python3 -m unittest test_harness)"
+    } >&2
+    exit 1
+fi
+fi
+
+if ubqHolds core kit app; then
+if ! runGate python3 "$CORE_SCRIPTS/check-name-collisions.py" "$ROOT" --forward; then
+    {
+        echo
+        echo "pre-commit: a forward declaration names a type defined elsewhere (above)."
+        echo "  It compiles, and stays inert wherever enclosing lookup finds the real"
+        echo "  type first — then hands an incomplete one to a consumer that names it at"
+        echo "  namespace scope, reported there as an incomplete type in a file with"
+        echo "  nothing to do with the cause. Move the declaration into the namespace"
+        echo "  that defines it."
+    } >&2
+    exit 1
+fi
+fi
+
+if ubqHolds core kit app; then
+if ! runGate python3 "$CORE_SCRIPTS/check-name-collisions.py" "$ROOT"; then
+    {
+        echo
+        echo "pre-commit: one name means two things in two namespaces (above)."
+        echo "  An unqualified use resolves by enclosing scope, so adding an include or"
+        echo "  moving a declaration silently repoints it at the other value — it"
+        echo "  compiles, links, passes the suite, and ships a different number."
+        echo "  Rename one of them; the odd one out should be the one that moves."
+    } >&2
+    exit 1
+fi
+fi
+
+if ubqHolds core kit app; then
+if ! runGate python3 "$CORE_SCRIPTS/check-name-collisions.py" "$ROOT" --aliases; then
+    {
+        echo
+        echo "pre-commit: a nested namespace redeclares an ancestor's type alias (above)."
+        echo "  An unqualified use inside the inner namespace reaches both, and enclosing"
+        echo "  lookup decides which it means. Agreeing targets keep the pair quiet until"
+        echo "  the first edit that changes one of them — which compiles at every use"
+        echo "  site that meant the other. Rename the newer alias."
+    } >&2
+    exit 1
+fi
+fi
+
+if ubqHolds core; then
+if ! runGate python3 "$CORE_SCRIPTS/check-profile-orphans.py" "$ROOT"; then
+    {
+        echo
+        echo "pre-commit: the PGO profile is keyed on a namespace the tree no longer"
+        echo "  declares (above). A move renames the mangled symbol, and under"
+        echo "  -fprofile-use a function with no entry compiles COLD rather than"
+        echo "  neutrally — so a codegen-neutral rename demotes it on every build."
+        echo "  Retrain with Scripts/pgo-train.sh, in the same window as the move."
+    } >&2
+    exit 1
+fi
+fi
+
+if ! runGate "$CORE_SCRIPTS/check-enums.sh" --staged; then
+    {
+        echo
+        echo "pre-commit: newly-added bool/enum naming violation (above)."
+        echo "  Boolean names lead with a predicate (is/has/should/did/can/…) or a boolean"
+        echo "  adjective; boolean arguments are a descriptive enum, never a bare bool. Spell"
+    } >&2
+    exit 1
+fi
+
+# BLOCKS on a capability-SSOT breach — but only when this commit stages a
+# capability-relevant file (the script fast-exits otherwise). Catches a drifting
+# parallel allow-list, a new un-gated grid-escape, and a non-total tierOf.
+if ubqHolds core kit app; then
+if ! runGate "$CORE_SCRIPTS/check-capability-ssot.py" --staged; then
+    {
+        echo
+        echo "pre-commit: capability SSOT violation (above)."
+        echo "  One enum, one gate: no parallel allow-list, no un-gated grid-escape,"
+        echo "  tierOf total. Route through CapabilityPolicy::check()/tierOf(), or (if"
+        echo "  pull-state/grid-content) allowlist it in check-capability-ssot.py with a"
+    } >&2
+    exit 1
+fi
+fi
+
+# --- memcmp runtime-offset fold gate --------------------------------------
+if ! runGate "$CORE_SCRIPTS/check-memcmp-fold.py" --staged; then
+    {
+        echo
+        echo "pre-commit: memcmp against a literal at a runtime offset (above)."
+        echo "  GCC folds it as though the offset were zero, so the comparison silently"
+        echo "  never matches. Compare the bytes, or bind the address to a variable."
+    } >&2
+    exit 1
+fi
+
+# --- This repository's own gates ---------------------------------------------
+# One file per repository, named for it, each a run of stanzas written against
+# this hook's ROOT, CORE_SCRIPTS and runGate. A checkout holds the files of the
+# repositories it is.
+for ownGates in "$ROOT"/Scripts/hooks/pre-commit-parts/*; do
+    [ -f "$ownGates" ] || continue
+    # shellcheck source=/dev/null
+    . "$ownGates"
+done
+
+# --- Checks this clone adds ---------------------------------------------------
+# A clone's owner may add checks of their own under the clone's git directory;
+# Scripts/run-local-hooks.sh runs them. The hook takes no input, so none is
+# passed on.
+if ! runGate "$CORE_SCRIPTS/run-local-hooks.sh" pre-commit </dev/null; then
+    {
+        echo
+        echo "pre-commit: a check in this clone's hooks.d/pre-commit refused the commit (above)."
+    } >&2
+    exit 1
+fi
+
+# --- Core-subset path gate ---------------------------------------------------
+# Only runs when the commit touches the two files that can disagree. The same
+# assertion lives in ubiquitty_core_subset(), but that one fires only while the
+# calling target configures, so a target nobody builds locally carries a stale
+# path until someone hits it.
+if ubqHolds core; then
+if git diff --cached --name-only | grep -qE '^(CMakeLists\.txt|Scripts/portable-core-sources\.txt)$'; then
+    if ! runGate "$CORE_SCRIPTS/check-core-subset-paths.sh"; then
+        {
+            echo
+            echo "pre-commit: a core-subset path names a file the SSOT does not have (above)."
+            echo "  A moved file left the subset list behind. Fix the path, or drop the entry"
+        } >&2
+        exit 1
+    fi
+fi
+fi
+
+exit 0

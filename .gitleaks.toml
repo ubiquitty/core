@@ -1,0 +1,101 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+
+# Ubiquitty secret-scanning config (gitleaks).
+#
+# Extends gitleaks' upstream default ruleset with fixture and public-value
+# exceptions. Rule-scoped allowances leave other detection rules active.
+# Fixture paths include historical locations for scans that include Git history.
+title = "Ubiquitty gitleaks config"
+
+[extend]
+useDefault = true
+
+# The QUICBootstrap fuzz fixtures are synthetic parser inputs — their
+# `quic_token=<hex>` lines are placeholder test data, not real secrets — so the
+# upstream generic-api-key rule false-positives on them. Both spellings of the
+# directory: the corpus moved under Tests/Core when Tests/ was made to mirror
+# Source/, and an allowlist naming only the new path excused nothing in the
+# history while reading as if it did.
+[[allowlists]]
+description = "QUICBootstrap fuzz corpus/crashes — synthetic tokens, not secrets"
+paths = ['''Tests/(Core/)?Protocol/Sync/quic-bootstrap-(corpus|crashes)/''']
+
+# The iOS key-editor smoke feeds PrivateKeyPEM.read() containers whose refusal
+# must name the container it refused, so the file necessarily carries PEM
+# headers; their bodies are four to eight base64 characters — "AAAA",
+# "MHcCAQE=". The upstream private-key rule matches on the header alone.
+#
+# Scoped by the body, with no path condition at all. A path condition would be
+# the more obvious spelling and is the wrong one twice over: gitleaks ORs an
+# allowlist's conditions, so the path alone would excuse every future secret in
+# that file, and the property that makes these safe is not where they live but
+# that no key fits in sixteen base64 characters. The shortest real private key
+# body runs to hundreds, so a genuine key stays flagged wherever it is added.
+[[allowlists]]
+description = "PEM containers whose body is too short to be a key — parser fixtures, not secrets"
+regexTarget = "secret"
+regexes = ['''-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----\\n[A-Za-z0-9+/=]{0,16}\\n-----END [A-Z0-9 ]*PRIVATE KEY-----''']
+
+# AppKit spells its window-activation notifications didBecomeKey/didResignKey
+# and didBecomeMain/didResignMain, and Docs/swift-arm-parity-gaps names all four
+# in one sentence describing which edges re-derive focus. The upstream
+# generic-api-key rule reads `…Key, ` as an assignment and takes the next token
+# as its value, so the prose flags itself.
+#
+# Scoped by the value, not by the document. A path condition would excuse every
+# future secret in a file that is edited constantly, and these names are public
+# API constants wherever they are written — a doc, a comment, a test. What makes
+# them safe is that the whole value is notification names: no credential is
+# spelled didBecomeMain/didResignMain, and any real key alongside them still has
+# the entropy the rule is looking for and stays flagged.
+[[allowlists]]
+description = "AppKit window-activation notification names read as an API key by the prose around them"
+regexTarget = "secret"
+regexes = ['''^did(Become|Resign)(Key|Main)(/did(Become|Resign)(Key|Main))*$''']
+
+# 0x9E3779B97F4A7C15 is 2^64 divided by the golden ratio: the Fibonacci-hashing
+# multiplier and the SplitMix64 increment, printed in Knuth and in every hash
+# library. The paint heatmap seeds its cell hash with it through a variable named
+# `key`, and the upstream generic-api-key rule reads `key = <hex>` as a
+# credential.
+#
+# Scoped by the value, for the reason the entries above give: a path condition
+# would excuse every future secret in that file, while no credential is this
+# published constant, and any other value assigned to a `key` stays flagged.
+[[allowlists]]
+description = "The golden-ratio hash multiplier 0x9E3779B97F4A7C15, a published constant"
+regexTarget = "secret"
+regexes = ['''(?i)^0x9E3779B97F4A7C15(u|ul|ull)?$''']
+
+# The FNV-1a 64-bit offset basis is a published integer, not a credential.
+[[allowlists]]
+description = "The FNV-1a 64-bit offset basis 0xcbf29ce484222325"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['''(?i)^0xcbf29ce484222325(u|ul|ull)?$''']
+
+# In xxhash's data_key assignments, the generic rule extracts only the intrinsic
+# identifier before the argument list. Other values in the same file stay scanned.
+[[allowlists]]
+description = "The public AVX512 intrinsic identifier _mm512_srli_epi64"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['''^_mm512_srli_epi64$''']
+
+# RFC 6455 section 1.3's sample handshake key, the base64 of "the sample
+# nonce", which a WebSocket proxy test sends as its client's key. Scoped by the
+# value: any other Sec-WebSocket-Key stays flagged.
+[[allowlists]]
+description = "RFC 6455's sample Sec-WebSocket-Key dGhlIHNhbXBsZSBub25jZQ=="
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['''^dGhlIHNhbXBsZSBub25jZQ==$''']
+
+# The sixteen hexadecimal digits in order, a decoder test's placeholder QUIC
+# token. No minted token is this sequence, and every other value stays flagged.
+[[allowlists]]
+description = "The placeholder token 0123456789abcdef"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['''^0123456789abcdef$''']

@@ -1,0 +1,4 @@
+%begin 1 1 0
+%en* 1 1 0
+%o%b1 0
+%output [A3%[A utput %0 \033[A

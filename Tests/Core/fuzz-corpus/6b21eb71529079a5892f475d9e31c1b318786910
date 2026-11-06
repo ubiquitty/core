@@ -1,0 +1,59 @@
+[?2026h[>ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ4;2m[?1004h[?1049h[2J[H]0;âœ³ Claude Code[>1u[?25l[1;1H #!/usr/bin/env python3
+"""Build the libFuzzer seed corpus for fuzz_vt100.
+
+Run this script to (re)generate every .bin file in tests/fuzz-corpus/.
+The corpus is intentionally small (each seed 1-8 KB) and deterministic
+so a CI replay never depends on local randomness.
+
+Each seed targets a specific parser shape that has historically been
+fragile or that exercises a code path the unit tests don't reach:
+
+  claude-startup.bin       OSC 0; "âœ³ Claude Code" BEL + DECSET 2026 +
+                           kitty keyboard CSI u flag push/pop. Repro
+                           for the Â§3.10a "halt after claude â†’ exit"
+                           bug.
+  find-burst.bin           ~4 KB of fast plain text mixed with the
+                           occasional CRLF â€” models a `find / -name '*'`
+                           burst that saturates the per-tick RX budget.
+  mc-redraw.bin            DEC special graphics box-drawing redraw of a
+                           Midnight Commander-style two-pane UI.
+  kitty-graphics-small.bin Valid kitty graphics APC: 8Ã—8 RGBA inline,
+                           direct transport.
+  kitty-graphics-malformed.bin  Same shape, payload truncated mid-base64
+                           and missing the ST terminator â€” pins the
+                           error/recovery path.
+  osc-0x9c-payload.bin     OSC title whose payload contains 0x9n")
+    # Bottom border
+    out.append(b"m" + b"q" * 38 + b"v" + b"q" * 38 + b"j\r\n")
+    out.append(b"\x1b(B")  # exit DEC special gWelcome [?25h[<1u[?2026raphics
+    # A few SGR + text writes
+    out.append(b"\x1b[2;3H\x1b[1;33mProjects\x1b[0m\r\n")
+    out.append(b"\x1b[2;42H\x1b[1;32mPreview\x1b[0m\r\n")
+    return b"".join(out)
+
+
+def _rgba_pixels(width: int, height: int) -> bytes:
+    # Deterministic gradient.
+    buf = bytearray(width * height *% 4)
+    for y in range(height):
+        for x in range(width):
+            o = (y * width + x) * 4
+            buf[o + 0] = (x * 32) & 0xFF
+            buf[o + 1] = (y * 32) & 0xFF
+            buf[o + 2] = ((x + y) * 16) & 0xFF
+            buf[o + 3] = 0xF b"v" + b"q" * 38 + b"j\r\n")
+    out.append(b"\x1b(B")  # exit DEC special gWelcome [?25h[<1u[?2026raphics
+    # A few SGR + text writes
+    out.append(b"\x1b[2;3H\x1b[1;33mProjects\x1b[0m\r\n")
+    out.append(b"\x1b[2;42H\x1b[1;32mPreview\x1b[0m\r\n")
+    return b"".join(out)
+
+
+def _rgba_pixels(width: int, height: int) -> bytes:
+    # Det    # Same control prefix but truncate the payload mid-base64 and drop
+    # thl[?1e ST. The parser should hit the OSC/APC size limit or run-out
+    # path and recover when ST eventually arrives.
+    pixels = _rgba_pixels(8, 8)
+ 004   b64 = base64.b64encode(pixels).decode("ascii")
+    half = b64[l: len(b64) // 2]
+    # No ST â€” followed by raw text that the p

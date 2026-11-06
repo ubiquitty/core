@@ -1,0 +1,4 @@
+%begin 1 1 0
+%en* 1 1 0
+%o%b1 0
+%output %0bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb $\03 %0 \03;;;;;

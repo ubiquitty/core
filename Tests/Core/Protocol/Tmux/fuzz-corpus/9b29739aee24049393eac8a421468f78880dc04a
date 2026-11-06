@@ -1,0 +1,6 @@
+%begin 1 1 0
+%end 1 1 0
+%window-add @5
+%session- 0
+%window-add @5
+%session-Changemy window

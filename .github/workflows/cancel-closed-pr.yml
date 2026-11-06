@@ -1,0 +1,77 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+
+name: Cancel a closed PR's runs
+
+# A closed pull request's remaining jobs answer a question nobody is asking:
+# the branch landed or was abandoned, and whatever they report cannot change
+# that. Left alone they keep queueing for GitHub-hosted runners and spending
+# Actions minutes, and while they run they count against the account's
+# concurrent-job limit, so the next pull request's jobs can wait behind them.
+#
+# `concurrency` does not cover this. It cancels a run when a NEWER run starts on
+# the same ref, and a merge starts a run on `main` instead — a different ref, so
+# a different group, so nothing is cancelled. The cancel has to be asked for.
+#
+# Runs are cancelled rather than the workflow being skipped, because a job that
+# has already started holds a runner until it is told to stop.
+#
+# This is the backstop, not the mechanism. It needs a runner of its own, so it
+# starts only once one is free; `Tools/merge-pr.py` cancels from the client at
+# merge time. This covers a merge made in the web interface, where there is no
+# client to do it, and a pull request closed without merging.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  actions: write
+
+jobs:
+  cancel:
+    name: Cancel runs for the closed branch
+    # GitHub-hosted, like every job; see the runner note at the top of ci.yml.
+    # A pull request from a fork gets a read-only token here, which can cancel
+    # nothing, and its head branch's name can be one of this repository's own
+    # branches, whose runs are not the fork's to stop.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Cancel every unfinished run on this branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          # The listing is filtered to this branch and to the states that still
+          # hold a runner. A run that already finished is left alone, and the
+          # cancel of a run that finishes between the listing and the call
+          # (HTTP 409) is reported rather than failing the job. A refused cancel
+          # (HTTP 403) is a token without actions: write, which no run can fix:
+          # every other run is still asked, and then the job fails naming it.
+          runs=$(gh api "repos/$REPOSITORY/actions/runs?branch=$BRANCH&per_page=100" \
+            --jq '.workflow_runs[] | select(.status == "queued" or .status == "in_progress") | .id')
+          # This job's own run is on that branch and in progress, so the listing
+          # names it, and the API returns newest first — it is the first id in
+          # the loop. Cancelling it ends the step before any other id is reached,
+          # which leaves every run this exists to stop still holding a runner.
+          runs=$(printf '%s\n' "$runs" | grep -v "^${GITHUB_RUN_ID}$" || true)
+          if [ -z "$runs" ]; then
+            echo "cancel-closed-pr: no unfinished run on $BRANCH"
+            exit 0
+          fi
+          refused=0
+          for id in $runs; do
+            if error=$(gh api -X POST "repos/$REPOSITORY/actions/runs/$id/cancel" 2>&1 >/dev/null); then
+              echo "cancel-closed-pr: cancelled $id"
+              continue
+            fi
+            case "$error" in
+              *"HTTP 409"*) echo "cancel-closed-pr: $id finished before it could be cancelled" ;;
+              *"HTTP 403"*) echo "::error title=cancel-closed-pr::the token may not cancel run $id: $error"; refused=1 ;;
+              *) echo "::warning title=cancel-closed-pr::run $id was not cancelled: $error" ;;
+            esac
+          done
+          exit "$refused"

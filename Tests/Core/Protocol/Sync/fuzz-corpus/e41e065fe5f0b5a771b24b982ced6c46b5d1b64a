@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":"capture.9","method":"pane.capture","params":{"pane":1,"source":"rows","start":132,"end":182}}

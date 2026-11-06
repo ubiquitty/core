@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+#
+# Checks commit-message wording using the rules shipped in this repository.
+set -uo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+# The hook body is ubiquitty-core's whichever repository it gates: the gates it
+# names live beside it, and the tree they judge is $ROOT.
+CORE_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT" || exit 1
+
+# Deferral in the message.
+#
+# A commit message is where giving up gets recorded. A `for now` in a comment at
+# least sits beside the code it defers; a message saying a follow-up will handle
+# it names no change, no owner, and is read once. Scoping is not deferral and
+# does not match — a boundary stated in the present tense promises nothing.
+if ! python3 "$CORE_SCRIPTS/check-slop.py" --message "$1"; then
+    echo >&2
+    echo "commit-msg: rewrite the message, or do the work it defers." >&2
+    echo "  Bypass once with: git commit --no-verify" >&2
+    exit 1
+fi
+
+# A commit that takes back recently landed lines names the commit it undoes.
+# The staged change is blamed at HEAD, so this also runs at each step of a
+# rebase, where a conflict resolved by taking a whole file is what undoes the
+# work main gained meanwhile. Measured well under a second on typical commits.
+if ! python3 "$CORE_SCRIPTS/check-stale-landing.py" --staged --message-file "$1"; then
+    echo >&2
+    echo "commit-msg: name each commit above and why its lines go, or restore them." >&2
+    echo "  Bypass once with: git commit --no-verify" >&2
+    exit 1
+fi

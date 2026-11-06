@@ -1,0 +1,350 @@
+]133;A[1;32muser@host[0m:[1;34m~/project[0m$ ]133;Bls -la
+]133;C-rw-r--r--  1 user  staff    1000 Oct  9 12:00 [0mMakefile[0m
+-rw-r--r--  1 user  staff    1137 Oct  9 12:01 [0mREADME.md[0m
+-rw-r--r--  1 user  staff    1274 Oct  9 12:02 [1;34msrc[0m
+-rw-r--r--  1 user  staff    1411 Oct  9 12:03 [1;34mtests[0m
+-rw-r--r--  1 user  staff    1548 Oct  9 12:04 [0;32mbuild.sh[0m
+-rw-r--r--  1 user  staff    1685 Oct  9 12:05 [0mnotes.txt[0m
+-rw-r--r--  1 user  staff    1822 Oct  9 12:06 [0mLICENSE[0m
+-rw-r--r--  1 user  staff    1959 Oct  9 12:07 [1;34mdocs[0m
+-rw-r--r--  1 user  staff    2096 Oct  9 12:08 [0mMakefile[0m
+-rw-r--r--  1 user  staff    2233 Oct  9 12:09 [0mREADME.md[0m
+-rw-r--r--  1 user  staff    2370 Oct  9 12:10 [1;34msrc[0m
+-rw-r--r--  1 user  staff    2507 Oct  9 12:11 [1;34mtests[0m
+-rw-r--r--  1 user  staff    2644 Oct  9 12:12 [0;32mbuild.sh[0m
+-rw-r--r--  1 user  staff    2781 Oct  9 12:13 [0mnotes.txt[0m
+-rw-r--r--  1 user  staff    2918 Oct  9 12:14 [0mLICENSE[0m
+-rw-r--r--  1 user  staff    3055 Oct  9 12:15 [1;34mdocs[0m
+]133;D;0]133;A[1;32muser@host[0m:[1;34m~/project[0m$ ]133;Bgit status
+]133;COn branch main
+Changes not staged for commit:
+	[31mmodified:   src/file0.c[0m
+	[31mmodified:   src/file1.c[0m
+	[31mmodified:   src/file2.c[0m
+	[31mmodified:   src/file3.c[0m
+	[31mmodified:   src/file4.c[0m
+	[31mmodified:   src/file5.c[0m
+]133;D;0]133;A[1;32muser@host[0m:[1;34m~/project[0m$ ]133;Bcat notes.txt
+]133;C  0  The quick brown fox jumps over the lazy dog, line 0.
+  1  The quick brown fox jumps over the lazy dog, line 1.
+  2  The quick brown fox jumps over the lazy dog, line 2.
+  3  The quick brown fox jumps over the lazy dog, line 3.
+  4  The quick brown fox jumps over the lazy dog, line 4.
+  5  The quick brown fox jumps over the lazy dog, line 5.
+  6  The quick brown fox jumps over the lazy dog, line 6.
+  7  The quick brown fox jumps over the lazy dog, line 7.
+  8  The quick brown fox jumps over the lazy dog, line 8.
+  9  The quick brown fox jumps over the lazy dog, line 9.
+ 10  The quick brown fox jumps over the lazy dog, line 10.
+ 11  The quick brown fox jumps over the lazy dog, line 11.
+ 12  The quick brown fox jumps over the lazy dog, line 12.
+ 13  The quick brown fox jumps over the lazy dog, line 13.
+ 14  The quick brown fox jumps over the lazy dog, line 14.
+ 15  The quick brown fox jumps over the lazy dog, line 15.
+ 16  The quick brown fox jumps over the lazy dog, line 16.
+ 17  The quick brown fox jumps over the lazy dog, line 17.
+ 18  The quick brown fox jumps over the lazy dog, line 18.
+ 19  The quick brown fox jumps over the lazy dog, line 19.
+ 20  The quick brown fox jumps over the lazy dog, line 20.
+ 21  The quick brown fox jumps over the lazy dog, line 21.
+ 22  The quick brown fox jumps over the lazy dog, line 22.
+ 23  The quick brown fox jumps over the lazy dog, line 23.
+ 24  The quick brown fox jumps over the lazy dog, line 24.
+ 25  The quick brown fox jumps over the lazy dog, line 25.
+ 26  The quick brown fox jumps over the lazy dog, line 26.
+ 27  The quick brown fox jumps over the lazy dog, line 27.
+ 28  The quick brown fox jumps over the lazy dog, line 28.
+ 29  The quick brown fox jumps over the lazy dog, line 29.
+ 30  The quick brown fox jumps over the lazy dog, line 30.
+ 31  The quick brown fox jumps over the lazy dog, line 31.
+ 32  The quick brown fox jumps over the lazy dog, line 32.
+ 33  The quick brown fox jumps over the lazy dog, line 33.
+ 34  The quick brown fox jumps over the lazy dog, line 34.
+ 35  The quick brown fox jumps over the lazy dog, line 35.
+ 36  The quick brown fox jumps over the lazy dog, line 36.
+ 37  The quick brown fox jumps over the lazy dog, line 37.
+ 38  The quick brown fox jumps over the lazy dog, line 38.
+ 39  The quick brown fox jumps over the lazy dog, line 39.
+ 40  The quick brown fox jumps over the lazy dog, line 40.
+ 41  The quick brown fox jumps over the lazy dog, line 41.
+ 42  The quick brown fox jumps over the lazy dog, line 42.
+ 43  The quick brown fox jumps over the lazy dog, line 43.
+ 44  The quick brown fox jumps over the lazy dog, line 44.
+ 45  The quick brown fox jumps over the lazy dog, line 45.
+ 46  The quick brown fox jumps over the lazy dog, line 46.
+ 47  The quick brown fox jumps over the lazy dog, line 47.
+ 48  The quick brown fox jumps over the lazy dog, line 48.
+ 49  The quick brown fox jumps over the lazy dog, line 49.
+ 50  The quick brown fox jumps over the lazy dog, line 50.
+ 51  The quick brown fox jumps over the lazy dog, line 51.
+ 52  The quick brown fox jumps over the lazy dog, line 52.
+ 53  The quick brown fox jumps over the lazy dog, line 53.
+ 54  The quick brown fox jumps over the lazy dog, line 54.
+ 55  The quick brown fox jumps over the lazy dog, line 55.
+ 56  The quick brown fox jumps over the lazy dog, line 56.
+ 57  The quick brown fox jumps over the lazy dog, line 57.
+ 58  The quick brown fox jumps over the lazy dog, line 58.
+ 59  The quick brown fox jumps over the lazy dog, line 59.
+]133;D;0]133;A[1;32muser@host[0m:[1;34m~/project[0m$ ]133;Bmake -j8
+]133;C[1;36m[  0%][0m Building CXX object src/module0.o
+[1;36m[  3%][0m Building CXX object src/module1.o
+[1;36m[  6%][0m Building CXX object src/module2.o
+[1;36m[ 10%][0m Building CXX object src/module3.o
+[1;36m[ 13%][0m Building CXX object src/module4.o
+[1;36m[ 16%][0m Building CXX object src/module5.o
+[1;36m[ 20%][0m Building CXX object src/module6.o
+[1;36m[ 23%][0m Building CXX object src/module7.o
+[1;36m[ 26%][0m Building CXX object src/module8.o
+[1;36m[ 30%][0m Building CXX object src/module9.o
+[1;36m[ 33%][0m Building CXX object src/module10.o
+[1;36m[ 36%][0m Building CXX object src/module11.o
+[1;36m[ 40%][0m Building CXX object src/module12.o
+[1;36m[ 43%][0m Building CXX object src/module13.o
+[1;36m[ 46%][0m Building CXX object src/module14.o
+[1;36m[ 50%][0m Building CXX object src/module15.o
+[1;36m[ 53%][0m Building CXX object src/module16.o
+[1;36m[ 56%][0m Building CXX object src/module17.o
+[1;36m[ 60%][0m Building CXX object src/module18.o
+[1;36m[ 63%][0m Building CXX object src/module19.o
+[1;36m[ 66%][0m Building CXX object src/module20.o
+[1;36m[ 70%][0m Building CXX object src/module21.o
+[1;36m[ 73%][0m Building CXX object src/module22.o
+[1;36m[ 76%][0m Building CXX object src/module23.o
+[1;36m[ 80%][0m Building CXX object src/module24.o
+[1;36m[ 83%][0m Building CXX object src/module25.o
+[1;36m[ 86%][0m Building CXX object src/module26.o
+[1;36m[ 90%][0m Building CXX object src/module27.o
+[1;36m[ 93%][0m Building CXX object src/module28.o
+[1;36m[ 96%][0m Building CXX object src/module29.o
+[1;32m[100%][0m Built target app
+]133;D;0]133;A[1;32muser@host[0m:[1;34m~/project[0m$ ]133;Bls
+]133;C-rw-r--r--  1 user  staff    1000 Oct  9 12:00 [0mMakefile[0m
+-rw-r--r--  1 user  staff    1137 Oct  9 12:01 [0mREADME.md[0m
+-rw-r--r--  1 user  staff    1274 Oct  9 12:02 [1;34msrc[0m
+-rw-r--r--  1 user  staff    1411 Oct  9 12:03 [1;34mtests[0m
+-rw-r--r--  1 user  staff    1548 Oct  9 12:04 [0;32mbuild.sh[0m
+-rw-r--r--  1 user  staff    1685 Oct  9 12:05 [0mnotes.txt[0m
+-rw-r--r--  1 user  staff    1822 Oct  9 12:06 [0mLICENSE[0m
+-rw-r--r--  1 user  staff    1959 Oct  9 12:07 [1;34mdocs[0m
+-rw-r--r--  1 user  staff    2096 Oct  9 12:08 [0mMakefile[0m
+-rw-r--r--  1 user  staff    2233 Oct  9 12:09 [0mREADME.md[0m
+-rw-r--r--  1 user  staff    2370 Oct  9 12:10 [1;34msrc[0m
+-rw-r--r--  1 user  staff    2507 Oct  9 12:11 [1;34mtests[0m
+-rw-r--r--  1 user  staff    2644 Oct  9 12:12 [0;32mbuild.sh[0m
+-rw-r--r--  1 user  staff    2781 Oct  9 12:13 [0mnotes.txt[0m
+-rw-r--r--  1 user  staff    2918 Oct  9 12:14 [0mLICENSE[0m
+-rw-r--r--  1 user  staff    3055 Oct  9 12:15 [1;34mdocs[0m
+]133;D;0]133;A[1;32muser@host[0m:[1;34m~/project[0m$ ]133;Becho $SHELL
+]133;C/bin/zsh
+]133;D;0]133;A[1;32muser@host[0m:[1;34m~/project[0m$ ]133;Bgit log --oneline -20
+]133;C[33m2564cac[0m Commit message number 0
+[33mf0a0f07[0m Commit message number 1
+[33m44830bd[0m Commit message number 2
+[33m57009c1[0m Commit message number 3
+[33m5e10be8[0m Commit message number 4
+[33me8c478b[0m Commit message number 5
+[33md43d330[0m Commit message number 6
+[33mcb6988c[0m Commit message number 7
+[33m89b9ebf[0m Commit message number 8
+[33mde10f91[0m Commit message number 9
+[33mb162e14[0m Commit message number 10
+[33m225ea8f[0m Commit message number 11
+[33m066d224[0m Commit message number 12
+[33m21a4067[0m Commit message number 13
+[33m34c981a[0m Commit message number 14
+[33m843efa3[0m Commit message number 15
+[33m5e62ea2[0m Commit message number 16
+[33md99b060[0m Commit message number 17
+[33m4ab821f[0m Commit message number 18
+[33m4b1a3f0[0m Commit message number 19
+]133;D;0]133;A[1;32muser@host[0m:[1;34m~/project[0m$ ]133;Bmake test
+]133;C[1;36m[  0%][0m Building CXX object src/module0.o
+[1;36m[  3%][0m Building CXX object src/module1.o
+[1;36m[  6%][0m Building CXX object src/module2.o
+[1;36m[ 10%][0m Building CXX object src/module3.o
+[1;36m[ 13%][0m Building CXX object src/module4.o
+[1;36m[ 16%][0m Building CXX object src/module5.o
+[1;36m[ 20%][0m Building CXX object src/module6.o
+[1;36m[ 23%][0m Building CXX object src/module7.o
+[1;36m[ 26%][0m Building CXX object src/module8.o
+[1;36m[ 30%][0m Building CXX object src/module9.o
+[1;36m[ 33%][0m Building CXX object src/module10.o
+[1;36m[ 36%][0m Building CXX object src/module11.o
+[1;36m[ 40%][0m Building CXX object src/module12.o
+[1;36m[ 43%][0m Building CXX object src/module13.o
+[1;36m[ 46%][0m Building CXX object src/module14.o
+[1;36m[ 50%][0m Building CXX object src/module15.o
+[1;36m[ 53%][0m Building CXX object src/module16.o
+[1;36m[ 56%][0m Building CXX object src/module17.o
+[1;36m[ 60%][0m Building CXX object src/module18.o
+[1;36m[ 63%][0m Building CXX object src/module19.o
+[1;36m[ 66%][0m Building CXX object src/module20.o
+[1;36m[ 70%][0m Building CXX object src/module21.o
+[1;36m[ 73%][0m Building CXX object src/module22.o
+[1;36m[ 76%][0m Building CXX object src/module23.o
+[1;36m[ 80%][0m Building CXX object src/module24.o
+[1;36m[ 83%][0m Building CXX object src/module25.o
+[1;36m[ 86%][0m Building CXX object src/module26.o
+[1;36m[ 90%][0m Building CXX object src/module27.o
+[1;36m[ 93%][0m Building CXX object src/module28.o
+[1;36m[ 96%][0m Building CXX object src/module29.o
+[1;32m[100%][0m Built target app
+]133;D;0]133;A[1;32muser@host[0m:[1;34m~/project[0m$ ]133;Bclear
+]133;C[H[2J[3J]133;D;0]133;A[1;32muser@host[0m:[1;34m~/project[0m$ ]133;Bcat notes.txt
+]133;C  0  The quick brown fox jumps over the lazy dog, line 0.
+  1  The quick brown fox jumps over the lazy dog, line 1.
+  2  The quick brown fox jumps over the lazy dog, line 2.
+  3  The quick brown fox jumps over the lazy dog, line 3.
+  4  The quick brown fox jumps over the lazy dog, line 4.
+  5  The quick brown fox jumps over the lazy dog, line 5.
+  6  The quick brown fox jumps over the lazy dog, line 6.
+  7  The quick brown fox jumps over the lazy dog, line 7.
+  8  The quick brown fox jumps over the lazy dog, line 8.
+  9  The quick brown fox jumps over the lazy dog, line 9.
+ 10  The quick brown fox jumps over the lazy dog, line 10.
+ 11  The quick brown fox jumps over the lazy dog, line 11.
+ 12  The quick brown fox jumps over the lazy dog, line 12.
+ 13  The quick brown fox jumps over the lazy dog, line 13.
+ 14  The quick brown fox jumps over the lazy dog, line 14.
+ 15  The quick brown fox jumps over the lazy dog, line 15.
+ 16  The quick brown fox jumps over the lazy dog, line 16.
+ 17  The quick brown fox jumps over the lazy dog, line 17.
+ 18  The quick brown fox jumps over the lazy dog, line 18.
+ 19  The quick brown fox jumps over the lazy dog, line 19.
+ 20  The quick brown fox jumps over the lazy dog, line 20.
+ 21  The quick brown fox jumps over the lazy dog, line 21.
+ 22  The quick brown fox jumps over the lazy dog, line 22.
+ 23  The quick brown fox jumps over the lazy dog, line 23.
+ 24  The quick brown fox jumps over the lazy dog, line 24.
+ 25  The quick brown fox jumps over the lazy dog, line 25.
+ 26  The quick brown fox jumps over the lazy dog, line 26.
+ 27  The quick brown fox jumps over the lazy dog, line 27.
+ 28  The quick brown fox jumps over the lazy dog, line 28.
+ 29  The quick brown fox jumps over the lazy dog, line 29.
+ 30  The quick brown fox jumps over the lazy dog, line 30.
+ 31  The quick brown fox jumps over the lazy dog, line 31.
+ 32  The quick brown fox jumps over the lazy dog, line 32.
+ 33  The quick brown fox jumps over the lazy dog, line 33.
+ 34  The quick brown fox jumps over the lazy dog, line 34.
+ 35  The quick brown fox jumps over the lazy dog, line 35.
+ 36  The quick brown fox jumps over the lazy dog, line 36.
+ 37  The quick brown fox jumps over the lazy dog, line 37.
+ 38  The quick brown fox jumps over the lazy dog, line 38.
+ 39  The quick brown fox jumps over the lazy dog, line 39.
+ 40  The quick brown fox jumps over the lazy dog, line 40.
+ 41  The quick brown fox jumps over the lazy dog, line 41.
+ 42  The quick brown fox jumps over the lazy dog, line 42.
+ 43  The quick brown fox jumps over the lazy dog, line 43.
+ 44  The quick brown fox jumps over the lazy dog, line 44.
+ 45  The quick brown fox jumps over the lazy dog, line 45.
+ 46  The quick brown fox jumps over the lazy dog, line 46.
+ 47  The quick brown fox jumps over the lazy dog, line 47.
+ 48  The quick brown fox jumps over the lazy dog, line 48.
+ 49  The quick brown fox jumps over the lazy dog, line 49.
+ 50  The quick brown fox jumps over the lazy dog, line 50.
+ 51  The quick brown fox jumps over the lazy dog, line 51.
+ 52  The quick brown fox jumps over the lazy dog, line 52.
+ 53  The quick brown fox jumps over the lazy dog, line 53.
+ 54  The quick brown fox jumps over the lazy dog, line 54.
+ 55  The quick brown fox jumps over the lazy dog, line 55.
+ 56  The quick brown fox jumps over the lazy dog, line 56.
+ 57  The quick brown fox jumps over the lazy dog, line 57.
+ 58  The quick brown fox jumps over the lazy dog, line 58.
+ 59  The quick brown fox jumps over the lazy dog, line 59.
+]133;D;0]133;A[1;32muser@host[0m:[1;34m~/project[0m$ ]133;Bls -la
+]133;C-rw-r--r--  1 user  staff    1000 Oct  9 12:00 [0mMakefile[0m
+-rw-r--r--  1 user  staff    1137 Oct  9 12:01 [0mREADME.md[0m
+-rw-r--r--  1 user  staff    1274 Oct  9 12:02 [1;34msrc[0m
+-rw-r--r--  1 user  staff    1411 Oct  9 12:03 [1;34mtests[0m
+-rw-r--r--  1 user  staff    1548 Oct  9 12:04 [0;32mbuild.sh[0m
+-rw-r--r--  1 user  staff    1685 Oct  9 12:05 [0mnotes.txt[0m
+-rw-r--r--  1 user  staff    1822 Oct  9 12:06 [0mLICENSE[0m
+-rw-r--r--  1 user  staff    1959 Oct  9 12:07 [1;34mdocs[0m
+-rw-r--r--  1 user  staff    2096 Oct  9 12:08 [0mMakefile[0m
+-rw-r--r--  1 user  staff    2233 Oct  9 12:09 [0mREADME.md[0m
+-rw-r--r--  1 user  staff    2370 Oct  9 12:10 [1;34msrc[0m
+-rw-r--r--  1 user  staff    2507 Oct  9 12:11 [1;34mtests[0m
+-rw-r--r--  1 user  staff    2644 Oct  9 12:12 [0;32mbuild.sh[0m
+-rw-r--r--  1 user  staff    2781 Oct  9 12:13 [0mnotes.txt[0m
+-rw-r--r--  1 user  staff    2918 Oct  9 12:14 [0mLICENSE[0m
+-rw-r--r--  1 user  staff    3055 Oct  9 12:15 [1;34mdocs[0m
+]133;D;0]133;A[1;32muser@host[0m:[1;34m~/project[0m$ ]133;Bhistory | tail
+]133;C[33mf5e3c1e[0m Commit message number 0
+[33m3a4dae2[0m Commit message number 1
+[33m9b4c08b[0m Commit message number 2
+[33mea517b4[0m Commit message number 3
+[33mf62f1e5[0m Commit message number 4
+[33m7807359[0m Commit message number 5
+[33m391e2dd[0m Commit message number 6
+[33mebb016a[0m Commit message number 7
+[33m9ffeaae[0m Commit message number 8
+[33m9cc4582[0m Commit message number 9
+[33m552a714[0m Commit message number 10
+[33m6244c61[0m Commit message number 11
+[33mf134bfe[0m Commit message number 12
+[33m48e38d8[0m Commit message number 13
+[33m6fe7b9f[0m Commit message number 14
+[33m84559b4[0m Commit message number 15
+[33m6e2f654[0m Commit message number 16
+[33mb001a9a[0m Commit message number 17
+[33mdbf649c[0m Commit message number 18
+[33m774ff7d[0m Commit message number 19
+]133;D;0]133;A[1;32muser@host[0m:[1;34m~/project[0m$ ]133;Bmake -j8
+]133;C[1;36m[  0%][0m Building CXX object src/module0.o
+[1;36m[  3%][0m Building CXX object src/module1.o
+[1;36m[  6%][0m Building CXX object src/module2.o
+[1;36m[ 10%][0m Building CXX object src/module3.o
+[1;36m[ 13%][0m Building CXX object src/module4.o
+[1;36m[ 16%][0m Building CXX object src/module5.o
+[1;36m[ 20%][0m Building CXX object src/module6.o
+[1;36m[ 23%][0m Building CXX object src/module7.o
+[1;36m[ 26%][0m Building CXX object src/module8.o
+[1;36m[ 30%][0m Building CXX object src/module9.o
+[1;36m[ 33%][0m Building CXX object src/module10.o
+[1;36m[ 36%][0m Building CXX object src/module11.o
+[1;36m[ 40%][0m Building CXX object src/module12.o
+[1;36m[ 43%][0m Building CXX object src/module13.o
+[1;36m[ 46%][0m Building CXX object src/module14.o
+[1;36m[ 50%][0m Building CXX object src/module15.o
+[1;36m[ 53%][0m Building CXX object src/module16.o
+[1;36m[ 56%][0m Building CXX object src/module17.o
+[1;36m[ 60%][0m Building CXX object src/module18.o
+[1;36m[ 63%][0m Building CXX object src/module19.o
+[1;36m[ 66%][0m Building CXX object src/module20.o
+[1;36m[ 70%][0m Building CXX object src/module21.o
+[1;36m[ 73%][0m Building CXX object src/module22.o
+[1;36m[ 76%][0m Building CXX object src/module23.o
+[1;36m[ 80%][0m Building CXX object src/module24.o
+[1;36m[ 83%][0m Building CXX object src/module25.o
+[1;36m[ 86%][0m Building CXX object src/module26.o
+[1;36m[ 90%][0m Building CXX object src/module27.o
+[1;36m[ 93%][0m Building CXX object src/module28.o
+[1;36m[ 96%][0m Building CXX object src/module29.o
+[1;32m[100%][0m Built target app
+]133;D;0]133;A[1;32muser@host[0m:[1;34m~/project[0m$ ]133;Bgit diff --stat
+]133;COn branch main
+Changes not staged for commit:
+	[31mmodified:   src/file0.c[0m
+	[31mmodified:   src/file1.c[0m
+	[31mmodified:   src/file2.c[0m
+	[31mmodified:   src/file3.c[0m
+	[31mmodified:   src/file4.c[0m
+	[31mmodified:   src/file5.c[0m
+]133;D;0]133;A[1;32muser@host[0m:[1;34m~/project[0m$ ]133;Bls
+]133;C-rw-r--r--  1 user  staff    1000 Oct  9 12:00 [0mMakefile[0m
+-rw-r--r--  1 user  staff    1137 Oct  9 12:01 [0mREADME.md[0m
+-rw-r--r--  1 user  staff    1274 Oct  9 12:02 [1;34msrc[0m
+-rw-r--r--  1 user  staff    1411 Oct  9 12:03 [1;34mtests[0m
+-rw-r--r--  1 user  staff    1548 Oct  9 12:04 [0;32mbuild.sh[0m
+-rw-r--r--  1 user  staff    1685 Oct  9 12:05 [0mnotes.txt[0m
+-rw-r--r--  1 user  staff    1822 Oct  9 12:06 [0mLICENSE[0m
+-rw-r--r--  1 user  staff    1959 Oct  9 12:07 [1;34mdocs[0m
+-rw-r--r--  1 user  staff    2096 Oct  9 12:08 [0mMakefile[0m
+-rw-r--r--  1 user  staff    2233 Oct  9 12:09 [0mREADME.md[0m
+-rw-r--r--  1 user  staff    2370 Oct  9 12:10 [1;34msrc[0m
+-rw-r--r--  1 user  staff    2507 Oct  9 12:11 [1;34mtests[0m
+-rw-r--r--  1 user  staff    2644 Oct  9 12:12 [0;32mbuild.sh[0m
+-rw-r--r--  1 user  staff    2781 Oct  9 12:13 [0mnotes.txt[0m
+-rw-r--r--  1 user  staff    2918 Oct  9 12:14 [0mLICENSE[0m
+-rw-r--r--  1 user  staff    3055 Oct  9 12:15 [1;34mdocs[0m
+]133;D;0]133;A[1;32muser@host[0m:[1;34m~/project[0m$ ]133;B

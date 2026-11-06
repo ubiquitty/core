@@ -1,0 +1,5 @@
+%begin 1 1 0
+%end 1 1 0
+%layout-change @1!abcd,80x24,0,0{40x24,0,0,ÅÍŞßÚÏß12 : hello
+%exit
+,2}

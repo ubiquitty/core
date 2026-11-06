@@ -1,0 +1,8 @@
+# One line per gap: the identifier, two spaces, why, and the date it was recorded.
+# Tools/snapshot/main.cpp parses every flag a case passes; an entry here is a
+# renderer gap, named in its reason.
+#
+# A line may carry a pixel ceiling — `identifier  [max Npx] why (date)` — which
+# reds when the difference grows past it; see known-failing-macos.txt for the
+# rule. A case the driver refuses before drawing has no distance to bound and
+# carries none.

@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Build the libFuzzer seed corpus for fuzz_vt100.
+
+Run this script to (re)generate every .bin file in tests/fuzz-corpus/.
+The corpus is intentionally small (each seed 1-8 KB) and deterministic
+so a CI replay never depends on local randomness.
+
+Each seed targets a specific parser shape that has historically been
+fragile or that exercises a code path the unit tests don't reach:
+
+  claude-startup.bin       OSC 0; "✳ Claude Code" BEL + DECSET 2026 +
+                           kitty keyboard CSI u flag push/pop. Repro
+                           for the §3.10a "halt after claude → exit"
+                           bug.
+  find-burst.bin           ~4 KB of fast plain text mixed with the
+                           occasional CRLF — models a `find / -name '*'`
+        e                  burst that saturates the per[2J[H[38;2;0;0;0m#[38;2;3;0;7m#[38;2;6;0;14m#[38;2;9;0;21m#[38;2;12;0;28m#[38;2;15;0;35m#[38;2;18;0;42m#[38;2;21;0;49m#[38;2;24;0;56m#[38;2;27;0;63m#[38;2;30;0;70m#[38;2;33;0;77m#[38;2;36;0;84m#[38;2;39;0;91m#[38;2;42;0;98m#[38;2;45;0;105m#[38;2;48;0;112m#[38;2;51;0;119m#[38;2;54;0;126m#[38;2;57;0;133m#[38;2;60;0;140m#[38;2;63;0;147m#[38;2;66;0;154m#[38;2;69;0;161m#[38;2;72;0;169m#[38;2;75;0;175m#[38;2;78;0;182m#[38;2;81;0;189m#[38;2;84;0;196m#[38;2;87;0;203m#[38;2;90;0;210m#[38;2;93;0;217m#[38;2;96;                    continuation bytes — regression seed for
+                           §2.7 "0x9C is NOT a string terminator under
+����                       UTF-8".
+  truecolor-stress.bin     Many SGR 38;2 truecolor changes per row.
+                           Exercises the SGR parser allocator and the
+                           pen-cell comparator.
+
+Usage:
+    python3 build_corpus.py        # write every seed
+    python3 build_corpus.py --list # list filenames + sizes without writing
+"""
+from __future__ import annotations
+
+import base64
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def claude_startup() -> bytes:
+    # The bytes claude emits in the first ~150 chars of startup.
+    # Order matches what scripts/read-claude-first-line.py observed.
+    parts = [
+        b"\x1b[?2026h",                       # DECSET 2026 — synchronized output on
+        b"\x1b[>4;2m",                        # xterm modifyOtherKeys=2
+        b"\x1b[?1004h",                       # focus reporting on
+        b"\x1b[?1049h",                       # alt screen
+        b"\x1b[2J\x1b[H",                     # clear + home
+        b"\x1b]0;\xe2\x9c\xb3 Claude Code\x07",  # OSC 0 titl;44;203m#[38;2;78;44;210m#[38;2;81;44;217m#[38;2;84;44;224m#[38;2;87;44;231m#[38;2;90;44;238m#[38;2;93e with the ✳ graphics codepoint
+        b"\x1b[>1;44;245m#[38;2;96;44;2528;2;111;0;3m#[38;2;114;0u",                          # kitty keyboard flag push (DISAMBI;10m#[38;2;117;0;G1

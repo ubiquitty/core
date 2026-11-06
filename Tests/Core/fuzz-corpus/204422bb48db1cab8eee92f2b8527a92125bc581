@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Build the libFuzzer seed corpus for fuzz_vt100.
+
+Run this script to (re)generate every .bin file in tests/fuzz-corpus/.
+The corpus is intentionally small (each seed 1-8 KB) and deterministic
+so a CI replay never depends on local randomness.
+
+Each seed targets a specific parser shape that has historically been
+fragile or that exercises a code path the unit tests don't reach:
+
+  claude-startup.bin       OSC 0; "✳ Claude Code" BEL + DECSET 2026 +
+                           kitty keyboard CSI u flag push/pop. Repro
+                           for the §3.10a "halt after claude → exit"
+                           bug.
+  find-burst.bin           ~4 KB of fast plain text mixed with the
+                           occasional CRLF — models a `find / -name '*'`
+                           burst that saturates the per-tick RX budget.
+  mc-redraw.bin            DEC special graphics box-drawing redraw of a
+                           Midnight Commander-style two-pane UI.
+  kitty-graphics-small.bin Valid kitty graphics APC: 8×8 RGBA inline,
+                           direct transport.
+  kitty-graphics-malformed.bin  Same shape, payload truncated mid-base64
+                           and missing the ST terminator — pins the
+                           error/recovery path.
+  osc-0x9c-payload.bin     OSC title whose payload contains 0x9C
+                           continuation bytes — regression seed for
+                           §2.7 "0x9C is NOT a string terminator under
+                           UTF-8".
+  truecolor-stress.bin     Many SGR 38;2 truecolor changes per row.
+                           Exercises the SGR parser allocator and the
+                           pen-cell comparator.
+
+Usage:
+    python3 build_corpus.py        # write every seed
+    python3 build_corpus.py --list # list filenames + sizes without wri����
+"""
+from __future__ import annotations
+
+import base64
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def claude_startup() -> bytes:
+    # The bytes claude emits in the first ~150 chars of startup.
+    # Order matches what scripts/read-claude-first-line.py observed.
+    parts = [
+        b"\x1b[?2026h",                       # DECSET 2026 — synchronized output on
+        b"\x1b[>4;2m",                        # xterm modifyOtherKeys=2
+        b"\x1b[?1004h",                       # focus reporting on
+        b"\x1b[?1049h",                       # alt screen
+        b"\x1b[2J\x1b[H",                     # clear + home
+        b"\x1b]0;\xe2\x9c\xb3 Claude Code\x07",  # OSC 0 title with the ✳ graphics codepoint
+        b"\x1b[>1u",                          # kitty keyboard flag push (DISAMBIGUATE)
+        b"\x1b[?25l",                         # cursor hidden
+        b"\x1b[1;1H",
+        b" Welcome ",
+        b"\x1b[?25h",
+        b"\x1b[<1u",                          # kitty pop
+        b"\x1b[?2026l",                       # DECRST 2026
+        b"\x1b[?1049l",                       # leave alt
+        b"\x1b[?1004l",
+    ]
+    return b"".join(parts)
+
+
+def find_burst() -> bytes:
+    # ~4 KB of plain text mixed with CRLF, modelling a fast `find` burst.
+    lines = []
+    for i in range(56):
+        lines.append(
+            f"/Users/user/Projects/ubiquitty/src/core/file_{i:04d}_with_a_longish_name.c"
+        )
+    return ("\r\n".join(lines) + "\r\n").encode("ascii")
+
+
+def mc_redraw() -> bytes:
+    # DEC special graphics: \x1b(0 selects, \x1b(B restores. Use a few
+    # box-drawing codepoints to draw a two-pane UI.
+    out = []
+    out.append(b"\x1b[2J\x1b[H")
+    out.append(b"\x1b(0")  # enter DEC special graphics
+    # Top border
+    out.append(b"l" + b"q" * 38 + b"w" + b"q" * 38 + b"k\r\n")
+    # 20 rows of vertical bars
+    for _ in range(20):
+        out.append(b"x" + b" " * 38 + b"x" + b" " * 38 + b"x\r\n")
+    # Mid divider
+    out.append(b"t" + b"q" * 38 + b"n" + b"q" * 38 + b"u\r\n")
+    # Bottom border
+    out.append(b"m" + b"q" * 38 + b"v" + b"q" * 38 + b"j\r\n")
+    out.append(b"\x1b(B")  # exit DEC special graphics
+    # A few SGR + text writes
+    out.append(b"\x1b[2;3H\x1b[1;33mProjects\x1b[0m\r\n")
+    out.append(b"\x1b[2;42H\x1b[1;32mPreview\x1b[0m\r\n")
+    return b"".join(out)
+
+
+def _rgba_pixels(width: int, height: int) -> bytes:
+    # Deterministic gradient.
+    buf = bytearray(width * height * 4)
+    for y in range(height):
+        for x in range(width):
+            o = (y * width + x) * 4
+            buf[o + 0] = (x * 32) & 0xFF
+            buf[o + 1] = (y * 32) & 0xFF
+            buf[o + 2] = ((x + y) * 16) & 0xFF
+            buf[o + 3] = 0xFF
+    return bytes(buf)
+
+
+def kitty_graphics_small() -> bytes:
+    # 8×8 RGBA = 256 bytes raw → 344 chars base64.
+    pixels = _rgba_pixels(8, 8)
+    b64 = base64.b64encode(pixels).decode("ascii")
+    return (b"\x1b_Ga=T,t=d,f=32,s=8,v=8,i=1;" + b64.encode("ascii") +
+            b"\x1b\\")
+
+
+def kitty_graphics_malformed() -> bytes:
+    # Same control prefix but truncate the payload mid-base64 and drop
+    # the ST. The parser should hit the OSC/APC size limit or run-out
+    # path and recover when ST eventually arrives.
+    pixels = _rgba_pixels(8, 8)
+    b64 = base64.b64encode(pixels).decode("ascii")
+    half = b64[: len(b64) // 2]
+    # No ST — followed by raw text that the parser should NOT treat as
+    # graphics payload once the APC eventually terminates.
+    return (b"\x1b_Ga=T,t=d,f=32,s=8,v=8,i=2;" + half.encode("ascii") +
+            # eventual ST, then a normal printable run
+            b"\x1b\\HELLO\r\n")
+
+
+def osc_0x9c_payload() -> bytes:
+    # OSC 0 ; "é" (UTF-8: 0xC3 0xA9) repeated, then a stretch of 0x9C
+    # continuation bytes inside another valid UTF-8 sequence (0xE6 0x9C 0xAC
+    # = "本" = U+672C). These must not terminate the OSC payload — §2.7.
+    inner = b"\xc3\xa9 " * 8 + b"\xe6\x9c\xac" * 16
+    return b"\x1b]0;" + inner + b"\x07"
+
+
+def truecolor_stress() -> bytes:
+    # 8 rows × 40 cols of unique SGR 38;2;r;g;b cells. Cap to ~6 KB so
+    # the seed stays inside the 1-8 KB band the corpus targets.
+    out = [b"\x1b[2J\x1b[H"]
+    for y in range(8):
+        for x in range(40):
+            r = (x * 3) & 0xFF
+            g = (y * 11) & 0xFF
+            b = ((x + y) * 7) & 0xFF
+            out.append(
+                f"\x1b[38;2;{r};{g};{b}m#".encode("ascii")
+            )
+        out.append(b"\x1b[0m\r\n")
+    return b"".join(out)
+
+
+SEEDS = {
+    "claude-startup.bin": claude_startup,
+    "find-burst.bin": find_burst,
+    "mc-redraw.bin": mc_redraw,
+    "kitty-graphics-small.bin": kitty_graphics_small,
+    "kitty-graphics-malformed.bin": kitty_graphics_malformed,
+    "osc-0x9c-payload.bin": osc_0x9c_payload,
+    "truecolor-stress.bin": truecolor_stress,
+}
+
+
+def main(argv: list[str]) -> int:
+    list_only = "--list" in argv
+    for name, builder in SEEDS.items():
+        data = builder()
+        size = len(data)
+        # All seeds intentionally fit in [1 byte, 32 KB].
+        assert 1 <= size <= 32 * 1024, (name, size)
+        if list_only:
+            print(f"{name}\t{size} bytes")
+            continue
+        path = os.path.join(HERE, name)
+        with open(path, "wb") as fh:
+            fh.write(data)
+        print(f"wrote {name} ({size} bytes)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

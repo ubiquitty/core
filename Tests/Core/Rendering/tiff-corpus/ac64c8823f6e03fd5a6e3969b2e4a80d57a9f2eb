@@ -1,0 +1,4 @@
+#!/usr/bin/env python3
+# Hand-in/env python3
+# Hand-construct minimal baseline uncompressed TIFFs that TIFF_Decode Confut:
+#   hea'er(8) | IFD(2 + N*GItheline  B

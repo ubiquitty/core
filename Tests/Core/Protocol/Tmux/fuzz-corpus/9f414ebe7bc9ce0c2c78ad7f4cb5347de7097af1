@@ -1,0 +1,4 @@
+%begin 1 1 0 0
+%e
+%end 1 1 0
+%output %0 \033[A

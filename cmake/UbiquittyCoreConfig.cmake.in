@@ -1,0 +1,24 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+
+@PACKAGE_INIT@
+
+# UbiquittyCoreConfig.cmake — the installed-package config for libUbiquittyCore.
+#
+# A downstream project consumes the portable terminal Core with:
+#
+#   find_package(UbiquittyCore 0.1 REQUIRED)
+#   target_link_libraries(my_app PRIVATE Ubiquitty::ubiquitty-core)
+#   # then: #include "UbiquittyCore/UbiquittyCore.h", supply a PAL
+#   # See Docs/libubiquittycore.md; the session facade is Ubiquitty::ubiquitty-kit.
+#
+# The imported target carries its INSTALL_INTERFACE include dir
+# (include/UbiquittyCore-<version>) + the C++23 requirement; the consumer needs
+# no source-tree paths. The imported targets carry the model, behaviour and
+# bundled-backend static archives, plus the Kit archive when requested.
+# The standalone package has no QUIC/TLS dependency; the caller supplies the
+# remaining PAL system services.
+
+include("${CMAKE_CURRENT_LIST_DIR}/UbiquittyCoreTargets.cmake")
+
+check_required_components(UbiquittyCore)

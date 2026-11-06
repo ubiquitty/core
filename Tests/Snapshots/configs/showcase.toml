@@ -1,0 +1,19 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+
+[font]
+family = "GNU Unifont"
+size = 10
+
+[appearance]
+text_contrast = false
+theme = "Noir Clair"
+
+# The block, named: every showcase entry renders under this one file, and a
+# cursor is in most of their pictures. A terminal seeded from a configuration
+# takes the shipped default shape where none is named, and that default is a
+# bar — so the shape is stated here, as the case registry states it for every
+# case, and the day the product's default moves no showcase golden moves with
+# it.
+[cursor]
+shape = "block"

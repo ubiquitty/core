@@ -1,0 +1,219 @@
+{
+  "_doc": [
+    "The bundled font inventory: what each file is, where it came from, and what it must still be.",
+    "",
+    "Scripts/fonts.py reads this. `check` hashes every entry and compares; `update`",
+    "re-fetches from `source` at `version` and rewrites the file. The hash is the",
+    "point: a font is a binary nobody reads in review, so a swapped or truncated",
+    "one passes every human check and changes every golden.",
+    "",
+    "`axes` is not decoration. A face bundled to exercise a variation setting is",
+    "useless the moment it is replaced by a static build, and the replacement",
+    "renders fine — the settings simply stop doing anything, and the snapshots",
+    "that were supposed to pin them keep passing. Recording the axes here makes",
+    "that substitution a gate failure rather than a silent loss of coverage.",
+    "",
+    "`licence_file` must exist beside the font. Bundling redistributes it, and the",
+    "OFL requires the licence to travel with the software.",
+    "",
+    "ADDING A FILE HERE IS A RENDERING CHANGE UNTIL MEASURED OTHERWISE, even when",
+    "nothing selects it by name. macOS bundles this directory whole and registers it",
+    "through Info.plist's ATSApplicationFontsPath, so CoreText resolves a family from",
+    "whatever sits here — and given two files claiming one family it need not prefer",
+    "the one that was already shipping.",
+    "",
+    "Worked example: two variable builds were added BESIDE the six static",
+    "instances of the same family, and the commit said it changed no rendering on any",
+    "arm because nothing selected them. CoreText resolved JetBrains Mono to the",
+    "variable file for regular and bold from the moment it landed. A bundle carrying",
+    "only the statics reads 118 pass / 1 fail; the same tree with the variable files",
+    "present reads 99 / 20. Eighteen of those twenty were sub-threshold — identical",
+    "ink counts and run positions, only channel values below the repaint cut — which",
+    "is why it read as noise for three weeks.",
+    "",
+    "So attribute by RENDERING the bundle with and without the new file, not by",
+    "reading the diff: the diff shows an added file and no edit to any selector, which",
+    "is exactly what the failing case looks like. `CTFontCopyAttribute(font,",
+    "kCTFontURLAttribute)` reports which file actually won.",
+    "",
+    "`member` may sit on each entry of `files` rather than on the font, for a release",
+    "archive that carries several of one family's files; the font-level `member` still",
+    "names the first file's when there is only one.",
+    "",
+    "`url` names the whole download for a font whose upstream publishes no release",
+    "asset, and takes precedence over `source`/`version`/`asset` in `update`."
+  ],
+  "fonts": [
+    {
+      "name": "JetBrains Mono",
+      "role": "The shipped primary face: what a terminal draws with when the user names no family. One file per slant, weight on the axis.",
+      "files": [
+        {
+          "path": "JetBrainsMono[wght].ttf",
+          "sha256": "3cfafa86e28b87184d592fef82846e8c10cb48653c62efcda34f082da225ec34"
+        },
+        {
+          "path": "JetBrainsMono-Italic[wght].ttf",
+          "sha256": "c5c2a1d29297d2a40ec4a0114447c6b7a1477678ab2d9aa4b755356e1a02cead"
+        }
+      ],
+      "licence": "SIL Open Font License 1.1",
+      "licence_file": "JetBrainsMono-OFL.txt",
+      "source": "https://github.com/JetBrains/JetBrainsMono",
+      "version": "19371302b95d218af43299bce79ddbddd0bc364d",
+      "member": "fonts/variable",
+      "axes": [
+        "wght"
+      ],
+      "notes": [
+        "Pinned to a COMMIT, not a tag or a branch, for the reason fetch-quic-deps.sh gives about the QUIC sources: a mutable ref means whoever can move it upstream chooses what ships.",
+        "Taken from master rather than a release. The last release, v2.304, is from January 2023; master carries 2.305 and two further years of fixes, so the released artefact is the older one here.",
+        "wght is 100-800 and defaults to 400. Measured against the v2.304 statics these replaced: the Regular instance is identical (stem 9.00, M advance 19.200), so body text did not move, but the rest of the ramp is heavier upstream — Bold 14.20 against 12.60, Medium 11.60 against 9.90. Bold text is visibly heavier than it was and `font.bold_weight` picks another coordinate for anyone who wants the old colour.",
+        "Read fonts/variable/, not fonts/archives/variable/: the archive copy is a release snapshot and differs (304208 bytes against 300144).",
+        "Not ttfautohint'd, where the statics were (v1.8.4.7-5d5b in their version string). FreeType honours TT hinting and CoreText ignores it, so replacing them re-minted the Linux goldens at small sizes while macOS saw only the weight change.",
+        "The bracket in the filename is a glob character class to a shell and to fnmatch. Every reference to it has to be quoted; unquoted it matches nothing here and would silently start matching if a one-character sibling ever appeared."
+      ]
+    },
+    {
+      "name": "Monaspace Neon Var",
+      "role": "The variable face the weight and width settings are pinned against. Not a shipped default; nothing selects it unless a configuration names it.",
+      "files": [
+        {
+          "path": "MonaspaceNeonVar.ttf",
+          "sha256": "e3cc8bf1c4a0384309d584c0dce9291166535066c538e60e2d5ac444b76fec4c"
+        }
+      ],
+      "licence": "SIL Open Font License 1.1",
+      "licence_file": "Monaspace-OFL.txt",
+      "source": "https://github.com/githubnext/monaspace",
+      "version": "v1.400",
+      "asset": "monaspace-variable-v1.400.zip",
+      "member": "Variable Fonts/Monaspace Neon/Monaspace Neon Var.ttf",
+      "axes": [
+        "wght",
+        "wdth",
+        "slnt"
+      ],
+      "notes": [
+        "The plain build, not the Nerd Font rebuild: the bundled Symbols Nerd Font is a glyph-only fallback that covers icons for whichever primary is selected, so patching the primary would duplicate coverage the fallback already provides at ten times the size.",
+        "Its wght axis DEFAULTS TO 200, not 400 — an unset font.weight draws this face ExtraLight. That is the case a weight setting has to survive, which is what makes it the right subject rather than a wrong one.",
+        "Reports traitMonoSpace = false while every printable-ASCII advance is identical, so a caller trusting the flag rejects a face that is monospaced in fact."
+      ]
+    },
+    {
+      "name": "Symbols Nerd Font Mono",
+      "role": "Glyph-only fallback for the icon ranges a text face does not cover. Never contributes metrics.",
+      "files": [
+        {
+          "path": "SymbolsNerdFontMono-Regular.ttf",
+          "sha256": "7f14415832a929155c3d6d1c7d404fae00dfbfe4f1b29940e3736e6e790e3312"
+        }
+      ],
+      "licence": "MIT AND OFL-1.1 AND CC-BY-4.0 AND Apache-2.0 AND Bitstream-Vera AND Unlicense",
+      "licence_file": "SymbolsNerdFont-CONSTITUENTS.txt",
+      "source": "https://github.com/ryanoasis/nerd-fonts/tree/e2dc2203202ed148ceb76d2c3100216170e94297/patched-fonts/NerdFontsSymbolsOnly",
+      "version": "3.3.0",
+      "axes": [],
+      "notes": "Unmodified Nerd Fonts v3.3.0 binary, verified against the pinned upstream file. SymbolsNerdFont-CONSTITUENTS.txt contains the constituent notices and terms; SymbolsNerdFont-LICENSE.txt retains the Nerd Fonts integration license."
+    },
+    {
+      "name": "GNU Unifont",
+      "role": "The embedded bitmap tier: the last-resort face, baked into C++ rather than shipped as a font file.",
+      "files": [
+        {
+          "path": "../../Source/Core/Rendering/UnifontData.cpp",
+          "sha256": "5cf93036c96d0e732a9e1f86675a357045f8790f6e129e9f8d84fbda8627ca5d"
+        }
+      ],
+      "licence": "SIL Open Font License 1.1",
+      "licence_file": "../../Source/Core/Rendering/UnifontLICENSE.txt",
+      "source": "https://ftp.gnu.org/gnu/unifont/unifont-17.0.04/",
+      "version": "17.0.04",
+      "axes": [],
+      "generated_by": "Scripts/gen-unifont.py",
+      "notes": "Not a bundled .ttf: gen-unifont.py bakes the .hex into UnifontData.cpp, so `update` regenerates rather than downloads a font file."
+    },
+    {
+      "name": "Monaspace Neon",
+      "role": "The static family the texture-healing cases are set in: one file per style, so a bundle that has it draws the healed letterforms on every arm, iOS included. The Nerd Font rebuild is not bundled; the bundled Symbols Nerd Font is the glyph fallback for whichever primary is selected.",
+      "files": [
+        {
+          "path": "MonaspaceNeon-Regular.otf",
+          "sha256": "0daf2cd6cbd780b1a9426cb25c17e80f22844051f988a5133ad54b2751b0b8af",
+          "member": "Static Fonts/Monaspace Neon/MonaspaceNeon-Regular.otf"
+        },
+        {
+          "path": "MonaspaceNeon-Bold.otf",
+          "sha256": "9ff6e131e139c73fe67d1cc045a8a536078fa56cd2c69ee33f0475238a8a9609",
+          "member": "Static Fonts/Monaspace Neon/MonaspaceNeon-Bold.otf"
+        },
+        {
+          "path": "MonaspaceNeon-Italic.otf",
+          "sha256": "8bf31d46a42df399444d2a5a16095cc706cbf20bc6637af4a251b5958b02cdbc",
+          "member": "Static Fonts/Monaspace Neon/MonaspaceNeon-Italic.otf"
+        },
+        {
+          "path": "MonaspaceNeon-BoldItalic.otf",
+          "sha256": "6a6bc24aefa327ec73991ca4f93d764cfc19209a3f34252fa6c2ffb5da41a4e8",
+          "member": "Static Fonts/Monaspace Neon/MonaspaceNeon-BoldItalic.otf"
+        }
+      ],
+      "licence": "SIL Open Font License 1.1",
+      "licence_file": "Monaspace-OFL.txt",
+      "source": "https://github.com/githubnext/monaspace",
+      "version": "v1.400",
+      "asset": "monaspace-static-v1.400.zip",
+      "axes": [],
+      "notes": [
+        "Statics rather than the variable build beside them, because the healing cases are pinned to the letterforms at one weight and a variable build heals more weakly at its default instance; the static Regular is what the plate was minted with.",
+        "Declares the family \"Monaspace Neon\", distinct from the variable file's \"Monaspace Neon Var\", so the two do not compete for one name."
+      ]
+    },
+    {
+      "name": "Noto Sans",
+      "role": "The proportional face the Linux arm draws OSC 66 runs with. Apple platforms keep the system face; Linux has no system face to keep, so this is the one it defines.",
+      "files": [
+        {
+          "path": "NotoSans-Regular.ttf",
+          "sha256": "f3961a9cde016d41a4879aecda1474d3a36d6bf54fa0e4643de029cc2248b0e8",
+          "member": "NotoSans/unhinted/ttf/NotoSans-Regular.ttf"
+        },
+        {
+          "path": "NotoSans-Bold.ttf",
+          "sha256": "87cb2d84472a7d66da659ee47b6cdb9552326e8c128245231f191b6ac72529d9",
+          "member": "NotoSans/unhinted/ttf/NotoSans-Bold.ttf"
+        }
+      ],
+      "licence": "SIL Open Font License 1.1",
+      "licence_file": "NotoSans-OFL.txt",
+      "source": "https://github.com/notofonts/latin-greek-cyrillic",
+      "version": "NotoSans-v2.015",
+      "asset": "NotoSans-v2.015.zip",
+      "axes": [],
+      "notes": [
+        "The unhinted statics: the Linux rasteriser runs FreeType's own hinting policy, and a hinted build would carry instructions a second policy then argues with.",
+        "Two files, Regular and Bold, because a proportional run is drawn regular or bold and nothing else."
+      ]
+    },
+    {
+      "name": "Noto Color Emoji",
+      "role": "The colour emoji face the Linux arm draws with, and the one a configuration may select on Apple platforms in place of the system emoji. COLRv1 outlines, not bitmap strikes, so it scales to any cell.",
+      "files": [
+        {
+          "path": "NotoColorEmoji-COLRv1.ttf",
+          "sha256": "0ae57fe58645638523ba35f388d93739d292539a9acb84df5700c81b1e1a28d2"
+        }
+      ],
+      "licence": "SIL Open Font License 1.1",
+      "licence_file": "NotoColorEmoji-OFL.txt",
+      "source": "https://github.com/googlefonts/noto-emoji",
+      "version": "v2.051",
+      "url": "https://raw.githubusercontent.com/googlefonts/noto-emoji/v2.051/fonts/Noto-COLRv1.ttf",
+      "axes": [],
+      "notes": [
+        "Fetched by `url`, not from a release asset: the noto-emoji releases are tags with no attached files.",
+        "v2.048 is the build Fedora ships as google-noto-color-emoji-fonts 20250623; this is the release after it."
+      ]
+    }
+  ]
+}

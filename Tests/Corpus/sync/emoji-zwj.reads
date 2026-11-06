@@ -1,0 +1,72 @@
+# emoji with ZWJ sequences, flags, skin tones, presentation selectors, CJK and combining marks, scrolled into history
+# Each read: <microseconds> <length> <block|more>.
+#   block — the PTY had nothing more after this read (a would-block).
+#   more  — the next read was already pending; a host keeps draining.
+# Each redraw: redraw <begin> <end> — byte offsets of one logical repaint,
+#   so a frame published strictly inside it showed half a repaint.
+# Each key: input <microseconds> — the user sent a key then; the next read
+#   is its echo, so the frame that first shows it measures the hold after input.
+0 118 block
+23102 41 block
+89442 50 block
+130581 48 block
+176518 40 block
+205841 108 block
+273743 38 block
+303743 60 block
+342473 43 block
+385799 37 block
+464154 45 block
+497581 121 block
+532754 39 block
+567154 38 block
+597154 40 block
+633824 57 block
+678409 44 block
+765950 112 block
+829675 48 block
+887254 50 block
+970557 38 block
+1000557 38 block
+1040224 41 block
+1104364 135 block
+1187328 44 block
+1232630 39 block
+1269338 48 block
+1314635 38 block
+1344635 46 block
+1398446 111 block
+1487226 40 block
+1531844 58 block
+1573051 46 block
+1641203 43 block
+1706923 38 block
+1736923 120 block
+1782202 45 block
+1850501 43 block
+1918242 37 block
+2007145 63 block
+2058986 116 block
+2114965 38 block
+2144965 37 block
+2231975 46 block
+2252036 46 block
+2336440 41 block
+2389991 113 block
+2463761 61 block
+2542641 38 block
+2572641 44 block
+2605105 40 block
+2685017 47 block
+2719208 119 block
+2793774 40 block
+2826306 40 block
+2851466 38 block
+redraw 405 443
+redraw 788 826
+redraw 1177 1215
+redraw 1560 1598
+redraw 1942 1980
+redraw 2404 2442
+redraw 2786 2824
+redraw 3154 3192

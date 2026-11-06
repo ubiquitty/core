@@ -1,0 +1,89 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+#
+# WHY THIS FILE EXISTS. Without it, `clang-tidy <file>` runs whatever checks the
+# invoker typed, so two people auditing the same file reach different lists and
+# neither is the project's. The list below is the project's.
+#
+# THE CHECKS THAT ARE OFF ARE THE POINT. Each one is off for a reason recorded
+# here, because a check disabled without a reason gets re-enabled by the next
+# person who runs `-checks=modernize-*` and wonders why the tree disagrees.
+#
+# modernize-use-trailing-return-type
+#   WebKit's rule is "only use the arrow for function return types if it allows
+#   you to omit redundant information". This check applies the arrow
+#   unconditionally, to every declaration in the tree. Selective is the rule; a
+#   blanket rewrite is not a stricter version of it, it is a different rule.
+#
+# modernize-return-braced-init-list
+#   It rewrites `return std::string(1, c);` to `return {1, c};`, which is not the
+#   same expression: braces prefer the initializer_list<char> constructor, so the
+#   result is the two characters 0x01 and c. Applied to keyTokenForCodePoint,
+#   it formats every letter key with a 0x01 in front of it. Nothing failed to compile and the printf output looked
+#   correct, because the stray byte is invisible until you print the length.
+#   The check cannot see which constructor the braces will select, so its fixit
+#   is a guess wherever a type has a list constructor.
+#
+# modernize-use-designated-initializers
+#   Measured 2026-07-30: 84,842 sites, of which 82,579 are in four generated
+#   .tables.inc files that a generator rewrites wholesale. Fixing generated
+#   output is churn the next generator run deletes.
+#
+# modernize-use-auto
+#   `auto` where the type is not spelled on the right-hand side hides it from
+#   the reader, and this check does not distinguish the two cases.
+#
+# modernize-loop-convert
+#   Its fixit needs manual repair on every run, measured across three: it names
+#   the element after the INDEX it replaced, so a loop over `bool[]` becomes
+#   `for (bool& i :` and `i` survives into a body that indexes nothing — 21 sites
+#   in one run, 4 in another, 3 in a third. It also leaves the `sizeof` count
+#   constant behind, unused under -Werror, four times. Neither is visible to the
+#   check, and a range-for is worth having only where a person picked the name.
+#
+# modernize-avoid-c-arrays
+#   WANTED, and not enabled yet. The check ships NO fixits (measured: 3
+#   diagnostics, 0 replacements), so every conversion is hand work, and ~320
+#   sites remain. Enabling it now would mean a config the tree does not satisfy.
+#   Three groups are not conversions to std::array at all and are excluded when
+#   it is turned on: a `static constexpr char x[] = "literal"` wants
+#   std::string_view, the generated tables are rewritten by their generator, and
+#   `const char* const argv[]` is execv's ABI.
+
+Checks: >
+  -*,
+  clang-diagnostic-ignored-attributes,
+  modernize-concat-nested-namespaces,
+  modernize-macro-to-enum,
+  modernize-min-max-use-initializer-list,
+  modernize-raw-string-literal,
+  modernize-redundant-void-arg,
+  modernize-use-bool-literals,
+  modernize-use-emplace,
+  modernize-use-equals-delete,
+  modernize-use-nodiscard,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-ranges,
+  modernize-use-scoped-lock,
+  modernize-use-starts-ends-with,
+  modernize-use-std-numbers,
+  modernize-use-std-print,
+  modernize-use-using
+
+# A diagnostic in a header is reported once per translation unit that includes
+# it, so a Core header reached by 200 TUs reports 200 times. Deduplication is
+# the reader's problem either way; what this controls is which headers are ours.
+#
+# POSIX ERE, which has no lookahead. llvm::Regex accepts `(?!…)` without a word
+# of complaint and then matches nothing, so a filter written in PCRE suppresses
+# every header diagnostic and the run reports a header-heavy tree clean. The
+# exclusion below is what keeps ThirdParty out, and it is a separate option
+# precisely because this one cannot express it.
+HeaderFilterRegex: '(Source|Tests)/.*\.h$'
+
+# ThirdParty is vendored, and a fix applied there is reverted by the next
+# vendor update. Generated tables are rewritten by their generator.
+ExcludeHeaderFilterRegex: '(ThirdParty|\.tables\.inc)'
+
+FormatStyle: file

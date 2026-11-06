@@ -1,0 +1,65 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+
+name: Bug report
+description: Report something that's broken or behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. For **security** issues, do not file here — see security.md.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: A clear description of the bug.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: >
+        Exact steps. If it's a rendering/parsing bug, a minimal byte stream or
+        escape sequence (e.g. `printf '\e[31mhi\e[0m'`) is the most useful thing
+        you can give us.
+    validations:
+      required: true
+  - type: dropdown
+    id: frontend
+    attributes:
+      label: Frontend
+      options:
+        - macOS app
+        - ubiquitty-host (headless daemon)
+        - ubq
+        - Linux (GTK)
+        - iOS app
+        - Web (WebAssembly)
+        - wscons (OpenBSD / NetBSD console)
+        - Emacs client
+        - Neovim client
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: The release version or git commit SHA (see VERSION, or the About panel).
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and hardware
+      placeholder: "e.g. macOS 26.1 on Apple M3; or Fedora 41 x86_64"
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Logs / screenshots (optional)
+      description: Crash logs, a screenshot, or `[perf]` output if relevant.

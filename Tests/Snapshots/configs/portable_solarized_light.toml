@@ -1,0 +1,9 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+
+[font]
+family = "GNU Unifont"
+size = 10
+
+[appearance]
+theme = "Noir Clair"

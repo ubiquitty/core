@@ -1,0 +1,6 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+
+[font]
+family = "JetBrains Mono"
+size = 10

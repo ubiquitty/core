@@ -1,0 +1,4 @@
+%begin 1 1 0
+%end 1 1 0
+%window-add @5
+ed @5 my window

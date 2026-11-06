@@ -1,0 +1,9 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+
+# A native font profile: the [font] block a case names through `native`.
+# The fixture face under Tests/Snapshots/fixtures/fonts, a proportional
+# family with a wdth axis that the Linux arm reaches through fontconfig.
+[font]
+family = "Ubiquitty Wdth Test"
+size = 14

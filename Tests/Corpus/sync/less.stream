@@ -1,0 +1,208 @@
+[?1049h[24;1H[?1h=   1 alpha beta gamma delta epsilon zeta[m
+   2 theta iota kappa lambda mu nu xi[m
+   3 omicron pi rho sigma tau upsilon phi chi[m
+   4 chi psi omega alpha beta gamma delta epsilon zeta[m
+   5 epsilon zeta eta theta iota kappa lambda mu nu xi[m
+   6 mu nu xi omicron pi rho sigma tau upsilon phi chi[m
+   7 tau upsilon phi chi psi omega alpha beta gamma delta epsilon zeta[m
+   8 beta gamma delta epsilon zeta eta[m
+   9 iota kappa lambda mu nu xi omicron[m
+  10 pi rho sigma tau upsilon phi chi psi[m
+  11 psi omega alpha beta gamma delta epsilon zeta eta[m
+  12 zeta eta theta iota kappa lambda mu nu xi omicron[m
+  13 nu xi omicron pi rho sigma tau upsilon phi chi psi[m
+  14 upsilon phi chi psi omega alpha beta gamma delta epsilon zeta eta[m
+  15 gamma delta epsilon zeta eta theta[m
+  16 kappa lambda mu nu xi omicron pi[m
+  17 rho sigma tau upsilon phi chi psi omega[m
+  18 omega alpha beta gamma delta epsilon zeta eta theta[m
+  19 eta theta iota kappa lambda mu nu xi omicron pi[m
+  20 xi omicron pi rho sigma tau upsilon phi chi psi omega[m
+  21 phi chi psi omega alpha beta gamma delta epsilon zeta eta theta[m
+  22 delta epsilon zeta eta theta iota[m
+  23 lambda mu nu xi omicron pi rho[m
+[7mcorpus.txt[27m[K[K  24 sigma tau upsilon phi chi psi omega alpha[m
+  25 alpha beta gamma delta epsilon zeta eta theta iota[m
+  26 theta iota kappa lambda mu nu xi omicron pi rho[m
+  27 omicron pi rho sigma tau upsilon phi chi psi omega alpha[m
+  28 chi psi omega alpha beta gamma delta epsilon zeta eta theta iota[m
+  29 epsilon zeta eta theta iota kappa[m
+  30 mu nu xi omicron pi rho sigma[m
+  31 tau upsilon phi chi psi omega alpha beta[m
+  32 beta gamma delta epsilon zeta eta theta iota kappa[m
+  33 iota kappa lambda mu nu xi omicron pi rho sigma[m
+  34 pi rho sigma tau upsilon phi chi psi omega alpha beta[m
+  35 psi omega alpha beta gamma delta epsilon zeta eta theta iota kappa[m
+  36 zeta eta theta iota kappa lambda[m
+  37 nu xi omicron pi rho sigma tau[m
+  38 upsilon phi chi psi omega alpha beta gamma[m
+  39 gamma delta epsilon zeta eta theta iota kappa lambda[m
+  40 kappa lambda mu nu xi omicron pi rho sigma tau[m
+  41 rho sigma tau upsilon phi chi psi omega alpha beta gamma[m
+  42 omega alpha beta gamma delta epsilon zeta eta theta iota kappa lambda[m
+  43 eta theta iota kappa lambda mu[m
+  44 xi omicron pi rho sigma tau upsilon[m
+  45 phi chi psi omega alpha beta gamma delta[m
+  46 delta epsilon zeta eta theta iota kappa lambda mu[m
+:[K[K  47 lambda mu nu xi omicron pi rho sigma tau upsilon[m
+  48 sigma tau upsilon phi chi psi omega alpha beta gamma delta[m
+  49 alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu[m
+  50 theta iota kappa lambda mu nu[m
+  51 omicron pi rho sigma tau upsilon phi[m
+  52 chi psi omega alpha beta gamma delta epsilon[m
+  53 epsilon zeta eta theta iota kappa lambda mu nu[m
+  54 mu nu xi omicron pi rho sigma tau upsilon phi[m
+  55 tau upsilon phi chi psi omega alpha beta gamma delta epsilon[m
+  56 beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu[m
+  57 iota kappa lambda mu nu xi[m
+  58 pi rho sigma tau upsilon phi chi[m
+  59 psi omega alpha beta gamma delta epsilon zeta[m
+  60 zeta eta theta iota kappa lambda mu nu xi[m
+  61 nu xi omicron pi rho sigma tau upsilon phi chi[m
+  62 upsilon phi chi psi omega alpha beta gamma delta epsilon zeta[m
+  63 gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi[m
+  64 kappa lambda mu nu xi omicron[m
+  65 rho sigma tau upsilon phi chi psi[m
+  66 omega alpha beta gamma delta epsilon zeta eta[m
+  67 eta theta iota kappa lambda mu nu xi omicron[m
+  68 xi omicron pi rho sigma tau upsilon phi chi psi[m
+  69 phi chi psi omega alpha beta gamma delta epsilon zeta eta[m
+:[K[K  70 delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron[m
+:[K[K  71 lambda mu nu xi omicron pi[m
+:[K[K  72 sigma tau upsilon phi chi psi omega[m
+:[K[K  73 alpha beta gamma delta epsilon zeta eta theta[m
+:[K[K  74 theta iota kappa lambda mu nu xi omicron pi[m
+:[K[K  75 omicron pi rho sigma tau upsilon phi chi psi omega[m
+:[K[K  76 chi psi omega alpha beta gamma delta epsilon zeta eta theta[m
+:[K[K  77 epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi[m
+:[K[K  78 mu nu xi omicron pi rho[m
+:[K[K  79 tau upsilon phi chi psi omega alpha[m
+:[K[K  80 beta gamma delta epsilon zeta eta theta iota[m
+:[K[K  81 iota kappa lambda mu nu xi omicron pi rho[m
+:[K[K  82 pi rho sigma tau upsilon phi chi psi omega alpha[m
+:[K[K  83 psi omega alpha beta gamma delta epsilon zeta eta theta iota[m
+:[K[K  84 zeta eta theta iota kappa lambda mu nu xi omicron pi rho[m
+:[K[K/[Koo[Kmm[Kee[Kgg[Kaa[K[1;1H[K  62 upsilon phi chi psi omega alpha beta gamma delta epsilon zeta[m
+[2;1H[K  63 gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi[m
+[3;1H[K  64 kappa lambda mu nu xi omicron[m
+[4;1H[K  65 rho sigma tau upsilon phi chi psi[m
+[5;1H[K  66 omega alpha beta gamma delta epsilon zeta eta[m
+[6;1H[K  67 eta theta iota kappa lambda mu nu xi omicron[m
+[7;1H[K  68 xi omicron pi rho sigma tau upsilon phi chi psi[m
+[8;1H[K  69 phi chi psi omega alpha beta gamma delta epsilon zeta eta[m
+[9;1H[K  70 delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron[m
+[10;1H[K  71 lambda mu nu xi omicron pi[m
+[11;1H[K  72 sigma tau upsilon phi chi psi omega[m
+[12;1H[K  73 alpha beta gamma delta epsilon zeta eta theta[m
+[13;1H[K  74 theta iota kappa lambda mu nu xi omicron pi[m
+[14;1H[K  75 omicron pi rho sigma tau upsilon phi chi psi omega[m
+[15;1H[K  76 chi psi omega alpha beta gamma delta epsilon zeta eta theta[m
+[16;1H[K  77 epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi[m
+[17;1H[K  78 mu nu xi omicron pi rho[m
+[18;1H[K  79 tau upsilon phi chi psi omega alpha[m
+[19;1H[K  80 beta gamma delta epsilon zeta eta theta iota[m
+[20;1H[K  81 iota kappa lambda mu nu xi omicron pi rho[m
+[21;1H[K  82 pi rho sigma tau upsilon phi chi psi omega alpha[m
+[22;1H[K  83 psi omega alpha beta gamma delta epsilon zeta eta theta iota[m
+[23;1H[K  84 zeta eta theta iota kappa lambda mu nu xi omicron pi rho[m
+[24;1H[1;1H[K  62 upsilon phi chi psi [7momega[27m alpha beta gamma delta epsilon zeta[m
+[2;1H[K  63 gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi[m
+[3;1H[K  64 kappa lambda mu nu xi omicron[m
+[4;1H[K  65 rho sigma tau upsilon phi chi psi[m
+[5;1H[K  66 [7momega[27m alpha beta gamma delta epsilon zeta eta[m
+[6;1H[K  67 eta theta iota kappa lambda mu nu xi omicron[m
+[7;1H[K  68 xi omicron pi rho sigma tau upsilon phi chi psi[m
+[8;1H[K  69 phi chi psi [7momega[27m alpha beta gamma delta epsilon zeta eta[m
+[9;1H[K  70 delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron[m
+[10;1H[K  71 lambda mu nu xi omicron pi[m
+[11;1H[K  72 sigma tau upsilon phi chi psi [7momega[27m[m
+[12;1H[K  73 alpha beta gamma delta epsilon zeta eta theta[m
+[13;1H[K  74 theta iota kappa lambda mu nu xi omicron pi[m
+[14;1H[K  75 omicron pi rho sigma tau upsilon phi chi psi [7momega[27m[m
+[15;1H[K  76 chi psi [7momega[27m alpha beta gamma delta epsilon zeta eta theta[m
+[16;1H[K  77 epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi[m
+[17;1H[K  78 mu nu xi omicron pi rho[m
+[18;1H[K  79 tau upsilon phi chi psi [7momega[27m alpha[m
+[19;1H[K  80 beta gamma delta epsilon zeta eta theta iota[m
+[20;1H[K  81 iota kappa lambda mu nu xi omicron pi rho[m
+[21;1H[K  82 pi rho sigma tau upsilon phi chi psi [7momega[27m alpha[m
+[22;1H[K  83 psi [7momega[27m alpha beta gamma delta epsilon zeta eta theta iota[m
+[23;1H[K  84 zeta eta theta iota kappa lambda mu nu xi omicron pi rho[m
+[24;1H[K:[K[K/[K  85 nu xi omicron pi rho sigma[m
+  86 upsilon phi chi psi [7momega[27m alpha beta[m
+  87 gamma delta epsilon zeta eta theta iota kappa[m
+  88 kappa lambda mu nu xi omicron pi rho sigma[m
+:[K[K/[K  89 rho sigma tau upsilon phi chi psi [7momega[27m alpha beta[m
+  90 [7momega[27m alpha beta gamma delta epsilon zeta eta theta iota kappa[m
+  91 eta theta iota kappa lambda mu nu xi omicron pi rho sigma[m
+:[K[K[HM  68 xi omicron pi rho sigma tau upsilon phi chi psi[m
+[HM  67 eta theta iota kappa lambda mu nu xi omicron[m
+[HM  66 [7momega[27m alpha beta gamma delta epsilon zeta eta[m
+[HM  65 rho sigma tau upsilon phi chi psi[m
+[HM  64 kappa lambda mu nu xi omicron[m
+[HM  63 gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi[m
+[HM  62 upsilon phi chi psi [7momega[27m alpha beta gamma delta epsilon zeta[m
+[HM  61 nu xi omicron pi rho sigma tau upsilon phi chi[m
+[HM  60 zeta eta theta iota kappa lambda mu nu xi[m
+[HM  59 psi [7momega[27m alpha beta gamma delta epsilon zeta[m
+[HM  58 pi rho sigma tau upsilon phi chi[m
+[HM  57 iota kappa lambda mu nu xi[m
+[HM  56 beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu[m
+[HM  55 tau upsilon phi chi psi [7momega[27m alpha beta gamma delta epsilon[m
+[HM  54 mu nu xi omicron pi rho sigma tau upsilon phi[m
+[HM  53 epsilon zeta eta theta iota kappa lambda mu nu[m
+[HM  52 chi psi [7momega[27m alpha beta gamma delta epsilon[m
+[HM  51 omicron pi rho sigma tau upsilon phi[m
+[HM  50 theta iota kappa lambda mu nu[m
+[HM  49 alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu[m
+[HM  48 sigma tau upsilon phi chi psi [7momega[27m alpha beta gamma delta[m
+[HM  47 lambda mu nu xi omicron pi rho sigma tau upsilon[m
+[HM  46 delta epsilon zeta eta theta iota kappa lambda mu[m
+[24;1H[K:[K[K...skipping...
+ 378 [7momega[27m alpha beta gamma delta epsilon zeta eta theta iota kappa lambda[m
+ 379 eta theta iota kappa lambda mu[m
+ 380 xi omicron pi rho sigma tau upsilon[m
+ 381 phi chi psi [7momega[27m alpha beta gamma delta[m
+ 382 delta epsilon zeta eta theta iota kappa lambda mu[m
+ 383 lambda mu nu xi omicron pi rho sigma tau upsilon[m
+ 384 sigma tau upsilon phi chi psi [7momega[27m alpha beta gamma delta[m
+ 385 alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu[m
+ 386 theta iota kappa lambda mu nu[m
+ 387 omicron pi rho sigma tau upsilon phi[m
+ 388 chi psi [7momega[27m alpha beta gamma delta epsilon[m
+ 389 epsilon zeta eta theta iota kappa lambda mu nu[m
+ 390 mu nu xi omicron pi rho sigma tau upsilon phi[m
+ 391 tau upsilon phi chi psi [7momega[27m alpha beta gamma delta epsilon[m
+ 392 beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu[m
+ 393 iota kappa lambda mu nu xi[m
+ 394 pi rho sigma tau upsilon phi chi[m
+ 395 psi [7momega[27m alpha beta gamma delta epsilon zeta[m
+ 396 zeta eta theta iota kappa lambda mu nu xi[m
+ 397 nu xi omicron pi rho sigma tau upsilon phi chi[m
+ 398 upsilon phi chi psi [7momega[27m alpha beta gamma delta epsilon zeta[m
+ 399 gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi[m
+ 400 kappa lambda mu nu xi omicron[m
+[7m(END)[27m[K[K[H[2J[HM  23 lambda mu nu xi omicron pi rho[m
+[HM  22 delta epsilon zeta eta theta iota[m
+[HM  21 phi chi psi [7momega[27m alpha beta gamma delta epsilon zeta eta theta[m
+[HM  20 xi omicron pi rho sigma tau upsilon phi chi psi [7momega[27m[m
+[HM  19 eta theta iota kappa lambda mu nu xi omicron pi[m
+[HM  18 [7momega[27m alpha beta gamma delta epsilon zeta eta theta[m
+[HM  17 rho sigma tau upsilon phi chi psi [7momega[27m[m
+[HM  16 kappa lambda mu nu xi omicron pi[m
+[HM  15 gamma delta epsilon zeta eta theta[m
+[HM  14 upsilon phi chi psi [7momega[27m alpha beta gamma delta epsilon zeta eta[m
+[HM  13 nu xi omicron pi rho sigma tau upsilon phi chi psi[m
+[HM  12 zeta eta theta iota kappa lambda mu nu xi omicron[m
+[HM  11 psi [7momega[27m alpha beta gamma delta epsilon zeta eta[m
+[HM  10 pi rho sigma tau upsilon phi chi psi[m
+[HM   9 iota kappa lambda mu nu xi omicron[m
+[HM   8 beta gamma delta epsilon zeta eta[m
+[HM   7 tau upsilon phi chi psi [7momega[27m alpha beta gamma delta epsilon zeta[m
+[HM   6 mu nu xi omicron pi rho sigma tau upsilon phi chi[m
+[HM   5 epsilon zeta eta theta iota kappa lambda mu nu xi[m
+[HM   4 chi psi [7momega[27m alpha beta gamma delta epsilon zeta[m
+[HM   3 omicron pi rho sigma tau upsilon phi chi[m
+[HM   2 theta iota kappa lambda mu nu xi[m
+[HM   1 alpha beta gamma delta epsilon zeta[m
+[24;1H[K:[K[K[?1l>[?1049l

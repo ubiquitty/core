@@ -1,0 +1,9 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+
+# A native font profile: the [font] block a case names through `native`.
+[font]
+family = "JetBrains Mono"
+size = 14
+weight = 400
+variations = "wght=700"

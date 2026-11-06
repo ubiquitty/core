@@ -1,0 +1,39 @@
+#6double width line 0
+#3double height 1
+#4double height 1
+#5single width line 2
+plain line 3
+#6double width line 4
+#3double height 5
+#4double height 5
+#5single width line 6
+plain line 7
+#6double width line 8
+#3double height 9
+#4double height 9
+#5single width line 10
+plain line 11
+#6double width line 12
+#3double height 13
+#4double height 13
+#5single width line 14
+plain line 15
+#6double width line 16
+#3double height 17
+#4double height 17
+#5single width line 18
+plain line 19
+#6double width line 20
+#3double height 21
+#4double height 21
+#5single width line 22
+plain line 23
+#6double width line 24
+#3double height 25
+#4double height 25
+#5single width line 26
+plain line 27
+#6double width line 28
+#3double height 29
+#4double height 29
+[3;1H#6[24;1H[4;1H#5[24;1H[5;1H#6[24;1H[6;1H#5[24;1H[7;1H#6[24;1H[8;1H#5[24;1H[9;1H#6[24;1H[10;1H#5[24;1H

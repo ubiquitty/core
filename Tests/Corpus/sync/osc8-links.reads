@@ -1,0 +1,69 @@
+# OSC 8 hyperlinks, one wrapping the margin, links overwritten in place
+# Each read: <microseconds> <length> <block|more>.
+#   block — the PTY had nothing more after this read (a would-block).
+#   more  — the next read was already pending; a host keeps draining.
+# Each redraw: redraw <begin> <end> — byte offsets of one logical repaint,
+#   so a frame published strictly inside it showed half a repaint.
+# Each key: input <microseconds> — the user sent a key then; the next read
+#   is its echo, so the frame that first shows it measures the hold after input.
+0 103 block
+38373 103 block
+52060 103 block
+78114 103 block
+95330 103 block
+133875 103 block
+161227 103 block
+195478 103 block
+248742 103 block
+286544 103 block
+334965 105 block
+372938 105 block
+412295 105 block
+427218 105 block
+468024 105 block
+515933 105 block
+536385 105 block
+557396 105 block
+572126 105 block
+603570 105 block
+617503 105 block
+655093 105 block
+681451 105 block
+698488 105 block
+718122 105 block
+735851 105 block
+781824 105 block
+806844 105 block
+853660 105 block
+869009 105 block
+922670 105 block
+955490 105 block
+987599 105 block
+1023053 105 block
+1058795 105 block
+1079795 105 block
+1129385 105 block
+1181750 105 block
+1236216 105 block
+1272506 105 block
+1322415 226 block
+1362415 70 block
+1412415 70 block
+1462415 70 block
+1512415 70 block
+1562415 70 block
+1612415 70 block
+1662415 70 block
+1712415 70 block
+1762415 70 block
+1812415 70 block
+redraw 4406 4476
+redraw 4476 4546
+redraw 4546 4616
+redraw 4616 4686
+redraw 4686 4756
+redraw 4756 4826
+redraw 4826 4896
+redraw 4896 4966
+redraw 4966 5036
+redraw 5036 5106

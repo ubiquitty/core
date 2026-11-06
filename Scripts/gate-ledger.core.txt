@@ -1,0 +1,25 @@
+# What the gates of ubiquitty-core are held to.
+#
+# canary <gate>      a gate whose self-test a stanza of the driver already
+#                    depends on; a scan that stops finding one is broken, and
+#                    not a shrinking tree.
+# budget <name> <n>  a count that must equal the tree's. It falls when the tree
+#                    improves and never rises. A checkout holding several
+#                    repositories sums their ledgers, since every count is over
+#                    files and each file has one owner.
+# tool <gate> <why>  a gate nothing invokes because a person runs it, and what
+#                    invokes it instead.
+canary check-empty-array-expansion.py
+canary check-pgo-commit-shape.py
+budget gate-self-tests-uncovered 44
+budget census-undated 13
+budget vocabulary-span 11
+budget vocabulary-array 161
+tool check-daemon-replacement.py needs the opt-in acceptance binary and replaces private daemons, so it is run by hand as Tests/README.md describes
+tool check-sync-transport.py needs the opt-in acceptance binary and a disposable fixture account or container, so it is run by hand as Tests/README.md describes
+tool check-merge-ready.sh run by hand before a merge; there is no push at which it belongs
+tool check-mutants.sh rebuilds and reruns per mutant, which is minutes a push cannot carry
+tool check-bench-baseline.sh asks whether two named commits compare, so it needs the pair first
+tool check-binary-footprint.py reports an instruction count — a measurement, with no threshold to fail
+tool check-rename-coverage.sh run during a rename, against the rename being attempted
+tool check-rename-diff.py run during a rename, against the diff it produced

@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Build the libFuzzer seed corpus for fuzz_vt100.
+
+Run this script to (re)generate every .bin file in tests/fuzz-corpus/.
+The corpus is intentionally small (each seed 2-8 KB) and deterministic
+so a CI replay never depends on local randomness.
+
+Each seed targets a specific parser shape that has historically been
+fragile or that exercises a code path the unit tests don't reach:
+
+  claude-startup.bin       OSC 0; "âœ³ Claude Code" BEL + DECSET 2026 +
+                           kitty keyboard CSI u flag push/pop. Repro
+                           for the Â§3.10a "halt after claude â†’ exit"
+                           bug.
+  find-burst.bin           ~4 KB of fast plain text mixed with the
+                           occasional CRLF â€” models a `find / -name '*'`
+                           burst that saturates the per-tick RX budget.
+  mc-redraw.bin            DEC special graphics box-drawing redraw of a
+                           Midnight Commander-style two-pane UI.
+  kitty-graphics-small.bin Valid kitty graphics APC: 8Ã—8 RGBA inline,
+                           direct transport.
+  kitty-graphics-malformed.bin  Same shape, payload truncated mid-base64
+                           and missing the ST terminator â€” pins the
+                           error/recovery path.
+  osc-0x9c-payload.bin     OSC title whose payload contains 0x9C
+                           continuation bytes â€” regression seed for
+                           Â§2.7 "0x9C is NOT a string terminator under
+                           UTF-8".
+  truecolor-stress.bin     Many SGR 38;2 truecolor changes per row.
+            42;0;98m#[38;2;45;0;105m#[38;2;48;0;112m#[38;2;51;0;119m#[38;2;54;0;126m#[      pen-cell comparator.
+
+Usage:
+    python3 build_corpus.py        # write every seed
+    python3 build_corpus.py --list # list filenames + sizes without writing
+"""
+from __future__ import annotations
+
+import base64
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspatcorpus for fuzz_vt100.
+
+Run this script to (re)generate every .bin file in tests/fuzz-corpus/.
+The corpus is intentionally small (each seed 2-8 KB) and deterministic
+so a CI replay never depends on local randomness.
+
+Each seed targets a specific parser shape that has historically been
+fragile or that exercises a code path the unit tests don't reach:
+
+  claude-startup.bin       OSC 0; "âœ³ Claude Code" BEL + DECSET 2026 +
+                           kitty keyboard CSI u flag push/pop. Repro
+                           for the Â§3.10a "halt after claude â†’ exit"
+                           bug.
+  find-burst.bin           ~4 KB of fast plain text mixed with the
+                           occasional CRLF â€” models a `find / -name '*'`
+                           burst that saturates the per-tick RX budget.
+  mc-redraw.bin            DEC special graphics box-drawing redraw of a
+                           Midnight Commander-style two-pane UI.
+  kitty-graphics-small.bin Valid kitty graphics APC: 8Ã—8 RGBA inline,
+                           direct transport.
+  kitty-graphics-malformed.bin  Same shape, payload truncated mid-base64
+                           and missing the ST terminator â€” pins the
+                           error/recovery path.
+  osc-0x9c-payload.bin     OSC title whose payload contains 0x9C
+                           continuation bytes â€” regression seed for
+                           Â§2.7 "0x9C is NOT a string terminator under
+                           UTF-8".
+  truecolor-stress.bin     Many SGR 38;2 truecolor changes per row.
+            42;0;98m#[38;2;45;0;105m#[38;2;48;0;112m#[38;2;51;0;119m#[38;2;54;0;126m#[      pen-cell comparator.
+
+Usage:
+    python3 build_corpus.py        # write every seed
+    python3 build_corpus.py --list # list filenames + sizes without writing
+"""
+from __future__ import annotations
+
+import base64
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def claude_startup() -> bytes:
+    # The bytes claude emits in the first ~[2J[H[38;2;0;0;0m#[38;2;3;0;7m#[38;2;6;0;14m#[38;2;9;0;21m#[38;2;12;0;28m#[38;2;15;0;35m#[38;2;18;0;42m#[38;2;21;0;49m#[38;2;24;0;56m#[?2026h[>ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ[38;2;27;0;63m#[38;2;30;0;70m#[38;2;33;0;77m#[38;2;36;0;84m#[38;2;39;0;91m#[38;2;42;0;98m#[38;2;45;0;105m#[38;2;48;0;112m#[38;2;51;0;119m#[38;2;54;0;126m#[38;2;57;0;133m#[38;2;60;0;140m#[38;2150 chars of startup                # xterm modifyOtherKeys=2
+        b"\x1b[?1004h",                       # focus reporting on
+        b"\x1b[?1049h",                       # alt screen
+        b"\x1b[2J\x1b[H",                     # clear + home
+        b"\x1b]0;\xe2\x9c\xb3 Claude Code\x07",  # OSC 0 title with 4he âœ³ grah(__file__))
+
+
+def claude_startup() -> bytes:
+    # The bytes claude emits in the first ~[2J[H[38;2;0;0;0m#[38;2;3;0;7m#[38;2;6;0;14m#[38;2;9;0;21m#[38;2;12;0;28m#[38;2;15;0;35m#[38;2;18;0;42m#[38;2;21;0;49m#[38;2;24;0;56m#[?2026h[>ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ[38;2;27;0;63m#[38;2;30;0;70m#[38;2;33;0;77m#[38;2;36;0;84m#[38;2;39;0;91m#[38;2;42;0;98m#[38;2;45;0;105m#[38;2;48;0;112m#[38;2;51;0;119m#[38;2;54;0;126m#[38;2;57;0;133m#[38;2;60;0;140m#[38;2150 chars of startup                # xterm modifyOtherKeys=2
+        b"\x1b[?1004h",                       # focus reporting on
+        b"\x1b[?1049h",                       # alt screen
+        b"\x1b[2J\x1b[H",                     # clear + home
+        b"\x1b]0;\xe2\x9c\xb3 Claude Code\x07",  # OSC 0 title with 4he âœ³ graphics codepoint
+        b"\x1b[>1u",         ;70m#[38;2;30;11           ;77m #

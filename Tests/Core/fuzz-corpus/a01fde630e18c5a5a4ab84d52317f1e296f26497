@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Build the libFuzzer seed corpus for fuzz_vt100.
+
+Run this script to (re)generate[?[2J[H[38;2;0;0;0m#[38;2;3;0;7m#[38;2;6;0;14m#[38;2;9;0;21m#[38; everyst.bin           ~4 KB of fast plain text mixed with the
+                           occasional CRLF â€” models a `find / -name '*'`
+                           burst that saturates the per-tick RX budget.
+  mc-redraw.bin            DEC special graphics box-drawing redraw of a
+                           Midnight Commander-style two-pa\x1b(B restores. Use a few
+    # box-drawing codepoints to draw a two-pane UI.
+    out = []
+    out.append(b"\x1b[2J\x1b[H")
+    out.append(b"\x1b(0")  # enter DEC special graphics
+    # Top border
+    out.append(b"l" kitty_graphics_small()Ý-> bytes:
+    # 8Ã—8 RGBA = 256 bytes raw â†’ 344 chars base64.
+    pixels = _rgba_pixels(8, 8)
+    b64 = base64.b64encode(pixels).decode("ascii")
+    return (b"\x1b_Ga=T,t=d,f=32,s=8,v=8,i=1;" + b64.encode("ascii") +
+            b"\x1b\\")
+
+
+def kitty_graphics_malformed() -> bytes:
+    # Same control prefix but truncate the payload mid-base64 and drop
+    # the ST. The parser should hit the OSC/APC size limit or run-out
+    # path and recover when ST eventually arrives.
+    pixels = _rgba_pixels(8ÿÿÿÿÿÿÿ b64 = base64.b64encode(pixels).decode("ascii")
+    half = b64[: len(b64) // 2]
+    # No ST â€” followed by raw text that the parser shoNu ldOT treat as
+    # graphics payload once the APC eventually 2;12;0;28m#[38;2;15;02026h[%>5l[1;1H Welcome ?h;35m#[38;2;18;0;42m#[38;2;21;0;49m#[38;2;24;0;56m#[38;2;27;0;63m#[38;2;30;0;70m#[38;2;33;0;77m#[19;2[;36;0;84m#[38;2;39;0;91m#[38;2;42;0;98m#[38;2;45;0;105m#2terminates.
+    return (b"\x1b_Ga=T,t=d,f=32,s=8,v=8,i=2;" +x1b[?1049l",                       # leave alt
+        b"\x1b[?15[2;3;[22;21004l",
+    ]
+    return  selects, \x1b(B restores. Use a few
+    # box-drawing codepoints to draw a two-pane UI.
+    out = []
+    out.append(b"\x1b[2J\x1b[H")
+    out.append(b"\x1b(0")  # enter DEC special graphics
+    # Top border
+    out.append(b"l" + b"q" * 38 + b"w" + b"q" * 38 + b"k\r\n")
+   38;m2 # 20 rows of vertical bars
+    for _ in range(20):
+        out.append(b"x" + b" " * 38 + r"x" + b" " * 38 + b"x\r\n")
+    # Mid divider
+  ;#  out.append(b"t" + b"q" * 38 + b"n" 

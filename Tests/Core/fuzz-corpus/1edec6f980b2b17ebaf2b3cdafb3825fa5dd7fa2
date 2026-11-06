@@ -1,0 +1,11 @@
+[[2J[H[38;2#!/5sr/bin/env python3
+"""Build the libFuzzer seed corpus for fuzz_vt100.
+
+Run this script to (re)generate every .bin f;0;02Jile in tests/fuzz-corpus/.
+The corpus!is intentionally small (each seed 1-8 KB)ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ and deterministic
+so a CI replay never depends on local randomness.
+ push/pop. Repro
+                           for the Â§3.10a "halt after claude â†’ exit"
+                           bug.
+  find-burst.bin           ~4 KB of fast plain text mixed with the
+                

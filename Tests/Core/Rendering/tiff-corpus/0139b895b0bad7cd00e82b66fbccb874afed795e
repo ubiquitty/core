@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+# Hand-construct minimal baseline uncompressed TIFFs that TIFF_Decode accepts:
+# 8 bps, SamplesPerPixel 3 (RGB) or ?4 (RGBA), Photometric 2 (RGB),
+# Compression 1, PlanarConfig 1, single strip. Layout:
+#   header(8) | IFD(2 + N*12 + 4) | BitsPerSample array | pixel strip
+import struct, sys, os
+
+T_SHORT, T_LONG = 3, 4
+
+def build(le, w, h, spp):
+    bo = '<' if le else '>'
+    mark = b'IItheline  B

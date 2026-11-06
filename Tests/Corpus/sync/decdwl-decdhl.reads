@@ -1,0 +1,54 @@
+# DECDWL and DECDHL rows written, scrolled into history, and switched in place
+# Each read: <microseconds> <length> <block|more>.
+#   block — the PTY had nothing more after this read (a would-block).
+#   more  — the next read was already pending; a host keeps draining.
+# Each redraw: redraw <begin> <end> — byte offsets of one logical repaint,
+#   so a frame published strictly inside it showed half a repaint.
+# Each key: input <microseconds> — the user sent a key then; the next read
+#   is its echo, so the frame that first shows it measures the hold after input.
+0 24 block
+46072 40 block
+118797 24 block
+185811 14 block
+238649 24 block
+318614 40 block
+355316 24 block
+397745 14 block
+472606 24 block
+525003 40 block
+587353 25 block
+660905 15 block
+735379 25 block
+809706 42 block
+849248 25 block
+903395 15 block
+953849 25 block
+1025558 42 block
+1087377 25 block
+1138102 15 block
+1210280 25 block
+1261776 42 block
+1331565 25 block
+1362362 15 block
+1414084 25 block
+1448041 42 block
+1515054 25 block
+1545669 15 block
+1589198 25 block
+1644826 42 block
+1680399 16 block
+1720399 16 block
+1760399 16 block
+1800399 16 block
+1840399 16 block
+1880399 16 block
+1920399 16 block
+1960399 17 block
+redraw 803 819
+redraw 819 835
+redraw 835 851
+redraw 851 867
+redraw 867 883
+redraw 883 899
+redraw 899 915
+redraw 915 932

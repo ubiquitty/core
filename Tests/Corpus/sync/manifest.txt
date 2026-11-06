@@ -1,0 +1,28 @@
+# Tests/Corpus/sync/manifest.txt — the Sync PTY corpus.
+#
+# One entry per line: <name> <rows> <columns> <origin> <stream>
+#
+#   rows, columns  the PTY size the stream was written for
+#   origin         synthetic — Tests/Corpus/sync/generate.py, deterministic
+#                  recorded  — Tests/Corpus/sync/record.py, via Scripts/record-pty-corpus.sh
+#   stream         the bytes; a name ending in .z is zlib-compressed
+#
+# Beside each stream, <name>.reads cuts it into the reads a host makes off the
+# PTY: the instant each became readable, its length, and whether a would-block
+# followed it. Synthetic entries also mark each logical redraw's byte span and
+# the instant of each key the user sent, whose echo is the next read. The
+# first comment line of each .reads file says what the entry is.
+shell                  24 80 synthetic shell.stream
+cat-flood              24 80 synthetic cat-flood.stream.z
+emoji-zwj              24 80 synthetic emoji-zwj.stream
+osc8-links             24 80 synthetic osc8-links.stream
+decdwl-decdhl          24 80 synthetic decdwl-decdhl.stream
+synchronized-output    24 80 synthetic synchronized-output.stream
+cursor-hidden-repaint  24 80 synthetic cursor-hidden-repaint.stream
+ink-spinner            24 80 synthetic ink-spinner.stream
+echo-burst             24 80 synthetic echo-burst.stream
+line-trickle-fast      24 80 synthetic line-trickle-fast.stream
+line-trickle-slow      24 80 synthetic line-trickle-slow.stream
+vim-margins            24 80 recorded  vim-margins.stream
+less                   24 80 recorded  less.stream
+top                    24 80 recorded  top.stream

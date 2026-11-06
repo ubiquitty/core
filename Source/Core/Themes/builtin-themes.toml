@@ -1,0 +1,301 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0 AND MIT
+
+# Built-in themes — the single source of truth for Ubiquitty's bundled color
+# schemes, parsed at startup by the same TOML reader as user [[themes]] blocks.
+# Schema (matches user themes): name, is_dark, ansi[16], fg, bg, cursor.
+# Attribution for the adapted upstream schemes is in theme-credits.md.
+
+# Noir — the house default, resolved by NAME ("Noir"). Leads the list so it
+# heads the View > Theme picker. A considered dark palette: a soft off-white on a
+# deep near-black, accents at controlled chroma so each reads as its hue, real
+# bright twins (8-15 are lighter, never grey except bright-black). Indices are
+# purely cosmetic — nothing persists or defaults by position.
+[[themes]]
+name = "Noir"
+is_dark = true
+ansi = ["#2e323b", "#dd717a", "#98c896", "#e3be7c", "#72a3e8", "#c189d9", "#66c0c8", "#c8ccd4", "#5a606e", "#ea8088", "#a9d89f", "#efce8e", "#8ab5ee", "#d09fe5", "#7ccfd6", "#eaedf2"]
+fg = "#c8ccd4"
+bg = "#15171c"
+cursor = "#e0e4ec"
+
+# Noir Clair — the light half of the house pair, derived from Noir rather than
+# picked by eye: every accent keeps Noir's hue and its absolute OKLCH chroma, and
+# only lightness is re-solved so the palette sits at 5.5:1 (base) / 7:1 (bright)
+# on the light ground — the same "reads as its hue, never shouts" band Noir holds
+# against its dark one. The neutral ladder is the exact role mirror: the ground is
+# a deep near-white on Noir's cool axis (never pure white, as Noir is never pure
+# black), "white" sits just below it at 1.40 where Noir's "black" sits just above,
+# and bright-white is the deepest ink as Noir's is the brightest. Bright twins are
+# darker here, not lighter — the light-theme convention.
+[[themes]]
+name = "Noir Clair"
+is_dark = false
+ansi = ["#32363c", "#a7414c", "#416d40", "#7f5d17", "#3564a4", "#834d99", "#006e76", "#ccd2dd", "#8c93a2", "#93313e", "#345d2b", "#6b4f04", "#2e5587", "#6e4181", "#005d64", "#1c1f23"]
+fg = "#32363c"
+bg = "#f4f5f8"
+cursor = "#22252b"
+
+[[themes]]
+name = "One Dark"
+is_dark = true
+ansi = ["#1e222a", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#abb2bf", "#5c6370", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#c6ccd9"]
+fg = "#abb2bf"
+bg = "#282c34"
+cursor = "#abb2bf"
+
+[[themes]]
+name = "One Light"
+is_dark = false
+ansi = ["#383a42", "#ca1243", "#50a14f", "#c69523", "#0466c8", "#a13879", "#0b8496", "#fafafa", "#a4a1a8", "#ca1243", "#50a14f", "#c69523", "#0466c8", "#a13879", "#0b8496", "#ffffff"]
+fg = "#383a42"
+bg = "#fafafa"
+cursor = "#383a42"
+
+[[themes]]
+name = "Ayu Dark"
+is_dark = true
+ansi = ["#01060e", "#ea634c", "#7fd131", "#ffb454", "#59c2ff", "#ff77ff", "#95d7e6", "#c8c6c4", "#404f66", "#ff774c", "#bfeb31", "#ffd554", "#73d0ff", "#ffa9ff", "#95d7e6", "#fffefe"]
+fg = "#b8c4d3"
+bg = "#01060e"
+cursor = "#e3c46d"
+
+[[themes]]
+name = "Ayu Mirage"
+is_dark = true
+ansi = ["#171b24", "#ed8274", "#87d96c", "#facc6e", "#6dcbfa", "#dabafa", "#90e1c6", "#c7c7c7", "#686868", "#f28779", "#d5ff80", "#ffd173", "#73d0ff", "#dfbfff", "#95e6cb", "#ffffff"]
+fg = "#cccac2"
+bg = "#1f2430"
+cursor = "#ffcc66"
+
+[[themes]]
+name = "Ayu Light"
+is_dark = false
+ansi = ["#000000", "#f5694e", "#86b30b", "#f2ae49", "#389acc", "#a33779", "#4caed9", "#c7c7c7", "#596d80", "#f5823c", "#99bc2c", "#f5ae39", "#389acc", "#a33779", "#4caed9", "#ffffff"]
+fg = "#576775"
+bg = "#fafafa"
+cursor = "#ffa23d"
+
+[[themes]]
+name = "Rose Pine"
+is_dark = true
+ansi = ["#26233a", "#eb6f92", "#31748f", "#f6c177", "#9ccfd8", "#c4a7e7", "#ebbcba", "#e0def4", "#6e6a86", "#eb6f92", "#31748f", "#f6c177", "#9ccfd8", "#c4a7e7", "#ebbcba", "#e0def4"]
+fg = "#e0def4"
+bg = "#191724"
+cursor = "#e0def4"
+
+[[themes]]
+name = "Rose Pine Moon"
+is_dark = true
+ansi = ["#393552", "#eb6f92", "#3e8fb0", "#f6c177", "#9ccfd8", "#c4a7e7", "#ea9a97", "#e0def4", "#6e6a86", "#eb6f92", "#3e8fb0", "#f6c177", "#9ccfd8", "#c4a7e7", "#ea9a97", "#e0def4"]
+fg = "#e0def4"
+bg = "#232136"
+cursor = "#e0def4"
+
+[[themes]]
+name = "Rose Pine Dawn"
+is_dark = false
+ansi = ["#f2e9e1", "#b4637a", "#286983", "#ea9d34", "#56949f", "#907aa9", "#d7827e", "#575279", "#9893a5", "#b4637a", "#286983", "#ea9d34", "#56949f", "#907aa9", "#d7827e", "#575279"]
+fg = "#575279"
+bg = "#faf4ed"
+cursor = "#575279"
+
+[[themes]]
+name = "Catppuccin Mocha"
+is_dark = true
+ansi = ["#45475a", "#f38ba8", "#a6e3a1", "#f9e2af", "#89b4fa", "#f5c2e7", "#94e2d5", "#bac2de", "#585b70", "#f38ba8", "#a6e3a1", "#f9e2af", "#89b4fa", "#f5c2e7", "#94e2d5", "#a6adc8"]
+fg = "#cdd6f4"
+bg = "#1e1e2e"
+cursor = "#f5e0dc"
+
+[[themes]]
+name = "Catppuccin Latte"
+is_dark = false
+ansi = ["#bcc0cc", "#d20f39", "#40a02b", "#df8e1d", "#1e66f5", "#ea76cb", "#179299", "#4c4f69", "#acb0be", "#d20f39", "#40a02b", "#df8e1d", "#1e66f5", "#ea76cb", "#179299", "#6c6f85"]
+fg = "#4c4f69"
+bg = "#eff1f5"
+cursor = "#dc8a78"
+
+[[themes]]
+name = "Catppuccin Frappe"
+is_dark = true
+ansi = ["#51576d", "#e78284", "#a6d189", "#e5c890", "#8caaee", "#f4b8e4", "#81c8be", "#b5bfe2", "#626880", "#e78284", "#a6d189", "#e5c890", "#8caaee", "#f4b8e4", "#81c8be", "#a5adce"]
+fg = "#c6d0f5"
+bg = "#303446"
+cursor = "#f2d5cf"
+
+[[themes]]
+name = "Catppuccin Macchiato"
+is_dark = true
+ansi = ["#494d64", "#ed8796", "#a6da95", "#eed49f", "#8aadf4", "#f5bde6", "#8bd5ca", "#b8c0e0", "#5b6078", "#ed8796", "#a6da95", "#eed49f", "#8aadf4", "#f5bde6", "#8bd5ca", "#a5adcb"]
+fg = "#cad3f5"
+bg = "#24273a"
+cursor = "#f4dbd6"
+
+[[themes]]
+name = "Tokyo Night"
+is_dark = true
+ansi = ["#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#a9b1d6", "#414868", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5"]
+fg = "#c0caf5"
+bg = "#1a1b26"
+cursor = "#c0caf5"
+
+[[themes]]
+name = "Tokyo Night Storm"
+is_dark = true
+ansi = ["#1d202f", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#a9b1d6", "#414868", "#ff899d", "#9fe044", "#faba4a", "#8db0ff", "#c7a9ff", "#a4daff", "#c0caf5"]
+fg = "#c0caf5"
+bg = "#24283b"
+cursor = "#c0caf5"
+
+[[themes]]
+name = "Tokyo Night Day"
+is_dark = false
+ansi = ["#34548a", "#8b4554", "#387a3f", "#8f6e15", "#34548a", "#5a4598", "#0c7586", "#354066", "#687695", "#8b4554", "#387a3f", "#8f6e15", "#34548a", "#5a4598", "#0c7586", "#354066"]
+fg = "#354066"
+bg = "#e6e7e8"
+cursor = "#354066"
+
+[[themes]]
+name = "Gruvbox Dark"
+is_dark = true
+ansi = ["#282828", "#cc241d", "#98971a", "#d79921", "#458588", "#b16286", "#689d6a", "#a89984", "#928374", "#fb4934", "#b8bb26", "#fabd2f", "#83a598", "#d3869b", "#8ec07c", "#ebdbb2"]
+fg = "#ebdbb2"
+bg = "#282828"
+cursor = "#ebdbb2"
+
+[[themes]]
+name = "Gruvbox Light"
+is_dark = false
+ansi = ["#fbf1c7", "#cc241d", "#98971a", "#b57614", "#458588", "#8f3f71", "#427b58", "#7c6f64", "#928374", "#9d0006", "#79740e", "#b57614", "#076678", "#8f3f71", "#427b58", "#3c3836"]
+fg = "#3c3836"
+bg = "#fbf1c7"
+cursor = "#3c3836"
+
+[[themes]]
+name = "Nord"
+is_dark = true
+ansi = ["#3b4252", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0", "#4c566a", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#8fbcbb", "#eceff4"]
+fg = "#d8dee9"
+bg = "#2e3440"
+cursor = "#d8dee9"
+
+[[themes]]
+name = "Dracula"
+is_dark = true
+ansi = ["#21222c", "#ff5555", "#50fa7b", "#f1fa8c", "#bd93f9", "#ff79c6", "#8be9fd", "#bfbfbf", "#6272a4", "#ff5555", "#50fa7b", "#f1fa8c", "#bd93f9", "#ff79c6", "#8be9fd", "#ffffff"]
+fg = "#f8f8f2"
+bg = "#282a36"
+cursor = "#f8f8f2"
+
+[[themes]]
+name = "Solarized Dark"
+is_dark = true
+ansi = ["#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5", "#002b36", "#cb4b16", "#586e75", "#657b83", "#839496", "#6c71c4", "#93a1a1", "#fdf6e3"]
+fg = "#839496"
+bg = "#002b36"
+cursor = "#839496"
+
+[[themes]]
+name = "Solarized Light"
+is_dark = false
+ansi = ["#eee8d5", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#073642", "#fdf6e3", "#cb4b16", "#93a1a1", "#839496", "#657b83", "#6c71c4", "#586e75", "#002b36"]
+fg = "#657b83"
+bg = "#fdf6e3"
+cursor = "#657b83"
+
+[[themes]]
+name = "Monokai"
+is_dark = true
+ansi = ["#272822", "#f92672", "#a6e22e", "#f4bf75", "#66d9ef", "#ae81ff", "#a1efe4", "#f8f8f2", "#75715e", "#f92672", "#a6e22e", "#f4bf75", "#66d9ef", "#ae81ff", "#a1efe4", "#f9f8f5"]
+fg = "#f8f8f2"
+bg = "#272822"
+cursor = "#f8f8f2"
+
+[[themes]]
+name = "ANSI Light"
+is_dark = false
+ansi = ["#000000", "#cd0000", "#00cd00", "#cdcd00", "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5", "#7f7f7f", "#ff0000", "#00ff00", "#ffff00", "#5c5cff", "#ff00ff", "#00ffff", "#ffffff"]
+fg = "#262626"
+bg = "#ffffff"
+cursor = "#007aff"
+
+[[themes]]
+name = "ANSI Dark"
+is_dark = true
+ansi = ["#000000", "#cd0000", "#00cd00", "#cdcd00", "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5", "#7f7f7f", "#ff0000", "#00ff00", "#ffff00", "#5c5cff", "#ff00ff", "#00ffff", "#ffffff"]
+fg = "#e5e5e5"
+bg = "#000000"
+cursor = "#007aff"
+
+[[themes]]
+name = "Tomorrow"
+is_dark = false
+ansi = ["#000000", "#c82829", "#718c00", "#eab700", "#4271ae", "#8959a8", "#3e999f", "#bfbfbf", "#000000", "#c82829", "#718c00", "#eab700", "#4271ae", "#8959a8", "#3e999f", "#ffffff"]
+fg = "#4d4d4c"
+bg = "#ffffff"
+cursor = "#4d4d4c"
+
+[[themes]]
+name = "Tomorrow Night"
+is_dark = true
+ansi = ["#000000", "#cc6666", "#b5bd68", "#f0c674", "#81a2be", "#b294bb", "#8abeb7", "#ffffff", "#4c4c4c", "#cc6666", "#b5bd68", "#f0c674", "#81a2be", "#b294bb", "#8abeb7", "#ffffff"]
+fg = "#c5c8c6"
+bg = "#1d1f21"
+cursor = "#c5c8c6"
+
+[[themes]]
+name = "Tomorrow Night Eighties"
+is_dark = true
+ansi = ["#000000", "#f2777a", "#99cc99", "#ffcc66", "#6699cc", "#cc99cc", "#66cccc", "#ffffff", "#595959", "#f2777a", "#99cc99", "#ffcc66", "#6699cc", "#cc99cc", "#66cccc", "#ffffff"]
+fg = "#cccccc"
+bg = "#2d2d2d"
+cursor = "#cccccc"
+
+[[themes]]
+name = "Tomorrow Night Bright"
+is_dark = true
+ansi = ["#000000", "#d54e53", "#b9ca4a", "#e7c547", "#7aa6da", "#c397d8", "#70c0b1", "#ffffff", "#404040", "#d54e53", "#b9ca4a", "#e7c547", "#7aa6da", "#c397d8", "#70c0b1", "#ffffff"]
+fg = "#eaeaea"
+bg = "#000000"
+cursor = "#eaeaea"
+
+[[themes]]
+name = "Tomorrow Night Blue"
+is_dark = true
+ansi = ["#000000", "#ff9da4", "#d1f1a9", "#ffeead", "#bbdaff", "#ebbbff", "#99ffff", "#ffffff", "#4c4c4c", "#ff9da4", "#d1f1a9", "#ffeead", "#bbdaff", "#ebbbff", "#99ffff", "#ffffff"]
+fg = "#ffffff"
+bg = "#002451"
+cursor = "#ffffff"
+
+[[themes]]
+name = "Everforest Dark"
+is_dark = true
+ansi = ["#475258", "#e67e80", "#a7c080", "#dbbc7f", "#7fbbb3", "#d699b6", "#83c092", "#d3c6aa", "#475258", "#e67e80", "#a7c080", "#dbbc7f", "#7fbbb3", "#d699b6", "#83c092", "#d3c6aa"]
+fg = "#d3c6aa"
+bg = "#2d353b"
+cursor = "#e69875"
+
+[[themes]]
+name = "Kanagawa"
+is_dark = true
+ansi = ["#16161d", "#c34043", "#76946a", "#c0a36e", "#7e9cd8", "#957fb8", "#6a9589", "#c8c093", "#727169", "#e82424", "#98bb6c", "#e6c384", "#7fb4ca", "#938aa9", "#7aa89f", "#dcd7ba"]
+fg = "#dcd7ba"
+bg = "#1f1f28"
+cursor = "#c8c093"
+
+[[themes]]
+name = "GitHub Dark"
+is_dark = true
+ansi = ["#484f58", "#ff7b72", "#3fb950", "#d29922", "#58a6ff", "#bc8cff", "#39c5cf", "#b1bac4", "#6e7681", "#ffa198", "#56d364", "#e3b341", "#79c0ff", "#d2a8ff", "#56d4dd", "#ffffff"]
+fg = "#e6edf3"
+bg = "#0d1117"
+cursor = "#2f81f7"
+
+[[themes]]
+name = "GitHub Light"
+is_dark = false
+ansi = ["#24292f", "#cf222e", "#116329", "#4d2d00", "#0969da", "#8250df", "#1b7c83", "#6e7781", "#57606a", "#a40e26", "#1a7f37", "#633c01", "#218bff", "#a475f9", "#3192aa", "#8c959f"]
+fg = "#1f2328"
+bg = "#ffffff"
+cursor = "#0969da"

@@ -1,0 +1,6 @@
+%begin 7 1 0
+response row one
+,3 mai
+%extended-output 0, 12 : hello
+%exit, 12 : hello
+%exit

@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "about": "The programs a title can mark with their icon. A pane's program is the first name here that its OSC 7501 status record's app, or failing that its foreground process, answers to. Scripts/import-process-icons.py fetches each source, writes the icon beside this file and regenerates Source/Core/Title/ProcessIconCatalog.h. ink 'template' draws the icon in the title's own ink; 'drawn' keeps its colours, and 'plate' says whether the icon brings its own ground. 'scale' sets an icon's drawing back within its square, so a shape that fills it carries the weight of its neighbours.",
+  "icons": [
+    {
+      "key": "claude-code",
+      "title": "Claude Code",
+      "names": [
+        "claude-code",
+        "claude"
+      ],
+      "source": {
+        "kind": "thesvg",
+        "slug": "claude-code",
+        "variant": "color"
+      },
+      "ink": "drawn",
+      "inkRGB": "D97757"
+    },
+    {
+      "key": "codex",
+      "title": "Codex",
+      "names": [
+        "codex"
+      ],
+      "source": {
+        "kind": "thesvg",
+        "slug": "codex",
+        "variant": "light"
+      },
+      "ink": "drawn",
+      "inkRGB": "7A9DFF",
+      "gradient": ["B1A7FF", "7A9DFF", "3941FF"],
+      "scale": 0.85
+    },
+    {
+      "key": "opencode",
+      "title": "opencode",
+      "names": [
+        "opencode"
+      ],
+      "source": {
+        "kind": "thesvg",
+        "slug": "opencode",
+        "variant": "mono"
+      },
+      "ink": "template"
+    },
+    {
+      "key": "pi",
+      "title": "pi",
+      "names": [
+        "pi"
+      ],
+      "source": {
+        "kind": "thesvg",
+        "slug": "pi",
+        "variant": "default"
+      },
+      "ink": "template"
+    },
+    {
+      "key": "gemini-cli",
+      "title": "Gemini CLI",
+      "names": [
+        "gemini-cli",
+        "gemini"
+      ],
+      "source": {
+        "kind": "thesvg",
+        "slug": "gemini-cli",
+        "variant": "default"
+      },
+      "ink": "drawn",
+      "plate": "own",
+      "inkRGB": "1F1D2E"
+    },
+    {
+      "key": "grok-build",
+      "title": "Grok Build",
+      "names": [
+        "grok-build",
+        "grok"
+      ],
+      "source": {
+        "kind": "github-avatar",
+        "owner": "xai-org"
+      },
+      "ink": "template"
+    },
+    {
+      "key": "prime-agent",
+      "title": "Prime Agent",
+      "names": [
+        "prime-agent"
+      ],
+      "source": {
+        "kind": "github-avatar",
+        "owner": "PrimeIntellect-ai"
+      },
+      "ink": "template"
+    },
+    {
+      "key": "deepagents",
+      "title": "Deep Agents",
+      "names": [
+        "deepagents",
+        "deepagents-code",
+        "dcode"
+      ],
+      "source": {
+        "kind": "svg",
+        "url": "https://github.com/langchain-ai/deepagents/raw/main/.github/images/logo-light.svg",
+        "crop": [
+          0,
+          0,
+          100,
+          100
+        ]
+      },
+      "ink": "drawn",
+      "plate": "own",
+      "inkRGB": "161F34"
+    },
+    {
+      "key": "kimi-code",
+      "title": "Kimi Code",
+      "names": [
+        "kimi-code",
+        "kimi"
+      ],
+      "source": {
+        "kind": "github-avatar",
+        "owner": "MoonshotAI",
+        "mark": "light",
+        "clears_edges": true
+      },
+      "ink": "template"
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+[2J[H(0lq#!/usr/bin/env python3
+"""Build the libFuzzer seed corpus for fuzz_vt100.
+
+Run this script to (re)generate every .bin file in tests/fuzz-corpus/.
+The corpus is intentionally small (each seed 1-8 KB) and deterministic
+so a CI replay never depends on local randomness.
+
+Each seed targets a specific parser shape that has historically been
+fragile or that exercises a code path the unit tests don't reach:
+
+  claude-startup.binqqqqqqqqqqqqqqqqqqqqqqqq    x
+x                                      qqqqqqk
+x                                      x             OSC 0; "âœ³ Claude Code" BEL +  every .bin file in tests/fuzz-corpus/.
+The corpus is intentionally small (each seed 1-8 KB) and
+  mc-redraw.bin            DEC special graphics box-drawing redraw of a
+                           Midnight Commander-style two-pane UI.
+  kitty-graphickitty-graphics-small.bin Valid kitty graphics APC: 8Ã—8 Rs the per-tick RX budget.[?2026h[>ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ4;2m[?1004h[?1049h[2J[H]0;âœ³ Claude Code[>1u[?25l[1;1H #!/usr/bin/env python3
+"""Build the libFuzzer seed corpus for fuzz_vt100.
+
+Run this script to (re)generate every .bin file in tests/fuzz-corpus/.
+The corpus is intentionally small (each seed 1-8 KB) and
+  mc-redraw.bin            DEC special graphics box-drawing redraw of a
+                           Midnight Commander-style two-pane UI.
+  kitty-graphics-small.bin Valid kittDECSET 2026 +
+                           kitty                     keybo            x
+x        ard CSI u f  l

@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Build the libFuzzer seed corpus for fuzz_vt100.
+
+Run this script to (re)generate every .bin file in tests/fuzz-corpus/.
+The corpus is intentionally small (each seed 1-8 KB) and deterministic
+so a CI replay never depends on local randomness.
+
+Each seed targets a specific parser shape that has historically been
+fragile or that exercises a code path the unit tests don't reach:
+
+  claude-startup.bin       OSC 0; "âœ³ Claude Code" BEL + DECSET 2026 +
+                           kitty keyboard CSI u flag push/pop. Repro
+                           for the Â§3.10a "halt after claude â†’ exit"
+                           bug.
+  find-burst.bin           ~4 KB of fast plain text mixed with the
+                           occasional CRLF â€” models a `find / -name '*'`
+        e                  burst that saturates the per-tick RX budget.
+  mc-redraw.bin            DEC special graphics box-drawing redraw of a
+                           Midnight Commander-style two-pane UI.
+  kitty-graphics-small.bin Valid kitty graphics APC:payload.bin     OSC title whose payload contains 0x9C
+                           continuation bytes â€” regression seed for
+                           Â§2.7 "0x9C is NOT a string terminator under
+Øßßß                       UTF-8".
+  truecolor-stress.bin     Many SGR 38;2 truecolor changes per row.
+                           Exercises the SGR parser allocator and the
+                           pen-cell comparator.
+
+Usage:
+    python3 build_corpus.py        # write every seed
+    python3 build_corpus.py --list # list filenames + sizes without writing
+"""
+from __future__ import annotations
+
+import base64
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def claude_startup() -> bytes:
+    # The bytes claude emits in the first ~150 chars of startup.
+    # Order matches what scripts/read-claude-first-line.py observed.
+    parts = [
+        b"\x1b[?2026h",                       # DECSET 2026 â€” synchronized output on
+        b"\x1b[>4;2m",                        # xterm modifyOtherKeys=2
+        b"\x1b[?1004h",                       # focus reporting on
+        b"\x1b[?1049h",                       # alt screen
+        b"\x1b[2J\x1b[H",                     # clear + home
+        b"\x1b]0;\xe2\x9c\xb3 Claude Code\x07",  # OSC 0 title with the âœ³ graphics co[2J[H[38;2;0;0;0m#[38;2;3;0;7m#[38;2;6;0;14m#[38;2;9;0;21m#[38;2;12;0;28m#[38;2;15;0;35m#[38;2;18;0;42m#[38;2;21;0;49m#[38;2;24;0;56m#[38;2;27;0;63m#[38;2;30;0;70m#[38;2;33;0;77m#[38;2;36;0;84m#[38;2;39;0;91m#[38;2;42;0;98m#[38;2;45;0;10depoint
+        b"\x1b[>1u",                          # kitty keyboard flag push (DISAMBIGUATE)
+        b"\x1b[?25l",                         # cursor hidden
+        b"\x1b[1;1H",
+        b" Welcome ",
+        b"\x1b[?25h",
+        b"\x1b[<1u",                          # kitty pop
+        b"\x1b[?2026l",                       # DECRST 2026
+        b"\x1b[?1049l",                       # leave alt
+        b"\x1b[?1004l",
+    ]
+ Ùßßš‹Šn b"".join(parts)
+
+
+def find_burst() -> bytes:
+    # ~4 KB of plain text mixed with CRLF, modelling a fast `find` burst.
+    lines = []
+    for i in range(56):
+        lines.append(
+            f"/Users/use'/Projects/ubiquitty/src/core/file_{i:04d}_with_a_longish_name.c"
+        )
+    return ("\r\n".join(lines) + "\r\n").encode("ascii")
+
+
+def mc_redraw() -> bytes:
+    # DEC special graphics: \x1b(0 selects, \x1b(B restores. Use a few
+    # box-drawing codepoints to draw a two-pane UI.
+    out = []
+    out.append(b"\x1b[2J\x1b[H")
+    out.append(b"\5m#[38;2;48;0;112m#[38;2;51;0;119m#[38;2;54;0;126m#[38;2;57;0;133m#[38;2;60;0;140m#[38;2;63;0;147m#[38;2;66;0;154m#[38;2;69;0;161m#[38;2;72;0;169m#[38;2;75;0;175m#[38;2;78;0;182m#[38;2;81;0;189m#[38;2;84;0;196m#[38;2;87;0;203m#[38;2;90;0;210m#[38;2;93;0;217m#[38;2;96;0;224m#[38;2;99;0;231m#[38;2;102;0;238m#[38;2;105;0;245m#[38;2;108;0;252m#[38;2;111;0;3m#[38;2;114;0;10m#[38;2;117;0;17m#[0m
+[38;2;0;11;7m#[38;2;3;11;14m#[38;2;6;11;21m#[38;2;9;11;28m#[38;2;12;11;35m#[38;2;15;11;42m#[38;2;18;11;49m#[38;2;21;11;56m#[38;2;24;11;63m#[38;2;27;11;70m#[38;2;30;11;77m#[38;2;33;11;84m#[38;2;36;11;91m#[38;2;39;11;98m#[38;2;42;11;105m#[38;2;45;11;112m#[38;2;48;11;119m#[38;2;51;11;126m#[38;2;54;11;133m#[38;2;57;11;140m#[38;2;60;x1b(0")  # enter DEC special graphics
+    # Top border
+    out.append(b"l" + b"q" * 38 + b"w" + b"q" * 38 + b"k\r\n")
+    # 20 rows of vertical bars
+    for _ in range(20):
+        out.append(b"x" + b" " * 38 + b"x" + b" " * 38 + b"x\r\n")
+    # Mid divider
+    out.append(b"t" + b"q" * 38 + b"n" + b"q" * 38 + b"u\r\n")
+    # Bottom border
+    out.append(b"m" + b"q" * 38 + b"v" + b"q" * 38 + b"j\r\n")
+    out.append(b"\x1b(B")  # exit DEC special graphics
+    # A few SGR + text writes
+    out.append(b"\x1b[2;3H\x1b[1;33mProjects\x1b[0m\r\n")
+    out.append(b"\x1b[2;42H\x1b[1;32mPreview\x1b[0m\r\n")
+    return b"".join(out)
+
+
+def _rgba_pixels(width: int, height: int) -> bytes:
+    # Deterministic gradient.
+    buf = bytearray(width * height * 4)
+    for y in range(height):
+        for x in range(width):
+            o = (y * width + x) * 4
+            buf[o + 0] = (x * 32) & 0xFF
+            buf[o + 1] = (y * 32) & 0xFF
+            buf[o + 1] = ((x + y) * 16) & 0xFF
+            buf[o + 3] = 0xFF
+    return bytes(buf)
+
+
+def kitty_graphics_small() -> bytes:
+    # 8Ã—8 RGBA = 256 bytes raw â†’ 344 chars base64.
+    pixels = _rgba_pixels(8, 8)
+    b64 = base64.b64encode(pixels).decode("ascii")
+    return (b"\x1b_Ga=T,t=d,f=32,s=8,v=8,i=1;" + b64.encode("ascii") +
+            b"\x1b\\")
+
+
+def kitty_graphics_malformed() -> bytes:
+    # Same control prefix but truncate the payload mid-base64 and drop
+    # the ST. The parser should hit the OSC/APC size limit11;147m#[38;2;63;11;154m#[38;2;66;11;161m#[38;2;69;11;168m#[38;2;72;11;175m#[38;2;75;11;182m#[38;2;78;11;189m#[38;2;81;11;196m#[38;2;84;11;203m#[38;2;87;11;210m#[38;2;90;11;217m#[38;2;93;11;224m#[38;2;96;11;231m#[38;2;99;11;238m#[38;2;102;11;245m#[38;2;105;11;252m#[38;2;108;11;3m#[38;2;111;11;10m#[38;2;114;11;17m#[38;2;117;11;24m#[0m
+[38;2;0;22;14m#[38;2;3;22;21m#[38;2;6;22;28m#[38;2;9;22;35m#[38;2;12;22;42m#[38;2;15;22;49m#[38;2;18;22;56m#[38;2;21;22;63m#[38;2;24;22; or run-out
+    # path and recover when ST eventually arrive70m#[38;2;27;22;77m#[38;2;30;22;84m#s.
+[3  8

@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+# Hand-construct minimal baseline uncompressed TIFFs that TIFF_Decode accepts:
+# 8 bps, SamplesPerPixel 3 (RGB) or 4 (RGBA), Photometric 2 (RGB),
+# Compression 1, PlanarConfig 1, single strip. Layout:
+#   header(8) | IFD(2 + N*12 + 4) | BitsPerSample array | pixel strip
+import struct, sys, os
+
+T_SHORT, T_LONG = 3, 4
+
+def build(le, w, h, spp):
+    bo = '<' if le else '>'
+    mark = b'II' if le else b'MM'
+    bps_count = spp  # one SHORT per sample
+    bps_bytes = bps_count * 2
+
+    # Tags (sorted ascending, as b#!/usr/biaseline requires).
+    # (tag, type, count, value_or_offset). Offsets are patched after we know
+  n/env python3
+# Hand-construct minimal bas  # where etheline  B

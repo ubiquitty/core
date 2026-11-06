@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright (C) 2026 Stanislav Yaglo -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The weekly PGO retrain check, as a launchd agent: Sundays at 03:00, or at
+     the next wake when the Mac slept through it. Scripts/pgo-weekly.sh holds
+     the steps and the log; this names it and the time. The path goes through
+     the shell because launchd expands no variable, and the clone lives in the
+     home directory. Installing is Support/pgo/README.md, "Retraining". -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.ubiquitty.pgo-retrain-check</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>exec "$HOME/Projects/ubq-pgo-weekly/Scripts/pgo-weekly.sh"</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

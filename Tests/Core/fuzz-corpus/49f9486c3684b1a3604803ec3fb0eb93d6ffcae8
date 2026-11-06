@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Build the libFuzzer seed corpus for fuzz_vt100.
+
+Run this script to (re)generate every .bin file in tests/fuzz-corpus/.
+The corpus is intentionally small (each seed 1-8 KB) and deterministic
+so a CI replay never depends on local randomness.
+
+Each seed targets a specific parser shape that has historically been
+fragile or that exercises a code path the unit tests don't reach:
+
+  claude-startup.bin       OSC 0; "✳ Claude Code" BEL + DECSET 2026 +
+                           kitty keyboard CSI u flag push/pop. Repro
+                           for the §3.10a "halt after claude → exit"
+                           bug.
+  find-burst.bin           ~4 KB of fast plain text mixed with the
+                           occasional CRLF — models a `find / -name '*'`
+                           burst that saturates the per-tick RX budget.
+  mc-redraw.bin            DEC special graphics box-drawing redraw of a
+                           Midnight Commander-style two-pane UI.
+  kitty-graphics-small.bin Valid kitty graphics APC: 8×8 RGBA inline,
+                           direct transport.
+  kitty-graphics-malformed.bin  Same shape, payload truncated mid-base64
+                           and missing the ST terminator — pins the
+                           error/recovery path.
+  osc-0x9c-payload.bin     OSC title whose payload contains 0x9C
+                           continuation bytes — regression seed for
+                           §2.7 "0x9C is NOT a string terminator under
+                           UTF-8".
+  truecolor-stress.bin     Many SGR 38;2 truecolor changes per row.
+�                          Exercises the SGR parser allocator and the
+                           pen-cell comparator.
+
+Usage:
+    python3 build_corpus.py        # write every seed
+    python3 build_corpus.py --list # list filenames + sizes without writing
+"""
+from __future__ import annotations
+
+import base64
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def claude_startup() -> bytes:
+    # The bytes claude emits in the first ~150 chars of startup.
+    # Order matches what scripts/read-claude-first-line.py observed.
+    parts = [
+        b"\x1b[?2026h",                       # DECSET 2026 — synchronized output on
+        b"\x1b[>4;2m",                        # xterm modifyOtherKeys=2
+        b"\x1b[?1004h",                       # focus reporting on
+        b"\x1b[?1049h", 38;2;6;0;14m#[38;2;9;0;21m#[38;2;12;0;28m#[38;2;15;0;35m#[38;2;18;0;42m#[38;2;21;0;49m#[38;2;24;0;56m#[38;2;27;0;63m#[38;2;30;0;70m#[38;2;33;0;77m#[38;2;36;0;84m#[38;2;39;0;91m#[38;2;42;0;98m#[38;2;45;0;105m#[38;2;48;0;112m#[38;2;51;0;119m#[38;2;54;0;126m#[38;2;57;0;133m#[38;2;60;0;140m#[38;2;63;0;147m#[38;2;66;0;154m#[38;2;69;0;161m#[38;2;72;0;169m#[38;2;75;0;175m#[38;2;78;0;182m#[38;2;81;0;189m#[38;2;84;0;196m#[38;2;87;0;203m#[38;2;90;0;210m#[38;2;93;0;217m#[38;2;96;0;224m#[38;2;99;0;231m#[38;2;102;0;238m#[38;2;105;0;245m#[38;2;108;0;252m#[38;2;111;0;3m#[38;2;114;0;10m#[38;2;117;0;17m#[0m
+[38;2;0;11;7m#[38;2;3;11;14m#[38;2;6;11;21m#[38;2;9;11;28m#[38;2;12;11;35m#[38;2;15;11;42m#[38;2;18;11;49m#[38;2;21;11;56m#[38;2;24;11;63m#[38;2;27;11;70m#[38;2;30;11;77m#[38;2;33;11;84m#[38;2;36;11;91m#[38;2;39;11;98m#[38;2;42;11;105m#[38;2;45;11;112m#[38;2;48;11;119m#[38;[38;2;87;44;231m#[38;2;90;44;238m#[38;2;93;44;245m#[38;2;96;44;252m#[38;2;99;44;3m#[38;2;102;44;10m#[38;2;105;44;17m#[38;2;108;44;24m#[38;2;111;44;31m#[38;2;114;44;38m#[38;2;117;44;45m#[0m
+[38;2;0;55;35m#[38;2;3;55;42m#[38;2;6;55;49m#[38;2;9;55;56m#[38;2;12;55;63m#[38;2;15;55;70m#[38;2;18;55;77m#[38;2;21;55;84m#[38;2;24;55;91m#[38;2;27;55;98m#[38;2;30;55;105m#[38;2;33;55;112m#[38;2;36;55;119m#[38;2;39;55;126m#[38;2;42;55;133m#[38;2;45;55;140m#[38;2;48;55;147m#[38;2;51;55;154m#[38;2;54;55;161m#[38;2;57;55;168m#[38;2;60;55;175m#[38;2;63;55;182m#[38;2;66;55;189m#[38;2;69;55;196m#[38;2;72;55;203m#[38;2;75;                      # xterm modifyOtherKeys=2
+        b"\x1b[?1004h",                       # focus reporting on
+        b"\x1b[?1049h",                       # alt screen
+        b"\x1b[2J\x1b[H",                     # clear + home
+        b"\x1b]0;\xe2\x9c\xb3 Claude Code\x07",  # OSC 0 title with the ✳ graphics codepoint
+        b"\x1b[>1u",                          # kitty keyboard flag push (DISAMBIGUATE)
+        b"\x1b[?25l",                         # cursor hidden
+        b"\x1b[1;1H",
+        b" Welcome ",
+        b"\x1b[?25h",
+        b"\x1b[<1u",                          # kitty pop
+        b"\x1b[?2026l",                       # DECRST 2026
+        b"\x1b[?1049l",                       # leave alt
+        b"\x1b[?1004l",
+    ]
+    return b"".join(parts)
+
+
+def find_burst() -> bytes:
+    # ~4 KB of plain text mixed with CRLF, modelling a fast `find` burst.
+    lines = []
+    for i in range(56):
+       aphics-malformed.bin": kitty_graphics_malformed,
+    "osc-0x9c-payload.bin": osc_0x9c_payload,
+    "truecolor-stress.bin": truecolor_stress,
+}
+
+
+def main(argv: list[str]) -> int:
+    list_only = "--list" in argv
+    for name, builder in SEEDS.items():
+        data = builder()
+        size = len(data)
+        # All seeds intentionally fit in [1 byte, 32 KB].
+        assert 1 <= size <= 32 * 1024, (name, size)
+        if list_only:
+            print(f"{name}\t{size} bytes")
+            continue
+        path = os.path.join(HERE, name)
+        with open(path, "wb") as fh:
+            fh.write(data)
+        print(f"wrote {name} ({size} bytes)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

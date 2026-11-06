@@ -1,0 +1,9 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+
+# Fractional horizontal advance and fractional quarter-line dot pitch at 1x.
+[font]
+family = "JetBrains Mono"
+size = 13
+line_spacing = 1.5
+ligatures = true

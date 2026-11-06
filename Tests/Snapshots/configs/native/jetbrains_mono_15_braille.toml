@@ -1,0 +1,9 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+
+# An odd FreeType cell advance exercises half-pixel dot spacing.
+[font]
+family = "JetBrains Mono"
+size = 15
+line_spacing = 1.5
+ligatures = true

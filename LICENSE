@@ -1,0 +1,21 @@
+Ubiquitty license
+
+Copyright 2026 Stanislav Yaglo
+
+Every original file in this repository is licensed under the Apache License,
+Version 2.0 (LICENSES/Apache-2.0.txt). Each file states this in its
+SPDX-License-Identifier header; files that cannot carry a header are assigned
+in license-scope.json, and Docs/licensing.md explains the policy.
+
+Two original parts carry other permissive licenses: the Emacs client is MIT
+(Source/Platform/Emacs/LICENSE) and the code of conduct is CC-BY-4.0.
+Third-party components, vendored sources, fonts and generated data keep their
+own licenses; see third-party-notices.md. Where a file names a separate
+license, that license applies to the file.
+
+The license grants no right to use the Ubiquitty name or logo beyond what
+TRADEMARKS.md permits. Forks and modified builds must use a different name and
+icon.
+
+Contributions are accepted under Apache-2.0, as described in
+.github/contributing.md.

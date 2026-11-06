@@ -1,0 +1,118 @@
+[?1049h[>4;2m[?1h=[?2004h[?1004h[1;24r[?12h[?12l[22;2t[22;1t[27m[23m[29m[m[H[2J[?25l[24;1H"corpus.txt" 400L, 20598B[2;1H▽[6n[2;1H  [3;1HPzz\[0%m[6n[3;1H           [1;1H[>c[1;4H1 alpha beta gamma delta epsilon zeta
+   2 theta iota kappa lambda mu nu xi[2;38H[K[3;1H   3 omicron pi rho sigma tau upsilon phi chi[3;46H[K[4;4H4 chi psi omega alpha beta gamma delta epsilon zeta
+   5 epsilon zeta eta theta iota kappa lambda mu nu xi
+   6 mu nu xi omicron pi rho sigma tau upsilon phi chi
+   7 tau upsilon phi chi psi omega alpha beta gamma delta epsilon zeta
+   8 beta gamma delta epsilon zeta eta
+   9 iota kappa lambda mu nu xi omicron
+  10 pi rho sigma tau upsilon phi chi psi
+  11 psi omega alpha beta gamma delta epsilon zeta eta
+  12 zeta eta theta iota kappa lambda mu nu xi omicron
+  13 nu xi omicron pi rho sigma tau upsilon phi chi psi
+  14 upsilon phi chi psi omega alpha beta gamma delta epsilon zeta eta
+  15 gamma delta epsilon zeta eta theta
+  16 kappa lambda mu nu xi omicron pi
+  17 rho sigma tau upsilon phi chi psi omega
+  18 omega alpha beta gamma delta epsilon zeta eta theta
+  19 eta theta iota kappa lambda mu nu xi omicron pi
+  20 xi omicron pi rho sigma tau upsilon phi chi psi omega
+  21 phi chi psi omega alpha beta gamma delta epsilon zeta eta theta
+  22 delta epsilon zeta eta theta iota
+  23 lambda mu nu xi omicron pi rho[1;4H[?25h[?4m[?25l[24;1H[K[24;1H:set number[1;1H[38;5;130m  1 [m   1 alpha beta gamma delta epsilon zeta
+[38;5;130m  2 [m   2 theta iota kappa lambda mu nu xi
+[38;5;130m  3 [m   3 omicron pi rho sigma tau upsilon phi chi
+[38;5;130m  4 [m   4 chi psi omega alpha beta gamma delta epsilon zeta
+[38;5;130m  5 [m   5 epsilon zeta eta theta iota kappa lambda mu nu xi
+[38;5;130m  6 [m   6 mu nu xi omicron pi rho sigma tau upsilon phi chi
+[38;5;130m  7 [m   7 tau upsilon phi chi psi omega alpha beta gamma delta epsilon zeta
+[38;5;130m  8 [m   8 beta gamma delta epsilon zeta eta
+[38;5;130m  9 [m   9 iota kappa lambda mu nu xi omicron
+[38;5;130m 10 [m  10 pi rho sigma tau upsilon phi chi psi
+[38;5;130m 11 [m  11 psi omega alpha beta gamma delta epsilon zeta eta
+[38;5;130m 12 [m  12 zeta eta theta iota kappa lambda mu nu xi omicron
+[38;5;130m 13 [m  13 nu xi omicron pi rho sigma tau upsilon phi chi psi
+[38;5;130m 14 [m  14 upsilon phi chi psi omega alpha beta gamma delta epsilon zeta eta
+[38;5;130m 15 [m  15 gamma delta epsilon zeta eta theta
+[38;5;130m 16 [m  16 kappa lambda mu nu xi omicron pi
+[38;5;130m 17 [m  17 rho sigma tau upsilon phi chi psi omega
+[38;5;130m 18 [m  18 omega alpha beta gamma delta epsilon zeta eta theta
+[38;5;130m 19 [m  19 eta theta iota kappa lambda mu nu xi omicron pi
+[38;5;130m 20 [m  20 xi omicron pi rho sigma tau upsilon phi chi psi omega
+[38;5;130m 21 [m  21 phi chi psi omega alpha beta gamma delta epsilon zeta eta theta
+[38;5;130m 22 [m  22 delta epsilon zeta eta theta iota
+[38;5;130m 23 [m  23 lambda mu nu xi omicron pi rho[1;8H[?25h[?25l[24;1H[K[24;1H:split[12;1H[1m[7mcorpus.txt                                                                      [m[13;2H[38;5;130m 1[m[3C 1 alpha beta gamma delta epsilon zeta[13;45H[K[14;2H[38;5;130m 2[m[3C 2 theta iota kappa lambda mu nu xi[14;42H[K[15;2H[38;5;130m 3[m[3C 3 omicron pi rho sigma tau upsilon phi chi[16;2H[38;5;130m 4[m[3C 4 chi psi omega alpha beta gamma delta epsilon zeta[17;2H[38;5;130m 5[m[3C 5 epsilon zeta eta theta iota kappa lambda mu nu xi[18;2H[38;5;130m 6[m[3C 6 mu nu xi omicron pi rho sigma tau upsilon phi chi[18;59H[K[19;2H[38;5;130m 7[m[3C 7 tau upsilon phi chi psi omega alpha beta gamma delta epsilon zeta[20;2H[38;5;130m 8[m[3C 8 beta gamma delta epsilon zeta eta[20;43H[K[21;2H[38;5;130m 9[m[3C 9 iota kappa lambda mu nu xi omicron[21;45H[K[22;2H[38;5;130m10[m[3C10 pi rho sigma tau upsilon phi chi psi
+[7mcorpus.txt                                                                      [1;8H[?25h[?25l[m[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 12 [m  12 zeta eta theta iota kappa lambda mu nu xi omicron[24;1H[K[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 13 [m  13 nu xi omicron pi rho sigma tau upsilon phi chi psi[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 14 [m  14 upsilon phi chi psi omega alpha beta gamma delta epsilon zeta eta[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 15 [m  15 gamma delta epsilon zeta eta theta[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 16 [m  16 kappa lambda mu nu xi omicron pi[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 17 [m  17 rho sigma tau upsilon phi chi psi omega[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 18 [m  18 omega alpha beta gamma delta epsilon zeta eta theta[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 19 [m  19 eta theta iota kappa lambda mu nu xi omicron pi[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 20 [m  20 xi omicron pi rho sigma tau upsilon phi chi psi omega[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 21 [m  21 phi chi psi omega alpha beta gamma delta epsilon zeta eta theta[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 22 [m  22 delta epsilon zeta eta theta iota[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 23 [m  23 lambda mu nu xi omicron pi rho[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 24 [m  24 sigma tau upsilon phi chi psi omega alpha[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 25 [m  25 alpha beta gamma delta epsilon zeta eta theta iota[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 26 [m  26 theta iota kappa lambda mu nu xi omicron pi rho[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 27 [m  27 omicron pi rho sigma tau upsilon phi chi psi omega alpha[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 28 [m  28 chi psi omega alpha beta gamma delta epsilon zeta eta theta iota[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 29 [m  29 epsilon zeta eta theta iota kappa[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 30 [m  30 mu nu xi omicron pi rho sigma[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 31 [m  31 tau upsilon phi chi psi omega alpha beta[1;8H[?25h[?25l[24;70H^E[1;8H[24;70H  [1;8H[1;11r[11;1H
+[1;24r[11;1H[38;5;130m 32 [m  32 beta gamma delta epsilon zeta eta theta iota kappa[1;8H[?25h[?25l[24;70H^D[1;8H[24;70H  [1;7H[1;11r[1;1H[5M[1;24r[7;1H[38;5;130m 33 [m  33 iota kappa lambda mu nu xi omicron pi rho sigma
+[38;5;130m 34 [m  34 pi rho sigma tau upsilon phi chi psi omega alpha beta
+[38;5;130m 35 [m  35 psi omega alpha beta gamma delta epsilon zeta eta theta iota kappa
+[38;5;130m 36 [m  36 zeta eta theta iota kappa lambda
+[38;5;130m 37 [m  37 nu xi omicron pi rho sigma tau[1;7H[?25h[?25l[24;70H^D[1;7H[24;70H  [1;7H[1;11r[1;1H[5M[1;24r[7;1H[38;5;130m 38 [m  38 upsilon phi chi psi omega alpha beta gamma
+[38;5;130m 39 [m  39 gamma delta epsilon zeta eta theta iota kappa lambda
+[38;5;130m 40 [m  40 kappa lambda mu nu xi omicron pi rho sigma tau
+[38;5;130m 41 [m  41 rho sigma tau upsilon phi chi psi omega alpha beta gamma
+[38;5;130m 42 [m  42 omega alpha beta gamma delta epsilon zeta eta theta iota kappa lambda[1;7H[?25h[?25l[24;70H^Ww[1;7H[24;70H   [13;8H[12;1H[7mcorpus.txt[m[1m[7m [m[7m                                                                      [m[23;1H[1m[7mcorpus.txt                                                                      [13;8H[?25h[?25l[m[24;70H^Y[13;8H[24;70H  [13;8H[?25h[?25l[24;70H^Y[13;8H[24;70H  [13;8H[?25h[?25l[24;70H^Y[13;8H[24;70H  [13;8H[?25h[?25l[24;70H^Y[13;8H[24;70H  [13;8H[?25h[?25l[24;70H^Y[13;8H[24;70H  [13;8H[?25h[?25l[24;70H^Y[13;8H[24;70H  [13;8H[?25h[?25l[24;70H^Y[13;8H[24;70H  [13;8H[?25h[?25l[24;70H^Y[13;8H[24;70H  [13;8H[?25h[?25l[24;70H^Y[13;8H[24;70H  [13;8H[?25h[?25l[24;70H^Y[13;8H[24;70H  [13;8H[?25h[?25l[38;5;130m39[m[3C391 tau upsilon phi chi psi omega alpha beta gamma delta epsilon
+[38;5;130m39[m[3C392 beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu
+[38;5;130m39[m[3C393 iota kappa lambda mu nu xi[15;36H[K[16;1H[38;5;130m39[m[3C394 pi rho sigma tau upsilon phi chi[16;42H[K[17;1H[38;5;130m39[m[3C395 psi omega alpha beta gamma delta epsilon zeta[17;55H[K[18;1H[38;5;130m39[m[3C396 zeta eta theta iota kappa lambda mu nu xi[18;52H[K[19;1H[38;5;130m39[m[3C397 nu xi omicron pi rho sigma tau upsilon phi chi[19;57H[K[20;1H[38;5;130m39[m[3C398 upsilon phi chi psi omega alpha beta gamma delta epsilon zeta
+[38;5;130m39[m[3C399 gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi
+[38;5;130m40[m[3C400 kappa lambda mu nu xi omicron[22;39H[K[22;6H[?25h[?25l[24;70Hzz[22;6H[24;70H  [17;6H[13;22r[13;1H[5M[1;24r[18;1H[94m~                                                                               [19;1H~                                                                               [20;1H~                                                                               [21;1H~                                                                               [22;1H~                                                                               [17;6H[?25h[?25l[m[24;70H^U[17;6H[24;70H  [17;6H[13;22r[13;1H[5L[1;24r[13;1H[38;5;130m391 [m 391 tau upsilon phi chi psi omega alpha beta gamma delta epsilon
+[38;5;130m392 [m 392 beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu
+[38;5;130m393 [m 393 iota kappa lambda mu nu xi
+[38;5;130m394 [m 394 pi rho sigma tau upsilon phi chi
+[38;5;130m395 [m 395 psi omega alpha beta gamma delta epsilon zeta[17;6H[?25h[?25l[13;1H[38;5;130m  [m[3C  1 alpha beta gamma delta epsilon zet[13;46H[K[14;1H[38;5;130m  [m[3C  2 theta iota kappa lambda mu nu xi[14;42H[K[15;1H[38;5;130m  [m[3C  3 omicron pi rho sigma tau upsilon phi chi
+[38;5;130m  [m[3C  4 chi psi omega alpha beta gamma delta epsilon zeta
+[38;5;130m  [m[3C  5 epsilon zeta eta theta iota kappa lambda mu nu xi
+[38;5;130m  [m[3C  6 mu nu xi omicron pi rho sigma tau upsilon phi chi
+[38;5;130m  [m[3C  7 tau upsilon phi chi psi omega alpha beta gamma delta epsilon zeta
+[38;5;130m  [m[3C  8 beta gamma delta epsilon zeta eta[20;43H[K[21;1H[38;5;130m  [m[3C  9 iota kappa lambda mu nu xi omicron[21;45H[K[22;1H[38;5;130m 1[m[3C 10 pi rho sigma tau upsilon phi chi psi[13;8H[?25h[?25l[24;1H[1m-- INSERT --[m[24;1H[K[13;17H[1;3H[38;5;130m3
+ 34
+ 35
+ 36
+ 37
+ 38
+ 39
+ 40
+ 41
+ 42
+ 43[m[12;12H[7m[+][m[13;5Hinserted lin[13;18H[K[14;8H1 alpha beta gamma delta epsilon zeta[15;8H2 theta iota kappa lambda mu nu xi[15;43H[K[16;8H3 omicron pi rho sigma tau upsilon phi chi[16;50H[K[17;8H4 chi psi omega alpha beta gamma delta epsilon zeta[18;8H5 epsilon zeta eta theta iota kappa lambda mu nu x[19;8H6 mu nu xi omicron pi rho sigma tau upsilon phi chi[19;59H[K[20;8H7 tau upsilon phi chi psi omega alpha beta gamma delta epsilon zeta[21;8H8 beta gamma delta epsilon zeta eta[21;43H[K[22;7H 9 iota kappa lambda mu nu xi omicron[22;44H[K[23;12H[1m[7m[+][m
+[1m-- INSERT --[13;18H[m[24;70H^[[13;17H[?25h[?25l[24;70H  [13;18H[24;1H[K[13;17H[?25h[?25l[24;70Hu[13;17H[24;1H1 line less; before #1  1 second ago[24;70H[K[13;8H[1;3H[38;5;130m2
+ 33
+ 34
+ 35
+ 36
+ 37
+ 38
+ 39
+ 40
+ 41
+ 42[m[12;12H[7m   [13;22r[m[22;1H
+[1;24r[13;3H[38;5;130m1
+  2
+  3
+  4
+  5
+  6
+  7
+  8
+  9
+ 10 [m  10 pi rho sigma tau upsilon phi chi psi[23;12H[1m[7m    [m[24;1H[K[24;1H1 line less; before #1  1 second ago[13;8H[?25h[?25l[24;1H[K[24;1H:q![1;3H[38;5;130m1[m[4C1 tau upsilon phi chi psi omega alpha beta[1;50H[K[2;3H[38;5;130m2[m[4C2 beta gamma delta epsilon zeta eta theta iota kappa[3;3H[38;5;130m3[m[4C3 iota kappa lambda mu nu xi omicron pi rho sigma[3;57H[K[4;3H[38;5;130m4[m[4C4 pi rho sigma tau upsilon phi chi psi omega alpha beta[4;63H[K[5;3H[38;5;130m5[m[4C5 psi omega alpha beta gamma delta epsilon zeta eta theta iota kappa[6;3H[38;5;130m6[m[4C6 zeta eta theta iota kappa lambda[7;3H[38;5;130m7[m[4C7 nu xi omicron pi rho sigma tau[7;40H[K[8;3H[38;5;130m8[m[4C8 upsilon phi chi psi omega alpha beta gamm[8;52H[K[9;2H[38;5;130m39[m[3C39 gamma delta epsilon zeta eta theta iota kappa lambda[10;3H[38;5;130m0[m[4C0 kappa lambda mu nu xi omicron pi rho sigma tau[10;56H[K[11;3H[38;5;130m1[m[4C1 rho sigma tau upsilon phi chi psi omega alpha beta gamm[11;67H[K[12;1H[38;5;130m 42 [m  42 omega alpha beta gamma delta epsilon zeta eta theta iota kappa lambda[12;79H[K[13;2H[38;5;130m43[m[3C43 eta theta iota kappa lambda mu[13;41H[K[14;2H[38;5;130m44[m[3C44 xi omicron pi rho sigma tau upsilon[15;2H[38;5;130m45[m[3C45 phi chi psi omega alpha beta gamma delta[16;2H[38;5;130m46[m[3C46 delta epsilon zeta eta theta iota kappa lambda mu[17;2H[38;5;130m47[m[3C47 lambda mu nu xi omicron pi rho sigma tau upsilon[17;58H[K[18;2H[38;5;130m48[m[3C48 sigma tau upsilon phi chi psi omega alpha beta gamma delta[19;2H[38;5;130m49[m[3C49 alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu[20;2H[38;5;130m50[m[3C50 theta iota kappa lambda mu nu[20;40H[K[21;2H[38;5;130m51[m[3C51 omicron pi rho sigma tau upsilon phi[22;2H[38;5;130m52[m[3C52 chi psi omega alpha beta gamma delta epsilon
+[38;5;130m 53 [m  53 epsilon zeta eta theta iota kappa lambda mu nu[23;56H[K[2;7H[?25h[?25l[24;1H[K[24;1H:q![?2004l[>4;m[23;2t[23;1t[24;1H[K[24;1H[?1004l[?2004l[?1l>[?1049l[?25h[>4;m

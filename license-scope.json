@@ -1,0 +1,674 @@
+{
+  "version": 1,
+  "description": "Every repository file has a checked header or exactly one explicit scope. The boundary assigns each first-party path its license: an exact file beats a pattern, and a pattern beats the longest directory prefix ('./' is the repository's top-level files). Rules record files that cannot carry a header and upstream material; a header or metadata rule must agree with its file's boundary license. Upstream notices remain intact. Review entries block release checks.",
+  "boundary": [
+    {
+      "license": "Apache-2.0",
+      "paths": [
+        "./",
+        ".github/",
+        "cmake/",
+        "Docs/",
+        "Resources/",
+        "Samples/",
+        "Scripts/",
+        "Source/",
+        "Support/",
+        "Tests/",
+        "Tools/"
+      ],
+      "reason": "Every original file in the repository: the terminal engine, the platform backends, the renderers, the application shells, the host daemon, the agent, the editor clients, the documentation, the tests and the tooling. The product's commercial side is an operated service that is not in this repository, so nothing here needs a narrower license."
+    },
+    {
+      "license": "CC-BY-4.0",
+      "paths": [
+        ".github/code_of_conduct.md"
+      ],
+      "reason": "Adaptation of Contributor Covenant 2.1, which keeps its upstream license."
+    }
+  ],
+  "rules": [
+    {
+      "paths": [
+        "Source/Core/Rendering/UnifontData.cpp"
+      ],
+      "mode": "header",
+      "license": "Apache-2.0 AND OFL-1.1",
+      "reason": "Apache wrapper and GNU Unifont bitmap data used under the upstream OFL option.",
+      "license_files": [
+        "LICENSES/Apache-2.0.txt",
+        "Source/Core/Rendering/UnifontLICENSE.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Source/Core/Rendering/ProportionalStrikeData.cpp",
+        "Source/Core/Rendering/ProportionalOutlineData.cpp"
+      ],
+      "mode": "header",
+      "license": "Apache-2.0 AND OFL-1.1",
+      "reason": "Apache wrapper and rasterized and outline Noto Sans data.",
+      "license_files": [
+        "LICENSES/Apache-2.0.txt",
+        "Resources/fonts/NotoSans-OFL.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Source/Core/Unicode/GraphemeBreak.tables.inc",
+        "Source/Core/Unicode/Joining.tables.inc",
+        "Source/Core/Unicode/Normalize.tables.inc",
+        "Source/Core/Unicode/Width.tables.inc"
+      ],
+      "mode": "header",
+      "license": "Apache-2.0 AND Unicode-3.0",
+      "reason": "Apache wrapper and Unicode Character Database-derived tables.",
+      "license_files": [
+        "LICENSES/Apache-2.0.txt",
+        "Source/Core/Unicode/UNICODE-LICENSE.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Source/Core/Unicode/Encodings.tables.inc"
+      ],
+      "mode": "header",
+      "license": "Apache-2.0 AND PSF-2.0 AND Unicode-3.0 AND ICU AND LicenseRef-Unicode-GB2312-1999",
+      "reason": "Apache wrapper and Python codec mappings retain the independently audited upstream grants.",
+      "license_files": [
+        "LICENSES/Apache-2.0.txt",
+        "Source/Core/Unicode/ENCODINGS-LICENSE.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Source/Core/Themes/builtin-themes.toml"
+      ],
+      "mode": "header",
+      "license": "Apache-2.0 AND MIT",
+      "reason": "Existing Apache wrapper and palettes adapted from the MIT/Apache upstream theme projects.",
+      "license_files": [
+        "LICENSES/Apache-2.0.txt",
+        "Source/Core/Themes/theme-credits.md",
+        "Docs/third-party-licenses/Theme-LICENSES.txt"
+      ]
+    },
+    {
+      "paths": [
+        ".github/code_of_conduct.md"
+      ],
+      "mode": "header",
+      "license": "CC-BY-4.0",
+      "reason": "Adaptation of Contributor Covenant 2.1; attribution and upstream license accompany the document.",
+      "license_files": [
+        "Docs/third-party-licenses/Contributor-Covenant-2.1-LICENSE.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Source/ThirdParty/re2/LICENSE",
+        "Source/ThirdParty/re2/re2/bitmap256.cc",
+        "Source/ThirdParty/re2/re2/bitmap256.h",
+        "Source/ThirdParty/re2/re2/bitstate.cc",
+        "Source/ThirdParty/re2/re2/compile.cc",
+        "Source/ThirdParty/re2/re2/dfa.cc",
+        "Source/ThirdParty/re2/re2/filtered_re2.h",
+        "Source/ThirdParty/re2/re2/mimics_pcre.cc",
+        "Source/ThirdParty/re2/re2/nfa.cc",
+        "Source/ThirdParty/re2/re2/onepass.cc",
+        "Source/ThirdParty/re2/re2/parse.cc",
+        "Source/ThirdParty/re2/re2/perl_groups.cc",
+        "Source/ThirdParty/re2/re2/pod_array.h",
+        "Source/ThirdParty/re2/re2/prefilter.cc",
+        "Source/ThirdParty/re2/re2/prefilter.h",
+        "Source/ThirdParty/re2/re2/prefilter_tree.cc",
+        "Source/ThirdParty/re2/re2/prefilter_tree.h",
+        "Source/ThirdParty/re2/re2/prog.cc",
+        "Source/ThirdParty/re2/re2/prog.h",
+        "Source/ThirdParty/re2/re2/re2.cc",
+        "Source/ThirdParty/re2/re2/re2.h",
+        "Source/ThirdParty/re2/re2/regexp.cc",
+        "Source/ThirdParty/re2/re2/regexp.h",
+        "Source/ThirdParty/re2/re2/set.cc",
+        "Source/ThirdParty/re2/re2/set.h",
+        "Source/ThirdParty/re2/re2/simplify.cc",
+        "Source/ThirdParty/re2/re2/sparse_array.h",
+        "Source/ThirdParty/re2/re2/sparse_set.h",
+        "Source/ThirdParty/re2/re2/stringpiece.cc",
+        "Source/ThirdParty/re2/re2/stringpiece.h",
+        "Source/ThirdParty/re2/re2/tostring.cc",
+        "Source/ThirdParty/re2/re2/unicode_casefold.cc",
+        "Source/ThirdParty/re2/re2/unicode_casefold.h",
+        "Source/ThirdParty/re2/re2/unicode_groups.cc",
+        "Source/ThirdParty/re2/re2/unicode_groups.h",
+        "Source/ThirdParty/re2/re2/walker-inl.h",
+        "Source/ThirdParty/re2/util/benchmark.h",
+        "Source/ThirdParty/re2/util/flags.h",
+        "Source/ThirdParty/re2/util/logging.h",
+        "Source/ThirdParty/re2/util/malloc_counter.h",
+        "Source/ThirdParty/re2/util/mix.h",
+        "Source/ThirdParty/re2/util/mutex.h",
+        "Source/ThirdParty/re2/util/pcre.h",
+        "Source/ThirdParty/re2/util/strutil.cc",
+        "Source/ThirdParty/re2/util/strutil.h",
+        "Source/ThirdParty/re2/util/test.h",
+        "Source/ThirdParty/re2/util/util.h"
+      ],
+      "mode": "upstream",
+      "license": "BSD-3-Clause",
+      "reason": "Vendored upstream source and license text retain their original notices.",
+      "license_files": [
+        "Source/ThirdParty/re2/LICENSE"
+      ]
+    },
+    {
+      "paths": [
+        "Source/ThirdParty/simdutf/LICENSE",
+        "Source/ThirdParty/simdutf/simdutf.cpp",
+        "Source/ThirdParty/simdutf/simdutf.h"
+      ],
+      "mode": "upstream",
+      "license": "MIT AND BSD-3-Clause",
+      "reason": "Vendored upstream source and license text retain their original notices.",
+      "license_files": [
+        "Source/ThirdParty/simdutf/LICENSE"
+      ]
+    },
+    {
+      "paths": [
+        "Source/ThirdParty/wuffs/LICENSE",
+        "Source/ThirdParty/wuffs/wuffs-v0.4.c"
+      ],
+      "mode": "upstream",
+      "license": "Apache-2.0 OR MIT",
+      "reason": "Vendored upstream source and license text retain their original notices.",
+      "license_files": [
+        "Source/ThirdParty/wuffs/LICENSE"
+      ]
+    },
+    {
+      "paths": [
+        "Source/ThirdParty/xxhash/LICENSE",
+        "Source/ThirdParty/xxhash/xxhash.h"
+      ],
+      "mode": "upstream",
+      "license": "BSD-2-Clause",
+      "reason": "Vendored upstream source and license text retain their original notices.",
+      "license_files": [
+        "Source/ThirdParty/xxhash/LICENSE"
+      ]
+    },
+    {
+      "paths": [
+        "Source/ThirdParty/yyjson/LICENSE",
+        "Source/ThirdParty/yyjson/yyjson.c",
+        "Source/ThirdParty/yyjson/yyjson.h"
+      ],
+      "mode": "upstream",
+      "license": "MIT",
+      "reason": "Vendored upstream source and license text retain their original notices.",
+      "license_files": [
+        "Source/ThirdParty/yyjson/LICENSE"
+      ]
+    },
+    {
+      "paths": [
+        "Source/ThirdParty/re2/util/rune.cc",
+        "Source/ThirdParty/re2/util/utf.h"
+      ],
+      "mode": "upstream",
+      "license": "LicenseRef-Lucent-2002",
+      "reason": "These RE2 files retain their distinct Lucent permission notice.",
+      "license_files": [
+        "Docs/third-party-licenses/RE2-Lucent-LICENSE.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Docs/third-party-licenses/AppImageUpdate-LICENSE.txt"
+      ],
+      "mode": "upstream",
+      "license": "MIT",
+      "reason": "Preserved upstream license and attribution documents; the text itself is not relicensed.",
+      "license_files": [
+        "Docs/third-party-licenses/AppImageUpdate-LICENSE.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Docs/third-party-licenses/ngtcp2-1.23.0-COPYING.txt"
+      ],
+      "mode": "upstream",
+      "license": "MIT",
+      "reason": "Preserved upstream license and attribution documents; the text itself is not relicensed.",
+      "license_files": [
+        "Docs/third-party-licenses/ngtcp2-1.23.0-COPYING.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Docs/third-party-licenses/AWS-LC-5.1.0-LICENSE.txt"
+      ],
+      "mode": "upstream",
+      "license": "Apache-2.0 AND ISC AND MIT AND BSD-3-Clause AND CC0-1.0",
+      "reason": "Preserved upstream license and attribution documents; the text itself is not relicensed.",
+      "license_files": [
+        "Docs/third-party-licenses/AWS-LC-5.1.0-LICENSE.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Resources/fonts/JetBrainsMono[wght].ttf",
+        "Resources/fonts/JetBrainsMono-Italic[wght].ttf",
+        "Resources/fonts/JetBrainsMono-OFL.txt"
+      ],
+      "mode": "upstream",
+      "license": "OFL-1.1",
+      "reason": "Bundled font binaries and preserved upstream OFL text.",
+      "license_files": [
+        "Resources/fonts/JetBrainsMono-OFL.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Resources/fonts/MonaspaceNeon-Bold.otf",
+        "Resources/fonts/MonaspaceNeon-BoldItalic.otf",
+        "Resources/fonts/MonaspaceNeon-Italic.otf",
+        "Resources/fonts/MonaspaceNeon-Regular.otf",
+        "Resources/fonts/MonaspaceNeonVar.ttf",
+        "Resources/fonts/Monaspace-OFL.txt"
+      ],
+      "mode": "upstream",
+      "license": "OFL-1.1",
+      "reason": "Bundled font binaries and preserved upstream OFL text.",
+      "license_files": [
+        "Resources/fonts/Monaspace-OFL.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Tests/Snapshots/fixtures/fonts/UbiquittyWdthTest.ttf",
+        "Tests/Snapshots/fixtures/fonts/UbiquittyWdthTest-OFL.txt"
+      ],
+      "mode": "upstream",
+      "license": "OFL-1.1",
+      "reason": "Test font: Noto Sans[wdth,wght] pinned at wght 400, subset to printable ASCII and renamed so the modified subset does not carry the original name, with the upstream OFL text.",
+      "license_files": [
+        "Tests/Snapshots/fixtures/fonts/UbiquittyWdthTest-OFL.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Resources/fonts/NotoSans-Bold.ttf",
+        "Resources/fonts/NotoSans-Regular.ttf",
+        "Resources/fonts/NotoSans-OFL.txt"
+      ],
+      "mode": "upstream",
+      "license": "OFL-1.1",
+      "reason": "Bundled Noto Sans binaries and the OFL text of their release, NotoSans-v2.015 of notofonts/latin-greek-cyrillic, verbatim.",
+      "license_files": [
+        "Resources/fonts/NotoSans-OFL.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Resources/fonts/NotoColorEmoji-COLRv1.ttf",
+        "Resources/fonts/NotoColorEmoji-OFL.txt"
+      ],
+      "mode": "upstream",
+      "license": "OFL-1.1",
+      "reason": "Bundled Noto Color Emoji binary and the LICENSE of its release, googlefonts/noto-emoji v2.051, verbatim.",
+      "license_files": [
+        "Resources/fonts/NotoColorEmoji-OFL.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Resources/fonts/SymbolsNerdFontMono-Regular.ttf",
+        "Resources/fonts/SymbolsNerdFont-LICENSE.txt",
+        "Resources/fonts/SymbolsNerdFont-CONSTITUENTS.txt"
+      ],
+      "mode": "upstream",
+      "license": "MIT AND OFL-1.1 AND CC-BY-4.0 AND Apache-2.0 AND Bitstream-Vera AND Unlicense",
+      "reason": "The aggregate font retains the grants and attribution of every incorporated icon set.",
+      "license_files": [
+        "Resources/fonts/SymbolsNerdFont-LICENSE.txt",
+        "Resources/fonts/SymbolsNerdFont-CONSTITUENTS.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Tests/Core/Unicode/BidiCharacterTest.txt",
+        "Tests/Core/Unicode/GraphemeBreakTest.txt",
+        "Tests/Core/Unicode/emoji-data.txt",
+        "Source/Core/Unicode/UNICODE-LICENSE.txt"
+      ],
+      "mode": "upstream",
+      "license": "Unicode-3.0",
+      "reason": "Unicode conformance data and preserved Unicode license; upstream version notices remain unchanged.",
+      "license_files": [
+        "Source/Core/Unicode/UNICODE-LICENSE.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Source/Core/Rendering/UnifontLICENSE.txt"
+      ],
+      "mode": "upstream",
+      "license": "OFL-1.1 OR GPL-2.0-or-later WITH Font-exception-2.0",
+      "reason": "Preserves the complete upstream dual-license notice; embedded font data selects OFL-1.1.",
+      "license_files": [
+        "Source/Core/Rendering/UnifontLICENSE.txt"
+      ]
+    },
+    {
+      "paths": [
+        "LICENSE"
+      ],
+      "mode": "metadata",
+      "license": "Apache-2.0",
+      "reason": "Plain-text notice describing the license split; the license texts are under LICENSES/.",
+      "license_files": [
+        "LICENSES/Apache-2.0.txt"
+      ],
+      "copyright": [
+        "2026 Stanislav Yaglo"
+      ]
+    },
+    {
+      "paths": [
+        "LICENSES/Apache-2.0.txt"
+      ],
+      "mode": "upstream",
+      "license": "Apache-2.0",
+      "reason": "Verbatim license or certification text retains its own terms.",
+      "license_files": [
+        "LICENSES/Apache-2.0.txt"
+      ]
+    },
+    {
+      "paths": [
+        "NOTICE"
+      ],
+      "mode": "metadata",
+      "license": "Apache-2.0",
+      "reason": "Project attribution notice is plain text.",
+      "copyright": [
+        "2026 Stanislav Yaglo"
+      ],
+      "license_files": [
+        "LICENSE"
+      ]
+    },
+    {
+      "paths": [],
+      "mode": "metadata",
+      "license": "Apache-2.0",
+      "reason": "Project test inputs are byte-exact parser/fuzzer payloads; adding comments changes their meaning.",
+      "copyright": [
+        "2026 Stanislav Yaglo"
+      ],
+      "patterns": [
+        "Tests/Core/fuzz-corpus/*",
+        "Tests/Core/kitty-corpus/*",
+        "Tests/Core/Rendering/sixel-corpus/*",
+        "Tests/Core/Rendering/tiff-corpus/*",
+        "Tests/Core/Protocol/Sync/fuzz-corpus/*",
+        "Tests/Core/Protocol/Sync/quic-bootstrap-corpus/*",
+        "Tests/Core/Protocol/Sync/quic-bootstrap-crashes/*",
+        "Tests/Core/Protocol/Tmux/fuzz-corpus/*",
+        "Tests/Corpus/sync/fuzz_sync_catalog/*",
+        "Tests/Corpus/sync/fuzz_sync_connection/*",
+        "Tests/Corpus/sync/fuzz_sync_handover/*",
+        "Tests/Corpus/sync/fuzz_sync_screen/*"
+      ],
+      "suffixes": [
+        "",
+        ".bin",
+        ".tiff",
+        ".txt"
+      ],
+      "payload": true
+    },
+    {
+      "paths": [],
+      "mode": "metadata",
+      "license": "Apache-2.0",
+      "reason": "Host test inputs are byte-exact fuzz payloads; adding comments changes their meaning.",
+      "copyright": [
+        "2026 Stanislav Yaglo"
+      ],
+      "patterns": [
+        "Tests/Host/fuzz-corpus-quic-preamble/*"
+      ],
+      "suffixes": [
+        "",
+        ".bin",
+        ".tiff",
+        ".txt"
+      ],
+      "payload": true
+    },
+    {
+      "paths": [],
+      "mode": "metadata",
+      "license": "Apache-2.0",
+      "reason": "Captured terminal streams, rich-text inputs, and rendered golden images must remain byte-exact.",
+      "copyright": [
+        "2026 Stanislav Yaglo"
+      ],
+      "patterns": [
+        "Tests/Corpus/richtext/*.rtf",
+        "Tests/Corpus/sync/*.reads",
+        "Tests/Corpus/sync/*.stream",
+        "Tests/Corpus/sync/*.z",
+        "Tests/Snapshots/golden/*.png",
+        "Tests/Snapshots/feeds/*.txt"
+      ],
+      "payload": true
+    },
+    {
+      "paths": [
+        "Docs/other-repositories.txt",
+        "Docs/third-party-inventory.json",
+        "Resources/fonts/manifest.json",
+        "Scripts/clang-format-pin",
+        "Scripts/core-srcs-excluded.txt",
+        "Scripts/gate-ledger.core.txt",
+        "Scripts/linux-images.txt",
+        "Scripts/macos-deployment-target.txt",
+        "Scripts/portable-core-sources.txt",
+        "Scripts/repository.txt",
+        "Tests/Core/App/outline-rows.json",
+        "Tests/Corpus/sync/manifest.txt",
+        "Tests/Performance/unicode-corpus.txt",
+        "Tests/Snapshots/cases.json",
+        "Tests/Snapshots/exempt-portable.txt",
+        "Tests/Snapshots/fixtures/backdrop_gradient.png",
+        "Tests/Snapshots/known-failing-portable.txt",
+        "Tests/coverage/covering-tests.tsv",
+        "VERSION",
+        "license-scope.json"
+      ],
+      "mode": "metadata",
+      "license": "Apache-2.0",
+      "reason": "Project JSON, lockfiles, assets, measurements, and line-oriented input lists retain their required data format.",
+      "copyright": [
+        "2026 Stanislav Yaglo"
+      ],
+      "license_files": [
+        "LICENSES/Apache-2.0.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Resources/Icon/Welcome/Ubiquitty-Coverage-115.png",
+        "Resources/Icon/Welcome/Ubiquitty-Coverage-230.png",
+        "Resources/Icon/Welcome/Ubiquitty-Coverage-346.png",
+        "Resources/Icon/Welcome/Ubiquitty-Default-115.png",
+        "Resources/Icon/Welcome/Ubiquitty-Default-230.png",
+        "Resources/Icon/Welcome/Ubiquitty-Default-346.png",
+        "Resources/Icon/Welcome/Ubiquitty-Layers-115.png",
+        "Resources/Icon/Welcome/Ubiquitty-Layers-230.png",
+        "Resources/Icon/Welcome/Ubiquitty-Layers-346.png"
+      ],
+      "mode": "metadata",
+      "license": "Apache-2.0",
+      "reason": "Application icon assets keep their image format; the icon is also governed by TRADEMARKS.md.",
+      "copyright": [
+        "2026 Stanislav Yaglo"
+      ],
+      "license_files": [
+        "LICENSES/Apache-2.0.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Support/pgo/linux-aarch64-core.drift-budget",
+        "Support/pgo/linux-aarch64-core.profdata",
+        "Support/pgo/linux-aarch64-core.trained-at",
+        "Support/pgo/linux-aarch64-core.trained-tree",
+        "Support/pgo/linux-aarch64-core.trained-toolchain",
+        "Support/pgo/linux-x86_64-core.trained-toolchain",
+        "Support/pgo/linux-x86_64-core.drift-budget",
+        "Support/pgo/linux-x86_64-core.profdata",
+        "Support/pgo/linux-x86_64-core.trained-at",
+        "Support/pgo/linux-x86_64-core.trained-tree",
+        "Support/pgo/portable-core.drift-budget",
+        "Support/pgo/portable-core.profdata",
+        "Support/pgo/portable-core.trained-at",
+        "Support/pgo/portable-core.trained-tree"
+      ],
+      "mode": "metadata",
+      "license": "Apache-2.0",
+      "reason": "PGO profiles and their sidecars are generated by Scripts/pgo-train.sh from instrumented runs of the repository's benchmarks over the code compiled into Core, its vendored libraries included; a profile holds function names and execution counts, and no source text or data.",
+      "copyright": [
+        "2026 Stanislav Yaglo"
+      ],
+      "license_files": [
+        "LICENSES/Apache-2.0.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Scripts/hooks-dispatch",
+        "Scripts/hooks/commit-msg",
+        "Scripts/hooks/pre-commit",
+        "Scripts/hooks/pre-push"
+      ],
+      "mode": "header",
+      "license": "Apache-2.0",
+      "reason": "Executable Git hooks require source headers."
+    },
+    {
+      "paths": [
+        "Support/pgo/org.ubiquitty.pgo-retrain-check.plist"
+      ],
+      "mode": "header",
+      "license": "Apache-2.0",
+      "reason": "A launchd agent definition written by hand carries its header as XML comments, which launchd ignores."
+    },
+    {
+      "paths": [
+        "Tests/Host/sync-transport.Dockerfile"
+      ],
+      "mode": "header",
+      "license": "Apache-2.0",
+      "reason": "The host transport fixture Dockerfile requires a source header."
+    },
+    {
+      "paths": [
+        "Docs/third-party-licenses/RE2-Lucent-LICENSE.txt"
+      ],
+      "mode": "upstream",
+      "license": "LicenseRef-Lucent-2002",
+      "reason": "Preserves the Lucent notice from RE2 rune.cc and utf.h.",
+      "license_files": [
+        "Docs/third-party-licenses/RE2-Lucent-LICENSE.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Docs/third-party-licenses/Contributor-Covenant-2.1-LICENSE.txt"
+      ],
+      "mode": "upstream",
+      "license": "CC-BY-4.0",
+      "reason": "Preserves the license of Contributor Covenant 2.1.",
+      "license_files": [
+        "Docs/third-party-licenses/Contributor-Covenant-2.1-LICENSE.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Docs/third-party-licenses/Theme-LICENSES.txt"
+      ],
+      "mode": "upstream",
+      "license": "Apache-2.0 AND MIT",
+      "reason": "Preserves the full upstream theme grants and copyright notices.",
+      "license_files": [
+        "Docs/third-party-licenses/Theme-LICENSES.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Source/Core/Unicode/ENCODINGS-LICENSE.txt"
+      ],
+      "mode": "upstream",
+      "license": "PSF-2.0 AND Unicode-3.0 AND ICU AND LicenseRef-Unicode-GB2312-1999",
+      "reason": "Preserves the full upstream codec mapping grants and source provenance.",
+      "license_files": [
+        "Source/Core/Unicode/ENCODINGS-LICENSE.txt"
+      ]
+    },
+    {
+      "paths": [
+        "Tests/Snapshots/zwj_all_emoji.txt"
+      ],
+      "mode": "metadata",
+      "license": "Apache-2.0 AND Unicode-3.0",
+      "reason": "The byte-exact terminal fixture contains the Unicode RGI emoji ZWJ sequence set.",
+      "copyright": [
+        "2026 Stanislav Yaglo",
+        "1991-2026 Unicode, Inc."
+      ],
+      "license_files": [
+        "LICENSES/Apache-2.0.txt",
+        "Source/Core/Unicode/UNICODE-LICENSE.txt"
+      ],
+      "payload": true
+    },
+    {
+      "paths": [
+        "Resources/process-icons/claude-code.svg",
+        "Resources/process-icons/codex.svg",
+        "Resources/process-icons/deepagents.svg",
+        "Resources/process-icons/gemini-cli.svg",
+        "Resources/process-icons/grok-build.png",
+        "Resources/process-icons/kimi-code.png",
+        "Resources/process-icons/opencode.svg",
+        "Resources/process-icons/pi.svg",
+        "Resources/process-icons/prime-agent.png"
+      ],
+      "mode": "upstream",
+      "license": "LicenseRef-Process-Icon-Marks",
+      "reason": "Programs' logos, their owners' trademarks, drawn only to identify the program a pane runs; Resources/process-icons/NOTICE.md records each one's source and terms.",
+      "license_files": [
+        "Resources/process-icons/NOTICE.md"
+      ]
+    },
+    {
+      "paths": [
+        "Resources/process-icons/catalog.json"
+      ],
+      "mode": "metadata",
+      "license": "Apache-2.0",
+      "reason": "The process-icon catalog is JSON, which has no comment to carry a header.",
+      "copyright": [
+        "2026 Stanislav Yaglo"
+      ],
+      "license_files": [
+        "LICENSES/Apache-2.0.txt"
+      ]
+    }
+  ]
+}
