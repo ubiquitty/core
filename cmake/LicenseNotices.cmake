@@ -26,12 +26,15 @@ function(ubiquitty_license_notice_paths output)
     get_property(script GLOBAL PROPERTY UBIQUITTY_LICENSE_NOTICE_SCRIPT)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
         "${script}" "${CMAKE_SOURCE_DIR}/Docs/third-party-inventory.json")
-    set(coreArguments)
+    set(libraryArguments)
     if(DEFINED UBIQUITTY_CORE_SOURCE_DIR)
-        set(coreArguments --core "${UBIQUITTY_CORE_SOURCE_DIR}")
+        set(libraryArguments --core "${UBIQUITTY_CORE_SOURCE_DIR}")
+    endif()
+    if(DEFINED UBIQUITTY_KIT_SOURCE_DIR)
+        list(APPEND libraryArguments --kit "${UBIQUITTY_KIT_SOURCE_DIR}")
     endif()
     execute_process(
-        COMMAND "${Python3_EXECUTABLE}" "${script}" --source "${CMAKE_SOURCE_DIR}" ${coreArguments} --files
+        COMMAND "${Python3_EXECUTABLE}" "${script}" --source "${CMAKE_SOURCE_DIR}" ${libraryArguments} --files
         RESULT_VARIABLE result OUTPUT_VARIABLE listing ERROR_VARIABLE error
         OUTPUT_STRIP_TRAILING_WHITESPACE)
     if(NOT result EQUAL 0)

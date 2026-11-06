@@ -84,6 +84,78 @@ class LicenseNotices(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing or external notice"):
             notice_files(self.source)
 
+    def splitNoticeCheckouts(self):
+        core = (Path(self.temporary.name) / "core").resolve()
+        kit = (Path(self.temporary.name) / "kit").resolve()
+        for name in ("Resources/fonts/Example [weight]-OFL.txt", "Source/ThirdParty/example/LICENSE",
+                     "Source/Core/Themes/theme-credits.md"):
+            destination = core / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            (self.source / name).rename(destination)
+        phosphor = kit / "Resources/phosphor/LICENSE"
+        phosphor.parent.mkdir(parents=True, exist_ok=True)
+        phosphor.write_bytes(b"Kit's Phosphor notice\r\n")
+        inventory = json.loads(self.inventory.read_text())
+        inventory.append({"name": "Phosphor", "noticeRequired": True,
+                          "noticePath": "Resources/phosphor/LICENSE"})
+        self.inventory.write_text(json.dumps(inventory))
+        self.names.add("Resources/phosphor/LICENSE")
+        return core, kit
+
+    def testAppCoreAndKitNoticesUseTheirOwningCheckouts(self):
+        core, kit = self.splitNoticeCheckouts()
+        files = notice_files(self.source, core, kit)
+        self.assertEqual(files["Resources/phosphor/LICENSE"], kit / "Resources/phosphor/LICENSE")
+        self.assertEqual(files["Source/ThirdParty/example/LICENSE"], core / "Source/ThirdParty/example/LICENSE")
+        self.assertEqual(files["NOTICE"], self.source.resolve() / "NOTICE")
+        copy_notices(self.source, self.destination, core, kit)
+        self.assertEqual((self.destination / "Resources/phosphor/LICENSE").read_bytes(), b"Kit's Phosphor notice\r\n")
+        self.assertEqual(verify_notices(self.source, self.destination, core, kit), [])
+        result = subprocess.run([sys.executable, str(ROOT / "Scripts/license_notices.py"),
+                                 "--source", str(self.source), "--core", str(core), "--kit", str(kit), "--files"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"Resources/phosphor/LICENSE\t{kit / 'Resources/phosphor/LICENSE'}", result.stdout)
+
+    def testMissingKitNoticeCannotFallBackToAppOrCore(self):
+        core, kit = self.splitNoticeCheckouts()
+        (kit / "Resources/phosphor/LICENSE").unlink()
+        for root in (self.source, core):
+            path = root / "Resources/phosphor/LICENSE"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"wrong checkout's notice\n")
+        with self.assertRaisesRegex(ValueError, "missing or external notice: Resources/phosphor/LICENSE"):
+            copy_notices(self.source, self.destination, core, kit)
+        self.assertFalse(self.destination.exists())
+
+    def testKitNoticeSymlinkCannotEscapeItsCheckout(self):
+        core, kit = self.splitNoticeCheckouts()
+        notice = kit / "Resources/phosphor/LICENSE"
+        notice.unlink()
+        outside = Path(self.temporary.name) / "outside-license.txt"
+        outside.write_bytes(b"outside\n")
+        notice.symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, "missing or external notice: Resources/phosphor/LICENSE"):
+            notice_files(self.source, core, kit)
+
+    @unittest.skipUnless(shutil.which("cmake"), "CMake is unavailable")
+    def testCMakeInstallReadsNoticesAcrossThreeCheckouts(self):
+        core, kit = self.splitNoticeCheckouts()
+        (self.source / "CMakeLists.txt").write_text(f'''cmake_minimum_required(VERSION 3.13)
+project(NoticeFixture LANGUAGES NONE)
+set(UBIQUITTY_CORE_SOURCE_DIR "{core}")
+set(UBIQUITTY_KIT_SOURCE_DIR "{kit}")
+include("{ROOT}/cmake/LicenseNotices.cmake")
+ubiquitty_install_license_notices("share/doc/ubiquitty")
+''')
+        build = Path(self.temporary.name) / "build"
+        for command in (["cmake", "-S", str(self.source), "-B", str(build)],
+                        ["cmake", "--install", str(build), "--prefix", str(self.destination)]):
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        staged = self.destination / "share/doc/ubiquitty"
+        self.assertEqual(verify_notices(self.source, staged, core, kit), [])
+
     def testMissingRequiredPathFails(self):
         self.inventory.write_text('[{"name":"missing", "noticeRequired":true}]')
         with self.assertRaisesRegex(ValueError, "no noticePath"):

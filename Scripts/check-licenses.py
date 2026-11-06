@@ -196,6 +196,8 @@ def font_surface_errors(directory, rows):
     failures = []
     held = ubq_roots.repositories(str(directory))
     core = Path(ubq_roots.core_root(str(directory)))
+    kit = Path(ubq_roots.kit_root(str(directory)))
+    kit_rows = None
     font_rows = rows
     if core != directory:
         try:
@@ -210,8 +212,29 @@ def font_surface_errors(directory, rows):
             failures.append(f"surface: {path} copies its {surface} fonts in a form this check does not read; "
                             f"update copied_fonts() in Scripts/check-licenses.py")
             continue
+        # The web stage copies Kit's Phosphor fonts beside Core's terminal
+        # fonts. The explicit resource prefix selects their owning inventory;
+        # another checkout's row cannot supply a missing distribution surface.
+        code = "\n".join(line for line in (directory / path).read_text(encoding="utf-8").splitlines()
+                         if not line.lstrip().startswith("#"))
+        kit_fonts = set(re.findall(r'Resources/phosphor/(' + FONT_FILE.pattern + ')', code))
         for font in sorted(fonts):
-            owners = [row for row in font_rows if matches(font.rsplit(".", 1)[0], row.get("name", ""))]
+            owning_rows = font_rows
+            if font in kit_fonts:
+                if not (kit / "Resources/phosphor" / font).is_file():
+                    failures.append(f"surface: {path} copies a missing Kit font: Resources/phosphor/{font}")
+                    continue
+                if kit_rows is None:
+                    if kit == directory:
+                        kit_rows = rows
+                    else:
+                        try:
+                            kit_rows = json.loads((kit / INVENTORY).read_text(encoding="utf-8"))
+                        except (OSError, ValueError) as error:
+                            failures.append(f"surface: cannot read Kit's font inventory at {kit / INVENTORY}: {error}")
+                            continue
+                owning_rows = kit_rows
+            owners = [row for row in owning_rows if matches(font.rsplit(".", 1)[0], row.get("name", ""))]
             if not owners:
                 failures.append(f"surface: {path} copies {font}, which has no inventory row")
             for row in owners:
@@ -444,6 +467,27 @@ def project_license_self_test():
             failures = font_surface_errors(self.root, self.rows(*self.SURFACES))
             self.assertEqual(len(failures), 1)
             self.assertIn("Face-Regular.ttf into ubiquittykit-framework", failures[0])
+
+        def app_with_core_and_kit_fonts(self, *kit_surfaces):
+            self.kit_with_core_fonts(*self.SURFACES)
+            self.write("Scripts/repository.txt", "app\n")
+            self.write("Libraries/ubiquitty-kit/Scripts/repository.txt", "kit\n")
+            self.write("Libraries/ubiquitty-kit/Resources/phosphor/Phosphor.ttf", "")
+            self.write("Libraries/ubiquitty-kit/" + INVENTORY,
+                       json.dumps([{"name": "Phosphor Icons", "distributionSurface": list(kit_surfaces)}]))
+            self.write("Scripts/build-web.sh", 'cp "$CORE_ROOT/Resources/fonts/Face-Regular.ttf" "$STAGE/fonts/"\n'
+                                               'cp "$KIT_ROOT/Resources/phosphor/Phosphor.ttf" "$STAGE/phosphor/"\n')
+
+        def test_web_fonts_read_core_and_kit_inventories(self):
+            self.app_with_core_and_kit_fonts("web")
+            self.assertEqual(font_surface_errors(self.root, []), [])
+
+        def test_a_web_surface_missing_from_kits_row_fails(self):
+            self.app_with_core_and_kit_fonts("ubiquittykit-framework")
+            local_rows = [{"name": "Phosphor Icons", "distributionSurface": ["web"]}]
+            failures = font_surface_errors(self.root, local_rows)
+            self.assertEqual(len(failures), 1)
+            self.assertIn("Phosphor.ttf into web", failures[0])
 
     test_path = Path(__file__).resolve().parent.parent / "Tests/test-license-scope.py"
     specification = importlib.util.spec_from_file_location("license_scope_tests", test_path)
