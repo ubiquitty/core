@@ -74,14 +74,18 @@ int main(int argc, char** argv)
 
     auto terminal = std::make_unique<Terminal>();
     resize(*terminal, benchRows, benchColumns);
+    // Published as a frontend publishes the cell it draws at, which is the cell
+    // a virtual placement's box is measured in.
+    publishPixelGeometry(*terminal, { { 8, 16 }, { 8 * benchColumns, 16 * benchRows }, { 8 * benchColumns, 16 * benchRows } });
     // A virtual placement covering the grid, so every placeholder cell resolves.
-    // The image is one pixel per grid cell: any smaller and a cell's source
-    // sub-rectangle rounds to nothing and the pass skips it, which times a walk
-    // that decides not to place rather than one that places.
-    std::string transmit = "\033_Ga=T,U=1,i=31,f=24,s=200,v=50,c=200,r=50;";
+    // The image is one pixel across and two down per grid cell, the cell's own
+    // aspect, so it fills its box with no letterbox: any other aspect leaves
+    // cells outside the fitted image, and the pass skips them, which times a
+    // walk that decides not to place rather than one that places.
+    std::string transmit = "\033_Ga=T,U=1,i=31,f=24,s=200,v=100,c=200,r=50;";
     // Zero bytes, so the payload is a run of the base64 digit for zero. 24-bit
     // colour over the whole image is three bytes a pixel.
-    transmit.append(static_cast<std::size_t>(benchColumns) * benchRows * 3 * 4 / 3, 'A');
+    transmit.append(static_cast<std::size_t>(benchColumns) * benchRows * 2 * 3 * 4 / 3, 'A');
     transmit += "\033\\";
     processBytes(terminal.get(), transmit);
 
