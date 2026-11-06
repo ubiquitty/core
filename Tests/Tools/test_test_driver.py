@@ -58,7 +58,8 @@ class TestDriverTests(unittest.TestCase):
         self.cache.parent.mkdir(parents=True)
         self.cache.write_text("CMAKE_CACHEFILE_DIR:INTERNAL=/another/checkout\n")
         self.environment = dict(os.environ)
-        for name in ("CTEST_BUILD_DIR", "UBQ_OUT", "NO_CTEST", "SKIP_CTEST_COVERED", "FUZZ_REQUIRED",
+        for name in ("UBQ_TESTS_ROOT", "UBQ_CORE_ROOT", "UBQ_KIT_ROOT",
+                     "CTEST_BUILD_DIR", "UBQ_OUT", "NO_CTEST", "SKIP_CTEST_COVERED", "FUZZ_REQUIRED",
                      "UBQ_HOST_TEST_TREE", "UBQ_TEST_TARGETS_PREBUILT", "UBQ_LIBCORE_PREBUILT",
                      "UBQ_SHARED_BINARIES_FROM_FIXTURES", "UBQ_HOST_PREBUILT", "UBQ_AGENT_PREBUILT",
                      "UBQ_HOST_TEST_BUILD", "UBQ_BIN", "UBIQUITTY_HOST_BIN", "UBQ_SNAPSHOT_RENDERER_PREBUILT"):
@@ -184,16 +185,31 @@ class TestDriverTests(unittest.TestCase):
         uname.write_text(f'#!/bin/bash\nif [ "$1" = "-s" ]; then echo "{platform}"; else /usr/bin/uname "$@"; fi\n')
         uname.chmod(0o755)
 
-    def testGuardedNamesAreDiscoveredOnlyOnTheirPlatform(self):
-        source = self.driver.read_text()
+    def guardedCoreRecipeNames(self, source):
         guarded = {line.split("wanted ", 1)[1].split(";", 1)[0]
                    for line in source.splitlines()
                    if line.startswith('if [ "$(uname -s)" = "Darwin" ] && wanted ')}
-        # The floor is what the driver carries, and it is here because a guard
-        # spelled differently would match nothing and leave every assertion
-        # below vacuously true. A stanza that becomes portable, or moves into
-        # the CMake suite, lowers it; a Darwin-only one raises it.
-        self.assertGreaterEqual(len(guarded), 9)
+        # This fixture runs Core's driver. Native frontend recipes belong to
+        # their repositories; Core keeps its PTY and serial recipes. Naming
+        # both rejects a missing or unrecognised declaration instead of letting
+        # an empty parsed set pass every platform assertion below.
+        missing = {"test_pty", "test_serial"} - guarded
+        self.assertFalse(missing, f"missing Core Darwin recipes: {sorted(missing)}")
+        return guarded
+
+    def testMissingCoreDarwinRecipeIsRejected(self):
+        source = self.driver.read_text()
+        for name in ("test_pty", "test_serial"):
+            with self.subTest(name=name):
+                declaration = f'if [ "$(uname -s)" = "Darwin" ] && wanted {name}; then'
+                self.assertEqual(source.count(declaration), 1)
+                missing = source.replace(declaration, "if false; then")
+                with self.assertRaisesRegex(AssertionError, name):
+                    self.guardedCoreRecipeNames(missing)
+
+    def testGuardedNamesAreDiscoveredOnlyOnTheirPlatform(self):
+        source = self.driver.read_text()
+        guarded = self.guardedCoreRecipeNames(source)
         self.driver.write_text(source + '\nif false; then\n'
                                '    if [ "$(uname -s)" = "Darwin" ] && wanted driver_guarded_probe; then :; fi\nfi\n')
         guarded.add("driver_guarded_probe")
@@ -548,6 +564,97 @@ fi
         self.assertDiagnosticBuildTree(custom)
         self.assertFalse((self.repository / "injected").exists())
         self.assertFalse(custom.exists())
+
+
+class BuildTestsDriverTests(unittest.TestCase):
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory(prefix="ubiquitty-build-tests-subject-")
+        self.addCleanup(scratch.cleanup)
+        self.directory = Path(scratch.name).resolve()
+        self.tools = self.directory / "tools"
+        self.tools.mkdir()
+        self.trace = self.directory / "configure.json"
+        cmake = self.tools / "cmake"
+        cmake.write_text(f"#!{sys.executable}\n"
+                         "import json, os, sys\n"
+                         "with open(os.environ['DRIVER_TOOL_TRACE'], 'w') as output:\n"
+                         "    json.dump(sys.argv[1:], output)\n"
+                         "sys.exit(83)\n")
+        cmake.chmod(0o755)
+        self.environment = {key: value for key, value in os.environ.items()
+                            if not key.startswith(("GIT_", "UBIQUITTY_", "UBQ_"))
+                            and key not in ("BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS")}
+        self.environment.update(PATH=str(self.tools) + os.pathsep + os.environ.get("PATH", ""),
+                                UBQ_BUILD_ROOT=str(self.directory / "external build"),
+                                BUILD_JOBS="1", DRIVER_TOOL_TRACE=str(self.trace))
+
+    def makeDriver(self, checkout):
+        scripts = checkout / "Scripts"
+        scripts.mkdir(parents=True)
+        for name in ("build-jobs.sh", "build-root.sh", "ccache-env.sh"):
+            (scripts / name).symlink_to(ROOT / "Scripts" / name)
+        driver = scripts / "build-tests.sh"
+        shutil.copyfile(ROOT / "Scripts/build-tests.sh", driver)
+        return driver
+
+    def initializeRepository(self, checkout):
+        checkout.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(checkout)], env=self.environment,
+                       capture_output=True, text=True, check=True)
+
+    def configureArguments(self, driver, cwd):
+        result = subprocess.run(["/bin/bash", str(driver)], cwd=cwd, env=self.environment,
+                                capture_output=True, text=True, timeout=10, check=False)
+        self.assertEqual(result.returncode, 83, result.stdout + result.stderr)
+        arguments = json.loads(self.trace.read_text())
+        self.assertEqual(arguments[0], "-S")
+        return arguments
+
+    def testDirectCoreConfiguresCore(self):
+        core = self.directory / "standalone Core"
+        driver = self.makeDriver(core)
+        self.initializeRepository(core)
+        arguments = self.configureArguments(driver, core)
+        self.assertEqual(arguments[1], str(core))
+        self.assertFalse(any(argument.startswith("-DUBIQUITTY_CORE_SOURCE_DIR=") for argument in arguments))
+
+    def testExplicitSubjectOverridesTheCurrentCheckout(self):
+        core = self.directory / "standalone Core"
+        driver = self.makeDriver(core)
+        self.initializeRepository(core)
+        subject = self.directory / "app ' quote $(touch injected) ; $value"
+        subject.mkdir()
+        self.environment["UBQ_TESTS_ROOT"] = str(subject)
+        arguments = self.configureArguments(driver, core)
+        self.assertEqual(arguments[1], str(subject))
+        self.assertIn(f"-DUBIQUITTY_CORE_SOURCE_DIR={core}", arguments)
+        self.assertFalse((core / "injected").exists())
+
+    def testEmbeddedDriverConfiguresItsConsumer(self):
+        app = self.directory / "app checkout"
+        core = app / "Libraries/ubiquitty-core"
+        driver = self.makeDriver(core)
+        self.initializeRepository(app)
+        kit = app / "Libraries/ubiquitty-kit"
+        kit.mkdir()
+        arguments = self.configureArguments(driver, app)
+        self.assertEqual(arguments[1], str(app))
+        self.assertIn(f"-DUBIQUITTY_CORE_SOURCE_DIR={core}", arguments)
+        self.assertIn(f"-DUBIQUITTY_KIT_SOURCE_DIR={kit}", arguments)
+
+    def testExplicitKitRootReachesTheConsumerConfigure(self):
+        core = self.directory / "standalone Core"
+        driver = self.makeDriver(core)
+        self.initializeRepository(core)
+        app = self.directory / "app checkout"
+        app.mkdir()
+        kit = self.directory / "selected Kit"
+        kit.mkdir()
+        self.environment.update(UBQ_TESTS_ROOT=str(app), UBQ_KIT_ROOT=str(kit))
+        arguments = self.configureArguments(driver, core)
+        self.assertEqual(arguments[1], str(app))
+        self.assertIn(f"-DUBIQUITTY_CORE_SOURCE_DIR={core}", arguments)
+        self.assertIn(f"-DUBIQUITTY_KIT_SOURCE_DIR={kit}", arguments)
 
 
 if __name__ == "__main__":
