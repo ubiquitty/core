@@ -5,13 +5,12 @@
 
 | You are building | Reach for | Repository |
 |---|---|---|
-| Your own UI that draws the terminal itself: a GPU UI toolkit, a game engine, or an editor with its own text system | libubiquitty's C++ session facade and Core headers | `ubiquitty-core` |
-| The same from C++, linking Core in your own CMake graph | the C++ session facade and Core's headers | `ubiquitty-core` |
-| Persistent sessions, a session daemon, attach and reattach across machines | the multiplexer: `ubiquitty-host`, Sync, the `ubq` command and the agent | `ubiquitty-core` |
-| A terminal view to drop into a macOS or iOS app | UbiquittyKit's `TerminalSurface` (Metal) | `ubiquitty-kit` |
-| A terminal view in a Linux app, or a software-rendered surface | the Vulkan, FreeType and software renderers and the GTK platform layer | `ubiquitty-kit` |
-| Core's renderer drawing into a texture or layer your app owns | UbiquittyRenderKit (Metal) or the Vulkan renderer's exportable frames | `ubiquitty-kit` |
-| The Ubiquitty apps themselves | the macOS, iOS, Linux and web frontends | `ubiquitty` |
+| A C++ host with its own UI, text system or renderer | libubiquitty's C++ session facade and Core headers | [ubiquitty-core](https://github.com/ubiquitty/ubiquitty-core) |
+| Persistent sessions, a session daemon, attach and reattach across machines | the multiplexer: `ubiquitty-host`, Sync, the `ubq` command and the agent | [ubiquitty-core](https://github.com/ubiquitty/ubiquitty-core) |
+| A terminal view to drop into a macOS or iOS app | UbiquittyKit's `TerminalSurface` (Metal) | [ubiquitty-kit](https://github.com/ubiquitty/ubiquitty-kit) |
+| A terminal view in a Linux app, or a software-rendered surface | the Vulkan, FreeType and software renderers and the GTK platform layer | [ubiquitty-kit](https://github.com/ubiquitty/ubiquitty-kit) |
+| Core's renderer drawing into a texture or layer your app owns | UbiquittyRenderKit (Metal) or the Vulkan renderer's exportable frames | [ubiquitty-kit](https://github.com/ubiquitty/ubiquitty-kit) |
+| The Ubiquitty apps themselves | the macOS, iOS, Linux and web frontends | [ubiquitty](https://github.com/ubiquitty/ubiquitty) |
 
 Ubiquitty is three repositories. Each depends only on the ones below it:
 `ubiquitty` → `ubiquitty-kit` → `ubiquitty-core`. This is the bottom one.
@@ -51,6 +50,11 @@ compiler. The first QUIC-enabled build of the host fetches and builds its QUIC
 dependencies, which needs network access, Go and Perl.
 
 ```sh
+git clone https://github.com/ubiquitty/ubiquitty-core.git
+cd ubiquitty-core
+```
+
+```sh
 Scripts/build-host.sh     # ubiquitty-host, the session daemon
 Scripts/build-agent.sh    # ubq, the headless client and MCP server
 Scripts/build-tests.sh    # compiles every test, runs none
@@ -61,6 +65,7 @@ its root, and `UBQ_BUILD_ROOT` overrides it. The libraries and the consumer
 sample:
 
 ```sh
+BUILD="$(python3 Scripts/build_root.py .)/core"
 cmake -S . -B "$BUILD" -G Ninja -DUBIQUITTY_FRONTEND=Core -DUBIQUITTY_QUIC=OFF
 cmake --build "$BUILD" --target core-consumer
 "$BUILD/core-consumer"
