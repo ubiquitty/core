@@ -367,7 +367,7 @@ static Ubiquitty::IntSize kittyPlacedCells(const Ubiquitty::Terminal& t, const U
         return { columns, rows };
     const double offsetX = std::max(0, c->pixelOffsetX);
     const double offsetY = std::max(0, c->pixelOffsetY);
-    const auto cells = [](double pixels, double cell) { return static_cast<int>(std::min(65535.0, std::ceil(pixels / cell))); };
+    const auto cells = [](double pixels, double cell) { return Image::cellsCovering(pixels, cell); };
     if (columns == 0 && rows == 0)
         return { cells(sourceWidth + offsetX, cellWidth), cells(sourceHeight + offsetY, cellHeight) };
     if (columns == 0)

@@ -54,6 +54,10 @@ constexpr uint32_t placeholderCodePoint = 0x10EEEE;
 /// arguments mirror `Rendering::collectImageQuads`, the caller that combines
 /// this with the grid placements.
 ///
+/// A virtual placement's box of cells is measured in the terminal's published
+/// cell, the one CSI 16 t reports, so it is the box the program laid its
+/// placeholder cells out in. `cellSizeInPixels` places each tile on screen.
+///
 /// - Parameters:
 ///   - t: The terminal whose visible grid is scanned.
 ///   - cellSizeInPixels: One cell, in device pixels.
@@ -87,6 +91,11 @@ struct UBIQUITTY_NONESCAPABLE PlaceholderGrid {
     ClusterReader readCluster = nullptr;
     /// Handed to `readCluster` as its last argument.
     void* readClusterContext = nullptr;
+    /// The captured terminal's published cell (`Terminal::cellPixelWidth` and
+    /// `cellPixelHeight`), which a virtual placement's box is measured in.
+    /// Zero, as on a terminal nothing published to, measures it in the
+    /// renderer's cell as a frontend rounds it to publish.
+    IntSize publishedCellPixels {};
 };
 
 /// Resolves the placeholder cells of a captured grid into image quads.

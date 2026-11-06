@@ -242,6 +242,11 @@ struct UBIQUITTY_NONESCAPABLE BuildInputs {
     bool alternateActive = false;
     int placementCount = 0;
     int viewOffset = 0;
+    /// The terminal's published cell (`Terminal::cellPixelWidth` and
+    /// `cellPixelHeight`), zero where nothing was published: what a kitty
+    /// virtual placement's box of cells is measured in
+    /// (`Kitty::PlaceholderGrid::publishedCellPixels`).
+    IntSize publishedCellPixels {};
 
     // Translucent selection highlight: one filled overlay quad per selected
     // on-screen row span, in selectionColor (RGBA 0..1; alpha tints the cells so

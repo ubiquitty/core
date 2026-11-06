@@ -168,10 +168,11 @@ struct TerminalImage {
     // Kitty Unicode-placeholder virtual placement (a=T/t with U=1). When set, no
     // grid placement is created; the image is positioned by U+10EEEE placeholder
     // cells whose diacritics carry (row, column) and foreground color the image id.
-    // virtualColumns/virtualRows are the requested c/r (0 = derive from the
-    // placeholder span); the resolver partitions the image into that grid and
-    // shows cell (row, col) in the matching placeholder. virtualPlacementID
-    // mirrors p= for matching from the placeholder's underline color.
+    // virtualColumns/virtualRows are the requested c/r; 0 is the whole cells the
+    // image covers on that axis at the cell size the program reads (kitty's
+    // grman_put_cell_image). The resolver tiles that box of cells and shows box
+    // cell (row, col) in the matching placeholder. virtualPlacementID mirrors p=
+    // for matching from the placeholder's underline color.
     bool virtualPlacement;
     uint16_t virtualColumns;
     uint16_t virtualRows;
@@ -376,6 +377,16 @@ inline bool imageCacheStampMatches(TextureState textureState, uint64_t storedSta
 ///   - cellColumns: The requested columns, 0 to derive; receives the result.
 ///   - cellRows: The requested rows, 0 to derive; receives the result.
 void completeCellBox(int pixelWidth, int pixelHeight, int cellPixelWidth, int cellPixelHeight, int* cellColumns, int* cellRows);
+
+/// The whole cells an extent covers on one axis, rounded up: kitty's count for
+/// an axis a placement leaves to the image, for a direct placement's extent
+/// (update_dest_rect) and for a virtual placement's box (grman_put_cell_image).
+///
+/// - Parameters:
+///   - extentInPixels: The extent to cover; positive.
+///   - cellInPixels: One cell on that axis; positive.
+/// - Returns: The cell count, in 1...65535.
+[[nodiscard]] int cellsCovering(double extentInPixels, double cellInPixels);
 
 /// Where an OSC 1337 image goes and how large it is drawn.
 ///

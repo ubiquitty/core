@@ -446,6 +446,11 @@ void completeCellBox(int pixelWidth, int pixelHeight, int cellPixelWidth, int ce
     *cellColumns = (derived < 1.0) ? 1 : static_cast<int>(derived + 0.5);
 }
 
+int cellsCovering(double extentInPixels, double cellInPixels)
+{
+    return std::clamp(static_cast<int>(std::min(65535.0, std::ceil(extentInPixels / cellInPixels))), 1, 65535);
+}
+
 // The top half of the id range. The counter's low 31 bits go under it, so
 // the sync bump that raises the counter past a received id keeps working and
 // the result never falls into the half a client names from.

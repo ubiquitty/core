@@ -264,6 +264,7 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
     // Marks live on the primary, so the alternate screen has none to pass.
     source.rowMarks = terminal.screens.isUsingAlternateScreen ? nullptr : capturedRowMarks->data();
     source.alternateActive = terminal.screens.isUsingAlternateScreen;
+    source.publishedCellPixels = { terminal.cellPixelWidth, terminal.cellPixelHeight };
     source.rows = terminal.rows;
     source.columns = terminal.columns;
     source.scrollbackCount = history;
@@ -1176,6 +1177,7 @@ bool TerminalFrameInputs::captureSource(const FrameSource& source, const Termina
     m_inputs.placements = m_hasPlacements ? m_placements.data() : nullptr;
     m_inputs.placementCount = m_hasPlacements ? Image::maxTerminalImagePlacementCount : 0;
     m_inputs.alternateActive = source.alternateActive;
+    m_inputs.publishedCellPixels = source.publishedCellPixels;
     m_inputs.viewOffset = m_viewOffset;
     m_inputs.backgroundOpacity = std::clamp(options.style.backgroundOpacity, 0.0f, 1.0f);
     // The per-index opacity is the captured palette's own, assembled with

@@ -163,6 +163,9 @@ struct UBIQUITTY_NONESCAPABLE FrameSource {
     /// The screen active at capture time, so a renderer resolving from this
     /// capture draws only the placements belonging to it.
     bool alternateActive = false;
+    /// The terminal's published cell, which a kitty virtual placement's box of
+    /// cells is measured in; zero where nothing was published.
+    IntSize publishedCellPixels {};
     /// Reads a cell's full grapheme cluster. A source that leaves this null is
     /// not refused: the builder falls back to the cell's base code point, and a
     /// ZWJ family, a flag or a skin-toned hand key the atlas as a man, a
