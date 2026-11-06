@@ -69,6 +69,41 @@ TEST(testMalformedTokensAreSkippedNotRefused)
     CHECK(parseFontVariationSpecification("opsz=1.2.3").empty());
 }
 
+// The refusal paths of the value grammar that testMalformedTokensAreSkippedNotRefused
+// does not reach (it pins trailing characters). Each one rejects rather than
+// accepts a number it half-read: a parse that fell through would hand the face
+// an axis value assembled from the digits it happened to consume.
+TEST(malformedValuesAndTagsAreRefusedRatherThanHalfRead)
+{
+    CHECK_MSG(parseFontVariationSpecification("wght=+").empty(), "a sign with no digits after it");
+    CHECK_MSG(parseFontVariationSpecification("wght=-").empty(), "and the same for a minus");
+    CHECK_MSG(parseFontVariationSpecification("wght=1234567").empty(), "an integral part past any axis scale");
+    CHECK_MSG(parseFontVariationSpecification("opsz=1.234567").empty(), "more fractional digits than the scale carries");
+    CHECK_MSG(parseFontVariationSpecification("opsz=.").empty(), "a point with digits on neither side");
+    CHECK_MSG(parseFontVariationSpecification("wght=1.").empty(), "integral digits followed by a bare point");
+
+    // A tag is four ASCII graphic characters; a control byte inside one is the
+    // case a length check alone would pass.
+    CHECK_MSG(parseFontVariationSpecification(std::string("wg\x01t=400")).empty(), "a control byte inside the tag");
+
+    // And the good value beside them, so the test cannot pass by refusing
+    // everything.
+    const auto good = parseFontVariationSpecification("wght=400");
+    CHECK(good.size() == 1 && good[0].value == 400.0);
+}
+
+// Each limit of the value grammar is accepted at the limit and refused one step
+// past it.
+TEST(valueLimitsAreInclusiveAtTheEdge)
+{
+    CHECK_MSG(valueOf(parseFontVariationSpecification("wght=100000"), "wght") == 100000.0,
+        "the largest integral part is accepted");
+    CHECK_MSG(parseFontVariationSpecification("wght=100001").empty(), "and one past it is refused");
+    CHECK_MSG(valueOf(parseFontVariationSpecification("opsz=1.2345"), "opsz") == 1.2345,
+        "four fractional digits fill the scale exactly");
+    CHECK_MSG(parseFontVariationSpecification("opsz=1.23456").empty(), "and a fifth is refused");
+}
+
 TEST(testCanonicalRoundTrip)
 {
     const auto v = parseFontVariationSpecification("slnt=-6,opsz=14.50 , wght=450");

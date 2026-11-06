@@ -68,6 +68,22 @@ TEST(oneSegmentDrawnTwoWaysIsTwoAnswers)
         "the style is part of the question, so a bold row cannot be served the regular answer");
 }
 
+// Publishing a segment the current frame already holds answers the held span
+// rather than growing a second record for it: the shaper is allowed to answer
+// twice within one frame, and a cache that appended both would serve whichever
+// the probe reached first.
+TEST(publishingTwiceKeepsOneRecord)
+{
+    ShapedCellCache cache;
+    const auto segment = text("== <=");
+    const auto first = cache.publish(segment, 0u, answer({ 900u, 0u, 32u, 901u, 0u }));
+    CHECK(cache.retainedSegments() == 1);
+    const auto again = cache.publish(segment, 0u, answer({ 1u, 2u, 3u, 4u, 5u }));
+    CHECK_MSG(cache.retainedSegments() == 1, "the second publish adds no record");
+    CHECK_MSG(again.data() == first.data() && again[0].glyphID == 900u,
+        "and answers the record already held rather than the value just offered");
+}
+
 TEST(aDifferentSegmentOfTheSameLengthIsNotServedTheAnswer)
 {
     ShapedCellCache cache;
