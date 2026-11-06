@@ -20,13 +20,13 @@ namespace Ubiquitty::Unicode {
 enum class Encoding : std::uint8_t {
     UTF8 = 0, // default; pass-through (decoder not used)
     Latin1, // ISO-8859-1
-    Iso8859_15, // ISO-8859-15 (Latin-9)
-    Koi8R, // KOI8-R (Cyrillic)
+    ISO8859_15, // ISO-8859-15 (Latin-9)
+    KOI8R, // KOI8-R (Cyrillic)
     Windows1252, // CP1252 (Western, superset of Latin-1)
-    ShiftJis, // Shift_JIS (Japanese)
-    EucJp, // EUC-JP (Japanese)
-    EucKr, // EUC-KR / CP949 (Korean)
-    Gb18030, // GB18030 (Chinese; supersedes GBK/GB2312)
+    ShiftJIS, // Shift_JIS (Japanese)
+    EUCJP, // EUC-JP (Japanese)
+    EUCKR, // EUC-KR / CP949 (Korean)
+    GB18030, // GB18030 (Chinese; supersedes GBK/GB2312)
     Big5, // Big5 (Traditional Chinese)
 };
 
@@ -50,15 +50,15 @@ inline bool encodingIsSingleByte(Encoding e)
 {
     switch (e) {
     case Encoding::Latin1:
-    case Encoding::Iso8859_15:
-    case Encoding::Koi8R:
+    case Encoding::ISO8859_15:
+    case Encoding::KOI8R:
     case Encoding::Windows1252:
         return true;
     case Encoding::UTF8:
-    case Encoding::ShiftJis:
-    case Encoding::EucJp:
-    case Encoding::EucKr:
-    case Encoding::Gb18030:
+    case Encoding::ShiftJIS:
+    case Encoding::EUCJP:
+    case Encoding::EUCKR:
+    case Encoding::GB18030:
     case Encoding::Big5:
         return false;
     }

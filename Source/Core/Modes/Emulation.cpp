@@ -52,12 +52,12 @@ std::optional<Ubiquitty::VT::Emulation> emulationFromName(const char* name)
     static const Entry table[] = {
         { "vt", Ubiquitty::VT::Emulation::VT },
         { "linux", Ubiquitty::VT::Emulation::Linux },
-        { "sco", Ubiquitty::VT::Emulation::Sco },
+        { "sco", Ubiquitty::VT::Emulation::SCO },
         { "wyse", Ubiquitty::VT::Emulation::Wyse },
-        { "televideo", Ubiquitty::VT::Emulation::Televideo },
-        { "adm", Ubiquitty::VT::Emulation::Adm },
+        { "televideo", Ubiquitty::VT::Emulation::TeleVideo },
+        { "adm", Ubiquitty::VT::Emulation::ADM },
         { "heath", Ubiquitty::VT::Emulation::Heath },
-        { "hp", Ubiquitty::VT::Emulation::Hp },
+        { "hp", Ubiquitty::VT::Emulation::HP },
     };
     for (const Entry& e : table) {
         if (std::strcmp(name, e.token) == 0)

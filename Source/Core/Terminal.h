@@ -610,7 +610,7 @@ struct Terminal {
     bool windowFocused {}; // frontend-pushed key focus (default true); gates unfocused-bell notification.
 
     // Escape grammar the byte driver interprets. VT keeps the native DEC/ANSI hot path unchanged;
-    // Linux/Sco layer console sequences on it; Wyse/Televideo/Adm/Heath/Hp switch to a legacy grammar.
+    // Linux/SCO layer console sequences on it; Wyse/TeleVideo/ADM/Heath/HP switch to a legacy grammar.
     // Set once at session start via Modes::setEmulation; never changed by a host escape.
     Ubiquitty::VT::Emulation emulation {};
     // Legacy non-ANSI parser substate (only meaningful for non-ANSI grammars). 0 = ground, 1 = saw ESC,

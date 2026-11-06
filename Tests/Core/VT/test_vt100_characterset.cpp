@@ -367,9 +367,9 @@ TEST(testLegacyEmulationFromName)
 {
     CHECK(Ubiquitty::Modes::emulationFromName("linux") == Ubiquitty::VT::Emulation::Linux);
     CHECK(Ubiquitty::Modes::emulationFromName("wyse") == Ubiquitty::VT::Emulation::Wyse);
-    CHECK(Ubiquitty::Modes::emulationFromName("televideo") == Ubiquitty::VT::Emulation::Televideo);
-    CHECK(Ubiquitty::Modes::emulationFromName("adm") == Ubiquitty::VT::Emulation::Adm);
-    CHECK(Ubiquitty::Modes::emulationFromName("sco") == Ubiquitty::VT::Emulation::Sco);
+    CHECK(Ubiquitty::Modes::emulationFromName("televideo") == Ubiquitty::VT::Emulation::TeleVideo);
+    CHECK(Ubiquitty::Modes::emulationFromName("adm") == Ubiquitty::VT::Emulation::ADM);
+    CHECK(Ubiquitty::Modes::emulationFromName("sco") == Ubiquitty::VT::Emulation::SCO);
     /// Unknown token returns std::nullopt.
     CHECK(!Ubiquitty::Modes::emulationFromName("bogus").has_value());
     /// Default (no setEmulation) is VT.
@@ -398,7 +398,7 @@ TEST(testLegacyWyseConsecutiveAddress)
 {
     Ubiquitty::Terminal t;
     Ubiquitty::hardReset(t);
-    Ubiquitty::Modes::setEmulation(&t, Ubiquitty::VT::Emulation::Televideo);
+    Ubiquitty::Modes::setEmulation(&t, Ubiquitty::VT::Emulation::TeleVideo);
     unsigned char seq[] = {
         0x1B,
         '=',
@@ -439,7 +439,7 @@ TEST(testLegacyControls)
 {
     Ubiquitty::Terminal t;
     Ubiquitty::hardReset(t);
-    Ubiquitty::Modes::setEmulation(&t, Ubiquitty::VT::Emulation::Adm);
+    Ubiquitty::Modes::setEmulation(&t, Ubiquitty::VT::Emulation::ADM);
     feed(t, "AB\r"); // print AB, CR back to column 0
     CHECK(t.screens.active->cursorX == 0);
     CHECK(t.screens.active->cursorY == 0);
@@ -855,7 +855,7 @@ TEST(testLegacyEncodingBatchParity)
     const std::string stream = buildLegacyParityStream();
     const Ubiquitty::Unicode::Encoding encodings[] = {
         Ubiquitty::Unicode::Encoding::Latin1,
-        Ubiquitty::Unicode::Encoding::Koi8R,
+        Ubiquitty::Unicode::Encoding::KOI8R,
     };
     for (Ubiquitty::Unicode::Encoding encoding : encodings) {
         LegacyParitySnapshot perByte = legacyParityFeed(encoding, stream, 1);
@@ -2032,7 +2032,7 @@ TEST(testESCGUnderADMEmulationIsDropped)
 {
     Ubiquitty::Terminal t;
     Ubiquitty::hardReset(t);
-    Ubiquitty::Modes::setEmulation(&t, Ubiquitty::VT::Emulation::Adm);
+    Ubiquitty::Modes::setEmulation(&t, Ubiquitty::VT::Emulation::ADM);
 
     feed(t, "\033G1"); // ESC G dropped; the '1' is no attribute byte here
     CHECK(cell(t, 0, 0)->codePoint == '1');

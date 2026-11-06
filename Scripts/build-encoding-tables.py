@@ -35,7 +35,7 @@ import io
 import sys
 
 
-REFERENCE_PAYLOAD_SHA256 = "2fae0fad9138ea893f6a5381e0beb8d51c585ddc2458cc7b130b3ebbf45848aa"
+REFERENCE_PAYLOAD_SHA256 = "2cecdc01dd10e603096a254ca813d78f7ceacda3a84790f3e8c3cd7dca58aabb"
 TABLE_HEADER = """// Copyright (C) 2026 Stanislav Yaglo
 // Copyright (c) 2001-2024 Python Software Foundation; All Rights Reserved
 // Copyright \u00a9 2015, 2016 Unicode, Inc.
@@ -226,7 +226,7 @@ def main():
         sjis = double_byte_map("shift_jis", 0x81, 0x9F, 0x40, 0x7E, 0x80, 0xFC)
         sjis += double_byte_map("shift_jis", 0xE0, 0xFC, 0x40, 0x7E, 0x80, 0xFC)
         sjis = sorted(dict(sjis).items())
-        emit_double("shiftJis", sjis, f)
+        emit_double("shiftJIS", sjis, f)
 
         # --- EUC-JP double-byte (G1: lead/trail 0xA1..0xFE) ---
         # Plus G3 via 0x8F (3-byte) — handled in the decoder by stripping the
@@ -234,7 +234,7 @@ def main():
         # (G2 0x8E is single-shift kana, in the state machine). For G3 we
         # build a separate 3-byte-keyed map below if present.
         eucjp = double_byte_map("euc-jp", 0xA1, 0xFE, 0xA1, 0xFE)
-        emit_double("eucJp", eucjp, f)
+        emit_double("eucJP", eucjp, f)
 
         # EUC-JP G3 (JIS X 0212): 0x8F + two bytes 0xA1..0xFE. Key on the
         # trailing two bytes (lead<<8|trail); decoder recognizes the 0x8F
@@ -249,7 +249,7 @@ def main():
                     continue
                 if len(s) == 1:
                     eucjp_g3[(lead << 8) | trail] = ord(s)
-        emit_double("eucJpG3", sorted(eucjp_g3.items()), f)
+        emit_double("eucJPG3", sorted(eucjp_g3.items()), f)
 
         # --- EUC-KR / CP949 (UHC) double-byte ---
         # CP949 lead 0x81..0xFE, trail 0x41..0x5A,0x61..0x7A,0x81..0xFE.

@@ -52,29 +52,29 @@ TEST(testNameResolution)
     e = encodingFromName("ISO-8859-1");
     CHECK(e && *e == Encoding::Latin1);
     e = encodingFromName("iso_8859.15");
-    CHECK(e && *e == Encoding::Iso8859_15);
+    CHECK(e && *e == Encoding::ISO8859_15);
     e = encodingFromName("Latin9");
-    CHECK(e && *e == Encoding::Iso8859_15);
+    CHECK(e && *e == Encoding::ISO8859_15);
     e = encodingFromName("KOI8-R");
-    CHECK(e && *e == Encoding::Koi8R);
+    CHECK(e && *e == Encoding::KOI8R);
     e = encodingFromName("windows-1252");
     CHECK(e && *e == Encoding::Windows1252);
     e = encodingFromName("CP1252");
     CHECK(e && *e == Encoding::Windows1252);
     e = encodingFromName("Shift_JIS");
-    CHECK(e && *e == Encoding::ShiftJis);
+    CHECK(e && *e == Encoding::ShiftJIS);
     e = encodingFromName("sjis");
-    CHECK(e && *e == Encoding::ShiftJis);
+    CHECK(e && *e == Encoding::ShiftJIS);
     e = encodingFromName("EUC-JP");
-    CHECK(e && *e == Encoding::EucJp);
+    CHECK(e && *e == Encoding::EUCJP);
     e = encodingFromName("euc-kr");
-    CHECK(e && *e == Encoding::EucKr);
+    CHECK(e && *e == Encoding::EUCKR);
     e = encodingFromName("cp949");
-    CHECK(e && *e == Encoding::EucKr);
+    CHECK(e && *e == Encoding::EUCKR);
     e = encodingFromName("GB18030");
-    CHECK(e && *e == Encoding::Gb18030);
+    CHECK(e && *e == Encoding::GB18030);
     e = encodingFromName("gbk");
-    CHECK(e && *e == Encoding::Gb18030);
+    CHECK(e && *e == Encoding::GB18030);
     e = encodingFromName("Big5");
     CHECK(e && *e == Encoding::Big5);
     CHECK(!encodingFromName("not-a-charset"));
@@ -105,7 +105,7 @@ TEST(testSingleByteRoundTrip)
         { 0xBE, 0x0178 },
     };
     for (auto& t : l9) {
-        auto v = decodeAll(Encoding::Iso8859_15, &t.byte, 1);
+        auto v = decodeAll(Encoding::ISO8859_15, &t.byte, 1);
         CHECK(v.size() == 1 && v[0] == t.codePoint);
     }
     // KOI8-R: a few anchors.
@@ -120,7 +120,7 @@ TEST(testSingleByteRoundTrip)
         { 0x80, 0x2500 }, // box drawing ─
     };
     for (auto& t : koi) {
-        auto v = decodeAll(Encoding::Koi8R, &t.byte, 1);
+        auto v = decodeAll(Encoding::KOI8R, &t.byte, 1);
         CHECK(v.size() == 1 && v[0] == t.codePoint);
     }
     // CP1252: the 0x80..0x9F window that Latin-1 leaves as C1 controls.
@@ -148,67 +148,67 @@ TEST(testSingleByteRoundTrip)
 }
 
 // ---- Shift_JIS ----
-TEST(testShiftJis)
+TEST(testShiftJIS)
 {
     // Full-width あ (U+3042) -> 82 A0.
     std::uint8_t a[] = { 0x82, 0xA0 };
-    auto v = decodeAll(Encoding::ShiftJis, a, 2);
+    auto v = decodeAll(Encoding::ShiftJIS, a, 2);
     CHECK(v.size() == 1 && v[0] == 0x3042);
     // 漢 (U+6F22) -> 8A BF.
     std::uint8_t k[] = { 0x8A, 0xBF };
-    v = decodeAll(Encoding::ShiftJis, k, 2);
+    v = decodeAll(Encoding::ShiftJIS, k, 2);
     CHECK(v.size() == 1 && v[0] == 0x6F22);
     // Half-width katakana ｱ (single byte 0xB1) -> U+FF71.
     std::uint8_t hw[] = { 0xB1 };
-    v = decodeAll(Encoding::ShiftJis, hw, 1);
+    v = decodeAll(Encoding::ShiftJIS, hw, 1);
     CHECK(v.size() == 1 && v[0] == 0xFF71);
     // ASCII passes through.
     std::uint8_t asc[] = { 'A', 'B' };
-    v = decodeAll(Encoding::ShiftJis, asc, 2);
+    v = decodeAll(Encoding::ShiftJIS, asc, 2);
     CHECK(v.size() == 2 && v[0] == 'A' && v[1] == 'B');
     // Lead with an invalid trail -> U+FFFD (trail 0x20 invalid).
     std::uint8_t bad[] = { 0x82, 0x20 };
-    v = decodeAll(Encoding::ShiftJis, bad, 2);
+    v = decodeAll(Encoding::ShiftJIS, bad, 2);
     // The bad trail (0x20) is ASCII, re-fed as a fresh start.
     CHECK(v.size() >= 1 && v[0] == 0xFFFD);
     CHECK(v.back() == 0x20);
 }
 
 // ---- EUC-JP ----
-TEST(testEucJp)
+TEST(testEUCJP)
 {
     // あ -> A4 A2.
     std::uint8_t a[] = { 0xA4, 0xA2 };
-    auto v = decodeAll(Encoding::EucJp, a, 2);
+    auto v = decodeAll(Encoding::EUCJP, a, 2);
     CHECK(v.size() == 1 && v[0] == 0x3042);
     // 漢 -> B4 C1.
     std::uint8_t k[] = { 0xB4, 0xC1 };
-    v = decodeAll(Encoding::EucJp, k, 2);
+    v = decodeAll(Encoding::EUCJP, k, 2);
     CHECK(v.size() == 1 && v[0] == 0x6F22);
     // SS2 half-width kana: 8E B1 -> U+FF71.
     std::uint8_t ss2[] = { 0x8E, 0xB1 };
-    v = decodeAll(Encoding::EucJp, ss2, 2);
+    v = decodeAll(Encoding::EUCJP, ss2, 2);
     CHECK(v.size() == 1 && v[0] == 0xFF71);
     // SS3 JIS X 0212: 8F A2 AF -> U+02D8 (breve) per JIS X 0212.
     std::uint8_t ss3[] = { 0x8F, 0xA2, 0xAF };
-    v = decodeAll(Encoding::EucJp, ss3, 3);
+    v = decodeAll(Encoding::EUCJP, ss3, 3);
     CHECK(v.size() == 1 && v[0] == 0x02D8);
 }
 
 // ---- EUC-KR / CP949 ----
-TEST(testEucKr)
+TEST(testEUCKR)
 {
     // 가 (U+AC00) -> B0 A1.
     std::uint8_t g[] = { 0xB0, 0xA1 };
-    auto v = decodeAll(Encoding::EucKr, g, 2);
+    auto v = decodeAll(Encoding::EUCKR, g, 2);
     CHECK(v.size() == 1 && v[0] == 0xAC00);
     // 한 (U+D55C) -> C7 D1.
     std::uint8_t h[] = { 0xC7, 0xD1 };
-    v = decodeAll(Encoding::EucKr, h, 2);
+    v = decodeAll(Encoding::EUCKR, h, 2);
     CHECK(v.size() == 1 && v[0] == 0xD55C);
     // CP949 extension byte (lead 0x81, trail 0x41) decodes (UHC range).
     std::uint8_t uhc[] = { 0x81, 0x41 };
-    v = decodeAll(Encoding::EucKr, uhc, 2);
+    v = decodeAll(Encoding::EUCKR, uhc, 2);
     CHECK(v.size() == 1 && v[0] != 0xFFFD);
 }
 
@@ -226,35 +226,35 @@ TEST(testBig5)
 }
 
 // ---- GB18030 ----
-TEST(testGb18030)
+TEST(testGB18030)
 {
     // ASCII.
     std::uint8_t asc[] = { 'X' };
-    auto v = decodeAll(Encoding::Gb18030, asc, 1);
+    auto v = decodeAll(Encoding::GB18030, asc, 1);
     CHECK(v.size() == 1 && v[0] == 'X');
     // 2-byte GBK: 中 (U+4E2D) -> D6 D0.
     std::uint8_t k[] = { 0xD6, 0xD0 };
-    v = decodeAll(Encoding::Gb18030, k, 2);
+    v = decodeAll(Encoding::GB18030, k, 2);
     CHECK(v.size() == 1 && v[0] == 0x4E2D);
     // 4-byte BMP: U+00A5 (¥) -> 81 30 84 36.
     std::uint8_t bmp[] = { 0x81, 0x30, 0x84, 0x36 };
-    v = decodeAll(Encoding::Gb18030, bmp, 4);
+    v = decodeAll(Encoding::GB18030, bmp, 4);
     CHECK(v.size() == 1 && v[0] == 0x00A5);
     // 4-byte BMP: U+0452 (ѓ) -> 81 30 D3 30.
     std::uint8_t bmp2[] = { 0x81, 0x30, 0xD3, 0x30 };
-    v = decodeAll(Encoding::Gb18030, bmp2, 4);
+    v = decodeAll(Encoding::GB18030, bmp2, 4);
     CHECK(v.size() == 1 && v[0] == 0x0452);
     // 4-byte SMP: U+10000 -> 90 30 81 30.
     std::uint8_t smp[] = { 0x90, 0x30, 0x81, 0x30 };
-    v = decodeAll(Encoding::Gb18030, smp, 4);
+    v = decodeAll(Encoding::GB18030, smp, 4);
     CHECK(v.size() == 1 && v[0] == 0x10000);
     // 4-byte SMP: U+1F600 (grinning face) -> 94 39 FC 36.
     std::uint8_t emoji[] = { 0x94, 0x39, 0xFC, 0x36 };
-    v = decodeAll(Encoding::Gb18030, emoji, 4);
+    v = decodeAll(Encoding::GB18030, emoji, 4);
     CHECK(v.size() == 1 && v[0] == 0x1F600);
     // 4-byte SMP top: U+10FFFF -> E3 32 9A 35.
     std::uint8_t top[] = { 0xE3, 0x32, 0x9A, 0x35 };
-    v = decodeAll(Encoding::Gb18030, top, 4);
+    v = decodeAll(Encoding::GB18030, top, 4);
     CHECK(v.size() == 1 && v[0] == 0x10FFFF);
 }
 
@@ -263,14 +263,14 @@ TEST(testSplitAcrossFeeds)
 {
     // Shift_JIS あ split 82 | A0 across two feed batches.
     EncDecoder d;
-    encReset(&d, Encoding::ShiftJis);
+    encReset(&d, Encoding::ShiftJIS);
     std::uint32_t codePoint;
     CHECK(encFeed(&d, 0x82, &codePoint) == EncStatus::Need);
     CHECK(encFeed(&d, 0xA0, &codePoint) == EncStatus::Emit);
     CHECK(codePoint == 0x3042);
 
     // GB18030 4-byte split 90 | 30 81 | 30 across three batches.
-    encReset(&d, Encoding::Gb18030);
+    encReset(&d, Encoding::GB18030);
     CHECK(encFeed(&d, 0x90, &codePoint) == EncStatus::Need);
     CHECK(encFeed(&d, 0x30, &codePoint) == EncStatus::Need);
     CHECK(encFeed(&d, 0x81, &codePoint) == EncStatus::Need);
@@ -278,7 +278,7 @@ TEST(testSplitAcrossFeeds)
     CHECK(codePoint == 0x10000);
 
     // EUC-JP SS3 split 8F | A2 | AF.
-    encReset(&d, Encoding::EucJp);
+    encReset(&d, Encoding::EUCJP);
     CHECK(encFeed(&d, 0x8F, &codePoint) == EncStatus::Need);
     CHECK(encFeed(&d, 0xA2, &codePoint) == EncStatus::Need);
     CHECK(encFeed(&d, 0xAF, &codePoint) == EncStatus::Emit);
@@ -294,12 +294,12 @@ TEST(testInvalidBytes)
     CHECK(v.size() >= 1 && v[0] == 0xFFFD);
     // GB18030 lead 0x80 is undefined.
     std::uint8_t g80[] = { 0x80 };
-    v = decodeAll(Encoding::Gb18030, g80, 1);
+    v = decodeAll(Encoding::GB18030, g80, 1);
     CHECK(v.size() == 1 && v[0] == 0xFFFD);
     // KOI8-R has no unmapped slots, but a lone EUC-KR lead at EOF emits
     // nothing (Need carried, never completed) — no spurious codePoint.
     EncDecoder d;
-    encReset(&d, Encoding::EucKr);
+    encReset(&d, Encoding::EUCKR);
     std::uint32_t codePoint;
     CHECK(encFeed(&d, 0xB0, &codePoint) == EncStatus::Need);
     // (stream ends; caller flushes nothing — correct.)
@@ -322,7 +322,7 @@ TEST(testTranscodeToUTF8)
     CHECK(outputBuffer[3] == 'B');
 
     // Shift_JIS あ across a split: first feed just the lead, then the trail.
-    encReset(&d, Encoding::ShiftJis);
+    encReset(&d, Encoding::ShiftJIS);
     std::uint8_t lead[] = { 0x82 };
     std::uint8_t trail[] = { 0xA0 };
     std::uint8_t o2[16];

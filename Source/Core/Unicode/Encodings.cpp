@@ -100,23 +100,23 @@ std::optional<Encoding> encodingFromName(std::string_view name)
         { "latin1", Encoding::Latin1 },
         { "iso88591", Encoding::Latin1 },
         { "l1", Encoding::Latin1 },
-        { "iso885915", Encoding::Iso8859_15 },
-        { "latin9", Encoding::Iso8859_15 },
-        { "l9", Encoding::Iso8859_15 },
-        { "koi8r", Encoding::Koi8R },
-        { "koi8", Encoding::Koi8R },
+        { "iso885915", Encoding::ISO8859_15 },
+        { "latin9", Encoding::ISO8859_15 },
+        { "l9", Encoding::ISO8859_15 },
+        { "koi8r", Encoding::KOI8R },
+        { "koi8", Encoding::KOI8R },
         { "windows1252", Encoding::Windows1252 },
         { "cp1252", Encoding::Windows1252 },
-        { "shiftjis", Encoding::ShiftJis },
-        { "sjis", Encoding::ShiftJis },
-        { "cp932", Encoding::ShiftJis },
-        { "eucjp", Encoding::EucJp },
-        { "euckr", Encoding::EucKr },
-        { "cp949", Encoding::EucKr },
-        { "uhc", Encoding::EucKr },
-        { "gb18030", Encoding::Gb18030 },
-        { "gbk", Encoding::Gb18030 },
-        { "gb2312", Encoding::Gb18030 },
+        { "shiftjis", Encoding::ShiftJIS },
+        { "sjis", Encoding::ShiftJIS },
+        { "cp932", Encoding::ShiftJIS },
+        { "eucjp", Encoding::EUCJP },
+        { "euckr", Encoding::EUCKR },
+        { "cp949", Encoding::EUCKR },
+        { "uhc", Encoding::EUCKR },
+        { "gb18030", Encoding::GB18030 },
+        { "gbk", Encoding::GB18030 },
+        { "gb2312", Encoding::GB18030 },
         { "big5", Encoding::Big5 },
     };
     for (const Alias& a : aliases) {
@@ -133,19 +133,19 @@ const char* encodingName(Encoding e)
         return "utf-8";
     case Encoding::Latin1:
         return "latin1";
-    case Encoding::Iso8859_15:
+    case Encoding::ISO8859_15:
         return "iso-8859-15";
-    case Encoding::Koi8R:
+    case Encoding::KOI8R:
         return "koi8-r";
     case Encoding::Windows1252:
         return "windows-1252";
-    case Encoding::ShiftJis:
+    case Encoding::ShiftJIS:
         return "shift_jis";
-    case Encoding::EucJp:
+    case Encoding::EUCJP:
         return "euc-jp";
-    case Encoding::EucKr:
+    case Encoding::EUCKR:
         return "euc-kr";
-    case Encoding::Gb18030:
+    case Encoding::GB18030:
         return "gb18030";
     case Encoding::Big5:
         return "big5";
@@ -233,10 +233,10 @@ static EncStatus gb18030Feed(EncDecoder* d, std::uint8_t b, std::uint32_t* outpu
 
 // `need`/`pending` encode the in-progress multibyte state per characterSet:
 //   need == 0          ground.
-//   ShiftJis/Big5/Kr   need==1, pending = lead byte (one trail expected).
-//   EucJp G1           need==1, pending = lead.
-//   EucJp SS2 (0x8E)   need==1, pending = 0xFF00 sentinel (kana trail).
-//   EucJp SS3 (0x8F)   need==2 then 1, pending accumulates the two trail
+//   ShiftJIS/Big5/Kr   need==1, pending = lead byte (one trail expected).
+//   EUCJP G1           need==1, pending = lead.
+//   EUCJP SS2 (0x8E)   need==1, pending = 0xFF00 sentinel (kana trail).
+//   EUCJP SS3 (0x8F)   need==2 then 1, pending accumulates the two trail
 //                      bytes of the JIS X 0212 form.
 //   GB18030 2-byte     need==1, pending = lead.
 //   GB18030 4-byte     need==3/2/1, pending packs the consumed bytes.
@@ -250,13 +250,13 @@ EncStatus encFeed(EncDecoder* d, std::uint8_t b, std::uint32_t* outputBuffer)
 
     // Single-byte: ASCII low half, table high half.
     case Encoding::Latin1:
-    case Encoding::Iso8859_15:
-    case Encoding::Koi8R:
+    case Encoding::ISO8859_15:
+    case Encoding::KOI8R:
     case Encoding::Windows1252: {
         if (b < 0x80)
             return emit(d, b, outputBuffer);
-        const std::uint16_t* high = d->enc == Encoding::Latin1 ? latin1High : d->enc == Encoding::Iso8859_15 ? iso885915High
-            : d->enc == Encoding::Koi8R                                                                      ? koi8rHigh
+        const std::uint16_t* high = d->enc == Encoding::Latin1 ? latin1High : d->enc == Encoding::ISO8859_15 ? iso885915High
+            : d->enc == Encoding::KOI8R                                                                      ? koi8rHigh
                                                                                                              : cp1252High;
         std::uint32_t codePoint = sbLookup(high, b);
         if (codePoint == 0xFFFF)
@@ -264,7 +264,7 @@ EncStatus encFeed(EncDecoder* d, std::uint8_t b, std::uint32_t* outputBuffer)
         return emit(d, codePoint, outputBuffer);
     }
 
-    case Encoding::ShiftJis: {
+    case Encoding::ShiftJIS: {
         if (d->need == 0) {
             if (b < 0x80)
                 return emit(d, b, outputBuffer);
@@ -278,7 +278,7 @@ EncStatus encFeed(EncDecoder* d, std::uint8_t b, std::uint32_t* outputBuffer)
             return invalid(d);
         }
         std::uint16_t key = static_cast<std::uint16_t>((d->pending << 8) | b);
-        std::uint32_t codePoint = dbcsLookup(shiftJisLeadRow, shiftJisRows, key);
+        std::uint32_t codePoint = dbcsLookup(shiftJISLeadRow, shiftJISRows, key);
         if (codePoint == 0)
             return invalid(d);
         return emit(d, codePoint, outputBuffer);
@@ -289,7 +289,7 @@ EncStatus encFeed(EncDecoder* d, std::uint8_t b, std::uint32_t* outputBuffer)
     //   0x8000  — SS3 (0x8F) path (JIS X 0212 / G3); the low byte holds the
     //             first G3 trail once seen (0 while still expecting it).
     // Otherwise `pending` is a plain G1 lead (0xA1..0xFE) awaiting its trail.
-    case Encoding::EucJp: {
+    case Encoding::EUCJP: {
         if (d->need == 0) {
             if (b < 0x80)
                 return emit(d, b, outputBuffer);
@@ -324,20 +324,20 @@ EncStatus encFeed(EncDecoder* d, std::uint8_t b, std::uint32_t* outputBuffer)
                 return EncStatus::Need;
             }
             std::uint16_t key = static_cast<std::uint16_t>(((d->pending & 0xFF) << 8) | b);
-            std::uint32_t codePoint = dbcsLookup(eucJpG3LeadRow, eucJpG3Rows, key);
+            std::uint32_t codePoint = dbcsLookup(eucJPG3LeadRow, eucJPG3Rows, key);
             if (codePoint == 0)
                 return invalid(d);
             return emit(d, codePoint, outputBuffer);
         }
         // G1 second byte.
         std::uint16_t key = static_cast<std::uint16_t>((d->pending << 8) | b);
-        std::uint32_t codePoint = dbcsLookup(eucJpLeadRow, eucJpRows, key);
+        std::uint32_t codePoint = dbcsLookup(eucJPLeadRow, eucJPRows, key);
         if (codePoint == 0)
             return invalid(d);
         return emit(d, codePoint, outputBuffer);
     }
 
-    case Encoding::EucKr: {
+    case Encoding::EUCKR: {
         if (d->need == 0) {
             if (b < 0x80)
                 return emit(d, b, outputBuffer);
@@ -373,7 +373,7 @@ EncStatus encFeed(EncDecoder* d, std::uint8_t b, std::uint32_t* outputBuffer)
         return emit(d, codePoint, outputBuffer);
     }
 
-    case Encoding::Gb18030:
+    case Encoding::GB18030:
         return gb18030Feed(d, b, outputBuffer); // see gb18030Feed for the state encoding
 
     case Encoding::UTF8:
