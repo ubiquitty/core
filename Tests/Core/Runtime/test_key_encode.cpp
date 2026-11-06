@@ -21,13 +21,17 @@
 #include "TerminalFixture.h"
 #include <cstring>
 
+#include "Core/Protocol/Sync/Input.h"
 #include "Core/Runtime/KeyEncode.h"
+#include "Core/Runtime/RemoteInput.h"
 
 #include "Core/Terminal.h"
 #include "Core/TerminalOperations.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace {
@@ -361,6 +365,48 @@ TEST(aControlChordOnALatinNonASCIIKeyFoldsThroughTheUSPosition)
         std::to_underlying(Ubiquitty::Kitty::KeyFlag::Disambiguate)
         | std::to_underlying(Ubiquitty::Kitty::KeyFlag::ReportAlternateKeys));
     CHECK(encoded(kitty, press) == "\033[252::91;5u");
+}
+
+/// A French key beyond ASCII on the digit row folds as kitty's table does.
+///
+/// kitty/key_encoding.c sends ctrled_key of the base-layout key for such a
+/// press: '2' is NUL, '7' is 0x1F, '6' is 0x1E, and '9' and '0' are themselves.
+/// The fold applies only to a chord through the base-layout key, so Ctrl+2 on
+/// a US keyboard keeps the byte the ASCII key sends.
+TEST(aControlChordOnAFrenchDigitRowKeyFoldsAsKittyDoes)
+{
+    Rt::ModeSnapshot modes;
+
+    Rt::KeyPress press;
+    press.eventType = K::KeyEventType::Press;
+    press.modifiers = static_cast<std::uint32_t>(K::Keymap::keymapModifierCtrl);
+    press.wasModified = true;
+    const auto expect = [&](std::uint32_t character, std::uint32_t position, std::string_view bytes) {
+        press.unshiftedCodePoint = character;
+        press.shiftedCodePoint = character;
+        press.baseLayoutCodePoint = position;
+        CHECK(encoded(modes, press) == bytes);
+    };
+    expect(0x00E9, '2', std::string_view("\0", 1)); // é
+    expect(0x00A7, '6', "\x1E"); // §
+    expect(0x00E8, '7', "\x1F"); // è
+    expect(0x00E7, '9', "9"); // ç
+    expect(0x00E0, '0', "0"); // à
+
+    // The ASCII key is unchanged: the position is not read for it.
+    expect('2', '2', "2");
+    expect('7', '7', "7");
+
+    // Ctrl+Alt prefixes the byte, as it does any folded control.
+    press.modifiers |= static_cast<std::uint32_t>(K::Keymap::keymapModifierAlternate);
+    expect(0x00E8, '7', "\x1B\x1F");
+    press.modifiers &= ~static_cast<std::uint32_t>(K::Keymap::keymapModifierAlternate);
+
+    // The press the predictor reads is the press the encoder writes.
+    press.unshiftedCodePoint = 0x00E9;
+    press.shiftedCodePoint = 0x00E9;
+    press.baseLayoutCodePoint = '2';
+    CHECK(Ubiquitty::Protocol::Sync::legacyControlCharacterOf(Ubiquitty::Runtime::keyEventOf(press)) == std::optional<std::uint8_t> { 0x00 });
 }
 
 /// A frontend holding the terminal itself gets the same answer.

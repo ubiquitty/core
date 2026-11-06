@@ -311,6 +311,7 @@ TEST(keyPositionsAndSidedModifiersReachTheHostEncoder)
     KeyEvent control;
     control.modifiers = static_cast<std::uint16_t>(Ubiquitty::Keys::Keymap::keymapModifierCtrl | (8u << Ubiquitty::Keys::positionModifierShift));
     control.unshiftedCodePoint = 'c';
+    control.shiftedCodePoint = 'c';
     CHECK(legacyControlCharacterOf(control) == 3);
 }
 
