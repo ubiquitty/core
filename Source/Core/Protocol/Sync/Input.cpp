@@ -5,6 +5,7 @@
 
 #include "Core/Keys/KeyTranslation.h"
 #include "Core/Keys/Keymap.h"
+#include "Core/Keys/KittyKeyboard.h"
 #include "Core/Protocol/Sync/Wire.h"
 
 #include <algorithm>
@@ -155,7 +156,9 @@ std::optional<std::uint8_t> legacyControlCharacterOf(const KeyEvent& event)
     if (event.kind == KeyEventKind::Release || (event.modifiers & ::Ubiquitty::Keys::characterModifierMask & ~locks) != ::Ubiquitty::Keys::Keymap::keymapModifierCtrl)
         return std::nullopt;
     const auto isLatin = [](std::uint32_t codePoint) { return (codePoint >= 'a' && codePoint <= 'z') || (codePoint >= 'A' && codePoint <= 'Z') || codePoint == '\\'; };
-    const std::uint32_t codePoint = isLatin(event.unshiftedCodePoint) ? event.unshiftedCodePoint : event.baseLayoutCodePoint;
+    // The encoder folds a chord through the base only on a text key beyond ASCII.
+    const bool isFoldedThroughBase = ::Ubiquitty::Kitty::isTextProducingKey(event.unshiftedCodePoint) && event.unshiftedCodePoint >= ::Ubiquitty::Keys::Keymap::asciiDelete;
+    const std::uint32_t codePoint = isFoldedThroughBase ? event.baseLayoutCodePoint : event.unshiftedCodePoint;
     if (!isLatin(codePoint))
         return std::nullopt;
     return static_cast<std::uint8_t>(codePoint & 0x1f);

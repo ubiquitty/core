@@ -160,8 +160,9 @@ using InputIntent = std::variant<RawInput, KeyInput, PointerInput, FocusInput, P
 
 /// The byte a key chord is in a terminal's legacy encoding when that byte is
 /// a control character a line discipline can act on: Ctrl with a letter, or
-/// Ctrl-\. The letter is the layout's when Latin, else the standard layout's
-/// at the key's position, as the key encoder reads it.
+/// Ctrl-\. The letter is the key's own; the standard layout's at the key's
+/// position stands in only for a key whose character is beyond ASCII, as the
+/// key encoder reads it, so a base layout key on an ASCII key names nothing.
 ///
 /// - Parameter event: The key.
 /// - Returns: The byte, or `nullopt` for a release, another chord, or a key
