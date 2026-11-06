@@ -304,6 +304,7 @@ TEST(theLegacyControlCharacterOfAChord)
     CHECK(legacyControlCharacterOf(controlKey('\\')) == std::optional<std::uint8_t> { 0x1c });
     KeyEvent cyrillic = controlKey('c');
     cyrillic.unshiftedCodePoint = 0x0441;
+    cyrillic.shiftedCodePoint = 0x0441;
     CHECK(!legacyControlCharacterOf(cyrillic).has_value());
     cyrillic.baseLayoutCodePoint = 'c';
     CHECK(legacyControlCharacterOf(cyrillic) == std::optional<std::uint8_t> { 0x03 });
@@ -350,8 +351,49 @@ TEST(theLegacyControlCharacterOfAChordTakesTheBaseOnlyForAKeyBeyondASCII)
     // A position that is no Latin letter or backslash names no control byte.
     KeyEvent bracket = controlKey('c');
     bracket.unshiftedCodePoint = 0x00FC;
+    bracket.shiftedCodePoint = 0x00FC;
     bracket.baseLayoutCodePoint = '[';
     CHECK(!legacyControlCharacterOf(bracket).has_value());
+}
+
+// The chord is read off the key the encoder resolves, not off the unshifted
+// code point alone: a character beyond ASCII on either side makes the shifted
+// one the key, and then the key folds through its position.
+TEST(theLegacyControlCharacterOfAChordReadsTheKeyTheEncoderResolves)
+{
+    // Caps Lock lets the shifted spelling beyond ASCII while the unshifted one
+    // is Latin: the encoder resolves the key to Ç and folds through the
+    // backslash position, where the unshifted 'c' alone would say 0x03.
+    KeyEvent locked = controlKey('c');
+    locked.modifiers |= Ubiquitty::Keys::Keymap::keymapModifierCapsLock;
+    locked.shiftedCodePoint = 0x00C7;
+    locked.baseLayoutCodePoint = '\\';
+    CHECK(legacyControlCharacterOf(locked) == std::optional<std::uint8_t> { 0x1c });
+    // A key with an unshifted spelling and no shifted one resolves to no key.
+    KeyEvent unshiftedOnly = controlKey('c');
+    unshiftedOnly.shiftedCodePoint = 0;
+    CHECK(!legacyControlCharacterOf(unshiftedOnly).has_value());
+}
+
+// A key beyond ASCII on the digit row folds as kitty's table does, and the
+// predictor says what the encoder writes: French é on the 2 position is NUL,
+// and a key on the 4 position is the quit character.
+TEST(theLegacyControlCharacterOfAChordOnTheDigitRowFoldsAsKittyDoes)
+{
+    KeyEvent acute = controlKey('c');
+    acute.unshiftedCodePoint = 0x00E9;
+    acute.shiftedCodePoint = 0x00E9;
+    acute.baseLayoutCodePoint = '2';
+    CHECK(legacyControlCharacterOf(acute) == std::optional<std::uint8_t> { 0x00 });
+    KeyEvent currency = controlKey('c');
+    currency.unshiftedCodePoint = 0x00A4;
+    currency.shiftedCodePoint = 0x00A4;
+    currency.baseLayoutCodePoint = '4';
+    CHECK(legacyControlCharacterOf(currency) == std::optional<std::uint8_t> { 0x1c });
+    // An ASCII key on the digit row is its own chord, whatever the base.
+    KeyEvent digit = controlKey('4');
+    digit.baseLayoutCodePoint = '4';
+    CHECK(!legacyControlCharacterOf(digit).has_value());
 }
 
 // Through the attachment: the interrupt gives the paste up ahead of itself,

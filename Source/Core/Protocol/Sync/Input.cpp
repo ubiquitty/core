@@ -5,7 +5,6 @@
 
 #include "Core/Keys/KeyTranslation.h"
 #include "Core/Keys/Keymap.h"
-#include "Core/Keys/KittyKeyboard.h"
 #include "Core/Protocol/Sync/Wire.h"
 
 #include <algorithm>
@@ -156,12 +155,17 @@ std::optional<std::uint8_t> legacyControlCharacterOf(const KeyEvent& event)
     if (event.kind == KeyEventKind::Release || (event.modifiers & ::Ubiquitty::Keys::characterModifierMask & ~locks) != ::Ubiquitty::Keys::Keymap::keymapModifierCtrl)
         return std::nullopt;
     const auto isLatin = [](std::uint32_t codePoint) { return (codePoint >= 'a' && codePoint <= 'z') || (codePoint >= 'A' && codePoint <= 'Z') || codePoint == '\\'; };
-    // The encoder folds a chord through the base only on a text key beyond ASCII.
-    const bool isFoldedThroughBase = ::Ubiquitty::Kitty::isTextProducingKey(event.unshiftedCodePoint) && event.unshiftedCodePoint >= ::Ubiquitty::Keys::Keymap::asciiDelete;
-    const std::uint32_t codePoint = isFoldedThroughBase ? event.baseLayoutCodePoint : event.unshiftedCodePoint;
-    if (!isLatin(codePoint))
+    // The key the encoder resolves, and the legacy encoder's reading of it.
+    const ::Ubiquitty::Keys::ReportedKey resolved = ::Ubiquitty::Keys::resolveReportedKey(
+        ::Ubiquitty::Keys::reportedKeyCodePoint(static_cast<::Ubiquitty::Keys::VirtualKey>(event.key), ::Ubiquitty::Keys::KeyEncoder::Legacy),
+        event.unshiftedCodePoint, event.shiftedCodePoint);
+    if (!::Ubiquitty::Keys::Keymap::foldsChordThroughBaseLayoutKey(resolved.keyCode))
+        return isLatin(resolved.keyCode) ? std::optional<std::uint8_t> { static_cast<std::uint8_t>(resolved.keyCode & 0x1f) } : std::nullopt;
+    if (const std::optional<std::uint8_t> controlByte = ::Ubiquitty::Keys::Keymap::controlByteOfBaseLayoutKey(event.baseLayoutCodePoint))
+        return controlByte;
+    if (!isLatin(event.baseLayoutCodePoint))
         return std::nullopt;
-    return static_cast<std::uint8_t>(codePoint & 0x1f);
+    return static_cast<std::uint8_t>(event.baseLayoutCodePoint & 0x1f);
 }
 
 InputLedger::InputLedger(std::size_t capacity)

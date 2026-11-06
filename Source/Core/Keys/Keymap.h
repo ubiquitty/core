@@ -7,6 +7,8 @@
 #include "Core/Kitty/KeyboardFlags.h"
 #include "Core/Modes/TerminalModes.h"
 #include "Core/VT/UserDefinedKeys.h"
+#include <cstdint>
+#include <optional>
 #include <span>
 
 namespace Ubiquitty::Keys::Keymap {
@@ -35,6 +37,21 @@ constexpr uint32_t asciiDelete = 0x7F;
 // A codePoint that is printable ASCII — usable directly as a standard key byte
 // or as a kitty primary codePoint. Non-ASCII (>= DEL) and C0 controls are excluded.
 [[nodiscard]] constexpr bool isAsciiPrintable(uint32_t codePoint) { return codePoint >= minPrintableASCII && codePoint < asciiDelete; }
+
+// Whether a chord on this key folds through the standard layout's key at its
+// position: a text key beyond ASCII (Cyrillic ф, German ü, French é). The
+// chord is the key, not the letter the layout paints on it, and one byte is all
+// a legacy terminal has to say it. An ASCII key is its own chord. The key
+// encoder and every client-side predictor of its bytes decide this here, on the
+// key ``resolveReportedKey`` answers.
+[[nodiscard]] bool foldsChordThroughBaseLayoutKey(uint32_t keyCode);
+
+// The control byte kitty sends for Ctrl on a base-layout key where its table
+// departs from the ASCII-key fold (Ctrl+2 is NUL, Ctrl+3 through Ctrl+7 are
+// ESC through US, Ctrl+8 is DEL, Ctrl+/ is US, Ctrl+~ is RS); nullopt for any
+// other key, whose chord folds as the ASCII key's does. Applies only to a chord
+// folded through the base-layout key, so a US keyboard's Ctrl+2 is unchanged.
+[[nodiscard]] std::optional<uint8_t> controlByteOfBaseLayoutKey(uint32_t baseLayoutKey);
 
 // A C0 control code or DEL. These are never valid "associated text" — but note
 // this is not the negation of isAsciiPrintable: a non-ASCII codePoint (é, CJK,

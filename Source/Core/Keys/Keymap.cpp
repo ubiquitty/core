@@ -284,6 +284,33 @@ static uint8_t foldControl(uint8_t ch)
 // modifyOtherKeys wrapping instead.
 static bool hasControlFolding(uint8_t character) { return foldControl(character) != character; }
 
+bool foldsChordThroughBaseLayoutKey(uint32_t keyCode) { return Kitty::isTextProducingKey(keyCode) && keyCode >= asciiDelete; }
+
+std::optional<uint8_t> controlByteOfBaseLayoutKey(uint32_t baseLayoutKey)
+{
+    switch (baseLayoutKey) {
+    case '2':
+        return 0x00;
+    case '3':
+        return 0x1B;
+    case '4':
+        return 0x1C;
+    case '5':
+        return 0x1D;
+    case '6':
+        return 0x1E;
+    case '7':
+    case '/':
+        return 0x1F;
+    case '8':
+        return asciiDelete;
+    case '~':
+        return 0x1E;
+    default:
+        return std::nullopt;
+    }
+}
+
 // xterm meta/alternate discipline (modes 1036/1039/1034): decide how an Alternate/Meta-
 // modified character is carried. metaSendsEscape (1036) or alternateSendsEscape (1039)
 // → ESC prefix. Otherwise eightBitInput (1034) → set bit 7. Otherwise (both
@@ -297,6 +324,28 @@ static bool alternateShouldEscapePrefix(const EncodeModes& modes)
     return !modes.eightBitInput;
 }
 
+// A control byte, carried bare or, under Alternate, in the meta discipline's
+// ESC prefix or 8th-bit form.
+static int putControlByte(std::span<char> output, uint8_t folded, uint32_t modifiers, const EncodeModes& modes)
+{
+    char* const outputBuffer = output.data();
+    if ((modifiers & keymapModifierAlternate) == 0) {
+        outputBuffer[0] = static_cast<char>(folded);
+        return 1;
+    }
+    // Ctrl+Alternate with eightBitInput (and no escape mode) sets bit 7 on the
+    // folded control byte; otherwise ESC-prefix it.
+    if (!alternateShouldEscapePrefix(modes)) {
+        outputBuffer[0] = static_cast<char>(folded | 0x80);
+        return 1;
+    }
+    if (output.size() < 2)
+        return 0;
+    outputBuffer[0] = 0x1B;
+    outputBuffer[1] = static_cast<char>(folded);
+    return 2;
+}
+
 // Standard-path byte carrier for a Ctrl / Alternate-modified printable:
 // control folding, then the meta-discipline ESC prefix or 8th-bit form.
 // Returns -1 when the modifier combination has no byte form here (the caller
@@ -308,24 +357,8 @@ static int putModifiedPrintable(std::span<char> output, uint8_t character, uint3
     bool ctrl = (modifiers & keymapModifierCtrl) != 0;
     bool alternate = (modifiers & keymapModifierAlternate) != 0;
     const bool shouldEscapePrefix = alternateShouldEscapePrefix(modes);
-    if (ctrl && hasControlFolding(character)) {
-        uint8_t folded = foldControl(character);
-        if (!alternate) {
-            outputBuffer[0] = static_cast<char>(folded);
-            return 1;
-        }
-        // Ctrl+Alternate with eightBitInput (and no escape mode) sets bit 7 on the
-        // folded control byte; otherwise ESC-prefix it.
-        if (!shouldEscapePrefix) {
-            outputBuffer[0] = static_cast<char>(folded | 0x80);
-            return 1;
-        }
-        if (outputCapacity < 2)
-            return 0;
-        outputBuffer[0] = 0x1B;
-        outputBuffer[1] = static_cast<char>(folded);
-        return 2;
-    }
+    if (ctrl && hasControlFolding(character))
+        return putControlByte(output, foldControl(character), modifiers, modes);
     if (alternate && !ctrl) {
         if (!shouldEscapePrefix) {
             // eightBitInput: carry the character with the 8th bit set.
@@ -1102,11 +1135,17 @@ int encodeKeyEvent(const Keys::KeyEvent& event, Ubiquitty::Modes::CursorKeyMode 
     // key instead. A press with no base-layout key sends nothing, since no
     // byte says "Ctrl+ф". A bare or shifted non-ASCII letter is text and takes
     // the passthrough below.
-    if (Kitty::isTextProducingKey(keyCode) && !isAsciiPrintable(keyCode)) {
+    if (foldsChordThroughBaseLayoutKey(keyCode)) {
         if (Kitty::printableReportedAsEscapeCode(modifiers, kittyKeyboardFlags))
             return Kitty::encodeKey(keyCode, event.shiftedKey, event.baseLayoutKey, modifiers, eventType, event.associatedText(), kittyKeyboardFlags, output);
-        if ((modifiers & keymapModifierCtrl) != 0 && isAsciiPrintable(event.baseLayoutKey))
+        if ((modifiers & keymapModifierCtrl) != 0 && isAsciiPrintable(event.baseLayoutKey)) {
+            // kitty sends the digit row's control bytes through the base-layout
+            // key; the ASCII-key fold leaves a digit as it is.
+            const bool formatAllModifiedKeys = xtermModifyOtherKeys >= 2 && modifierValue != 1;
+            if (const std::optional<uint8_t> controlByte = controlByteOfBaseLayoutKey(event.baseLayoutKey); controlByte && !formatAllModifiedKeys)
+                return putControlByte(output, *controlByte, modifiers, modes);
             keyCode = event.baseLayoutKey;
+        }
     }
 
     // Printable byte handling. We accept ASCII directly from the
