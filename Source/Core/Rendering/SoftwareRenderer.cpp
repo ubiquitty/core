@@ -2111,6 +2111,7 @@ void SoftwareRenderer::resolveImageQuads(const BuildInputs& in)
             .size = { in.columns, in.rows },
             .readCluster = in.clusterResolver,
             .readClusterContext = in.clusterResolverContext,
+            .publishedCellPixels = in.publishedCellPixels,
         };
         count += Kitty::resolvePlaceholders(grid, images, cell, origin, quads.subspan(static_cast<std::size_t>(count)));
     }

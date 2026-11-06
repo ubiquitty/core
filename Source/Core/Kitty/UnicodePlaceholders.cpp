@@ -10,6 +10,7 @@
 #include "Core/Cell.h"
 #include "Core/Image/ImagePlacement.h"
 #include "Core/Image/TerminalImage.h"
+#include "Core/Rendering/CellMetrics.h"
 #include "Core/Screen/Addressing.h"
 #include "Core/Terminal.h"
 #include <algorithm>
@@ -179,6 +180,77 @@ const Image::TerminalImage* findVirtualImage(std::span<const Image::TerminalImag
     return fallback;
 }
 
+// The cell a virtual placement's box is measured in: the published cell, which
+// the program reads from CSI 16 t and lays its placeholder cells out by. A
+// terminal nothing published to (a Sync replica, whose host holds the
+// published cell) measures it in the renderer's cell, rounded as a frontend
+// rounds it to publish: the cell this client publishes to its host.
+IntSize boxCellPixels(IntSize publishedCellPixels, FloatSize rendererCell)
+{
+    if (publishedCellPixels.width > 0 && publishedCellPixels.height > 0)
+        return publishedCellPixels;
+    return { Rendering::cellDimension(rendererCell.width), Rendering::cellDimension(rendererCell.height) };
+}
+
+// A virtual placement's box of cells and the rectangle its image is drawn in,
+// in cells from the box's top-left corner: kitty's grman_put_cell_image. c and
+// r name the box; an omitted axis is the whole cells the image covers on it.
+struct VirtualBox {
+    int columns;
+    int rows;
+    double imageLeft;
+    double imageTop;
+    double imageWidth;
+    double imageHeight;
+};
+
+// The box of an image with an axis left to it. The image is fitted to the box
+// with its aspect kept, filling one axis and centred on the other.
+VirtualBox fittedVirtualBox(const Image::TerminalImage& image, IntSize cell)
+{
+    const double imageWidth = image.width;
+    const double imageHeight = image.height;
+    VirtualBox box {};
+    box.columns = image.virtualColumns > 0 ? image.virtualColumns : Image::cellsCovering(imageWidth, cell.width);
+    box.rows = image.virtualRows > 0 ? image.virtualRows : Image::cellsCovering(imageHeight, cell.height);
+    const double boxWidth = static_cast<double>(box.columns) * cell.width;
+    const double boxHeight = static_cast<double>(box.rows) * cell.height;
+    if (imageWidth * boxHeight > imageHeight * boxWidth) {
+        box.imageWidth = box.columns;
+        box.imageHeight = imageHeight * boxWidth / imageWidth / cell.height;
+        box.imageTop = (box.rows - box.imageHeight) / 2.0;
+    } else {
+        box.imageHeight = box.rows;
+        box.imageWidth = imageWidth * boxHeight / imageHeight / cell.width;
+        box.imageLeft = (box.columns - box.imageWidth) / 2.0;
+    }
+    return box;
+}
+
+// The quad drawing box cell (row, column) into the screen cell whose top-left
+// is `destination`: the part of the image that box cell holds, at the place in
+// the screen cell it holds it. Nothing when the image does not reach the box
+// cell, as in a letterbox.
+std::optional<Image::ImageQuad> fittedTileQuad(const VirtualBox& box, int row, int column, FloatPoint destination, FloatSize rendererCell)
+{
+    const double left = std::max<double>(column, box.imageLeft);
+    const double right = std::min<double>(column + 1, box.imageLeft + box.imageWidth);
+    const double top = std::max<double>(row, box.imageTop);
+    const double bottom = std::min<double>(row + 1, box.imageTop + box.imageHeight);
+    if (right <= left || bottom <= top)
+        return std::nullopt;
+    Image::ImageQuad quad {};
+    quad.minXInPixels = destination.x + static_cast<float>(left - column) * rendererCell.width;
+    quad.maxXInPixels = destination.x + static_cast<float>(right - column) * rendererCell.width;
+    quad.minYInPixels = destination.y + static_cast<float>(top - row) * rendererCell.height;
+    quad.maxYInPixels = destination.y + static_cast<float>(bottom - row) * rendererCell.height;
+    quad.u0 = static_cast<float>((left - box.imageLeft) / box.imageWidth);
+    quad.u1 = static_cast<float>((right - box.imageLeft) / box.imageWidth);
+    quad.v0 = static_cast<float>((top - box.imageTop) / box.imageHeight);
+    quad.v1 = static_cast<float>((bottom - box.imageTop) / box.imageHeight);
+    return quad;
+}
+
 // Whether any image in the table carries a virtual placement: without one no
 // placeholder cell can resolve, so the grid scan is skipped.
 bool hasVirtualImage(std::span<const Image::TerminalImage> images)
@@ -192,8 +264,9 @@ bool hasVirtualImage(std::span<const Image::TerminalImage> images)
 // row, top row first; `readCluster(cell, codePoints)` writes a cell's cluster.
 template<typename RowAt, typename ReadCluster>
 int resolveRows(GridSize grid, const RowAt& rowAt, const ReadCluster& readCluster, std::span<const Image::TerminalImage> images,
-    FloatSize cellSizeInPixels, FloatPoint origin, std::span<Image::ImageQuad> out)
+    IntSize publishedCellPixels, FloatSize cellSizeInPixels, FloatPoint origin, std::span<Image::ImageQuad> out)
 {
+    const IntSize boxCell = boxCellPixels(publishedCellPixels, cellSizeInPixels);
     const float cellWidth = cellSizeInPixels.width;
     const float cellHeight = cellSizeInPixels.height;
     const float originX = origin.x;
@@ -252,15 +325,31 @@ int resolveRows(GridSize grid, const RowAt& rowAt, const ReadCluster& readCluste
             if (!image)
                 continue;
 
+            // Destination: this one screen cell.
+            const float destinationX = originX + static_cast<float>(col) * cellWidth;
+            const float destinationY = originY + static_cast<float>(screenRow) * cellHeight;
+
+            // An image with an axis left to it is fitted into its box of
+            // cells; cell (d.row, d.column) shows that box cell's part of it.
+            if (image->virtualRows == 0 || image->virtualColumns == 0) {
+                const VirtualBox box = fittedVirtualBox(*image, boxCell);
+                if (d.row >= box.rows || d.column >= box.columns)
+                    continue; // cell outside the box — ignore
+                std::optional<Image::ImageQuad> tile = fittedTileQuad(box, d.row, d.column, { destinationX, destinationY }, cellSizeInPixels);
+                if (!tile)
+                    continue;
+                tile->zIndex = 0;
+                tile->straightAlpha = true;
+                tile->filter = Image::imageFilterForScale(static_cast<float>(box.imageWidth) * cellWidth, static_cast<float>(box.imageHeight) * cellHeight, image->width, image->height);
+                tile->imageID = imageID;
+                out[static_cast<std::size_t>(count++)] = *tile;
+                continue;
+            }
+
             // Partition the image into a virtualRows x virtualColumns grid; cell
-            // (d.row, d.column) shows that grid cell. A 0 virtual dimension is
-            // unspecified — fall back to at least (row+1, column+1).
-            int gridRows = image->virtualRows;
-            int gridColumns = image->virtualColumns;
-            if (gridRows <= 0)
-                gridRows = d.row + 1;
-            if (gridColumns <= 0)
-                gridColumns = d.column + 1;
+            // (d.row, d.column) shows that grid cell.
+            const int gridRows = image->virtualRows;
+            const int gridColumns = image->virtualColumns;
             if (d.row >= gridRows || d.column >= gridColumns)
                 continue; // cell outside the declared grid — ignore
 
@@ -275,14 +364,11 @@ int resolveRows(GridSize grid, const RowAt& rowAt, const ReadCluster& readCluste
             if (sx1 <= sx0 || sy1 <= sy0)
                 continue;
 
-            // Destination: this one screen cell.
-            const float dx = originX + static_cast<float>(col) * cellWidth;
-            const float dy = originY + static_cast<float>(screenRow) * cellHeight;
             Image::ImageQuad q {};
-            q.minXInPixels = dx;
-            q.minYInPixels = dy;
-            q.maxXInPixels = dx + cellWidth;
-            q.maxYInPixels = dy + cellHeight;
+            q.minXInPixels = destinationX;
+            q.minYInPixels = destinationY;
+            q.maxXInPixels = destinationX + cellWidth;
+            q.maxYInPixels = destinationY + cellHeight;
             q.u0 = static_cast<float>(sx0) / static_cast<float>(imageWidth);
             q.v0 = static_cast<float>(sy0) / static_cast<float>(imageHeight);
             q.u1 = static_cast<float>(sx1) / static_cast<float>(imageWidth);
@@ -336,7 +422,7 @@ int resolvePlaceholders(const Ubiquitty::Terminal* t, FloatSize cellSizeInPixels
     const auto readCluster = [t](const Cell* cell, std::span<uint32_t> codePoints) {
         return Ubiquitty::cellClusterCodePoints(t, cell, codePoints.data(), static_cast<int>(codePoints.size()));
     };
-    return resolveRows({ t->columns, t->rows }, rowAt, readCluster, t->images.stored, cellSizeInPixels, origin, out);
+    return resolveRows({ t->columns, t->rows }, rowAt, readCluster, t->images.stored, { t->cellPixelWidth, t->cellPixelHeight }, cellSizeInPixels, origin, out);
 }
 
 int resolvePlaceholders(const PlaceholderGrid& grid, std::span<const Image::TerminalImage> images, FloatSize cellSizeInPixels, FloatPoint origin, std::span<Image::ImageQuad> out)
@@ -372,7 +458,7 @@ int resolvePlaceholders(const PlaceholderGrid& grid, std::span<const Image::Term
         }
         return Ubiquitty::cellInlineClusterCodePoints(*cell, codePoints.data(), static_cast<int>(codePoints.size()));
     };
-    return resolveRows({ grid.size.columns, rows }, rowAt, readCluster, images, cellSizeInPixels, origin, out);
+    return resolveRows({ grid.size.columns, rows }, rowAt, readCluster, images, grid.publishedCellPixels, cellSizeInPixels, origin, out);
 }
 
 } // namespace Ubiquitty::Kitty

@@ -649,3 +649,167 @@ TEST(testACapturedGridWithoutAClusterReaderPlacesNoGuessedTile)
     CHECK(Ubiquitty::Kitty::resolvePlaceholders(grid, t->images.stored, { 10.0f, 20.0f }, {}, { quads, std::size(quads) }) == 0);
     t.reset();
 }
+
+// ---- a virtual placement's box of cells (kitty's grman_put_cell_image) ----
+// An axis c or r leaves out is the whole cells the image covers on it at the
+// published cell, the one CSI 16 t reports and the program lays its cells out
+// by. The image is fitted into the box with its aspect kept and centred on the
+// axis it does not fill. Every case renders at a 10x20 cell, unlike the 4x4
+// published one, so the box can only have come from the published cell.
+
+// A terminal holding image 1, `width` x `height` RGBA, as a virtual placement
+// with the given keys, published at `cell` (nothing published when zero), with
+// `rows` rows of `columns` placeholder cells from home.
+static std::unique_ptr<Ubiquitty::Terminal> makeVirtualPlacementScene(int width, int height, const std::string& keys, Ubiquitty::IntSize cell, int rows, int columns)
+{
+    auto t = makeTerm(24, 80);
+    if (cell.width > 0)
+        Ubiquitty::publishPixelGeometry(*t, { cell, { cell.width * 80, cell.height * 24 }, { cell.width * 80, cell.height * 24 } });
+    const std::string rgba(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4, '\x7f');
+    const std::string control = "a=T,U=1,q=2,f=32,s=" + std::to_string(width) + ",v=" + std::to_string(height) + ",i=1,m=1" + keys;
+    feedChunkedVirtualTransmit(*t, control.c_str(), rgba, 64);
+    feedz(*t, "\033[H\033[38;5;1m");
+    const uint32_t rowDiacritic[4] = { 0x0305, 0x030D, 0x030E, 0x0310 };
+    for (int row = 0; row < rows; ++row) {
+        std::string text = placeholderCell({ rowDiacritic[row], 0x0305 });
+        for (int column = 1; column < columns; ++column)
+            text += placeholderCell({}); // inherits the next column
+        feed(*t, text.c_str(), static_cast<int>(text.size()));
+        feedz(*t, "\r\n");
+    }
+    return t;
+}
+
+// The quad's destination and source rectangles, each exact in binary.
+struct ExpectedQuad {
+    float minX, minY, maxX, maxY;
+    float u0, v0, u1, v1;
+};
+
+static bool isQuad(const Ubiquitty::Image::ImageQuad& quad, const ExpectedQuad& expected)
+{
+    return quad.minXInPixels == expected.minX && quad.minYInPixels == expected.minY
+        && quad.maxXInPixels == expected.maxX && quad.maxYInPixels == expected.maxY
+        && quad.u0 == expected.u0 && quad.v0 == expected.v0 && quad.u1 == expected.u1 && quad.v1 == expected.v1;
+}
+
+// Resolves the scene at a 10x20 cell from the origin and expects exactly
+// `expected`, in row-major cell order.
+static void checkQuads(const Ubiquitty::Terminal& t, std::initializer_list<ExpectedQuad> expected)
+{
+    Ubiquitty::Image::ImageQuad quads[16];
+    const int count = Ubiquitty::Rendering::collectImageQuads(&t, { 10.0f, 20.0f }, { 0.0f, 0.0f }, 1.0f, 0, { quads, std::size(quads) });
+    CHECK(count == static_cast<int>(expected.size()));
+    if (count != static_cast<int>(expected.size()))
+        return;
+    int index = 0;
+    for (const ExpectedQuad& quad : expected) {
+        CHECK_MSG(isQuad(quads[index], quad), ("quad " + std::to_string(index)).c_str());
+        ++index;
+    }
+}
+
+// No c or r (what ratatui-image sends): an 8x8 image at a 4x4 cell is a 2x2
+// box, each placeholder showing its own quarter across its whole cell. The
+// failure this pins is each cell taken as the whole box, drawing the entire
+// image per cell; at the renderer's 10x20 cell the box would be one cell.
+TEST(testVirtualPlacementWithoutCAndRCoversTheImagesCells)
+{
+    const auto t = makeVirtualPlacementScene(8, 8, "", { 4, 4 }, 2, 2);
+    checkQuads(*t, {
+                       { 0.0f, 0.0f, 10.0f, 20.0f, 0.0f, 0.0f, 0.5f, 0.5f },
+                       { 10.0f, 0.0f, 20.0f, 20.0f, 0.5f, 0.0f, 1.0f, 0.5f },
+                       { 0.0f, 20.0f, 10.0f, 40.0f, 0.0f, 0.5f, 0.5f, 1.0f },
+                       { 10.0f, 20.0f, 20.0f, 40.0f, 0.5f, 0.5f, 1.0f, 1.0f },
+                   });
+}
+
+// A 6x8 image at a 4x4 cell rounds up to a 2x2 box 8 px wide: kitty fits it to
+// the height and centres it, a pixel of box on each side, a quarter cell.
+TEST(testVirtualPlacementWithoutCAndRCentresAnImageNarrowerThanItsCells)
+{
+    const auto t = makeVirtualPlacementScene(6, 8, "", { 4, 4 }, 2, 2);
+    checkQuads(*t, {
+                       { 2.5f, 0.0f, 10.0f, 20.0f, 0.0f, 0.0f, 0.5f, 0.5f },
+                       { 10.0f, 0.0f, 17.5f, 20.0f, 0.5f, 0.0f, 1.0f, 0.5f },
+                       { 2.5f, 20.0f, 10.0f, 40.0f, 0.0f, 0.5f, 0.5f, 1.0f },
+                       { 10.0f, 20.0f, 17.5f, 40.0f, 0.5f, 0.5f, 1.0f, 1.0f },
+                   });
+}
+
+// c alone: the rows are the image's own, ceil(8 / 4) = 2, not derived from the
+// columns by aspect. The 4x8 image fills the 2x2 box's height and sits centred
+// across it, half a cell of box each side.
+TEST(testVirtualPlacementWithColumnsOnlyTakesTheImagesRows)
+{
+    const auto t = makeVirtualPlacementScene(4, 8, ",c=2", { 4, 4 }, 2, 2);
+    checkQuads(*t, {
+                       { 5.0f, 0.0f, 10.0f, 20.0f, 0.0f, 0.0f, 0.5f, 0.5f },
+                       { 10.0f, 0.0f, 15.0f, 20.0f, 0.5f, 0.0f, 1.0f, 0.5f },
+                       { 5.0f, 20.0f, 10.0f, 40.0f, 0.0f, 0.5f, 0.5f, 1.0f },
+                       { 10.0f, 20.0f, 15.0f, 40.0f, 0.5f, 0.5f, 1.0f, 1.0f },
+                   });
+}
+
+// r alone: the columns are the image's own, ceil(8 / 4) = 2. The 8x4 image
+// fills the 2x2 box's width and sits centred down it, half a cell above and
+// below.
+TEST(testVirtualPlacementWithRowsOnlyTakesTheImagesColumns)
+{
+    const auto t = makeVirtualPlacementScene(8, 4, ",r=2", { 4, 4 }, 2, 2);
+    checkQuads(*t, {
+                       { 0.0f, 10.0f, 10.0f, 20.0f, 0.0f, 0.0f, 0.5f, 0.5f },
+                       { 10.0f, 10.0f, 20.0f, 20.0f, 0.5f, 0.0f, 1.0f, 0.5f },
+                       { 0.0f, 20.0f, 10.0f, 30.0f, 0.0f, 0.5f, 0.5f, 1.0f },
+                       { 10.0f, 20.0f, 20.0f, 30.0f, 0.5f, 0.5f, 1.0f, 1.0f },
+                   });
+}
+
+// A terminal nothing published to, as a Sync replica is, measures the box in
+// the renderer's cell rounded as a frontend publishes it: 3.6 px is a 4 px
+// cell, so an 8x8 image is a 2x2 box. The unrounded cell would make it 3x3 and
+// sample thirds.
+TEST(testVirtualPlacementOnAnUnpublishedTerminalUsesTheRoundedRendererCell)
+{
+    const auto t = makeVirtualPlacementScene(8, 8, "", {}, 2, 2);
+    Ubiquitty::Image::ImageQuad quads[16];
+    const int count = Ubiquitty::Rendering::collectImageQuads(t.get(), { 3.6f, 3.6f }, { 0.0f, 0.0f }, 1.0f, 0, { quads, std::size(quads) });
+    CHECK(count == 4);
+    for (int index = 0; index < std::min(count, 4); ++index) {
+        CHECK(quads[index].u1 - quads[index].u0 == 0.5f);
+        CHECK(quads[index].v1 - quads[index].v0 == 0.5f);
+    }
+}
+
+// A captured grid measures the box in the cell the capture carries: given the
+// terminal's published cell it places the tiles the terminal does, and given
+// none it falls back to the renderer's 10x20 cell, where the 4x8 image is one
+// row tall and the second row of placeholders lies outside its box.
+TEST(testACapturedGridMeasuresTheBoxInThePublishedCellItCarries)
+{
+    const auto t = makeVirtualPlacementScene(4, 8, ",c=2", { 4, 4 }, 2, 2);
+    std::vector<Ubiquitty::Cell> rows(static_cast<std::size_t>(t->rows) * t->columns);
+    for (int row = 0; row < t->rows; ++row)
+        Ubiquitty::Screen::getDisplayRow(*t, 0, row, &rows[static_cast<std::size_t>(row) * t->columns], t->columns);
+    const auto readCluster = [](const Ubiquitty::Cell* cell, std::span<uint32_t> codePoints, void* context) {
+        return Ubiquitty::cellClusterCodePoints(static_cast<const Ubiquitty::Terminal*>(context), cell, codePoints.data(), static_cast<int>(codePoints.size()));
+    };
+    Ubiquitty::Kitty::PlaceholderGrid grid {
+        .cells = rows,
+        .size = { t->columns, t->rows },
+        .readCluster = readCluster,
+        .readClusterContext = t.get(),
+        .publishedCellPixels = { t->cellPixelWidth, t->cellPixelHeight },
+    };
+    Ubiquitty::Image::ImageQuad live[16];
+    const int liveCount = Ubiquitty::Kitty::resolvePlaceholders(t.get(), { 10.0f, 20.0f }, {}, 1.0f, 0, { live, std::size(live) });
+    Ubiquitty::Image::ImageQuad captured[16];
+    const int capturedCount = Ubiquitty::Kitty::resolvePlaceholders(grid, t->images.stored, { 10.0f, 20.0f }, {}, { captured, std::size(captured) });
+    CHECK(liveCount == 4 && capturedCount == 4);
+    for (int index = 0; index < std::min({ liveCount, capturedCount, 4 }); ++index)
+        CHECK(isSameQuad(live[index], captured[index]));
+    CHECK(capturedCount >= 1 && isQuad(captured[0], { 5.0f, 0.0f, 10.0f, 20.0f, 0.0f, 0.0f, 0.5f, 0.5f }));
+
+    grid.publishedCellPixels = {};
+    CHECK(Ubiquitty::Kitty::resolvePlaceholders(grid, t->images.stored, { 10.0f, 20.0f }, {}, { captured, std::size(captured) }) == 2);
+}

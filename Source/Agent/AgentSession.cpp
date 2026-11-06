@@ -1183,6 +1183,7 @@ std::vector<uint8_t> AgentSession::renderPNG()
         in.placements = m_term->images.placements.data();
         in.placementCount = Image::maxTerminalImagePlacementCount;
         in.viewOffset = 0;
+        in.publishedCellPixels = { m_term->cellPixelWidth, m_term->cellPixelHeight };
         if (isCursorVisible) {
             const Ubiquitty::PaletteRGB cursorColor = palette.cursor;
             in.cursor.row = cursorRow;
