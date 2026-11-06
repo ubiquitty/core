@@ -420,6 +420,29 @@ TEST(testKittyAlternateSubparamsGateOnFlag4Only)
     EXPECT_BYTES(outputBuffer, n, "\033[97::97;1u", 11);
 }
 
+/// A non-US layout carries a base-layout key distinct from the primary, so a
+/// client can match a shortcut layout-independently: the physical `[` key on a
+/// German layout yields primary U+00FC with base `[` (91). The base==primary
+/// case above never exercises these shapes.
+TEST(testKittyBaseLayoutKeyDistinctFromPrimary)
+{
+    char outputBuffer[64] = { 0 };
+    // No Shift held: the shifted subparameter is suppressed, and the
+    // base-layout alternate keeps its slot behind the empty one.
+    int n = Ubiquitty::Kitty::encodeKey(0xFC, 0, '[', 0, KeyEventType::Press, {}, Kitty::KeyFlag::ReportAlternateKeys, outputBuffer);
+    EXPECT_BYTES(outputBuffer, n, "\033[252::91;1u", 12);
+    // Shift held: all three subparameters are carried (modifier value 2).
+    n = Ubiquitty::Kitty::encodeKey(0xFC, 0xDC, '[', keymapModifierShift, KeyEventType::Press, {}, Kitty::KeyFlag::ReportAlternateKeys, outputBuffer);
+    EXPECT_BYTES(outputBuffer, n, "\033[252:220:91;2u", 15);
+    // Without ReportAlternateKeys the base does not leak.
+    n = Ubiquitty::Kitty::encodeKey(0xFC, 0, '[', 0, KeyEventType::Press, {}, Kitty::KeyFlag::ReportAll, outputBuffer);
+    EXPECT_BYTES(outputBuffer, n, "\033[252;1u", 8);
+    // A Latin primary on another layout's position: German z sits on the US y
+    // key.
+    n = Ubiquitty::Kitty::encodeKey('z', 0, 'y', keymapModifierCtrl, KeyEventType::Press, {}, Kitty::KeyFlag::ReportAlternateKeys, outputBuffer);
+    EXPECT_BYTES(outputBuffer, n, "\033[122::121;5u", 13);
+}
+
 TEST(testModifierPressReleaseWithEvents)
 {
     char outputBuffer[64] = { 0 };

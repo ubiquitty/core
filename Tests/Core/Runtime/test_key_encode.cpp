@@ -292,6 +292,77 @@ TEST(aControlChordOnANonLatinLayoutFoldsTheKeyNotTheLetter)
     CHECK(encoded(modes, press) == "\x0B");
 }
 
+/// A Latin layout whose letter sits on another layout's position reports that
+/// position as the base-layout key, and the chord still follows the letter.
+///
+/// German z is on the US y key. Ctrl+z is the 0x1A the user sees, not the US
+/// position's 0x19, because the fold applies only to a key beyond ASCII; Kitty
+/// carries the position beside the letter as the base-layout alternate.
+TEST(aLatinLayoutKeyOnAnotherPositionKeepsItsLetterAndReportsThePosition)
+{
+    Rt::ModeSnapshot legacy;
+
+    Rt::KeyPress press;
+    press.eventType = K::KeyEventType::Press;
+    press.modifiers = static_cast<std::uint32_t>(K::Keymap::keymapModifierCtrl);
+    press.wasModified = true;
+    press.unshiftedCodePoint = 'z';
+    press.shiftedCodePoint = 'z';
+    press.baseLayoutCodePoint = 'y';
+    press.text[0] = 0x1A;
+    press.textLength = 1;
+    CHECK(encoded(legacy, press) == "\x1A");
+
+    Rt::ModeSnapshot kitty;
+    kitty.kittyKeyboardFlags[0] = static_cast<std::uint16_t>(
+        std::to_underlying(Ubiquitty::Kitty::KeyFlag::Disambiguate)
+        | std::to_underlying(Ubiquitty::Kitty::KeyFlag::ReportAlternateKeys));
+    CHECK(encoded(kitty, press) == "\033[122::121;5u");
+
+    // Without the flag the position does not leak.
+    kitty.kittyKeyboardFlags[0] = static_cast<std::uint16_t>(std::to_underlying(Ubiquitty::Kitty::KeyFlag::Disambiguate));
+    CHECK(encoded(kitty, press) == "\033[122;5u");
+}
+
+/// Ctrl on a Latin layout's non-ASCII key folds through the US position, as
+/// kitty's legacy encoder does.
+///
+/// kitty/key_encoding.c encodes a Ctrl press whose key is not a legacy ASCII
+/// key through its alternate (base-layout) key when that one is. German ü sits
+/// on the US `[` key, so Ctrl+ü is Ctrl+[, 0x1B; ö folds to `;`, which has no
+/// control byte and is sent as itself. With no position
+/// reported nothing says the chord, and nothing is sent.
+TEST(aControlChordOnALatinNonASCIIKeyFoldsThroughTheUSPosition)
+{
+    Rt::ModeSnapshot modes;
+
+    Rt::KeyPress press;
+    press.eventType = K::KeyEventType::Press;
+    press.modifiers = static_cast<std::uint32_t>(K::Keymap::keymapModifierCtrl);
+    press.wasModified = true;
+    press.unshiftedCodePoint = 0x00FC; // ü, on the US [ position
+    press.shiftedCodePoint = 0x00FC;
+    CHECK(encoded(modes, press).empty());
+
+    press.baseLayoutCodePoint = '[';
+    CHECK(encoded(modes, press) == "\x1B");
+
+    press.unshiftedCodePoint = 0x00F6; // ö, on the US ; position
+    press.shiftedCodePoint = 0x00F6;
+    press.baseLayoutCodePoint = ';';
+    CHECK(encoded(modes, press) == ";");
+    press.unshiftedCodePoint = 0x00FC;
+    press.shiftedCodePoint = 0x00FC;
+    press.baseLayoutCodePoint = '[';
+
+    // Under Kitty the chord is reported with both the key and its position.
+    Rt::ModeSnapshot kitty;
+    kitty.kittyKeyboardFlags[0] = static_cast<std::uint16_t>(
+        std::to_underlying(Ubiquitty::Kitty::KeyFlag::Disambiguate)
+        | std::to_underlying(Ubiquitty::Kitty::KeyFlag::ReportAlternateKeys));
+    CHECK(encoded(kitty, press) == "\033[252::91;5u");
+}
+
 /// A frontend holding the terminal itself gets the same answer.
 ///
 /// The web page, the wscons console and the GTK shell hold a `Terminal` rather
