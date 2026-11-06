@@ -1022,13 +1022,144 @@ class StanzaDeclineTests(unittest.TestCase):
                                                  "UBIQUITTY_QUIC_PREFIX", "UBQ_BUILD_JOBS"])
                     self.assertEqual(environment[6], "UBQ_TEST_TARGETS_PREBUILT=1")
                     own = ["UBQ_WEB_OUTLINE=1"] if entry == "shell_web_outline" else []
-                    self.assertEqual(environment[7:], own)
+                    self.assertEqual(environment[7:], own + [f"UBQ_TESTS_ROOT={project}",
+                                                            f"UBQ_CORE_ROOT={batteries.ROOT}",
+                                                            f"UBQ_KIT_ROOT={project}"])
+                    self.assertIn(f'WORKING_DIRECTORY "{project}"', properties[entry])
                     self.assertIn('FIXTURES_REQUIRED "ubq_build_fixture" ', properties[entry])
                     self.assertNotIn("FIXTURES_SETUP", properties[entry])
                     self.assertNotIn("RESOURCE_LOCK", properties[entry])
                     self.assertIn(r"[=[run-app-tests\.sh: PASSED .+ 0 ran, [1-9]]=]", properties[entry])
                     timeout = '"900"' if entry == "shell_web_outline" else '"600"'
                     self.assertIn(f"TIMEOUT {timeout}", properties[entry])
+
+    def subjectFixture(self, ownDriver, sharedBuilds=False, lockSharedBuilds=True):
+        scratch = tempfile.TemporaryDirectory(prefix="ubq-ctest-subject-")
+        self.addCleanup(scratch.cleanup)
+        directory = Path(scratch.name).resolve()
+        project = directory / "consumer with spaces"
+        core = directory / "core"
+        kit = directory / "selected Kit"
+        for checkout in (project, core, kit):
+            (checkout / "Scripts").mkdir(parents=True)
+        (core / "Scripts/ctest-shell-lane-census.sh").symlink_to(
+            batteries.ROOT / "Scripts/ctest-shell-lane-census.sh")
+        expected = {"UBQ_TESTS_ROOT": str(project), "UBQ_CORE_ROOT": str(core), "UBQ_KIT_ROOT": str(kit)}
+
+        def writeDriver(path, stanza):
+            serial = "web_proxy_frames web\nweb_proxy_frames web-dist" if sharedBuilds else ""
+            hosts = "host_a\nhost_b" if sharedBuilds else ""
+            path.write_text(f"#!{sys.executable}\n"
+                            "import json, os, sys\n"
+                            f"expected = {expected!r}\n"
+                            "if any(os.environ.get(key) != value for key, value in expected.items()):\n"
+                            "    sys.exit(73)\n"
+                            "if os.getcwd() != expected['UBQ_TESTS_ROOT']:\n"
+                            "    sys.exit(74)\n"
+                            "if sys.argv[1] == '--list-stanzas':\n"
+                            f"    print({stanza!r})\n"
+                            "elif sys.argv[1] == '--list-serial-stanzas':\n"
+                            f"    print({serial!r})\n"
+                            "elif sys.argv[1] == '--list-host-binary-stanzas':\n"
+                            f"    print({hosts!r})\n"
+                            "elif sys.argv[1].startswith('--list-'):\n"
+                            "    pass\n"
+                            f"elif sys.argv[1] in {stanza!r}.splitlines():\n"
+                            "    with open(os.environ['UBQ_DRIVER_RUNTIME_TRACE'], 'w') as output:\n"
+                            "        json.dump(expected, output)\n"
+                            "    print('run-tests.sh: PASSED — 1 ran, 0 skipped')\n"
+                            "else:\n"
+                            "    sys.exit(75)\n")
+            path.chmod(0o755)
+
+        writeDriver(core / "Scripts/run-tests.sh", "core_only")
+        if ownDriver:
+            stanzas = "app_only\nhost_a\nhost_b\nweb_proxy_frames" if sharedBuilds else "app_only"
+            writeDriver(project / "Scripts/run-tests.sh", stanzas)
+        locks = 'set(shell_host_a_RESOURCE_LOCK existing_resource)\n' if sharedBuilds else ""
+        if sharedBuilds and lockSharedBuilds:
+            locks += 'ubiquitty_lock_shell_build_trees(DRIVER "${driver}")\n'
+        (project / "CMakeLists.txt").write_text(
+            "cmake_minimum_required(VERSION 3.20)\n"
+            "project(Subject LANGUAGES NONE)\n"
+            "enable_testing()\n"
+            f'set(UBIQUITTY_CORE_SOURCE_DIR "{core}")\n'
+            f'set(UBIQUITTY_KIT_SOURCE_DIR "{kit}")\n'
+            f'include("{batteries.ROOT}/Scripts/cmake/UbiquittyTests.cmake")\n'
+            "ubiquitty_default_shell_driver(driver)\n"
+            'file(WRITE "${CMAKE_BINARY_DIR}/selected-driver" "${driver}")\n'
+            + locks +
+            'ubiquitty_schedule_shell_stanzas(DRIVER "${driver}")\n')
+        build = directory / "build"
+        environment = dict(os.environ, UBQ_TESTS_ROOT=str(directory / "wrong subject"),
+                           UBQ_CORE_ROOT=str(directory / "wrong Core"), UBQ_KIT_ROOT=str(directory / "wrong Kit"),
+                           UBQ_DRIVER_RUNTIME_TRACE=str(directory / "ran.json"))
+        configured = subprocess.run(["cmake", "-S", str(project), "-B", str(build)], cwd=directory,
+                                    env=environment, capture_output=True, text=True)
+        self.assertEqual(configured.returncode, 0, configured.stdout + configured.stderr)
+        return project, core, build, environment
+
+    @unittest.skipUnless(shutil.which("cmake") and shutil.which("ctest"), "CMake and CTest are needed")
+    def test_consumer_driver_keeps_its_subject_and_library_roots_in_bare_ctest(self):
+        project, core, build, environment = self.subjectFixture(ownDriver=True)
+        self.assertEqual((build / "selected-driver").read_text(), str(project / "Scripts/run-tests.sh"))
+        tests = (build / "CTestTestfile.cmake").read_text()
+        self.assertIn("shell_app_only", tests)
+        self.assertNotIn("shell_core_only", tests)
+        # A direct driver invocation demonstrates the wrong-subject oracle;
+        # CTest must replace these inherited roots with the configured roots.
+        refused = subprocess.run([str(project / "Scripts/run-tests.sh"), "app_only"], cwd=project,
+                                 env=environment, capture_output=True, text=True)
+        self.assertEqual(refused.returncode, 73)
+        checked = subprocess.run(["ctest", "--test-dir", str(build), "-R", "^shell_app_only$",
+                                  "-FA", ".*", "--output-on-failure"], env=environment,
+                                 capture_output=True, text=True)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertIn("Passed", checked.stdout)
+        recorded = json.loads(Path(environment["UBQ_DRIVER_RUNTIME_TRACE"]).read_text())
+        self.assertEqual(recorded["UBQ_TESTS_ROOT"], str(project))
+        self.assertEqual(recorded["UBQ_CORE_ROOT"], str(core))
+
+    @unittest.skipUnless(shutil.which("cmake"), "CMake is needed")
+    def test_checkout_without_a_driver_uses_core_without_inventing_consumer_stanzas(self):
+        project, core, build, environment = self.subjectFixture(ownDriver=False)
+        self.assertFalse((project / "Scripts/run-tests.sh").exists())
+        self.assertEqual((build / "selected-driver").read_text(), str(core / "Scripts/run-tests.sh"))
+        tests = (build / "CTestTestfile.cmake").read_text()
+        self.assertIn("shell_core_only", tests)
+        self.assertNotIn("shell_app_only", tests)
+
+    def assertSharedBuildLocks(self, tests):
+        properties = dict(re.findall(r'^set_tests_properties\("?(shell_\w+)"? PROPERTIES (.*)\)$', tests, re.M))
+        locks = {}
+        for entry, settings in properties.items():
+            match = re.search(r'RESOURCE_LOCK "([^"]*)"', settings)
+            locks[entry] = set(match.group(1).split(";")) if match else set()
+        for entry in ("shell_host_a", "shell_host_b"):
+            self.assertIn("ubq_build_host-tests", locks[entry], entry)
+        self.assertIn("existing_resource", locks["shell_host_a"])
+        self.assertEqual(locks["shell_web_proxy_frames"], {"ubq_build_web", "ubq_build_web-dist"})
+        self.assertFalse(locks["shell_app_only"])
+
+    @unittest.skipUnless(shutil.which("cmake"), "CMake is needed")
+    def test_opted_in_driver_locks_each_shared_build_tree_for_the_entire_stanza(self):
+        project, core, build, environment = self.subjectFixture(ownDriver=True, sharedBuilds=True)
+        tests = (build / "CTestTestfile.cmake").read_text()
+        self.assertSharedBuildLocks(tests)
+        # Removing one host consumer's lock recreates the unsafe registration:
+        # its build and daemon could overlap another consumer's configure/link.
+        line = next(line for line in tests.splitlines() if re.match(r'^set_tests_properties\("?shell_host_b"? ', line))
+        unlocked = re.sub(r'RESOURCE_LOCK "[^"]*" ', "", line)
+        self.assertNotEqual(unlocked, line)
+        with self.assertRaisesRegex(AssertionError, "shell_host_b"):
+            self.assertSharedBuildLocks(tests.replace(line, unlocked))
+
+    @unittest.skipUnless(shutil.which("cmake"), "CMake is needed")
+    def test_registration_without_inventory_locks_is_rejected_by_the_shared_build_oracle(self):
+        project, core, build, environment = self.subjectFixture(ownDriver=True, sharedBuilds=True,
+                                                               lockSharedBuilds=False)
+        with self.assertRaisesRegex(AssertionError, "shell_host_a"):
+            self.assertSharedBuildLocks((build / "CTestTestfile.cmake").read_text())
 
 
 class SuiteFailFastTests(unittest.TestCase):

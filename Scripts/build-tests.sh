@@ -30,14 +30,34 @@
 #
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Keep the driver and its helpers in Core while configuring the checkout whose
+# tests were requested, just as run-tests.sh does.
+CORE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="${UBQ_TESTS_ROOT:-}"
+if [ -z "$ROOT" ]; then
+    ROOT="$CORE_ROOT"
+    ubq_toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$ubq_toplevel" ] && [ "$ubq_toplevel" != "$CORE_ROOT" ] \
+        && [ "$(cd "$ubq_toplevel/Libraries/ubiquitty-core" 2>/dev/null && pwd -P)" = "$(cd "$CORE_ROOT" && pwd -P)" ]; then
+        ROOT="$ubq_toplevel"
+    fi
+fi
+libraryArguments=()
+if [ "$ROOT" != "$CORE_ROOT" ]; then
+    libraryArguments+=("-DUBIQUITTY_CORE_SOURCE_DIR=$CORE_ROOT")
+    if [ -n "${UBQ_KIT_ROOT:-}" ]; then
+        libraryArguments+=("-DUBIQUITTY_KIT_SOURCE_DIR=$UBQ_KIT_ROOT")
+    elif [ -e "$ROOT/Libraries/ubiquitty-kit" ]; then
+        libraryArguments+=("-DUBIQUITTY_KIT_SOURCE_DIR=$ROOT/Libraries/ubiquitty-kit")
+    fi
+fi
 
 # How many compilers this machine can run at once; see Scripts/build-jobs.sh.
 # shellcheck source=Scripts/build-jobs.sh
-. "$ROOT/Scripts/build-jobs.sh"
+. "$CORE_ROOT/Scripts/build-jobs.sh"
 # Build output lives outside the checkout; see Scripts/build-root.sh.
 # shellcheck source=Scripts/build-root.sh
-. "$ROOT/Scripts/build-root.sh"
+. "$CORE_ROOT/Scripts/build-root.sh"
 
 # The tests target is the only one carrying a precompiled header, and a PCH
 # cannot be shared between build directories: its AST records the absolute path
@@ -72,6 +92,7 @@ fi
 # AST-based check — silently covers Source/ and reports a clean verdict over the
 # half it could see.
 cmake -S "$ROOT" -B "$BUILD" -G Ninja \
+    ${libraryArguments[@]+"${libraryArguments[@]}"} \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DUBIQUITTY_BUILD_TESTS=ON -DUBIQUITTY_FRONTEND=Core -DCMAKE_BUILD_TYPE=Debug >/dev/null
 
@@ -102,9 +123,9 @@ COMPILED="$(grep -c 'Building CXX object' "$BUILD_LOG" || true)"
 # change to the sync decoders can leave shell stanzas BUILD-BROKEN while this
 # script reports zero errors, because the files they break live under
 # Source/Platform and this configures UBIQUITTY_FRONTEND=Core.
-PLATFORM_SOURCES="$(git ls-files --cached --others --exclude-standard \
+PLATFORM_SOURCES="$(git -C "$ROOT" ls-files --cached --others --exclude-standard \
     'Source/Platform/*.cpp' 'Source/Platform/*.mm' | grep -c . || true)"
-UBQ_TEST_SOURCES="$(git ls-files --cached --others --exclude-standard 'Tests/*.cpp')"
+UBQ_TEST_SOURCES="$(git -C "$ROOT" ls-files --cached --others --exclude-standard 'Tests/*.cpp')"
 ALL_TEST_SOURCES="$(printf '%s\n' "$UBQ_TEST_SOURCES" | grep -c . || true)"
 OUTSIDE_GLOB="$(printf '%s\n' "$UBQ_TEST_SOURCES" | grep -vcE '(^|/)test_[^/]*\.cpp$' || true)"
 
@@ -131,4 +152,4 @@ echo "  Green here says nothing about either set."
 # traced to the translation units that read it and checked against the ones this
 # run built. A green build that skipped them is the failure this script exists
 # to prevent and cannot otherwise see.
-python3 "$ROOT/Scripts/check-build-reached.py" "$BUILD" || exit 1
+(cd "$ROOT" && python3 "$CORE_ROOT/Scripts/check-build-reached.py" "$BUILD") || exit 1

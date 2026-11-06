@@ -809,7 +809,12 @@ function(ubq_schedule_run_tests_stanzas driver)
 
     ubiquitty_schedule_shell_stanzas(DRIVER ${driver} STANZAS ${_stanzas})
 endfunction()
-ubq_schedule_run_tests_stanzas(${UBIQUITTY_CORE_SOURCE_DIR}/Scripts/run-tests.sh)
+ubiquitty_default_shell_driver(_ubq_shell_driver)
+if(_ubq_shell_driver STREQUAL "${UBIQUITTY_CORE_SOURCE_DIR}/Scripts/run-tests.sh")
+    ubq_schedule_run_tests_stanzas("${_ubq_shell_driver}")
+else()
+    ubiquitty_schedule_shell_stanzas(DRIVER "${_ubq_shell_driver}")
+endif()
 
 # ----------------------------------------------------------------------
 # Dev tools that are not tests: flood benchmarks, a fuzz-corpus generator, a

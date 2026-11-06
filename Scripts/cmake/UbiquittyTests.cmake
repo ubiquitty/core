@@ -20,7 +20,9 @@
 #       [FRONTEND_DIRECTORIES <subsystem>...])
 #
 #   ubiquitty_set_test_entry_properties(<ctest entry>...)
+#   ubiquitty_default_shell_driver(<variable>)
 #   ubiquitty_read_shell_stanzas(<variable> DRIVER <script> [LISTING <flag>])
+#   ubiquitty_lock_shell_build_trees(DRIVER <script>)
 #   ubiquitty_schedule_shell_stanzas(DRIVER <script> [STANZAS <stanza>...])
 #   ubiquitty_finish_host_tests([DRIVER <script>])
 #
@@ -397,6 +399,30 @@ function(ubiquitty_add_host_tests)
     endforeach()
 endfunction()
 
+# The configured checkout owns its shell tests. A checkout without a driver
+# uses Core's driver, which also accepts stanzas in the configured checkout.
+function(ubiquitty_default_shell_driver _variable)
+    set(_driver "${CMAKE_SOURCE_DIR}/Scripts/run-tests.sh")
+    if(NOT EXISTS "${_driver}")
+        set(_driver "${UBIQUITTY_CORE_SOURCE_DIR}/Scripts/run-tests.sh")
+    endif()
+    set(${_variable} "${_driver}" PARENT_SCOPE)
+endfunction()
+
+# Discovery and execution must name the same checkouts even when CTest is run
+# later, outside the shell that configured the tree, or with other root overrides.
+function(_ubiquitty_shell_driver_environment _variable)
+    set(_environment
+        "UBQ_TESTS_ROOT=${CMAKE_SOURCE_DIR}"
+        "UBQ_CORE_ROOT=${UBIQUITTY_CORE_SOURCE_DIR}")
+    if(DEFINED UBIQUITTY_KIT_SOURCE_DIR)
+        list(APPEND _environment "UBQ_KIT_ROOT=${UBIQUITTY_KIT_SOURCE_DIR}")
+    else()
+        list(APPEND _environment "UBQ_KIT_ROOT=${CMAKE_SOURCE_DIR}")
+    endif()
+    set(${_variable} "${_environment}" PARENT_SCOPE)
+endfunction()
+
 # Sets <variable> to the lines `<DRIVER> <LISTING>` prints, one list item each;
 # LISTING is --list-stanzas when none is given. A listing that exits non-zero
 # stops the configure: what it would have wired is unknowable, and an empty
@@ -410,8 +436,10 @@ function(ubiquitty_read_shell_stanzas _variable)
     if(NOT _argument_LISTING)
         set(_argument_LISTING --list-stanzas)
     endif()
+    _ubiquitty_shell_driver_environment(_driver_environment)
     execute_process(
-        COMMAND ${_argument_DRIVER} ${_argument_LISTING}
+        COMMAND ${CMAKE_COMMAND} -E env ${_driver_environment} ${_argument_DRIVER} ${_argument_LISTING}
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         OUTPUT_VARIABLE _ubq_listing
         OUTPUT_STRIP_TRAILING_WHITESPACE
         RESULT_VARIABLE _ubq_listing_result)
@@ -422,6 +450,42 @@ function(ubiquitty_read_shell_stanzas _variable)
     endif()
     string(REPLACE "\n" ";" _ubq_listing "${_ubq_listing}")
     set(${_variable} "${_ubq_listing}" PARENT_SCOPE)
+endfunction()
+
+# Opt-in for a driver exposing Core's --list-serial-stanzas and
+# --list-host-binary-stanzas inventories. Without a shared Host build fixture,
+# each Host consumer can build the daemon on demand, so the lock covers its
+# entire build and run. Other build trees keep their own locks. A generic driver
+# that only lists stanzas does not need these inventories.
+function(ubiquitty_lock_shell_build_trees)
+    cmake_parse_arguments(PARSE_ARGV 0 _argument "" "DRIVER" "")
+    if(NOT _argument_DRIVER)
+        message(FATAL_ERROR "ubiquitty_lock_shell_build_trees needs the DRIVER whose build trees it locks")
+    endif()
+    ubiquitty_read_shell_stanzas(_pairs DRIVER "${_argument_DRIVER}" LISTING --list-serial-stanzas)
+    ubiquitty_read_shell_stanzas(_host_stanzas DRIVER "${_argument_DRIVER}" LISTING --list-host-binary-stanzas)
+    foreach(_stanza IN LISTS _host_stanzas)
+        if(NOT _stanza STREQUAL "")
+            list(APPEND _pairs "${_stanza} host-tests")
+        endif()
+    endforeach()
+    set(_properties)
+    foreach(_pair IN LISTS _pairs)
+        if(_pair STREQUAL "")
+            continue()
+        endif()
+        if(NOT _pair MATCHES "^([A-Za-z0-9_-]+) ([A-Za-z0-9_-]+)$")
+            message(FATAL_ERROR "Invalid shared shell build tree from ${_argument_DRIVER}: ${_pair}")
+        endif()
+        set(_property "shell_${CMAKE_MATCH_1}_RESOURCE_LOCK")
+        list(APPEND ${_property} "ubq_build_${CMAKE_MATCH_2}")
+        list(APPEND _properties "${_property}")
+    endforeach()
+    list(REMOVE_DUPLICATES _properties)
+    foreach(_property IN LISTS _properties)
+        list(REMOVE_DUPLICATES ${_property})
+        set(${_property} "${${_property}}" PARENT_SCOPE)
+    endforeach()
 endfunction()
 
 # The shell-only remainder: one ctest entry per stanza of <DRIVER>, so `ctest`
@@ -524,6 +588,7 @@ function(ubiquitty_schedule_shell_stanzas)
     get_filename_component(_ubq_driver_name "${_argument_DRIVER}" NAME)
     string(REGEX REPLACE "([][.+*?^$|(){}\\\\])" "\\\\\\1" _ubq_driver_pattern "${_ubq_driver_name}")
     set(_ubq_stanza_decline "${_ubq_driver_pattern}: PASSED .+ 0 ran, [1-9]")
+    _ubiquitty_shell_driver_environment(_driver_environment)
     foreach(_ubq_stanza IN LISTS _ubq_stanzas)
         if(_ubq_stanza STREQUAL "")
             continue()
@@ -573,6 +638,7 @@ function(ubiquitty_schedule_shell_stanzas)
                 UBQ_BUILD_JOBS=${_ubq_stanza_jobs}
                 ${_ubq_stanza_env}
                 ${_ubq_stanza_coverage_env}
+                ${_driver_environment}
                 ${_argument_DRIVER} ${_ubq_stanza})
         # A stanza that asserted nothing exits 0, which ctest reports as a pass
         # and a reader counts as coverage. The driver ends every run with what
@@ -600,6 +666,7 @@ function(ubiquitty_schedule_shell_stanzas)
         # width and an actual one that are written separately are two numbers
         # that can disagree, and only the smaller one is ever believed.
         set_tests_properties(${_ubq_entry} PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
             FIXTURES_REQUIRED "${_ubq_stanza_fixtures}"
             PROCESSORS ${_ubq_stanza_jobs}
             SKIP_REGULAR_EXPRESSION "${_ubq_stanza_skip}"
