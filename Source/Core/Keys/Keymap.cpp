@@ -1135,15 +1135,15 @@ int encodeKeyEvent(const Keys::KeyEvent& event, Ubiquitty::Modes::CursorKeyMode 
     // key instead. A press with no base-layout key sends nothing, since no
     // byte says "Ctrl+ф". A bare or shifted non-ASCII letter is text and takes
     // the passthrough below.
+    std::optional<uint8_t> digitRowControlByte;
     if (foldsChordThroughBaseLayoutKey(keyCode)) {
         if (Kitty::printableReportedAsEscapeCode(modifiers, kittyKeyboardFlags))
             return Kitty::encodeKey(keyCode, event.shiftedKey, event.baseLayoutKey, modifiers, eventType, event.associatedText(), kittyKeyboardFlags, output);
         if ((modifiers & keymapModifierCtrl) != 0 && isAsciiPrintable(event.baseLayoutKey)) {
             // kitty sends the digit row's control bytes through the base-layout
-            // key; the ASCII-key fold leaves a digit as it is.
-            const bool formatAllModifiedKeys = xtermModifyOtherKeys >= 2 && modifierValue != 1;
-            if (const std::optional<uint8_t> controlByte = controlByteOfBaseLayoutKey(event.baseLayoutKey); controlByte && !formatAllModifiedKeys)
-                return putControlByte(output, *controlByte, modifiers, modes);
+            // key; the ASCII-key fold leaves a digit as it is. The byte is sent
+            // on the ASCII path below, after its Super rule.
+            digitRowControlByte = controlByteOfBaseLayoutKey(event.baseLayoutKey);
             keyCode = event.baseLayoutKey;
         }
     }
@@ -1187,6 +1187,8 @@ int encodeKeyEvent(const Keys::KeyEvent& event, Ubiquitty::Modes::CursorKeyMode 
         // their sequences" still holds. Only the modified letters change.
         const bool formatAllModifiedKeys = xtermModifyOtherKeys >= 2 && modifierValue != 1;
         if (!formatAllModifiedKeys) {
+            if (digitRowControlByte)
+                return putControlByte(output, *digitRowControlByte, modifiers, modes);
             int modifiedPrintableLength = putModifiedPrintable(output, typedByte, modifiers, modes);
             if (modifiedPrintableLength >= 0)
                 return modifiedPrintableLength;

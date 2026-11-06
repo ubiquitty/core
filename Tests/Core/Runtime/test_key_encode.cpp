@@ -28,6 +28,7 @@
 #include "Core/Terminal.h"
 #include "Core/TerminalOperations.h"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -402,11 +403,26 @@ TEST(aControlChordOnAFrenchDigitRowKeyFoldsAsKittyDoes)
     expect(0x00E8, '7', "\x1B\x1F");
     press.modifiers &= ~static_cast<std::uint32_t>(K::Keymap::keymapModifierAlternate);
 
-    // The press the predictor reads is the press the encoder writes.
-    press.unshiftedCodePoint = 0x00E9;
-    press.shiftedCodePoint = 0x00E9;
-    press.baseLayoutCodePoint = '2';
-    CHECK(Ubiquitty::Protocol::Sync::legacyControlCharacterOf(Ubiquitty::Runtime::keyEventOf(press)) == std::optional<std::uint8_t> { 0x00 });
+    constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, 3> digitRowKeys { { { 0x00E9, '2' }, { 0x00A7, '6' }, { 0x00E8, '7' } } };
+
+    // A Super chord is never a legacy control byte, on the digit row as on any ASCII key.
+    press.modifiers |= static_cast<std::uint32_t>(K::Keymap::keymapModifierSuper);
+    for (const auto& [character, position] : digitRowKeys) {
+        expect(character, position, "");
+        CHECK(!Ubiquitty::Protocol::Sync::legacyControlCharacterOf(Ubiquitty::Runtime::keyEventOf(press)));
+    }
+    expect('2', '2', "");
+    press.modifiers &= ~static_cast<std::uint32_t>(K::Keymap::keymapModifierSuper);
+
+    // The press the predictor reads is the byte the encoder writes.
+    for (const auto& [character, position] : digitRowKeys) {
+        press.unshiftedCodePoint = character;
+        press.shiftedCodePoint = character;
+        press.baseLayoutCodePoint = position;
+        const std::string bytes = encoded(modes, press);
+        REQUIRE(bytes.size() == 1);
+        CHECK(Ubiquitty::Protocol::Sync::legacyControlCharacterOf(Ubiquitty::Runtime::keyEventOf(press)) == std::optional<std::uint8_t> { static_cast<std::uint8_t>(bytes[0]) });
+    }
 }
 
 /// A frontend holding the terminal itself gets the same answer.
