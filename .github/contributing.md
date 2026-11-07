@@ -114,7 +114,7 @@ a PR.
 ## Reporting bugs & proposing features
 
 Open a [bug report or feature
-request](https://github.com/ubiquitty/ubiquitty-core/issues/new/choose). A bug report is
+request](https://github.com/ubiquitty/core/issues/new/choose). A bug report is
 most useful with the terminal's version, the OS, and the byte sequence or steps
 that reproduce it. For security issues, **do not** open a public issue — see
 [`security.md`](security.md).

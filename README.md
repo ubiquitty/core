@@ -1,19 +1,19 @@
 <!-- Copyright (C) 2026 Stanislav Yaglo -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# ubiquitty-core
+# Ubiquitty Core
 
 | You are building | Reach for | Repository |
 |---|---|---|
-| A C++ host with its own UI, text system or renderer | libubiquitty's C++ session facade and Core headers | [ubiquitty-core](https://github.com/ubiquitty/ubiquitty-core) |
-| Persistent sessions, a session daemon, attach and reattach across machines | the multiplexer: `ubiquitty-host`, Sync, the `ubq` command and the agent | [ubiquitty-core](https://github.com/ubiquitty/ubiquitty-core) |
-| A terminal view to drop into a macOS or iOS app | UbiquittyKit's `TerminalSurface` (Metal) | [ubiquitty-kit](https://github.com/ubiquitty/ubiquitty-kit) |
-| A terminal view in a Linux app, or a software-rendered surface | the Vulkan, FreeType and software renderers and the GTK platform layer | [ubiquitty-kit](https://github.com/ubiquitty/ubiquitty-kit) |
-| Core's renderer drawing into a texture or layer your app owns | UbiquittyRenderKit (Metal) or the Vulkan renderer's exportable frames | [ubiquitty-kit](https://github.com/ubiquitty/ubiquitty-kit) |
+| A C++ host with its own UI, text system or renderer | libubiquitty's C++ session facade and Core headers | [ubiquitty-core](https://github.com/ubiquitty/core) |
+| Persistent sessions, a session daemon, attach and reattach across machines | the multiplexer: `ubiquitty-host`, Sync, the `ubq` command and the agent | [ubiquitty-core](https://github.com/ubiquitty/core) |
+| A terminal view to drop into a macOS or iOS app | UbiquittyKit's `TerminalSurface` (Metal) | [ubiquitty-kit](https://github.com/ubiquitty/kit) |
+| A terminal view in a Linux app, or a software-rendered surface | the Vulkan, FreeType and software renderers and the GTK platform layer | [ubiquitty-kit](https://github.com/ubiquitty/kit) |
+| Core's renderer drawing into a texture or layer your app owns | UbiquittyRenderKit (Metal) or the Vulkan renderer's exportable frames | [ubiquitty-kit](https://github.com/ubiquitty/kit) |
 | The Ubiquitty apps themselves | the macOS, iOS, Linux and web frontends | [ubiquitty](https://github.com/ubiquitty/ubiquitty) |
 
 Ubiquitty is three repositories. Each depends only on the ones below it:
-`ubiquitty` → `ubiquitty-kit` → `ubiquitty-core`. This is the bottom one.
+`ubiquitty` → `kit` → `core`. This is the bottom one.
 
 ## What this repository holds
 
@@ -43,6 +43,14 @@ of clients attach to them, locally or across machines:
 Core owns everything a program can observe about its terminal, replies and modes
 included. Renderers, terminal views and apps live in the repositories above.
 
+## Correctness and performance
+
+**100% full-suite conformance: 4,529 / 4,529 applicable cases passed.** See the [comparison scope and scoring policy](https://github.com/ubiquitty/ubiquitty#conformance).
+
+**The fastest parser among the engines and workloads in our comparative runs, as of 7 November 2026.** See [benchmarks and measurement scope](https://github.com/ubiquitty/ubiquitty#benchmarks). Parser throughput, rendering, input latency and energy are separate measurements.
+
+A recorded October 27, 2026 run of Ghostty’s `libghostty-vt` engine passed **2,958 / 4,529 cases (65.31%)**. That dated result predates subsequent Ghostty fixes and is not a score for its current release.
+
 ## Build
 
 Needs Git, Python 3, CMake with C++23 support, Ninja or Make, Bash and a C++23
@@ -50,8 +58,8 @@ compiler. The first QUIC-enabled build of the host fetches and builds its QUIC
 dependencies, which needs network access, Go and Perl.
 
 ```sh
-git clone https://github.com/ubiquitty/ubiquitty-core.git
-cd ubiquitty-core
+git clone https://github.com/ubiquitty/core.git
+cd core
 ```
 
 ```sh
