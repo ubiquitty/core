@@ -405,6 +405,189 @@ add_custom_target(bundle-notice ALL
                               " ".join((invalid.stdout + invalid.stderr).split()))
                 (core / "Scripts/repository.txt").write_text("core\n")
 
+    @unittest.skipUnless(shutil.which("cmake") and shutil.which("ninja") and shutil.which("make"),
+                         "CMake, Ninja and Make are needed for parallel producer checks")
+    def testParallelResourceConsumersShareOneNoticeProducer(self):
+        log = Path(self.temporary.name) / "producer-calls"
+        collector = Path(self.temporary.name) / "notice-collector.py"
+        collector.write_text(
+            "import subprocess, sys\n"
+            "if '--copy' in sys.argv:\n"
+            f"    with open({str(log)!r}, 'a') as stream:\n"
+            "        stream.write('copy\\n')\n"
+            f"sys.exit(subprocess.call([sys.executable, {str(ROOT / 'Scripts/license_notices.py')!r}, *sys.argv[1:]]))\n")
+        (self.source / "CMakeLists.txt").write_text(f'''cmake_minimum_required(VERSION 3.13)
+project(NoticeFixture LANGUAGES NONE)
+include("{ROOT}/cmake/LicenseNotices.cmake")
+set_property(GLOBAL PROPERTY UBIQUITTY_LICENSE_NOTICE_SCRIPT "{collector}")
+ubiquitty_license_notice_paths(notices)
+set(inputs)
+foreach(notice IN LISTS notices)
+    ubiquitty_license_notice_file("${{notice}}" input)
+    list(APPEND inputs "${{input}}")
+endforeach()
+string(REPLACE ";" "\\n" inputLines "${{inputs}}")
+file(WRITE "${{CMAKE_BINARY_DIR}}/notice-inputs" "${{inputLines}}")
+ubiquitty_license_notice_file("LICENSE" first)
+ubiquitty_license_notice_file("Docs/licensing.md" second)
+get_source_file_property(firstProducer "${{first}}" UBIQUITTY_RESOURCE_PRODUCER)
+get_source_file_property(secondProducer "${{second}}" UBIQUITTY_RESOURCE_PRODUCER)
+if(NOT firstProducer OR NOT firstProducer STREQUAL secondProducer OR NOT TARGET "${{firstProducer}}")
+    message(FATAL_ERROR "Notice copies do not share an existing producer target")
+endif()
+get_target_property(producerType "${{firstProducer}}" TYPE)
+if(NOT producerType STREQUAL "UTILITY")
+    message(FATAL_ERROR "Notice producer is not a utility target")
+endif()
+# Each resource group always copies after the shared producer; generated file
+# dependencies here would attach its rule to independent Make target builds.
+add_custom_target(first-resource ALL
+    COMMAND "${{CMAKE_COMMAND}}" -E copy "${{first}}" "${{CMAKE_BINARY_DIR}}/first"
+    DEPENDS "${{firstProducer}}")
+add_custom_target(second-resource ALL
+    COMMAND "${{CMAKE_COMMAND}}" -E copy "${{second}}" "${{CMAKE_BINARY_DIR}}/second"
+    DEPENDS "${{secondProducer}}")
+''')
+
+        def run(*command):
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        for index, generator in enumerate(("Ninja", "Unix Makefiles")):
+            with self.subTest(generator=generator):
+                build = Path(self.temporary.name) / f"parallel-build-{index}"
+                run("cmake", "-S", str(self.source), "-B", str(build), "-G", generator)
+                staged = [Path(path) for path in (build / "notice-inputs").read_text().splitlines()]
+                # Configure's validated copies support direct install. Remove
+                # them so only the native build graph can supply both groups.
+                for attempt in range(2):
+                    with self.subTest(attempt=attempt):
+                        for path in staged:
+                            path.unlink()
+                        log.write_text("")
+                        run("cmake", "--build", str(build), "--parallel", "4")
+                        self.assertEqual(log.read_text().splitlines(), ["copy"])
+                        self.assertEqual((build / "first").read_bytes(), (self.source / "LICENSE").read_bytes())
+                        self.assertEqual((build / "second").read_bytes(), (self.source / "Docs/licensing.md").read_bytes())
+                        self.assertTrue(all(path.is_file() for path in staged))
+
+    def checkXcodeBundleNoticeInputs(self, *, inSubdirectory):
+        environment = {**os.environ, "CMAKE_BUILD_PARALLEL_LEVEL": "1"}
+        environment.pop("SDKROOT", None)
+
+        def run(*command):
+            result = subprocess.run(command, capture_output=True, text=True, env=environment)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return result.stdout.strip()
+
+        sdk = run("xcrun", "--sdk", "macosx", "--show-sdk-path")
+        targetSource = self.source / "bundle" if inSubdirectory else self.source
+        targetSource.mkdir(exist_ok=True)
+        (targetSource / "main.swift").write_text('print("notice fixture")\n')
+        declaration = f'''ubiquitty_license_notice_paths(notices)
+ubiquitty_license_notice_paths(repeatedNotices)
+if(NOT notices STREQUAL repeatedNotices)
+    message(FATAL_ERROR "Repeated notice queries disagree")
+endif()
+add_executable(NoticeBundle MACOSX_BUNDLE main.swift)
+set_target_properties(NoticeBundle PROPERTIES
+    MACOSX_BUNDLE_GUI_IDENTIFIER "org.ubiquitty.notice-fixture"
+    XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "org.ubiquitty.notice-fixture"
+    XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED NO)
+foreach(notice IN LISTS notices)
+    ubiquitty_license_notice_file("${{notice}}" noticeFile)
+    get_source_file_property(noticeProducer "${{noticeFile}}" UBIQUITTY_RESOURCE_PRODUCER)
+    if(NOT noticeProducer OR NOT TARGET "${{noticeProducer}}")
+        message(FATAL_ERROR "Notice resource has no producer target")
+    endif()
+    add_dependencies(NoticeBundle "${{noticeProducer}}")
+    get_filename_component(directory "${{notice}}" DIRECTORY)
+    set_source_files_properties("${{noticeFile}}" PROPERTIES
+        MACOSX_PACKAGE_LOCATION "Resources/${{directory}}"
+        HEADER_FILE_ONLY TRUE)
+    target_sources(NoticeBundle PRIVATE "${{noticeFile}}")
+endforeach()
+ubiquitty_license_notice_file("NOTICE" noticeInput)
+file(WRITE "${{CMAKE_BINARY_DIR}}/notice-input" "${{noticeInput}}")
+file(GENERATE OUTPUT "${{CMAKE_BINARY_DIR}}/bundle-$<CONFIG>"
+    CONTENT "$<TARGET_BUNDLE_CONTENT_DIR:NoticeBundle>/Resources")
+add_custom_command(TARGET NoticeBundle POST_BUILD
+    COMMAND "{sys.executable}" "{ROOT}/Scripts/license_notices.py"
+        --source "${{CMAKE_SOURCE_DIR}}"
+        --verify "$<TARGET_BUNDLE_CONTENT_DIR:NoticeBundle>/Resources")
+'''
+        # Xcode spells the bundle path with a build setting that this phase's
+        # shell must expand, matching the real bundle verifier's invocation.
+        project = f'''cmake_minimum_required(VERSION 3.13)
+project(NoticeBundleFixture LANGUAGES Swift)
+include("{ROOT}/cmake/LicenseNotices.cmake")
+'''
+        if inSubdirectory:
+            (self.source / "CMakeLists.txt").write_text(project + "add_subdirectory(bundle)\n")
+            (targetSource / "CMakeLists.txt").write_text(declaration)
+        else:
+            (self.source / "CMakeLists.txt").write_text(project + declaration)
+        build = Path(self.temporary.name) / "xcode-build"
+        run("cmake", "-S", str(self.source), "-B", str(build), "-G", "Xcode",
+            f"-DCMAKE_OSX_SYSROOT={sdk}", "-DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO",
+            "-DCMAKE_Swift_FLAGS=-j 1 -num-threads 1")
+        command = ("cmake", "--build", str(build), "--config", "Debug",
+                   "--target", "NoticeBundle", "--parallel", "1")
+        run(*command)
+        resources = Path((build / "bundle-Debug").read_text())
+        staged = Path((build / "notice-input").read_text())
+        self.assertCompleteCopy(resources)
+        self.assertEqual(verify_notices(self.source, resources), [])
+
+        # No executable source changes: Xcode must plan a resource copy from
+        # the original notice dependency, before its ZERO_CHECK can refresh it.
+        original = self.source / "NOTICE"
+        original.write_bytes(b"changed original NOTICE only\r\n")
+        run(*command)
+        self.assertEqual(staged.read_bytes(), original.read_bytes())
+        self.assertCompleteCopy(resources)
+        self.assertEqual(verify_notices(self.source, resources), [])
+
+        staged.unlink()
+        run(*command)
+        self.assertEqual(staged.read_bytes(), original.read_bytes())
+        self.assertCompleteCopy(resources)
+        self.assertEqual(verify_notices(self.source, resources), [])
+
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("cmake") and shutil.which("xcrun"),
+                         "Darwin, CMake and Xcode are needed for bundle resource checks")
+    def testXcodeBundleNoticeInputsRefreshAndRegenerate(self):
+        self.checkXcodeBundleNoticeInputs(inSubdirectory=False)
+
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("cmake") and shutil.which("xcrun"),
+                         "Darwin, CMake and Xcode are needed for bundle resource checks")
+    def testXcodeSubdirectoryBundleNoticeInputsRefreshAndRegenerate(self):
+        self.checkXcodeBundleNoticeInputs(inSubdirectory=True)
+
+    @unittest.skipUnless(shutil.which("cmake"), "CMake is unavailable")
+    def testConflictingRepeatedNoticeMapRefusesBeforeAnotherCopy(self):
+        core = Path(self.temporary.name) / "alternate-core"
+        shutil.copytree(self.source, core)
+        before = (self.source / "NOTICE").read_bytes()
+        (self.source / "CMakeLists.txt").write_text(f'''cmake_minimum_required(VERSION 3.13)
+project(NoticeFixture LANGUAGES NONE)
+include("{ROOT}/cmake/LicenseNotices.cmake")
+ubiquitty_license_notice_paths(notices)
+ubiquitty_license_notice_file("NOTICE" noticeInput)
+file(WRITE "${{CMAKE_BINARY_DIR}}/notice-input" "${{noticeInput}}")
+file(WRITE "${{CMAKE_SOURCE_DIR}}/NOTICE" "must not replace the first staged notice\\n")
+set(UBIQUITTY_CORE_SOURCE_DIR "{core}")
+ubiquitty_license_notice_paths(conflictingNotices)
+''')
+        build = Path(self.temporary.name) / "conflicting-build"
+        result = subprocess.run(["cmake", "-S", str(self.source), "-B", str(build)],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Conflicting license notice inputs", result.stdout + result.stderr)
+        staged = Path((build / "notice-input").read_text())
+        self.assertEqual(staged.read_bytes(), before)
+        self.assertFalse((staged.parent / "Libraries").exists())
+
     def testMissingRequiredPathFails(self):
         self.inventory.write_text('[{"name":"missing", "noticeRequired":true}]')
         with self.assertRaisesRegex(ValueError, "no noticePath"):
