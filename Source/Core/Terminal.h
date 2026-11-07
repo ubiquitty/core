@@ -2091,6 +2091,24 @@ inline bool setSampledDirectoryString(Ubiquitty::Terminal& term, std::string_vie
     return resolvePaneDirectory(term);
 }
 
+/// Drops only the title attributed to the specified process group.
+///
+/// Unknown and unrelated owners preserve their reports.
+///
+/// - Parameters:
+///   - term: The terminal holding the reported title.
+///   - processGroup: The positively absent group, or zero without proof.
+/// - Returns: Whether a nonempty title was retired.
+inline bool retireTitleOwnedByProcessGroup(Ubiquitty::Terminal& term, int processGroup)
+{
+    if (processGroup <= 0 || term.titleOwnerProcessGroup != processGroup)
+        return false;
+    const bool didChange = !term.titleUTF8.empty();
+    term.titleUTF8.clear();
+    term.titleOwnerProcessGroup = 0;
+    return didChange;
+}
+
 /// Retires a window title whose program has exited.
 ///
 /// An editor sets a title and quits; without this the title sticks to a window
@@ -2118,9 +2136,24 @@ inline bool retireTitleIfStale(Ubiquitty::Terminal& term, int foregroundProcessG
     }
     if (!hasReportOutlivedItsProgram(term.titleOwnerProcessGroup, foregroundProcessGroup))
         return false;
-    term.titleUTF8.clear();
-    term.titleOwnerProcessGroup = 0;
-    return true;
+    return retireTitleOwnedByProcessGroup(term, term.titleOwnerProcessGroup);
+}
+
+/// Drops a directory report attributed to an exact departed process group.
+///
+/// The pane directory resolves from the remaining report or sampled directory.
+///
+/// - Parameters:
+///   - term: The terminal holding the reported and sampled directories.
+///   - processGroup: The positively absent group, or zero without proof.
+/// - Returns: Whether the resolved pane directory changed.
+inline bool retireReportedDirectoryOwnedByProcessGroup(Ubiquitty::Terminal& term, int processGroup)
+{
+    if (processGroup <= 0 || term.reportingProcessGroup != processGroup)
+        return false;
+    term.reportedDirectory.clear();
+    term.reportingProcessGroup = 0;
+    return resolvePaneDirectory(term);
 }
 
 /// Retires a report whose program has exited, and re-resolves.
@@ -2145,9 +2178,25 @@ inline bool retireReportedDirectoryIfStale(Ubiquitty::Terminal& term, int foregr
     }
     if (!hasReportOutlivedItsProgram(term.reportingProcessGroup, foregroundProcessGroup))
         return false;
-    term.reportedDirectory.clear();
-    term.reportingProcessGroup = 0;
-    return resolvePaneDirectory(term);
+    return retireReportedDirectoryOwnedByProcessGroup(term, term.reportingProcessGroup);
+}
+
+/// Drops a host report attributed to an exact departed process group.
+///
+/// Unknown and unrelated owners preserve their reports.
+///
+/// - Parameters:
+///   - term: The terminal holding the reported host.
+///   - processGroup: The positively absent group, or zero without proof.
+/// - Returns: Whether a nonempty host report was retired.
+inline bool retireReportedHostOwnedByProcessGroup(Ubiquitty::Terminal& term, int processGroup)
+{
+    if (processGroup <= 0 || term.reportedHostProcessGroup != processGroup)
+        return false;
+    const bool didChange = !term.reportedHost.empty();
+    term.reportedHost.clear();
+    term.reportedHostProcessGroup = 0;
+    return didChange;
 }
 
 /// Retires a reported host whose program has left the foreground.
@@ -2178,9 +2227,7 @@ inline bool retireReportedHostIfStale(Ubiquitty::Terminal& term, int foregroundP
     }
     if (!hasReportOutlivedItsProgram(term.reportedHostProcessGroup, foregroundProcessGroup))
         return false;
-    term.reportedHost.clear();
-    term.reportedHostProcessGroup = 0;
-    return true;
+    return retireReportedHostOwnedByProcessGroup(term, term.reportedHostProcessGroup);
 }
 
 /// Whether this drain reported something that still waits for its program.

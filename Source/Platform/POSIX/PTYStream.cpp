@@ -415,6 +415,7 @@ public:
     bool foregroundIsShell() override;
     ForegroundHolder foregroundHolder() override;
     std::optional<ProcessID> foregroundProcessGroup() override;
+    ProcessGroupPresence processGroupPresence(ProcessID) override;
     void setTreeChangeNotifier(bool (*notify)(void*), void* context, void (*releaseContext)(void*)) override
     {
         processTrackerSetChangeNotifier(m_processTracker, notify, context, releaseContext);
@@ -1166,6 +1167,17 @@ std::optional<ProcessID> PTYStream::foregroundProcessGroup()
     if (foreground <= 0)
         return std::nullopt;
     return foreground;
+}
+
+ProcessGroupPresence PTYStream::processGroupPresence(ProcessID processGroup)
+{
+    // Zero and minus one select broader signal scopes; negation must name
+    // exactly one representable positive process group.
+    if (processGroup <= 1 || !std::in_range<pid_t>(processGroup))
+        return ProcessGroupPresence::Unknown;
+    if (::kill(-static_cast<pid_t>(processGroup), 0) == 0)
+        return ProcessGroupPresence::Present;
+    return errno == ESRCH ? ProcessGroupPresence::Gone : ProcessGroupPresence::Unknown;
 }
 
 std::string PTYStream::foregroundCurrentDirectory()

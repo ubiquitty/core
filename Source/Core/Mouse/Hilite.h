@@ -39,6 +39,26 @@ bool clearTracking(Ubiquitty::Terminal* t);
 ///   - isForegroundShell: Whether the current foreground was observed as a shell.
 /// - Returns: Whether capture was released.
 [[nodiscard]] bool retireTrackingIfStale(Ubiquitty::Terminal& terminal, int& ownerProcessGroup, int foregroundProcessGroup, bool isForegroundShell); // bool-ok: sampled process fact
+/// Releases pointer capture attributed to an exact departed process group.
+///
+/// Unknown and unrelated owners preserve every capture mode.
+///
+/// - Parameters:
+///   - terminal: The terminal holding the capture modes.
+///   - ownerProcessGroup: The capture owner, cleared when it matches.
+///   - processGroup: The positively absent group, or zero without proof.
+/// - Returns: Whether any capture mode changed.
+[[nodiscard]] bool retireTrackingOwnedByProcessGroup(Ubiquitty::Terminal&, int& ownerProcessGroup, int processGroup);
+
+/// Attributes enabled pointer tracking that has no observed owner.
+///
+/// Existing attribution remains authoritative until its owner retires.
+///
+/// - Parameters:
+///   - terminal: The terminal holding the capture modes.
+///   - ownerProcessGroup: The capture owner, updated only while unstamped.
+///   - processGroup: The actual tty foreground group, or zero if unknown.
+void stampUnstampedTrackingOwner(Ubiquitty::Terminal&, int& ownerProcessGroup, int processGroup);
 
 // Arm the bounded wait after the frontend has sent the hilite press report.
 // Stamps hiliteDeadlineTick = nowTicks + hiliteAwaitDeadlineTicks and drops any

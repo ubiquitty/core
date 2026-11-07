@@ -872,10 +872,9 @@ public:
 
     /// Whether a kernel process-tree edge is waiting to be answered.
     ///
-    /// A peek, not a take: what the frontend reads says which sample answers
-    /// an edge, and that sample clears it. The probe of the terminal's holder
-    /// answers a reader of the title and directory, the walk answers a reader
-    /// of process state, and an unread foreground is answered by neither.
+    /// A peek, not a take: a native foreground probe answers an edge. The
+    /// full walk may remain dirty while a proven-gone group has no holder;
+    /// that deferred walk does not schedule another edge probe of its own.
     ///
     /// - Returns: Whether an edge waits for the probe or walk that the current
     ///   observation reads.
@@ -885,9 +884,8 @@ public:
         case ForegroundObservation::Unread:
             return false;
         case ForegroundObservation::TitleAndDirectory:
-            return m_processTree->isForegroundProbeOwed.load(std::memory_order_relaxed);
         case ForegroundObservation::ProcessState:
-            return m_processTree->dirty.load(std::memory_order_relaxed);
+            return m_processTree->isForegroundProbeOwed.load(std::memory_order_relaxed);
         }
         return false;
     }
@@ -943,6 +941,14 @@ public:
     ///
     /// - Returns: Milliseconds between fallback walks, or zero for none.
     [[nodiscard]] std::uint32_t walkFallbackMilliseconds() const;
+
+    /// Returns the next cheap check of an unresolved foreground handoff.
+    ///
+    /// Called on the ingest owner; no periodic work is owed by a live group.
+    ///
+    /// - Parameter nowMicroseconds: The current monotonic microsecond counter.
+    /// - Returns: Milliseconds until the check, or no value without active debt.
+    [[nodiscard]] std::optional<std::uint32_t> foregroundHandoffProbeDueInMilliseconds(std::uint32_t nowMicroseconds) const;
 
     /// A shell builtin can change its directory without a process-tree edge.
     /// Where edges replace the process-walk timer, sample only the directory
@@ -1987,6 +1993,10 @@ private:
     Ticks m_lastForegroundProbeTicks {};
     int m_cachedForegroundGroup = 0;
     bool m_cachedForegroundIsShell = true;
+    // Derived native state: a new physical stream owes a fresh sample rather
+    // than inheriting an old process-presence proof through a snapshot.
+    int m_foregroundHandoffGroup = 0;
+    std::uint32_t m_lastForegroundHandoffProbeMicroseconds = 0;
     FrameDriver m_frameDriver;
 
     /// The clock the pacing policy measures in, in seconds.
@@ -2078,10 +2088,26 @@ private:
     /// - Parameter probedName: The name the probe read beside the holder it
     ///   cached, from the same reading of the foreground's owner.
     void sampleProcessState(std::string probedName);
-    /// Reads the foreground's group and holder into the probe's cache.
+    /// Holds one tty-group reading and the holder facts safe to attribute to it.
     ///
-    /// - Returns: The holder's name, read with the holder.
-    [[nodiscard]] std::string probeForegroundHolder();
+    /// Positive absence carries its exact group without inventing a holder.
+    struct ForegroundProbe {
+        // Missing while a known handoff remains unresolved; an empty name
+        // still belongs to the normal sampler's existing unknown-name policy.
+        std::optional<std::string> name;
+        int processGroup = 0;
+        int goneGroup = 0;
+    };
+    /// Reads the tty group and proves absence before asking for holder facts.
+    ///
+    /// - Returns: The current group with fresh holder facts or absence proof.
+    [[nodiscard]] ForegroundProbe probeForegroundHolder();
+
+    /// Retires only reports and pointer capture owned by a proven-gone group.
+    ///
+    /// - Parameter processGroup: The positively absent group, or zero without proof.
+    /// - Returns: The report changes to publish to observers.
+    [[nodiscard]] DrainOutcome retireReportsOwnedByGoneGroup(int processGroup);
     /// Clears the owed foreground probe before the probe reads the foreground.
     ///
     /// An edge raises the flag after the state it reports has moved, so a flag
