@@ -78,6 +78,7 @@
 #include "Core/CellGrid.h"
 #include "Core/Rendering/CellInstance.h"
 #include "Core/Rendering/CellInstanceBuilder.h"
+#include "Core/Rendering/ColorResolve.h"
 #include "Core/Rendering/RenderPlan.h"
 #include "Core/Rendering/SoftwareRenderer.h"
 

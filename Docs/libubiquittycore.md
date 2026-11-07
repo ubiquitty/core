@@ -14,6 +14,8 @@ internal modules; their includes are not a compatibility contract for embedders.
 
 For session driving, live configuration, and local or remote transports, use
 [the C++ session facade guide](https://github.com/ubiquitty/kit/blob/main/Docs/ubiquittykit-api.md).
+For an independently rendered multiplexer client, use the
+[host workspace facade](embedding-workspaces.md).
 
 The library and its headers are [Apache-2.0](../LICENSES/Apache-2.0.txt), so
 any product, including a commercial one, may embed it; so is the rest of the

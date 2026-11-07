@@ -13,6 +13,8 @@
 // one configuration door: hand `Preferences::configure` the TOML document and
 // every session and renderer follows it (Core/Preferences/Configuration.h,
 // Core/Preferences/RenderConfigurationFold.h).
+// Workspace drives a host-owned multiplexer, and HostConnection creates its
+// bounded local/SSH carriers without an internal transport include.
 //
 // The supported facade surface is this header's reachable set, versioned by
 // UbiquittyKit/Version.h (kitVersion) independently of coreVersion.
@@ -21,5 +23,7 @@
 #include "Core/Preferences/Configuration.h"
 #include "Core/Preferences/RenderConfigurationFold.h"
 #include "UbiquittyCore/UbiquittyCore.h"
+#include "UbiquittyKit/HostConnection.h"
 #include "UbiquittyKit/Session.h"
 #include "UbiquittyKit/Version.h"
+#include "UbiquittyKit/Workspace.h"

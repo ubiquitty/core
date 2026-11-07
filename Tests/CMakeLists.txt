@@ -409,6 +409,7 @@ set_source_files_properties(${UBIQUITTY_CORE_SOURCE_DIR}/Source/ThirdParty/yyjso
 
 # A test of a layer built on top of the aggregate links that layer by name.
 set(test_kit_session_EXTRA_LIBS ubiquitty-kit)
+set(test_kit_workspace_EXTRA_LIBS ubiquitty-kit)
 
 # Directories whose tests are left to Scripts/run-tests.sh as a whole. Empty:
 # every test target gets the real source root, so the tests under
