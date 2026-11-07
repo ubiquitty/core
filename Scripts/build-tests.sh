@@ -33,22 +33,15 @@ set -euo pipefail
 # Keep the driver and its helpers in Core while configuring the checkout whose
 # tests were requested, just as run-tests.sh does.
 CORE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ROOT="${UBQ_TESTS_ROOT:-}"
-if [ -z "$ROOT" ]; then
-    ROOT="$CORE_ROOT"
-    ubq_toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-    if [ -n "$ubq_toplevel" ] && [ "$ubq_toplevel" != "$CORE_ROOT" ] \
-        && [ "$(cd "$ubq_toplevel/Libraries/ubiquitty-core" 2>/dev/null && pwd -P)" = "$(cd "$CORE_ROOT" && pwd -P)" ]; then
-        ROOT="$ubq_toplevel"
-    fi
-fi
+ROOT="" KIT_ROOT=""
+sourceContext="$(python3 "$CORE_ROOT/Scripts/ubq_roots.py" shell-context --core-source-root "$CORE_ROOT" --no-promote-libraries)"
+# The shared resolver emits fixed names and shell-quoted values only.
+eval "$sourceContext"
 libraryArguments=()
 if [ "$ROOT" != "$CORE_ROOT" ]; then
     libraryArguments+=("-DUBIQUITTY_CORE_SOURCE_DIR=$CORE_ROOT")
-    if [ -n "${UBQ_KIT_ROOT:-}" ]; then
-        libraryArguments+=("-DUBIQUITTY_KIT_SOURCE_DIR=$UBQ_KIT_ROOT")
-    elif [ -e "$ROOT/Libraries/ubiquitty-kit" ]; then
-        libraryArguments+=("-DUBIQUITTY_KIT_SOURCE_DIR=$ROOT/Libraries/ubiquitty-kit")
+    if [ -n "$KIT_ROOT" ]; then
+        libraryArguments+=("-DUBIQUITTY_KIT_SOURCE_DIR=$KIT_ROOT")
     fi
 fi
 

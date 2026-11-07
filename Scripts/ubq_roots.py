@@ -327,11 +327,13 @@ class SourceRoots:
         return result
 
 
-def _source_subject(start):
-    """Finds the caller, promoting nested library mounts to their consumer."""
+def _source_subject(start, promote_libraries=True):
+    """Finds the nearest caller, optionally promoting nested libraries to their consumer."""
     where = Path(start).expanduser().resolve()
     found = next((parent for parent in (where, *where.parents)
                   if (parent / "CMakeLists.txt").is_file() and (parent / "Scripts").is_dir()), None)
+    if not promote_libraries:
+        return found
     while found is not None and found.parent.name == "Libraries":
         if found.name not in (Path(CORE_SUBMODULE).name, Path(KIT_SUBMODULE).name):
             break
@@ -349,17 +351,19 @@ def _source_subject(start):
     return found
 
 
-def source_roots(source=None, core=None, kit=None, environment=None, start=None):
+def source_roots(source=None, core=None, kit=None, environment=None, start=None, promote_libraries=True):
     """Resolves a caller's immutable source composition, without requiring git.
 
     Explicit roots win, then the UBQ_TESTS_ROOT/UBQ_CORE_ROOT/UBQ_KIT_ROOT
     environment. A marked App requires both populated public libraries; Core
     alone never requires a repository above it. Markerless combined trees
-    retain their one-root composition.
+    retain their one-root composition. A test entry point can keep the nearest
+    checkout as its subject instead of promoting an embedded library to its
+    consumer; explicit subjects always win.
     """
     environment = os.environ if environment is None else environment
     selected = source or environment.get("UBQ_TESTS_ROOT")
-    subject = Path(selected).expanduser().resolve() if selected else _source_subject(start or os.getcwd())
+    subject = Path(selected).expanduser().resolve() if selected else _source_subject(start or os.getcwd(), promote_libraries)
     if subject is None:
         subject = Path(__file__).resolve().parent.parent
     held = repositories(str(subject))
@@ -397,9 +401,11 @@ def main(argv):
         parser.add_argument("--source-root")
         parser.add_argument("--core-source-root")
         parser.add_argument("--kit-source-root")
+        parser.add_argument("--no-promote-libraries", action="store_true")
         arguments = parser.parse_args(argv[1:])
         try:
-            roots = source_roots(arguments.source_root, arguments.core_source_root, arguments.kit_source_root)
+            roots = source_roots(arguments.source_root, arguments.core_source_root, arguments.kit_source_root,
+                                 promote_libraries=not arguments.no_promote_libraries)
         except ValueError as error:
             parser.error(str(error))
         print("unset " + " ".join((*REPOSITORY_VARIABLES, "UBQ_KIT_ROOT", "UBIQUITTY_KIT_SOURCE_DIR")))

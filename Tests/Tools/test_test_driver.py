@@ -25,6 +25,7 @@ class TestDriverTests(unittest.TestCase):
         self.directory = Path(self.temporary.name)
         self.repository = self.directory / "checkout with spaces"
         self.repository.mkdir()
+        (self.repository / "CMakeLists.txt").write_text("# copied Core driver fixture\n")
         for name in ("Scripts", "Tests"):
             destination = self.repository / name
             destination.mkdir()
@@ -59,6 +60,7 @@ class TestDriverTests(unittest.TestCase):
         self.cache.write_text("CMAKE_CACHEFILE_DIR:INTERNAL=/another/checkout\n")
         self.environment = dict(os.environ)
         for name in ("UBQ_TESTS_ROOT", "UBQ_CORE_ROOT", "UBQ_KIT_ROOT",
+                     "UBIQUITTY_CORE_SOURCE_DIR", "UBIQUITTY_KIT_SOURCE_DIR",
                      "CTEST_BUILD_DIR", "UBQ_OUT", "NO_CTEST", "SKIP_CTEST_COVERED", "FUZZ_REQUIRED",
                      "UBQ_HOST_TEST_TREE", "UBQ_TEST_TARGETS_PREBUILT", "UBQ_LIBCORE_PREBUILT",
                      "UBQ_SHARED_BINARIES_FROM_FIXTURES", "UBQ_HOST_PREBUILT", "UBQ_AGENT_PREBUILT",
@@ -75,6 +77,71 @@ class TestDriverTests(unittest.TestCase):
         return subprocess.run(
             ["/bin/bash", str(self.driver), *arguments], cwd=self.repository,
             env=self.environment, capture_output=True, text=True, timeout=20, check=False)
+
+    def makeConsumer(self):
+        app = self.directory / "gitless app ' quote $(touch injected)"
+        kit = self.directory / "external Kit"
+        for checkout, role in ((app, "app"), (kit, "kit")):
+            (checkout / "Scripts").mkdir(parents=True)
+            (checkout / "CMakeLists.txt").write_text("# consumer source fixture\n")
+            (checkout / "Scripts/repository.txt").write_text(role + "\n")
+        (app / "Scripts/run-tests-stanzas-app.sh").write_text(
+            'if wanted app_probe; then\n'
+            '    printf \'%s\\n\' "$UBQ_TESTS_ROOT" "$UBQ_CORE_ROOT" "$UBQ_KIT_ROOT" '
+            '"$ROOT" "$CORE_ROOT" "$KIT_ROOT" > "$DRIVER_STANZA_TRACE"\n'
+            '    RAN=$((RAN + 1))\n'
+            'fi\n')
+        return app, kit
+
+    def testCoreDriverDiscoversGitlessAppAndExternalCMakeKitRoot(self):
+        app, kit = self.makeConsumer()
+        self.environment["UBIQUITTY_KIT_SOURCE_DIR"] = str(kit)
+        listing = subprocess.run(["bash", str(self.driver), "--list-stanzas"], cwd=app,
+                                 env=self.environment, capture_output=True, text=True, timeout=20)
+        self.assertEqual(listing.returncode, 0, listing.stdout + listing.stderr)
+        self.assertEqual(listing.stdout.splitlines(), ["app_probe"])
+        checked = subprocess.run(["bash", str(self.driver), "app_probe"], cwd=app,
+                                 env=self.environment, capture_output=True, text=True, timeout=20)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertEqual(self.stanzaTrace.read_text().splitlines(),
+                         [str(app), str(self.repository), str(kit)] * 2)
+        self.assertIn("1 ran, 0 skipped", checked.stdout)
+        self.assertFalse(self.toolTrace.exists())
+        self.assertFalse((app / "injected").exists())
+
+    def testExplicitGitlessAppContextWinsOutsideTheCheckoutAndForeignGit(self):
+        app, kit = self.makeConsumer()
+        self.environment.update(UBQ_TESTS_ROOT=str(app), UBQ_KIT_ROOT=str(kit),
+                                GIT_DIR=str(ROOT / ".git"), GIT_WORK_TREE=str(ROOT))
+        checked = subprocess.run(["bash", str(self.driver), "app_probe"], cwd=self.directory,
+                                 env=self.environment, capture_output=True, text=True, timeout=20)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertEqual(self.stanzaTrace.read_text().splitlines(),
+                         [str(app), str(self.repository), str(kit)] * 2)
+        self.assertFalse(self.toolTrace.exists())
+
+    def testWrongKitOwnerRefusesBeforeConsumerStanzasOrTools(self):
+        app, _ = self.makeConsumer()
+        self.environment.update(UBQ_TESTS_ROOT=str(app), UBIQUITTY_KIT_SOURCE_DIR=str(self.repository))
+        checked = self.runDriver("app_probe")
+        self.assertNotEqual(checked.returncode, 0)
+        self.assertIn("kit source root names core, not kit", checked.stderr)
+        self.assertFalse(self.stanzaTrace.exists())
+        self.assertFalse(self.toolTrace.exists())
+
+    def testEmbeddedCoreInvokedFromItsOwnCheckoutNeedsNoUpperKit(self):
+        app = self.directory / "containing App"
+        (app / "Scripts").mkdir(parents=True)
+        (app / "Scripts/repository.txt").write_text("app\n")
+        (app / "CMakeLists.txt").write_text("# containing App fixture\n")
+        core = app / "Libraries/ubiquitty-core"
+        shutil.copytree(self.repository, core, symlinks=True)
+        checked = subprocess.run(["bash", str(core / "Scripts/run-tests.sh"), "--list-stanzas"],
+                                 cwd=core, env=self.environment, capture_output=True, text=True, timeout=20)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertIn("gate_report", checked.stdout.splitlines())
+        self.assertFalse((app / "Libraries/ubiquitty-kit").exists())
+        self.assertReadOnly(checked)
 
     def assertReadOnly(self, result):
         self.assertTrue(self.cache.is_file(), result.stdout + result.stderr)
@@ -589,13 +656,19 @@ class BuildTestsDriverTests(unittest.TestCase):
                                 BUILD_JOBS="1", DRIVER_TOOL_TRACE=str(self.trace))
 
     def makeDriver(self, checkout):
+        self.makeSource(checkout, "core")
         scripts = checkout / "Scripts"
-        scripts.mkdir(parents=True)
         for name in ("build-jobs.sh", "build-root.sh", "ccache-env.sh"):
             (scripts / name).symlink_to(ROOT / "Scripts" / name)
+        shutil.copyfile(ROOT / "Scripts/ubq_roots.py", scripts / "ubq_roots.py")
         driver = scripts / "build-tests.sh"
         shutil.copyfile(ROOT / "Scripts/build-tests.sh", driver)
         return driver
+
+    def makeSource(self, checkout, role):
+        (checkout / "Scripts").mkdir(parents=True, exist_ok=True)
+        (checkout / "Scripts/repository.txt").write_text(role + "\n")
+        (checkout / "CMakeLists.txt").write_text("# build-driver source fixture\n")
 
     def initializeRepository(self, checkout):
         checkout.mkdir(parents=True, exist_ok=True)
@@ -623,7 +696,8 @@ class BuildTestsDriverTests(unittest.TestCase):
         driver = self.makeDriver(core)
         self.initializeRepository(core)
         subject = self.directory / "app ' quote $(touch injected) ; $value"
-        subject.mkdir()
+        self.makeSource(subject, "app")
+        self.makeSource(subject / "Libraries/ubiquitty-kit", "kit")
         self.environment["UBQ_TESTS_ROOT"] = str(subject)
         arguments = self.configureArguments(driver, core)
         self.assertEqual(arguments[1], str(subject))
@@ -634,9 +708,10 @@ class BuildTestsDriverTests(unittest.TestCase):
         app = self.directory / "app checkout"
         core = app / "Libraries/ubiquitty-core"
         driver = self.makeDriver(core)
+        self.makeSource(app, "app")
         self.initializeRepository(app)
         kit = app / "Libraries/ubiquitty-kit"
-        kit.mkdir()
+        self.makeSource(kit, "kit")
         arguments = self.configureArguments(driver, app)
         self.assertEqual(arguments[1], str(app))
         self.assertIn(f"-DUBIQUITTY_CORE_SOURCE_DIR={core}", arguments)
@@ -647,14 +722,37 @@ class BuildTestsDriverTests(unittest.TestCase):
         driver = self.makeDriver(core)
         self.initializeRepository(core)
         app = self.directory / "app checkout"
-        app.mkdir()
+        self.makeSource(app, "app")
         kit = self.directory / "selected Kit"
-        kit.mkdir()
+        self.makeSource(kit, "kit")
         self.environment.update(UBQ_TESTS_ROOT=str(app), UBQ_KIT_ROOT=str(kit))
         arguments = self.configureArguments(driver, core)
         self.assertEqual(arguments[1], str(app))
         self.assertIn(f"-DUBIQUITTY_CORE_SOURCE_DIR={core}", arguments)
         self.assertIn(f"-DUBIQUITTY_KIT_SOURCE_DIR={kit}", arguments)
+
+    def testGitlessAppUsesExternalCMakeKitBinding(self):
+        core = self.directory / "standalone Core"
+        driver = self.makeDriver(core)
+        app = self.directory / "gitless App"
+        kit = self.directory / "external Kit"
+        self.makeSource(app, "app")
+        self.makeSource(kit, "kit")
+        self.environment["UBIQUITTY_KIT_SOURCE_DIR"] = str(kit)
+        arguments = self.configureArguments(driver, app)
+        self.assertEqual(arguments[1], str(app))
+        self.assertIn(f"-DUBIQUITTY_CORE_SOURCE_DIR={core}", arguments)
+        self.assertIn(f"-DUBIQUITTY_KIT_SOURCE_DIR={kit}", arguments)
+
+    def testEmbeddedCoreWorkingDirectoryKeepsItsIndependentSubject(self):
+        app = self.directory / "containing App"
+        self.makeSource(app, "app")
+        core = app / "Libraries/ubiquitty-core"
+        driver = self.makeDriver(core)
+        arguments = self.configureArguments(driver, core)
+        self.assertEqual(arguments[1], str(core))
+        self.assertFalse(any(argument.startswith("-DUBIQUITTY_CORE_SOURCE_DIR=") for argument in arguments))
+        self.assertFalse((app / "Libraries/ubiquitty-kit").exists())
 
 
 if __name__ == "__main__":
