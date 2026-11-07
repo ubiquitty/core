@@ -2744,6 +2744,7 @@ TEST(aChildDoesNotInheritTheTerminalThisProcessWasStartedIn)
     ScopedEnvironmentVariable savedTmux("TMUX");
     ScopedEnvironmentVariable savedTmuxPane("TMUX_PANE");
     ScopedEnvironmentVariable savedTmuxDirectory("TMUX_TMPDIR");
+    ScopedEnvironmentVariable savedScreenWindow("WINDOW");
     ScopedEnvironmentVariable savedKittyWindow("KITTY_WINDOW_ID");
     ScopedEnvironmentVariable savedTerminfo("TERMINFO");
     ScopedEnvironmentVariable savedSSHConnection("SSH_CONNECTION");
@@ -2751,6 +2752,7 @@ TEST(aChildDoesNotInheritTheTerminalThisProcessWasStartedIn)
     ::setenv("TMUX", "/private/tmp/tmux-501/default,1234,0", 1);
     ::setenv("TMUX_PANE", "%3", 1);
     ::setenv("TMUX_TMPDIR", "/tmp", 1);
+    ::setenv("WINDOW", "3", 1);
     ::setenv("KITTY_WINDOW_ID", "7", 1);
     ::setenv("TERMINFO", "/Applications/kitty.app/Contents/Resources/kitty/terminfo", 1);
     ::setenv("SSH_CONNECTION", "192.0.2.1 51000 198.51.100.2 22", 1);
@@ -2760,6 +2762,7 @@ TEST(aChildDoesNotInheritTheTerminalThisProcessWasStartedIn)
     CHECK_MSG(listing.find("\nTERM=") != std::string::npos, "the child's environment was read");
     CHECK(listing.find("\nTMUX=") == std::string::npos);
     CHECK(listing.find("\nTMUX_PANE=") == std::string::npos);
+    CHECK(listing.find("\nWINDOW=") == std::string::npos);
     CHECK(listing.find("\nKITTY_WINDOW_ID=") == std::string::npos);
     CHECK(listing.find("\nTERMINFO=") == std::string::npos);
     CHECK(listing.find("\nTMUX_TMPDIR=/tmp\n") != std::string::npos);

@@ -38,7 +38,10 @@ function(ubiquitty_add_session_facade target)
     if(NOT _ubq_facade_CORE_TARGET)
         message(FATAL_ERROR "ubiquitty_add_session_facade(${target}) needs CORE_TARGET")
     endif()
-    add_library(${target} STATIC "${UBIQUITTY_CORE_SOURCE_DIR}/Source/UbiquittyKit/Session.cpp")
+    add_library(${target} STATIC
+        "${UBIQUITTY_CORE_SOURCE_DIR}/Source/UbiquittyKit/Session.cpp"
+        "${UBIQUITTY_CORE_SOURCE_DIR}/Source/UbiquittyKit/HostConnection.cpp"
+        "${UBIQUITTY_CORE_SOURCE_DIR}/Source/UbiquittyKit/Workspace.cpp")
     target_link_libraries(${target} PUBLIC ${_ubq_facade_CORE_TARGET})
 endfunction()
 

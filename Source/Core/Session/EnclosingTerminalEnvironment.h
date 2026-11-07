@@ -32,11 +32,12 @@ namespace Ubiquitty::Session {
 /// ``enclosingTerminalEnvironmentPrefixes`` instead. kitty's are named one by
 /// one because `KITTY_CONFIG_DIRECTORY` is the person's own setting, not
 /// kitty's identity.
-inline constexpr std::array<std::string_view, 32> enclosingTerminalEnvironmentNames {
+inline constexpr std::array<std::string_view, 33> enclosingTerminalEnvironmentNames {
     // Multiplexers.
     "TMUX",
     "TMUX_PANE",
     "STY",
+    "WINDOW",
     "ZELLIJ",
     // The enclosing terminal's terminfo, which describes it and not the pane.
     "TERMINFO",

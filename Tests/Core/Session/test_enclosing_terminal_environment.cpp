@@ -33,6 +33,7 @@ TEST(everyEnclosingTerminalVariableIsRecognized)
              "TMUX=/private/tmp/tmux-501/default,1234,0",
              "TMUX_PANE=%3",
              "STY=4242.ttys001.host",
+             "WINDOW=3",
              "ZELLIJ=0",
              "ZELLIJ_SESSION_NAME=work",
              "ZELLIJ_PANE_ID=1",
