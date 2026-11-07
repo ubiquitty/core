@@ -332,11 +332,12 @@ TEST(aLatinLayoutKeyOnAnotherPositionKeepsItsLetterAndReportsThePosition)
 /// Ctrl on a Latin layout's non-ASCII key folds through the US position, as
 /// kitty's legacy encoder does.
 ///
-/// kitty/key_encoding.c encodes a Ctrl press whose key is not a legacy ASCII
+/// Kitty's legacy encoder encodes a Ctrl press whose key is not a legacy ASCII
 /// key through its alternate (base-layout) key when that one is. German ü sits
 /// on the US `[` key, so Ctrl+ü is Ctrl+[, 0x1B; ö folds to `;`, which has no
 /// control byte and is sent as itself. With no position reported nothing says
 /// the chord, and nothing is sent.
+/// Reference: https://github.com/kovidgoyal/kitty/blob/2af2d313de885974b77256c60c8b08b73e1be050/kitty/key_encoding.c
 TEST(aControlChordOnALatinNonASCIIKeyFoldsThroughTheUSPosition)
 {
     Rt::ModeSnapshot modes;
@@ -370,7 +371,7 @@ TEST(aControlChordOnALatinNonASCIIKeyFoldsThroughTheUSPosition)
 
 /// A French key beyond ASCII on the digit row folds as kitty's table does.
 ///
-/// kitty/key_encoding.c sends ctrled_key of the base-layout key for such a
+/// The same upstream encoder sends ctrled_key of the base-layout key for such a
 /// press: '2' is NUL, '7' is 0x1F, '6' is 0x1E, and '9' and '0' are themselves.
 /// The fold applies only to a chord through the base-layout key, so Ctrl+2 on
 /// a US keyboard keeps the byte the ASCII key sends.
