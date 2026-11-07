@@ -470,6 +470,7 @@ def route_stage(stage, context: SourceRoots):
     """Resolves the manifest's required entry points without changing its verdict policy."""
     command = stage.command
     core_driver = None
+    subject_driver = None
     if stage.key == "snapshots":
         command = "python3 Tests/Snapshots/run.py --backend portable --quiet"
         if "app" in context.repositories:
@@ -488,10 +489,17 @@ if [ -f "$UBQ_BUILD_ROOT/web-dist/ubiquitty.wasm" ]; then
 fi'''
     if stage.key == "host-tests" and context.subject != context.core:
         core_driver = context.core / "Scripts/run-tests.sh"
+        # A consumer's own driver may configure its native product, as Kit's
+        # does. A consumer without one uses Core's implementation with the
+        # consumer's subject; another library's driver judges that library.
+        subject_driver = context.subject / "Scripts/run-tests.sh"
+        if not subject_driver.exists() and not subject_driver.is_symlink():
+            subject_driver = core_driver
         command = (
             'SNAPSHOT=skip UBQ_TESTS_ROOT="$UBQ_CORE_ROOT" UBQ_KIT_ROOT= UBIQUITTY_KIT_SOURCE_DIR= '
             'UBQ_BUILD_ROOT="$UBQ_BUILD_ROOT/core" ' + shlex.quote(str(core_driver)) + '\n'
-            'SNAPSHOT=skip UBQ_BUILD_ROOT="$UBQ_BUILD_ROOT/subject" ./Scripts/run-tests.sh'
+            'SNAPSHOT=skip UBQ_TESTS_ROOT=' + shlex.quote(str(context.subject))
+            + ' UBQ_BUILD_ROOT="$UBQ_BUILD_ROOT/subject" ' + shlex.quote(str(subject_driver))
         )
     if stage.key in ("fuzz", "agent-smokes") and context.subject != context.core:
         core_driver = context.core / "Scripts/run-tests.sh"
@@ -514,6 +522,10 @@ fi'''
             if not core_driver.is_file():
                 raise FileNotFoundError(f"required Core test driver is absent: {core_driver}")
             core_driver.resolve().relative_to(context.core)
+        if subject_driver is not None:
+            if not subject_driver.is_file():
+                raise FileNotFoundError(f"required subject test driver is not a file: {subject_driver}")
+            subject_driver.resolve().relative_to(context.subject if subject_driver != core_driver else context.core)
         if not set(stage.repositories).intersection(context.repositories):
             raise ValueError(f"stage {stage.key} requires {'/'.join(stage.repositories)} sources, not {'/'.join(context.repositories)}")
         command = SOURCE_PATH.sub(required, command)

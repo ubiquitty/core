@@ -1051,7 +1051,7 @@ class StanzaDeclineTests(unittest.TestCase):
                     timeout = '"900"' if entry == "shell_web_outline" else '"600"'
                     self.assertIn(f"TIMEOUT {timeout}", properties[entry])
 
-    def subjectFixture(self, ownDriver, sharedBuilds=False, lockSharedBuilds=True):
+    def subjectFixture(self, ownDriver, sharedBuilds=False, lockSharedBuilds=True, productionPolicy=False):
         scratch = tempfile.TemporaryDirectory(prefix="ubq-ctest-subject-")
         self.addCleanup(scratch.cleanup)
         directory = Path(scratch.name).resolve()
@@ -1090,13 +1090,27 @@ class StanzaDeclineTests(unittest.TestCase):
                             "    sys.exit(75)\n")
             path.chmod(0o755)
 
-        writeDriver(core / "Scripts/run-tests.sh", "core_only")
+        stanzas = "app_only\nhost_a\nhost_b\nweb_proxy_frames" if sharedBuilds else "app_only"
+        writeDriver(core / "Scripts/run-tests.sh", stanzas if productionPolicy else "core_only")
         if ownDriver:
-            stanzas = "app_only\nhost_a\nhost_b\nweb_proxy_frames" if sharedBuilds else "app_only"
             writeDriver(project / "Scripts/run-tests.sh", stanzas)
         locks = 'set(shell_host_a_RESOURCE_LOCK existing_resource)\n' if sharedBuilds else ""
         if sharedBuilds and lockSharedBuilds:
             locks += 'ubiquitty_lock_shell_build_trees(DRIVER "${driver}")\n'
+        scheduling = 'ubiquitty_schedule_shell_stanzas(DRIVER "${driver}")\n'
+        if productionPolicy:
+            # Exercise the actual top-level dispatch, without configuring or
+            # compiling Core. This callback marks a mistaken Core-policy
+            # selection; its prebuilt promise has no producer in the App.
+            source = (batteries.ROOT / "Tests/CMakeLists.txt").read_text()
+            start = source.index("ubiquitty_default_shell_driver(_ubq_shell_driver)")
+            finish = source.index("\nendif()", start) + len("\nendif()")
+            scheduling = (
+                'function(ubq_schedule_run_tests_stanzas selected)\n'
+                '    set(shell_host_a_ENVIRONMENT UBQ_HOST_PREBUILT=1)\n'
+                '    set(shell_host_a_FIXTURES_REQUIRED ubq_host_binary_fixture)\n'
+                '    ubiquitty_schedule_shell_stanzas(DRIVER "${selected}")\n'
+                'endfunction()\n' + source[start:finish] + '\n')
         (project / "CMakeLists.txt").write_text(
             "cmake_minimum_required(VERSION 3.20)\n"
             "project(Subject LANGUAGES NONE)\n"
@@ -1106,8 +1120,7 @@ class StanzaDeclineTests(unittest.TestCase):
             f'include("{batteries.ROOT}/Scripts/cmake/UbiquittyTests.cmake")\n'
             "ubiquitty_default_shell_driver(driver)\n"
             'file(WRITE "${CMAKE_BINARY_DIR}/selected-driver" "${driver}")\n'
-            + locks +
-            'ubiquitty_schedule_shell_stanzas(DRIVER "${driver}")\n')
+            + locks + scheduling)
         build = directory / "build"
         environment = dict(os.environ, UBQ_TESTS_ROOT=str(directory / "wrong subject"),
                            UBQ_CORE_ROOT=str(directory / "wrong Core"), UBQ_KIT_ROOT=str(directory / "wrong Kit"),
@@ -1225,6 +1238,24 @@ class StanzaDeclineTests(unittest.TestCase):
                                                                lockSharedBuilds=False)
         with self.assertRaisesRegex(AssertionError, "shell_host_a"):
             self.assertSharedBuildLocks((build / "CTestTestfile.cmake").read_text())
+
+    @unittest.skipUnless(shutil.which("cmake"), "CMake is needed")
+    def test_core_implementation_keeps_consumer_policy_without_a_facade(self):
+        project, core, build, _ = self.subjectFixture(ownDriver=False, sharedBuilds=True,
+                                                     productionPolicy=True)
+        self.assertEqual((build / "selected-driver").read_text(), str(core / "Scripts/run-tests.sh"))
+        tests = (build / "CTestTestfile.cmake").read_text()
+        self.assertSharedBuildLocks(tests)
+        commands = self.generatedShellEntries(tests, "add_test")
+        properties = self.generatedShellEntries(tests, "set_tests_properties")
+        self.assertEqual(set(commands), {"shell_app_only", "shell_host_a", "shell_host_b", "shell_web_proxy_frames"})
+        for name, command in commands.items():
+            with self.subTest(name=name):
+                self.assertIn(f"UBQ_TESTS_ROOT={project}", command)
+                self.assertNotIn("UBQ_HOST_PREBUILT=1", command)
+                self.assertNotIn("UBQ_SHARED_BINARIES_FROM_FIXTURES=1", command)
+                self.assertIn('FIXTURES_REQUIRED "ubq_build_fixture"', properties[name])
+                self.assertNotIn("ubq_host_binary_fixture", properties[name])
 
 
 class SuiteFailFastTests(unittest.TestCase):
@@ -3132,11 +3163,9 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         self.tool(self.app, "Scripts/build-linux-gtk.sh", "app-build")
         self.tool(self.core, "Scripts/ensure-quic-deps.sh", "core-quic")
         self.tool(self.core, "Scripts/run-tests.sh", "core-tests")
+        self.tool(self.kit, "Scripts/run-tests.sh", "kit-tests")
         self.tool(self.core, "Tests/Snapshots/run.py", "core-snapshot")
         self.tool(self.kit, "Scripts/check-linux-build-prerequisites.sh", "kit-prerequisite")
-        (self.app / "Scripts/run-tests.sh").write_text(
-            '#!/bin/sh\nexec "$UBQ_CORE_ROOT/Scripts/run-tests.sh" "$@"\n')
-        (self.app / "Scripts/run-tests.sh").chmod(0o755)
 
     def tool(self, owner, relative, label):
         path = owner / relative
@@ -3145,7 +3174,7 @@ class SourceCompositionBatteryTests(unittest.TestCase):
                         'from pathlib import Path\n'
                         f'row = dict(label={label!r}, arguments=sys.argv[1:], cwd=os.getcwd(), '
                         'subject=os.environ.get("UBQ_TESTS_ROOT"), core=os.environ.get("UBQ_CORE_ROOT"), '
-                        'kit=os.environ.get("UBQ_KIT_ROOT"))\n'
+                        'kit=os.environ.get("UBQ_KIT_ROOT"), build_root=os.environ.get("UBQ_BUILD_ROOT"))\n'
                         'with open(os.environ["UBQ_ROUTING_LOG"], "a") as stream: '
                         'stream.write(json.dumps(row)+"\\n")\n')
         path.chmod(0o755)
@@ -3168,6 +3197,9 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         rows = [json.loads(line) for line in self.log.read_text().splitlines()]
         self.assertEqual([row["label"] for row in rows], ["core-quic", "core-tests", "core-tests", "app-build", "core-snapshot"])
         self.assertEqual((rows[1]["subject"], rows[1]["kit"]), (str(self.core), ""))
+        gcc_root = Path(environment["RUNNER_WORKSPACE"]) / "build-gcc"
+        self.assertEqual(rows[1]["build_root"], str(gcc_root / "core"))
+        self.assertEqual(rows[2]["build_root"], str(gcc_root / "subject"))
         for index, row in enumerate(rows):
             self.assertEqual(row["cwd"], str(self.app))
             if index != 1:
@@ -3177,6 +3209,35 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         self.assertIn(str(self.kit), rows[-1]["arguments"])
         self.assertEqual({row["state"] for row in json.loads(path.read_text())}, {"completed"})
         self.assertEqual(batteries.validate_events("linux", manifest, Path(environment["UBQ_EVENT_LOG"])), [])
+
+    def test_substantive_kit_driver_remains_the_kit_subject_entry(self):
+        context = source_roots(self.kit, core=self.core, environment={})
+        stage = batteries.source_stages("linux", context, ("host-tests",))[0]
+        self.assertEqual(batteries.execute_stage(stage, self.environment(context)), 0)
+        rows = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual([row["label"] for row in rows], ["core-tests", "kit-tests"])
+        self.assertEqual([row["arguments"] for row in rows], [[], []])
+        self.assertEqual(rows[0]["subject"], str(self.core))
+        self.assertEqual(rows[1]["subject"], str(self.kit))
+        self.assertEqual(rows[1]["kit"], str(self.kit))
+
+    def test_consumer_owned_driver_is_not_replaced_with_the_shared_implementation(self):
+        self.tool(self.app, "Scripts/run-tests.sh", "app-tests")
+        context = source_roots(self.app, environment={})
+        stage = batteries.source_stages("linux", context, ("host-tests",))[0]
+        self.assertEqual(batteries.execute_stage(stage, self.environment(context)), 0)
+        rows = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual([row["label"] for row in rows], ["core-tests", "app-tests"])
+        self.assertEqual(rows[1]["subject"], str(self.app))
+
+    def test_consumer_driver_cannot_escape_its_owner_before_either_pass_starts(self):
+        outside = self.root / "outside-driver.sh"
+        outside.write_text("exit 0\n")
+        (self.app / "Scripts/run-tests.sh").symlink_to(outside)
+        context = source_roots(self.app, environment={})
+        stage = batteries.source_stages("linux", context, ("host-tests",))[0]
+        self.assertEqual(batteries.execute_stage(stage, self.environment(context)), 2)
+        self.assertFalse(self.log.exists())
 
     def test_required_kit_tool_is_executed_without_a_copied_app_shim(self):
         context = source_roots(self.app, environment={})

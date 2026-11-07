@@ -59,27 +59,14 @@ source "$(dirname "$0")/gate-report-lib.sh"
 # that models an SSH attach sets the variable itself.
 unset SSH_CONNECTION SSH_CLIENT SSH_TTY
 
-# This driver's checkout, and the checkout whose stanzas it runs. They are one tree,
-# except where this is ubiquitty-core's copy in another repository's Libraries/ and
-# the driver is run from that repository: its stanzas run, written against this
-# driver's helpers, and ubiquitty-core's own are not. UBQ_TESTS_ROOT names the
-# checkout explicitly.
+# Core owns the driver and helpers; the caller or explicit UBQ_TESTS_ROOT owns
+# the stanzas. The common resolver preserves gitless and external-library
+# compositions without making another library the test subject.
 CORE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ROOT="${UBQ_TESTS_ROOT:-}"
-if [ -z "$ROOT" ]; then
-    ROOT="$CORE_ROOT"
-    ubq_toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-    if [ -n "$ubq_toplevel" ] && [ "$ubq_toplevel" != "$CORE_ROOT" ] \
-        && [ "$(cd "$ubq_toplevel/Libraries/ubiquitty-core" 2>/dev/null && pwd -P)" = "$(cd "$CORE_ROOT" && pwd -P)" ]; then
-        ROOT="$ubq_toplevel"
-    fi
-fi
-# The libraries the stanzas of the checkout under test name files in; each is the
-# checkout itself where it holds them.
-KIT_ROOT="${UBQ_KIT_ROOT:-$ROOT}"
-if [ -z "${UBQ_KIT_ROOT:-}" ] && [ -e "$ROOT/Libraries/ubiquitty-kit" ]; then
-    KIT_ROOT="$ROOT/Libraries/ubiquitty-kit"
-fi
+ROOT="" KIT_ROOT=""
+sourceContext="$(python3 "$CORE_ROOT/Scripts/ubq_roots.py" shell-context --core-source-root "$CORE_ROOT" --no-promote-libraries)"
+# The shared resolver emits fixed names and shell-quoted values only.
+eval "$sourceContext"
 
 # How many compilers this machine can run at once; see Scripts/build-jobs.sh.
 # shellcheck source=Scripts/build-jobs.sh

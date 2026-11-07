@@ -132,7 +132,7 @@ core_gate_host() {
     # that does not compile fails here for the same reason it would fail there,
     # sooner and for a tenth of the machine.
     run_scoped "Tests/ compiles" \
-        "Source Tests CMakeLists.txt Scripts/cmake cmake Scripts/build-tests.sh Scripts/check-build-reached.py Scripts/portable-core-sources.txt Scripts/build-root.sh Scripts/build_root.py Scripts/build-jobs.sh Scripts/build_jobs.py" \
+        "Source Tests CMakeLists.txt Scripts/cmake cmake Scripts/build-tests.sh Scripts/ubq_roots.py Scripts/check-build-reached.py Scripts/portable-core-sources.txt Scripts/build-root.sh Scripts/build_root.py Scripts/build-jobs.sh Scripts/build_jobs.py" \
         ./Scripts/build-tests.sh
     # And RUNS the ones this branch can break. Compiling is not running: the
     # rows `test_preferences_keys` hand-copies from the `Key.h` descriptor table
