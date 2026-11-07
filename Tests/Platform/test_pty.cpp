@@ -54,6 +54,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <limits>
 #include <optional>
 
 #include <chrono>
@@ -61,6 +62,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <cerrno>
@@ -450,6 +452,129 @@ TEST(testForegroundProcessGroup)
     CHECK(a.has_value());
     CHECK(a == b); // stable while the same job is foreground
     std::printf("fg-pgrp: %d (stable across calls)\n", a.value_or(0));
+}
+
+TEST(testProcessGroupPresenceRejectsSpecialSignalScopes)
+{
+    auto stream = openArguments({ "/bin/cat" });
+    REQUIRE(stream);
+    for (const PAL::ProcessID group : { std::numeric_limits<PAL::ProcessID>::min(), -1, 0, 1 })
+        CHECK(stream->process().processGroupPresence(group) == PAL::ProcessGroupPresence::Unknown);
+    const pid_t currentGroup = ::getpgrp();
+    REQUIRE(currentGroup > 1 && std::in_range<PAL::ProcessID>(currentGroup));
+    CHECK(stream->process().processGroupPresence(static_cast<PAL::ProcessID>(currentGroup)) == PAL::ProcessGroupPresence::Present);
+}
+
+namespace {
+
+constexpr int processGroupReadinessMilliseconds = 3'000;
+constexpr int processGroupChildWatchdogMilliseconds = 15'000;
+
+// Each child joins only its own test group and leaves cooperatively when its
+// command pipe closes. The parent retains exclusive direct-child reaping.
+[[noreturn]] void waitForOwnedGroupRelease(pid_t group, int command, int ready, std::span<const int> pipeDescriptors)
+{
+    if (::setpgid(0, group) != 0)
+        ::_exit(124);
+    for (const int descriptor : pipeDescriptors) {
+        if (descriptor != command && descriptor != ready)
+            (void)::close(descriptor);
+    }
+    const char announcement = 'r';
+    if (::write(ready, &announcement, 1) != 1)
+        ::_exit(125);
+    (void)::close(ready);
+    struct pollfd released { command, POLLIN, 0 };
+    // This watchdog bounds a failed parent; successful tests release the
+    // pipe rather than waiting for a time-based process transition.
+    if (::poll(&released, 1, processGroupChildWatchdogMilliseconds) <= 0)
+        ::_exit(126);
+    char byte;
+    if (::read(command, &byte, 1) < 0)
+        ::_exit(127);
+    ::_exit(0);
+}
+
+} // namespace
+
+TEST(testProcessGroupRemainsPresentAfterItsLeaderExits)
+{
+    UbiquittyTest::OwnedChildProcess<> leader;
+    UbiquittyTest::OwnedChildProcess<> member;
+    REQUIRE(leader.canOwnChildren() && member.canOwnChildren());
+    // Declared after the child owners, so early-return cleanup closes the
+    // command pipes before either direct-child fallback runs.
+    auto leaderCommand = PAL::makeUnixPipe();
+    auto memberCommand = PAL::makeUnixPipe();
+    auto leaderReady = PAL::makeUnixPipe();
+    auto memberReady = PAL::makeUnixPipe();
+    REQUIRE(leaderCommand && memberCommand && leaderReady && memberReady);
+    const std::array pipeDescriptors { leaderCommand.read.get(), leaderCommand.write.get(),
+        memberCommand.read.get(), memberCommand.write.get(), leaderReady.read.get(), leaderReady.write.get(),
+        memberReady.read.get(), memberReady.write.get() };
+    for (const int descriptor : pipeDescriptors)
+        REQUIRE(::fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0);
+    const auto isReady = [](int descriptor) {
+        struct pollfd readable { descriptor, POLLIN, 0 };
+        if (::poll(&readable, 1, processGroupReadinessMilliseconds) != 1 || !(readable.revents & POLLIN))
+            return false;
+        char byte = 0;
+        return ::read(descriptor, &byte, 1) == 1 && byte == 'r';
+    };
+    const auto reapReleased = [](auto& child, int& childStatus) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(processGroupReadinessMilliseconds);
+        for (;;) {
+            const pid_t reaped = child.reap(WNOHANG, &childStatus);
+            if (reaped != 0 || std::chrono::steady_clock::now() >= deadline)
+                return reaped;
+            ::usleep(1000);
+        }
+    };
+    const pid_t leaderProcess = ::fork();
+    if (leaderProcess == 0)
+        waitForOwnedGroupRelease(0, leaderCommand.read.get(), leaderReady.write.get(), pipeDescriptors);
+    REQUIRE(leader.adoptForkResult(leaderProcess));
+    REQUIRE(isReady(leaderReady.read.get()));
+    const pid_t memberProcess = ::fork();
+    if (memberProcess == 0)
+        waitForOwnedGroupRelease(leaderProcess, memberCommand.read.get(), memberReady.write.get(), pipeDescriptors);
+    REQUIRE(member.adoptForkResult(memberProcess));
+    REQUIRE(isReady(memberReady.read.get()));
+    leaderCommand.read.reset();
+    memberCommand.read.reset();
+    leaderReady.write.reset();
+    memberReady.write.reset();
+    REQUIRE(::getpgid(leaderProcess) == leaderProcess);
+    REQUIRE(::getpgid(memberProcess) == leaderProcess);
+    REQUIRE(std::in_range<PAL::ProcessID>(leaderProcess));
+
+    auto stream = openArguments({ "/bin/cat" });
+    REQUIRE(stream);
+    const auto group = static_cast<PAL::ProcessID>(leaderProcess);
+    CHECK(stream->process().processGroupPresence(group) == PAL::ProcessGroupPresence::Present);
+    // A numeric group can disappear and return without a fork, exec or exit.
+    // The children remain the same direct children throughout this handoff.
+    const pid_t parentGroup = ::getpgrp();
+    REQUIRE(parentGroup > 1 && parentGroup != leaderProcess);
+    REQUIRE(::setpgid(leaderProcess, parentGroup) == 0);
+    REQUIRE(::setpgid(memberProcess, parentGroup) == 0);
+    CHECK(stream->process().processGroupPresence(group) == PAL::ProcessGroupPresence::Gone);
+    REQUIRE(::setpgid(leaderProcess, leaderProcess) == 0);
+    REQUIRE(::setpgid(memberProcess, leaderProcess) == 0);
+    CHECK(stream->process().processGroupPresence(group) == PAL::ProcessGroupPresence::Present);
+    leaderCommand.write.reset();
+    int leaderStatus = 0;
+    REQUIRE(reapReleased(leader, leaderStatus) == leaderProcess);
+    REQUIRE(WIFEXITED(leaderStatus) && WEXITSTATUS(leaderStatus) == 0);
+    CHECK(::getpgid(memberProcess) == leaderProcess);
+    CHECK_MSG(stream->process().processGroupPresence(group) == PAL::ProcessGroupPresence::Present,
+        "a pipeline keeps its group after its leader has been reaped");
+
+    memberCommand.write.reset();
+    int memberStatus = 0;
+    REQUIRE(reapReleased(member, memberStatus) == memberProcess);
+    REQUIRE(WIFEXITED(memberStatus) && WEXITSTATUS(memberStatus) == 0);
+    CHECK(stream->process().processGroupPresence(group) == PAL::ProcessGroupPresence::Gone);
 }
 
 // A program the caller forked itself announces its tree where the platform has

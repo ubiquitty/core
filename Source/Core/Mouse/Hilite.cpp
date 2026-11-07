@@ -31,10 +31,23 @@ bool retireTrackingIfStale(Ubiquitty::Terminal& terminal, int& ownerProcessGroup
         return false;
     }
     if (ownerProcessGroup == 0) {
-        ownerProcessGroup = foregroundProcessGroup;
+        stampUnstampedTrackingOwner(terminal, ownerProcessGroup, foregroundProcessGroup);
         return false;
     }
     if (!isForegroundShell || foregroundProcessGroup <= 0 || foregroundProcessGroup == ownerProcessGroup)
+        return false;
+    return retireTrackingOwnedByProcessGroup(terminal, ownerProcessGroup, ownerProcessGroup);
+}
+
+void stampUnstampedTrackingOwner(Ubiquitty::Terminal& terminal, int& ownerProcessGroup, int processGroup)
+{
+    if (ownerProcessGroup == 0 && processGroup > 0 && (tracksPointer(&terminal) || terminal.modes.mouseRelativePointerLock))
+        ownerProcessGroup = processGroup;
+}
+
+bool retireTrackingOwnedByProcessGroup(Ubiquitty::Terminal& terminal, int& ownerProcessGroup, int processGroup)
+{
+    if (processGroup <= 0 || ownerProcessGroup != processGroup)
         return false;
     ownerProcessGroup = 0;
     return clearTracking(&terminal);

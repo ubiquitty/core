@@ -218,9 +218,17 @@ std::uint32_t TerminalRuntime::walkFallbackMilliseconds() const
     return m_stream->process().deliversTreeEdges() ? 0 : Title::walkFallbackMilliseconds;
 }
 
+std::optional<std::uint32_t> TerminalRuntime::foregroundHandoffProbeDueInMilliseconds(std::uint32_t nowMicroseconds) const
+{
+    if (!m_stream || !isLocalStreamEnabled() || foregroundObservation() == ForegroundObservation::Unread || m_foregroundHandoffGroup == 0)
+        return std::nullopt;
+    const std::uint32_t elapsedMilliseconds = (nowMicroseconds - m_lastForegroundHandoffProbeMicroseconds) / 1000;
+    return elapsedMilliseconds >= Title::walkFallbackMilliseconds ? 0 : Title::walkFallbackMilliseconds - elapsedMilliseconds;
+}
+
 std::uint32_t TerminalRuntime::directorySampleMilliseconds() const
 {
-    if (!m_stream || !isLocalStreamEnabled() || foregroundObservation() == ForegroundObservation::Unread)
+    if (!m_stream || !isLocalStreamEnabled() || foregroundObservation() == ForegroundObservation::Unread || m_foregroundHandoffGroup != 0)
         return 0;
     // A shell report already owns the resolved directory. Its next prompt
     // reports any move, so a quiet process-directory probe buys nothing.
@@ -233,6 +241,7 @@ void TerminalRuntime::attachProcessTreeNotifier()
 {
     if (!m_stream || !isLocalStreamEnabled())
         return;
+    m_foregroundHandoffGroup = 0;
     // Core is the only registrant. The tracker holds one callback slot and a
     // second registrant silently replaces the first — a frontend that also
     // registered here would unhook this without any error, and every kernel
@@ -279,6 +288,7 @@ std::expected<void, TerminalRuntime::CloseError> TerminalRuntime::tryClose()
     // Teardown order: the stream first (no more bytes can arrive), then the Terminal.
     // Callers must have cleared any borrowTermForRender() reference.
     m_stream.reset();
+    m_foregroundHandoffGroup = 0;
     m_term.reset();
     m_sink = nullptr;
     return {};
@@ -544,6 +554,7 @@ void TerminalRuntime::collectSessionExitStatus()
 //   process state so this ride out is the delivery that pushes the change.
 void TerminalRuntime::recordSessionEnd(DrainHost& host, DrainOutcome& outcome)
 {
+    m_foregroundHandoffGroup = 0;
     if (m_sessionDidEnd.exchange(true, std::memory_order_acq_rel))
         return; // one end per session; a second end-of-file pass must not re-push
 
@@ -658,56 +669,78 @@ void TerminalRuntime::finishDrainPass(DrainHost& host, DrainOutcome& outcome)
     // EOF already retired the session above; sampling stale process facts here
     // could name it again or overwrite the exit notification.
     const bool shouldProbeFacts = !outcome.reachedEnd && shouldProbeForegroundFacts(probeTicks, outcome.caughtUp);
+    int foregroundGroup = m_cachedForegroundGroup;
+    bool foregroundIsShell = m_cachedForegroundIsShell;
     if (shouldProbeFacts) {
         takeForegroundProbeOwed();
         const bool wasForegroundShell = m_cachedForegroundIsShell;
-        std::string probedName = probeForegroundHolder();
-        const std::string sampledDirectory = m_stream->process().foregroundCurrentDirectory();
-        if (m_term) {
-            // The shell has the terminal back: where it marks no prompt,
-            // that is where a program's working or blocked record ends.
-            if (m_cachedForegroundIsShell && !wasForegroundShell)
-                OSC::foregroundReturnedToShell(*m_term);
-            // The probe's facts, published beside each other rather than over the
-            // shell's report: the sample is a source `resolvePaneDirectory`
-            // arbitrates, and the group is what retires a report whose program has
-            // exited. Both land before the resolve so one pass settles the answer.
-            m_term->foregroundProcessGroup = m_cachedForegroundGroup;
-            bool didDirectoryMove = Ubiquitty::retireReportedDirectoryIfStale(*m_term, m_cachedForegroundGroup);
-            if (!sampledDirectory.empty() && sampledDirectory != m_cachedForegroundDirectory) {
-                m_cachedForegroundDirectory = sampledDirectory;
-                didDirectoryMove = Ubiquitty::setSampledDirectoryString(*m_term, sampledDirectory) || didDirectoryMove;
+        ForegroundProbe probe = probeForegroundHolder();
+        foregroundGroup = probe.processGroup;
+        foregroundIsShell = probe.name.has_value() && m_cachedForegroundIsShell;
+        if (probe.name) {
+            const std::string sampledDirectory = m_stream->process().foregroundCurrentDirectory();
+            if (m_term) {
+                // The shell has the terminal back: where it marks no prompt,
+                // that is where a program's working or blocked record ends.
+                if (m_cachedForegroundIsShell && !wasForegroundShell)
+                    OSC::foregroundReturnedToShell(*m_term);
+                // The probe's facts, published beside each other rather than over the
+                // shell's report: the sample is a source `resolvePaneDirectory`
+                // arbitrates, and the group is what retires a report whose program has
+                // exited. Both land before the resolve so one pass settles the answer.
+                m_term->foregroundProcessGroup = m_cachedForegroundGroup;
+                bool didDirectoryMove = Ubiquitty::retireReportedDirectoryIfStale(*m_term, m_cachedForegroundGroup);
+                if (!sampledDirectory.empty() && sampledDirectory != m_cachedForegroundDirectory) {
+                    m_cachedForegroundDirectory = sampledDirectory;
+                    didDirectoryMove = Ubiquitty::setSampledDirectoryString(*m_term, sampledDirectory) || didDirectoryMove;
+                }
+                if (didDirectoryMove)
+                    m_term->currentDirectoryChanged = true;
+                // The same report's host leaves with its program, on the edge that
+                // brought it in: that edge is what copies it into the process facts
+                // below, where a window tag reads it.
+                if (Ubiquitty::retireReportedHostIfStale(*m_term, m_cachedForegroundGroup))
+                    m_term->currentDirectoryChanged = true;
+                // A title outlives its program the same way a directory report does,
+                // and is retired on the same probe rather than on a frontend's poll.
+                if (Ubiquitty::retireTitleIfStale(*m_term, m_cachedForegroundGroup))
+                    m_term->titleChanged = true;
             }
-            if (didDirectoryMove)
-                m_term->currentDirectoryChanged = true;
-            // The same report's host leaves with its program, on the edge that
-            // brought it in: that edge is what copies it into the process facts
-            // below, where a window tag reads it.
-            if (Ubiquitty::retireReportedHostIfStale(*m_term, m_cachedForegroundGroup))
-                m_term->currentDirectoryChanged = true;
-            // A title outlives its program the same way a directory report does,
-            // and is retired on the same probe rather than on a frontend's poll.
-            if (Ubiquitty::retireTitleIfStale(*m_term, m_cachedForegroundGroup))
-                m_term->titleChanged = true;
+            // Outside the Terminal guard above: the process facts a title is made
+            // of belong to the session, not to the grid, and a pane whose Terminal
+            // has not been built still has a child worth naming.
+            sampleProcessState(std::move(*probe.name));
+            outcome.processStateChanged = outcome.processStateChanged || m_didProcessStateMove;
+        } else {
+            host.lockModel();
+            if (m_term) {
+                // This pass parsed the reports/modes. Their attribution uses
+                // the tty reading, even while holder metadata remains stale.
+                Ubiquitty::stampUnstampedReports(*m_term, probe.processGroup);
+                Mouse::stampUnstampedTrackingOwner(*m_term, m_mouseTrackingProcessGroup, probe.processGroup);
+            }
+            const DrainOutcome retired = retireReportsOwnedByGoneGroup(probe.goneGroup);
+            if (m_term) {
+                m_term->titleChanged = m_term->titleChanged || retired.titleChanged;
+                m_term->currentDirectoryChanged = m_term->currentDirectoryChanged || retired.currentDirectoryChanged;
+            }
+            host.unlockModel();
+            outcome.processStateChanged = outcome.processStateChanged || retired.processStateChanged;
         }
-        // Outside the Terminal guard above: the process facts a title is made
-        // of belong to the session, not to the grid, and a pane whose Terminal
-        // has not been built still has a child worth naming.
-        sampleProcessState(std::move(probedName));
-        outcome.processStateChanged = m_didProcessStateMove;
         m_lastForegroundProbeTicks = probeTicks;
         m_foregroundProbeValid = true;
-    } else if (m_term && Ubiquitty::didDrainLeaveAReportUnstamped(*m_term)
-        && foregroundObservation() != ForegroundObservation::Unread) {
-        // A drain that set a title or reported a directory names their owner
-        // now even when the full probe is throttled. Left to the next probe, a
-        // program that reported and exited in between would hand its report to
-        // the shell, and the report would outlive it. One group read, and only
-        // on a drain that reported something.
-        Ubiquitty::stampUnstampedReports(*m_term, m_stream->process().foregroundProcessGroup().value_or(0));
+    } else if (!outcome.reachedEnd && m_term
+        && ((Ubiquitty::didDrainLeaveAReportUnstamped(*m_term) && foregroundObservation() != ForegroundObservation::Unread)
+            || (m_mouseTrackingProcessGroup == 0 && (Mouse::tracksPointer(m_term.get()) || m_term->modes.mouseRelativePointerLock)))) {
+        // Attribute fresh reports and pointer capture on the drain that parsed
+        // them, even when the full holder sample is throttled. A later sample
+        // could observe the shell after their writer has already exited.
+        foregroundGroup = m_stream->process().foregroundProcessGroup().value_or(0);
+        foregroundIsShell = false;
+        if (foregroundObservation() != ForegroundObservation::Unread)
+            Ubiquitty::stampUnstampedReports(*m_term, foregroundGroup);
+        Mouse::stampUnstampedTrackingOwner(*m_term, m_mouseTrackingProcessGroup, foregroundGroup);
     }
-    const int foregroundGroup = m_cachedForegroundGroup;
-    const bool foregroundIsShell = m_cachedForegroundIsShell;
 
     // Replies + bell + grid dims read/mutate the Terminal, so under the lock. The
     // bell is consumed (cleared) here, matching the parser's own reply path.
@@ -1682,23 +1715,29 @@ DrainOutcome TerminalRuntime::sampleProcessStateOffDrain(DrainHost& host)
     }
     takeForegroundProbeOwed();
     const bool wasForegroundShell = m_cachedForegroundIsShell;
-    std::string probedName = probeForegroundHolder();
-    const std::string directory = m_stream->process().foregroundCurrentDirectory();
+    ForegroundProbe probe = probeForegroundHolder();
+    const std::string directory = probe.name ? m_stream->process().foregroundCurrentDirectory() : std::string {};
     host.lockModel();
     if (m_term) {
-        const bool didRetirePointer = Mouse::retireTrackingIfStale(*m_term, m_mouseTrackingProcessGroup, m_cachedForegroundGroup, m_cachedForegroundIsShell);
-        // A quiet owner change still owes the frontend the new input modes.
-        outcome.processStateChanged = didRetirePointer;
-        if (m_cachedForegroundIsShell && !wasForegroundShell)
-            OSC::foregroundReturnedToShell(*m_term);
-        m_term->foregroundProcessGroup = m_cachedForegroundGroup;
-        outcome.currentDirectoryChanged = Ubiquitty::retireReportedDirectoryIfStale(*m_term, m_cachedForegroundGroup);
-        if (!directory.empty() && directory != m_cachedForegroundDirectory) {
-            m_cachedForegroundDirectory = directory;
-            outcome.currentDirectoryChanged = Ubiquitty::setSampledDirectoryString(*m_term, directory) || outcome.currentDirectoryChanged;
+        bool didRetirePointer = false;
+        if (probe.name) {
+            didRetirePointer = Mouse::retireTrackingIfStale(*m_term, m_mouseTrackingProcessGroup, m_cachedForegroundGroup, m_cachedForegroundIsShell);
+            // A quiet owner change still owes the frontend the new input modes.
+            outcome.processStateChanged = didRetirePointer;
+            if (m_cachedForegroundIsShell && !wasForegroundShell)
+                OSC::foregroundReturnedToShell(*m_term);
+            m_term->foregroundProcessGroup = m_cachedForegroundGroup;
+            outcome.currentDirectoryChanged = Ubiquitty::retireReportedDirectoryIfStale(*m_term, m_cachedForegroundGroup);
+            if (!directory.empty() && directory != m_cachedForegroundDirectory) {
+                m_cachedForegroundDirectory = directory;
+                outcome.currentDirectoryChanged = Ubiquitty::setSampledDirectoryString(*m_term, directory) || outcome.currentDirectoryChanged;
+            }
+            outcome.currentDirectoryChanged = Ubiquitty::retireReportedHostIfStale(*m_term, m_cachedForegroundGroup) || outcome.currentDirectoryChanged;
+            outcome.titleChanged = Ubiquitty::retireTitleIfStale(*m_term, m_cachedForegroundGroup);
+        } else {
+            outcome = retireReportsOwnedByGoneGroup(probe.goneGroup);
+            didRetirePointer = outcome.processStateChanged;
         }
-        outcome.currentDirectoryChanged = Ubiquitty::retireReportedHostIfStale(*m_term, m_cachedForegroundGroup) || outcome.currentDirectoryChanged;
-        outcome.titleChanged = Ubiquitty::retireTitleIfStale(*m_term, m_cachedForegroundGroup);
         if (outcome.titleChanged) {
             ++m_titleGeneration;
             m_term->titleChanged = false;
@@ -1721,8 +1760,10 @@ DrainOutcome TerminalRuntime::sampleProcessStateOffDrain(DrainHost& host)
     if (outcome.currentDirectoryChanged) {
         emit(EventKind::DirectoryChanged);
     }
-    sampleProcessState(std::move(probedName));
-    outcome.processStateChanged = outcome.processStateChanged || m_didProcessStateMove;
+    if (probe.name) {
+        sampleProcessState(std::move(*probe.name));
+        outcome.processStateChanged = outcome.processStateChanged || m_didProcessStateMove;
+    }
     m_lastForegroundProbeTicks = PAL::monotonicTicks();
     m_foregroundProbeValid = true;
     return outcome;
@@ -1762,19 +1803,50 @@ void TerminalRuntime::takeForegroundProbeOwed()
     m_processTree->isForegroundProbeOwed.exchange(false, std::memory_order_acq_rel);
 }
 
-std::string TerminalRuntime::probeForegroundHolder()
+TerminalRuntime::ForegroundProbe TerminalRuntime::probeForegroundHolder()
 {
-    m_cachedForegroundGroup = m_stream->process().foregroundProcessGroup().value_or(0);
+    auto& process = m_stream->process();
+    const int processGroup = process.foregroundProcessGroup().value_or(0);
+    const auto presence = process.processGroupPresence(processGroup);
+    const bool isGone = processGroup > 0 && presence == PAL::ProcessGroupPresence::Gone;
+    const bool isUnresolvedHandoff = m_foregroundHandoffGroup != 0
+        && (processGroup == 0 || (processGroup == m_foregroundHandoffGroup && presence == PAL::ProcessGroupPresence::Unknown));
+    if (isGone || isUnresolvedHandoff) {
+        m_didProcessStateMove = false;
+        if (isGone)
+            m_foregroundHandoffGroup = processGroup;
+        m_lastForegroundHandoffProbeMicroseconds = PAL::monotonicMicros();
+        // Reappearance can reuse both group and name. Its first real holder
+        // still owes a full walk; the independent probe flag paces that wait.
+        m_processTree->dirty.store(true, std::memory_order_relaxed);
+        return { .name = std::nullopt, .processGroup = processGroup, .goneGroup = isGone ? processGroup : 0 };
+    }
+    m_foregroundHandoffGroup = 0;
+    m_cachedForegroundGroup = processGroup;
     // The name is read for a sample, which only a reader of process state
     // takes; a probe for the mouse guard or the title and directory reads the
     // holder alone.
     if (foregroundObservation() != ForegroundObservation::ProcessState) {
         m_cachedForegroundIsShell = m_stream->process().foregroundIsShell();
-        return {};
+        return { .name = std::string {}, .processGroup = processGroup, .goneGroup = 0 };
     }
     PAL::ForegroundHolder holder = m_stream->process().foregroundHolder();
     m_cachedForegroundIsShell = holder.isShell;
-    return std::move(holder.name);
+    return { .name = std::move(holder.name), .processGroup = processGroup, .goneGroup = 0 };
+}
+
+DrainOutcome TerminalRuntime::retireReportsOwnedByGoneGroup(int processGroup)
+{
+    DrainOutcome outcome;
+    if (!m_term || processGroup <= 0)
+        return outcome;
+    outcome.titleChanged = retireTitleOwnedByProcessGroup(*m_term, processGroup);
+    outcome.currentDirectoryChanged = retireReportedDirectoryOwnedByProcessGroup(*m_term, processGroup);
+    outcome.currentDirectoryChanged = retireReportedHostOwnedByProcessGroup(*m_term, processGroup) || outcome.currentDirectoryChanged;
+    outcome.processStateChanged = Mouse::retireTrackingOwnedByProcessGroup(*m_term, m_mouseTrackingProcessGroup, processGroup);
+    if (outcome.processStateChanged)
+        m_mouseTrackingActiveLastDrain = Mouse::tracksPointer(m_term.get()) || m_term->modes.mouseRelativePointerLock;
+    return outcome;
 }
 
 void TerminalRuntime::sampleProcessState(std::string probedName)

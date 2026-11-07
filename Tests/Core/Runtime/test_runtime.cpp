@@ -229,6 +229,15 @@ public:
         return foregroundShell;
     }
     int foregroundGroupCalls { 0 };
+    ProcessGroupPresence scriptedGroupPresence = ProcessGroupPresence::Unknown;
+    int groupPresenceCalls = 0;
+    bool isTreeTracked = false;
+    bool deliversTreeEdges() override { return isTreeTracked; }
+    ProcessGroupPresence processGroupPresence(ProcessID) override
+    {
+        ++groupPresenceCalls;
+        return scriptedGroupPresence;
+    }
     /// How many of the next group reads land a process-tree edge right after
     /// the read, the moment an edge can fall between a probe's read and its
     /// clearing of the owed flag.
@@ -4374,6 +4383,324 @@ TEST(aQuietForegroundChangeRetiresReportedMetadata)
     CHECK(!repeated.titleChanged);
 }
 
+TEST(aProvenGoneGroupRetiresOnlyItsReportsAndPointerModes)
+{
+    TerminalRuntime runtime;
+    runtime.init(parameters80x24());
+    auto* pipe = attachPipe(runtime);
+    REQUIRE(pipe != nullptr);
+    CountingDrainHost host;
+    pipe->foregroundGroup = 222;
+    pipe->foregroundShell = false;
+    pipe->scriptedForegroundName = "editor";
+    pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Present;
+    pipe->toRead = "\x1b]7;file://remote/work\x07\x1b]2;editor title\x07\x1b[?1000;1016;7402;2004h";
+    (void)runtime.drainAvailable(host);
+    REQUIRE(runtime.borrowTermForRender()->titleOwnerProcessGroup == 222);
+    REQUIRE(runtime.link().reads.read().mouseReportsActive);
+    (void)runtime.sampleProcessStateOffDrain(host);
+    const int holderQueries = pipe->foregroundShellCalls;
+    const int walks = pipe->gatherProcessesCalls;
+
+    pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Gone;
+    // An empty group may be classified as a shell by a backend. Positive
+    // absence must be handled before that classification is consulted.
+    pipe->foregroundShell = true;
+    pipe->scriptedForegroundName = "shell";
+    const auto retired = runtime.sampleProcessStateOffDrain(host);
+    CHECK(retired.titleChanged);
+    CHECK(retired.currentDirectoryChanged);
+    CHECK(retired.processStateChanged);
+    CHECK(runtime.borrowTermForRender()->titleUTF8.empty());
+    CHECK(runtime.borrowTermForRender()->reportedDirectory.empty());
+    CHECK(runtime.reportedHost().empty());
+    CHECK(!runtime.link().reads.read().mouseReportsActive);
+    CHECK(runtime.borrowTermForRender()->modes.mouseSGRPixels);
+    CHECK(runtime.borrowTermForRender()->modes.fullscreenContent);
+    CHECK(runtime.borrowTermForRender()->modes.bracketedPaste);
+    CHECK(!runtime.isSampledForegroundShell());
+    CHECK(pipe->foregroundShellCalls == holderQueries);
+    CHECK(pipe->gatherProcessesCalls == walks);
+    const auto now = Ubiquitty::PAL::monotonicMicros();
+    REQUIRE(runtime.foregroundHandoffProbeDueInMilliseconds(now).has_value());
+    CHECK(*runtime.foregroundHandoffProbeDueInMilliseconds(now) > 0);
+    CHECK(runtime.foregroundHandoffProbeDueInMilliseconds(now + 1'000'000) == 0);
+    CHECK(runtime.directorySampleMilliseconds() == 0);
+
+    const int groups = pipe->foregroundGroupCalls;
+    const int presenceQueries = pipe->groupPresenceCalls;
+    const auto repeated = runtime.sampleProcessStateOffDrain(host);
+    CHECK(!repeated.titleChanged && !repeated.currentDirectoryChanged && !repeated.processStateChanged);
+    CHECK(pipe->foregroundGroupCalls == groups + 1);
+    CHECK(pipe->groupPresenceCalls == presenceQueries + 1);
+    CHECK(pipe->gatherProcessesCalls == walks);
+    CHECK(pipe->foregroundShellCalls == holderQueries);
+    CHECK(!runtime.didProcessStateMove());
+    CHECK(host.locks == host.unlocks);
+}
+
+TEST(aFreshDrainAttributesReportsAndCaptureToItsGoneForegroundGroup)
+{
+    for (const auto presence : { Ubiquitty::PAL::ProcessGroupPresence::Gone, Ubiquitty::PAL::ProcessGroupPresence::Unknown }) {
+        TerminalRuntime runtime;
+        runtime.init(parameters80x24());
+        auto* pipe = attachPipe(runtime);
+        REQUIRE(pipe != nullptr);
+        CountingDrainHost host;
+        pipe->isTreeTracked = true;
+        pipe->foregroundGroup = 100;
+        pipe->foregroundShell = true;
+        pipe->scriptedForegroundName = "shell";
+        pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Present;
+        (void)runtime.sampleProcessStateOffDrain(host);
+
+        pipe->foregroundGroup = 200;
+        if (presence == Ubiquitty::PAL::ProcessGroupPresence::Unknown) {
+            pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Gone;
+            (void)runtime.sampleProcessStateOffDrain(host);
+        }
+        pipe->scriptedGroupPresence = presence;
+        const int holderQueries = pipe->foregroundShellCalls;
+        pipe->toRead = "\x1b]2;short-lived title\x07\x1b[?1000h";
+        const auto drained = runtime.drainAvailable(host);
+        CHECK(drained.titleChanged);
+        const bool isGone = presence == Ubiquitty::PAL::ProcessGroupPresence::Gone;
+        if (isGone)
+            CHECK(drained.processStateChanged);
+        CHECK(runtime.borrowTermForRender()->titleUTF8.empty() == isGone);
+        CHECK(runtime.borrowTermForRender()->titleOwnerProcessGroup == (isGone ? 0 : 200));
+        CHECK(runtime.link().reads.read().mouseReportsActive == !isGone);
+        CHECK(pipe->foregroundShellCalls == holderQueries);
+        REQUIRE(runtime.foregroundHandoffProbeDueInMilliseconds(Ubiquitty::PAL::monotonicMicros()).has_value());
+
+        pipe->foregroundGroup = 100;
+        pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Present;
+        (void)runtime.sampleProcessStateOffDrain(host);
+        CHECK(!runtime.foregroundHandoffProbeDueInMilliseconds(Ubiquitty::PAL::monotonicMicros()));
+        CHECK(runtime.borrowTermForRender()->titleUTF8.empty());
+        CHECK(!runtime.link().reads.read().mouseReportsActive);
+        // A new owner may enable tracking after convergence. The shell's
+        // independently attributed capture needs its own absence proof.
+        pipe->toRead += "\x1b[?1000h";
+        (void)runtime.drainAvailable(host);
+        (void)runtime.sampleProcessStateOffDrain(host);
+        CHECK(runtime.link().reads.read().mouseReportsActive);
+    }
+}
+
+TEST(unknownAndPresentGroupsDoNotCreateAnIdleProbeOrRetireReports)
+{
+    for (const auto presence : { Ubiquitty::PAL::ProcessGroupPresence::Unknown, Ubiquitty::PAL::ProcessGroupPresence::Present }) {
+        TerminalRuntime runtime;
+        runtime.init(parameters80x24());
+        auto* pipe = attachPipe(runtime);
+        REQUIRE(pipe != nullptr);
+        pipe->isTreeTracked = true;
+        CountingDrainHost host;
+        pipe->foregroundGroup = 222;
+        pipe->foregroundShell = false;
+        pipe->scriptedForegroundName = "editor";
+        pipe->scriptedGroupPresence = presence;
+        pipe->toRead = "\x1b]2;editor title\x07\x1b[?1000h";
+        (void)runtime.drainAvailable(host);
+        (void)runtime.sampleProcessStateOffDrain(host);
+        CHECK(!runtime.borrowTermForRender()->titleUTF8.empty());
+        CHECK(runtime.link().reads.read().mouseReportsActive);
+        const int groups = pipe->foregroundGroupCalls;
+        const int queries = pipe->groupPresenceCalls;
+        const int walks = pipe->gatherProcessesCalls;
+        const auto now = Ubiquitty::PAL::monotonicMicros();
+        CHECK(!runtime.foregroundHandoffProbeDueInMilliseconds(now));
+        CHECK(!runtime.foregroundHandoffProbeDueInMilliseconds(now + 10'000'000));
+        CHECK(runtime.walkFallbackMilliseconds() == 0);
+        CHECK(pipe->foregroundGroupCalls == groups);
+        CHECK(pipe->groupPresenceCalls == queries);
+        CHECK(pipe->gatherProcessesCalls == walks);
+    }
+}
+
+TEST(aGoneGroupProofDoesNotRetireAnotherOrUnstampedReports)
+{
+    for (const int owner : { 0, 333 }) {
+        TerminalRuntime runtime;
+        runtime.init(parameters80x24());
+        auto* pipe = attachPipe(runtime);
+        REQUIRE(pipe != nullptr);
+        CountingDrainHost host;
+        pipe->foregroundGroup = 222;
+        pipe->foregroundShell = false;
+        pipe->toRead = "\x1b]7;file://remote/work\x07\x1b]2;other title\x07";
+        (void)runtime.drainAvailable(host);
+        auto* terminal = runtime.borrowTermForRender();
+        terminal->titleOwnerProcessGroup = owner;
+        terminal->reportingProcessGroup = owner;
+        terminal->reportedHostProcessGroup = owner;
+        pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Gone;
+        const auto sample = runtime.sampleProcessStateOffDrain(host);
+        CHECK(!sample.titleChanged);
+        CHECK(!sample.currentDirectoryChanged);
+        CHECK(!terminal->titleUTF8.empty());
+        CHECK(!terminal->reportedDirectory.empty());
+        CHECK_STR_EQ(runtime.reportedHost(), "remote");
+    }
+}
+
+TEST(aLiveHolderOrSameNumberRevivalCompletesTheGoneGroupHandoff)
+{
+    for (const int nextGroup : { 100, 222 }) {
+        TerminalRuntime runtime;
+        runtime.init(parameters80x24());
+        auto* pipe = attachPipe(runtime);
+        REQUIRE(pipe != nullptr);
+        CountingDrainHost host;
+        pipe->foregroundGroup = 222;
+        pipe->foregroundShell = false;
+        pipe->scriptedForegroundName = "editor";
+        pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Present;
+        pipe->toRead = "\x1b]2;editor title\x07";
+        (void)runtime.drainAvailable(host);
+        pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Gone;
+        (void)runtime.sampleProcessStateOffDrain(host);
+        REQUIRE(runtime.foregroundHandoffProbeDueInMilliseconds(Ubiquitty::PAL::monotonicMicros()).has_value());
+        const int walks = pipe->gatherProcessesCalls;
+
+        pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Unknown;
+        (void)runtime.sampleProcessStateOffDrain(host);
+        CHECK(pipe->gatherProcessesCalls == walks);
+        CHECK(runtime.foregroundHandoffProbeDueInMilliseconds(Ubiquitty::PAL::monotonicMicros()).has_value());
+
+        pipe->foregroundGroup = nextGroup;
+        pipe->foregroundShell = nextGroup == 100;
+        pipe->scriptedForegroundName = nextGroup == 100 ? "shell" : "revived";
+        pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Present;
+        CHECK(runtime.sampleProcessStateOffDrain(host).processStateChanged);
+        CHECK(runtime.foregroundProcessGroup() == static_cast<std::uint32_t>(nextGroup));
+        CHECK(runtime.isSampledForegroundShell() == (nextGroup == 100));
+        CHECK_STR_EQ(runtime.foregroundProgram(0).name, pipe->scriptedForegroundName);
+        CHECK(!runtime.foregroundHandoffProbeDueInMilliseconds(Ubiquitty::PAL::monotonicMicros()));
+        CHECK(runtime.borrowTermForRender()->titleUTF8.empty());
+        CHECK(pipe->gatherProcessesCalls == walks + 1);
+    }
+}
+
+TEST(aSameNameGroupRevivalRefreshesTheCachedNoncheapProcessChainOnce)
+{
+    TerminalRuntime runtime;
+    runtime.init(parameters80x24());
+    auto* pipe = attachPipe(runtime);
+    REQUIRE(pipe != nullptr);
+    CountingDrainHost host;
+    pipe->isTreeTracked = true;
+    pipe->foregroundGroup = 222;
+    pipe->foregroundShell = false;
+    pipe->scriptedForegroundName = "editor";
+    pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Present;
+    Ubiquitty::PAL::Process::Record shell;
+    shell.processID = 100;
+    shell.processGroupID = 100;
+    shell.name = "shell";
+    shell.isSessionLeader = true;
+    Ubiquitty::PAL::Process::Record program;
+    program.processID = 222;
+    program.processGroupID = 222;
+    program.parentProcessID = 100;
+    program.name = "editor";
+    program.commandLine = "editor --before";
+    program.isForeground = true;
+    pipe->scriptedRecords = { shell, program };
+    (void)runtime.sampleProcessStateOffDrain(host);
+    REQUIRE(!runtime.processChain().empty());
+    REQUIRE(runtime.processRecords().size() == 2);
+    REQUIRE(pipe->gatherProcessesCalls == 1);
+    CHECK(runtime.walkFallbackMilliseconds() == 0);
+
+    pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Gone;
+    REQUIRE(pipe->notifyTreeEdge());
+    (void)runtime.sampleProcessStateOffDrain(host);
+    CHECK(!runtime.hasPendingProcessTreeEdge());
+    CHECK(pipe->gatherProcessesCalls == 1);
+    CHECK(runtime.foregroundHandoffProbeDueInMilliseconds(Ubiquitty::PAL::monotonicMicros()).has_value());
+    const int groupQueries = pipe->foregroundGroupCalls;
+    const int presenceQueries = pipe->groupPresenceCalls;
+    (void)runtime.sampleProcessStateOffDrain(host);
+    CHECK(pipe->foregroundGroupCalls == groupQueries + 1);
+    CHECK(pipe->groupPresenceCalls == presenceQueries + 1);
+    CHECK(pipe->gatherProcessesCalls == 1);
+    CHECK(!runtime.hasPendingProcessTreeEdge());
+
+    program.commandLine = "editor --after";
+    pipe->scriptedRecords = { shell, program };
+    pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Present;
+    (void)runtime.sampleProcessStateOffDrain(host);
+    CHECK(pipe->gatherProcessesCalls == 2);
+    CHECK_STR_EQ(runtime.processRecords()[1].commandLine, "editor --after");
+    CHECK(!runtime.foregroundHandoffProbeDueInMilliseconds(Ubiquitty::PAL::monotonicMicros()));
+    (void)runtime.sampleProcessStateOffDrain(host);
+    CHECK(pipe->gatherProcessesCalls == 2);
+}
+
+TEST(anUnknownPresenceDoesNotReuseAnOldGoneProofAgainstANewReport)
+{
+    TerminalRuntime runtime;
+    runtime.init(parameters80x24());
+    auto* pipe = attachPipe(runtime);
+    REQUIRE(pipe != nullptr);
+    CountingDrainHost host;
+    pipe->foregroundGroup = 222;
+    pipe->foregroundShell = false;
+    pipe->toRead = "\x1b]2;old title\x07";
+    (void)runtime.drainAvailable(host);
+    pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Gone;
+    CHECK(runtime.sampleProcessStateOffDrain(host).titleChanged);
+    pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Unknown;
+    pipe->toRead += "\x1b]2;new title\x07";
+    (void)runtime.drainAvailable(host);
+    const auto sample = runtime.sampleProcessStateOffDrain(host);
+    CHECK(!sample.titleChanged);
+    CHECK_STR_EQ(runtime.borrowTermForRender()->titleUTF8.copyToString(), "new title");
+    CHECK(runtime.foregroundHandoffProbeDueInMilliseconds(Ubiquitty::PAL::monotonicMicros()).has_value());
+}
+
+TEST(anEdgeDuringAGoneGroupQueryRemainsOwed)
+{
+    for (const auto observation : { ForegroundObservation::TitleAndDirectory, ForegroundObservation::ProcessState }) {
+        TerminalRuntime runtime;
+        runtime.init(parameters80x24());
+        auto* pipe = attachPipe(runtime);
+        REQUIRE(pipe != nullptr);
+        CountingDrainHost host;
+        runtime.setForegroundObservation(observation);
+        pipe->foregroundGroup = 222;
+        pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Gone;
+        pipe->edgesAfterGroupRead = 1;
+        (void)runtime.sampleProcessStateOffDrain(host);
+        CHECK(runtime.hasPendingProcessTreeEdge());
+        (void)runtime.sampleProcessStateOffDrain(host);
+        CHECK(!runtime.hasPendingProcessTreeEdge());
+    }
+}
+
+TEST(aFullProcessStateProbeKeepsANewerNativeEdgeOwed)
+{
+    TerminalRuntime runtime;
+    runtime.init(parameters80x24());
+    auto* pipe = attachPipe(runtime);
+    REQUIRE(pipe != nullptr);
+    CountingDrainHost host;
+    pipe->foregroundGroup = 100;
+    pipe->scriptedForegroundName = "editor";
+    pipe->foregroundShell = false;
+    pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Present;
+    (void)runtime.sampleProcessStateOffDrain(host);
+    pipe->foregroundGroup = 200;
+    pipe->edgesAfterGroupRead = 1;
+    (void)runtime.sampleProcessStateOffDrain(host);
+    CHECK(pipe->edgesAfterGroupRead == 0);
+    CHECK(runtime.hasPendingProcessTreeEdge());
+    (void)runtime.sampleProcessStateOffDrain(host);
+    CHECK(!runtime.hasPendingProcessTreeEdge());
+}
+
 TEST(aQuietShellReturnReleasesOnlyTheDepartedApplicationsPointerCapture)
 {
     for (const std::string_view mode : { "\x1b[?1000h", "\x1b[?7403h", "\x1b[?1000;7403h" }) {
@@ -6105,9 +6432,14 @@ TEST(programActivityPublishesTabStatusAndClearsAtPrompt)
 
 namespace Ubiquitty::Runtime {
 
-// Injects only the remembered ingest fact. No thread or endpoint is created;
-// the stream double counts a forbidden restart before refusing its duplicate.
+// Borrows the runtime owned by the retained session and injects its remembered
+// ingest fact. No thread or endpoint is created by this access seam.
 struct LocalAdoptionTestAccess {
+    static TerminalRuntime& runtime(TerminalSession& session)
+    {
+        return *session.m_runtime;
+    }
+
     static void notePriorIngest(TerminalSession& session)
     {
         session.m_localAdoption->shouldResumeIngest = true;
@@ -6264,6 +6596,52 @@ struct LocalAdoptionFixture {
 };
 
 } // namespace
+
+TEST(goneGroupDebtRespectsObservationAndPhysicalStreamOwnership)
+{
+    LocalAdoptionFixture fixture;
+    REQUIRE(fixture.pipe != nullptr);
+    auto& runtime = Ubiquitty::Runtime::LocalAdoptionTestAccess::runtime(*fixture.session);
+    auto* pipe = fixture.pipe;
+    CountingDrainHost host;
+    pipe->foregroundGroup = 222;
+    pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Gone;
+    (void)runtime.sampleProcessStateOffDrain(host);
+    const auto hasDebt = [&] { return runtime.foregroundHandoffProbeDueInMilliseconds(Ubiquitty::PAL::monotonicMicros()).has_value(); };
+    REQUIRE(hasDebt());
+    runtime.setForegroundObservation(ForegroundObservation::Unread);
+    const int groups = pipe->foregroundGroupCalls;
+    CHECK(!hasDebt());
+    (void)runtime.sampleProcessStateOffDrain(host);
+    CHECK(pipe->foregroundGroupCalls == groups);
+    runtime.setForegroundObservation(ForegroundObservation::ProcessState);
+    CHECK(hasDebt());
+    CHECK(fixture.begin() == 0);
+    REQUIRE(fixture.session->hasUnresolvedLocalAdoption());
+    CHECK(!hasDebt());
+    CHECK(!runtime.tryClose().has_value());
+    (void)runtime.sampleProcessStateOffDrain(host);
+    CHECK(pipe->foregroundGroupCalls == groups);
+    REQUIRE(fixture.session->resolveLocalAdoption(reinterpret_cast<std::uintptr_t>(&abortLocalAdoption)) == ShareOwnership::Local);
+    CHECK(hasDebt());
+    CHECK(!runtime.adoptStream(nullptr).has_value());
+    CHECK(hasDebt());
+    auto replacement = std::make_unique<Ubiquitty::PAL::StreamTestPipe>();
+    auto* next = replacement.get();
+    replacement->foregroundGroup = 100;
+    replacement->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Present;
+    REQUIRE(runtime.adoptStream(std::move(replacement)).has_value());
+    CHECK(!hasDebt());
+    CHECK(runtime.hasPendingProcessTreeEdge());
+    next->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Gone;
+    (void)runtime.sampleProcessStateOffDrain(host);
+    REQUIRE(hasDebt());
+    next->eofPending = true;
+    CHECK(runtime.drainAvailable(host).reachedEnd);
+    CHECK(!hasDebt());
+    runtime.close();
+    CHECK(!hasDebt());
+}
 
 TEST(anUnresolvedLocalAdoptionFreezesEveryLocalIOPathAndRefusesTeardown)
 {

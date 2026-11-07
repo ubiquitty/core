@@ -531,6 +531,10 @@ private:
                 if (timeoutMilliseconds < 0 || timeoutMilliseconds > untilWalk)
                     timeoutMilliseconds = untilWalk;
             }
+            if (const auto untilHandoff = m_runtime.foregroundHandoffProbeDueInMilliseconds(nowEdgeMicros)) {
+                if (timeoutMilliseconds < 0 || timeoutMilliseconds > static_cast<int>(*untilHandoff))
+                    timeoutMilliseconds = static_cast<int>(*untilHandoff);
+            }
             const std::uint32_t directoryInterval = hasPendingDirectorySample ? m_runtime.directorySampleMilliseconds() : 0;
             const std::uint32_t sinceDirectoryMillis = (nowEdgeMicros - lastDirectorySampleMicros) / 1000;
             if (directoryInterval != 0) {
@@ -610,7 +614,9 @@ private:
                     && elapsed >= Title::edgeFloorMilliseconds
                     && (stillMillis >= Title::edgeSettleMilliseconds
                         || pendingMillis >= Title::edgeMaximumDeferMilliseconds);
-                const bool isDue = isEdgeDue || (fallbackInterval != 0 && elapsed >= fallbackInterval);
+                const auto untilHandoff = m_runtime.foregroundHandoffProbeDueInMilliseconds(nowMicros);
+                const bool isDue = isEdgeDue || (fallbackInterval != 0 && elapsed >= fallbackInterval)
+                    || (untilHandoff && *untilHandoff == 0);
                 if (isDue) {
                     lastTitleWalkMicros = nowMicros;
                     lastDirectorySampleMicros = nowMicros;

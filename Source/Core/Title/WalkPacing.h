@@ -12,12 +12,14 @@
 // session-leader shell — come from walking the process table, and the question
 // is what makes that walk run.
 //
-// Where the kernel announces a fork, exec or exit, the edge is the whole
-// signal: every way a title can change either raises an edge,
-// arrives as output, or is a keystroke, and each of those already wakes the
-// ingest loop. A wall-clock walk beside them is redundant, and it is not free —
+// Where the kernel announces a fork, exec or exit, edges, output and keystrokes
+// wake the ingest loop. A wall-clock walk beside them is redundant, and it is not free —
 // walking the table four times a second costs most of what an idle terminal
 // spends.
+// A tty handoff can follow its exit edge without another event. Once a native
+// query proves that foreground group gone, Core owes cheap group/presence
+// queries until a holder resolves. That debt runs no process-table walk while
+// the group stays gone or unknown, and a live idle group owes none of it.
 //
 // Where the kernel announces nothing, that redundancy is the whole mechanism.
 // A platform with no process-event facility has to notice a change by looking,

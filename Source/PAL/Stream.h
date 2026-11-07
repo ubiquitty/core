@@ -48,6 +48,13 @@ enum class StreamStatus : int {
 
 // POSIX pid_t.
 using ProcessID = int;
+
+/// Whether any member of a process group can be proven to remain.
+enum class ProcessGroupPresence : std::uint8_t {
+    Unknown,
+    Present,
+    Gone,
+};
 // No live process in a slot that can hold one: a forkpty child once reaped, or a
 // master adopted without a child.
 inline constexpr ProcessID noProcess = -1;
@@ -133,11 +140,18 @@ public:
         return { .isShell = isShell, .name = foregroundName() };
     }
     // Cheap change-detector. Empty when no foreground group resolves; a held
-    // value is always a live group, so callers test only for presence. Optional
+    // value is the tty's group reading, whose members may already have exited. Optional
     // rather than a sentinel because every consumer stores the group as an
     // unsigned 0-means-none field, and an implicit cast of a negative sentinel
     // would survive as a large positive and read as a live group.
     virtual std::optional<ProcessID> foregroundProcessGroup() = 0;
+    /// Checks whether any member of the given process group remains.
+    ///
+    /// Failure to inspect the group is unknown; only positive absence may
+    /// retire its owned reports. A missing leader alone is not absence.
+    ///
+    /// - Returns: Present for a live member, Gone for proven absence, or Unknown.
+    virtual ProcessGroupPresence processGroupPresence(ProcessID) { return ProcessGroupPresence::Unknown; }
     // Fork/exec/exit edge notifier for the session's process tree (see
     // processTrackerSetChangeNotifier in PTYFacts.h for the threading and
     // context-ownership contract). Backends without a tracker release the

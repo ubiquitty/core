@@ -278,6 +278,13 @@ public:
     ProcessID shellGroup = 0;
     /// Whether the tree announces its edges.
     bool isTreeTracked = false;
+    ProcessGroupPresence programPresence = ProcessGroupPresence::Unknown;
+    /// A terminal handoff performed after the next foreground probe read its group.
+    std::atomic<ProcessID> groupAfterNextProbe { 0 };
+    std::atomic<ProcessID> groupReadBeforeHandoff { 0 };
+    std::atomic<unsigned> acknowledgedGroupReads { 0 };
+    std::atomic<ProcessID> groupBeforeProbeHandoff { 0 };
+    std::atomic<unsigned> probeHandoffs { 0 };
 
     /// Raises a fork, exec or exit edge, as the tracker's thread does.
     ///
@@ -300,9 +307,22 @@ public:
     std::optional<ProcessID> foregroundProcessGroup() override
     {
         const ProcessID group = foregroundGroup.load(std::memory_order_relaxed);
+        if (groupAfterNextProbe.load(std::memory_order_acquire) != 0) {
+            groupReadBeforeHandoff.store(group, std::memory_order_relaxed);
+            acknowledgedGroupReads.fetch_add(1, std::memory_order_release);
+            const ProcessID nextGroup = groupAfterNextProbe.exchange(0, std::memory_order_acq_rel);
+            if (nextGroup != 0) {
+                groupBeforeProbeHandoff.store(foregroundGroup.exchange(nextGroup, std::memory_order_acq_rel), std::memory_order_relaxed);
+                probeHandoffs.fetch_add(1, std::memory_order_release);
+            }
+        }
         if (group == 0)
             return std::nullopt;
         return group;
+    }
+    ProcessGroupPresence processGroupPresence(ProcessID group) override
+    {
+        return group == shellGroup ? ProcessGroupPresence::Present : programPresence;
     }
     std::string foregroundCurrentDirectory() override { return {}; }
     std::string ttyName() override { return {}; }
@@ -482,6 +502,15 @@ std::string titleOf(TerminalSession& session)
     return title;
 }
 
+int foregroundGroupOf(TerminalSession& session)
+{
+    session.lockForRead();
+    const auto* terminal = session.terminal();
+    const int group = terminal ? terminal->foregroundProcessGroup : 0;
+    session.unlockForRead();
+    return group;
+}
+
 } // namespace
 
 // A program that set a title exits, and its shell takes the terminal back a
@@ -532,6 +561,72 @@ TEST(testAnExitEdgeIsAnsweredOnceTheShellHasTheTerminalBack)
         }
         CHECK_MSG(isRetired, (std::string(level) + ": the exit edge was answered before the shell took the terminal back, and the title outlived its program").c_str());
         session.stopIngest();
+    }
+}
+
+TEST(testAQuietShellHandoffAfterTheExitProbeRetiresTheProgramTitle)
+{
+    constexpr Ubiquitty::PAL::ProcessID shellGroup = 100;
+    constexpr Ubiquitty::PAL::ProcessID programGroup = 200;
+    for (const ForegroundObservation observation : { ForegroundObservation::TitleAndDirectory, ForegroundObservation::ProcessState }) {
+        const char* const level = observation == ForegroundObservation::TitleAndDirectory ? "TitleAndDirectory" : "ProcessState";
+        int pipeDescriptors[2] = { -1, -1 };
+        REQUIRE(::pipe(pipeDescriptors) == 0);
+        Ubiquitty::PAL::UnixFileDescriptor readEnd(pipeDescriptors[0]);
+        Ubiquitty::PAL::UnixFileDescriptor writeEnd(pipeDescriptors[1]);
+        REQUIRE(::fcntl(readEnd.get(), F_SETFL, ::fcntl(readEnd.get(), F_GETFL) | O_NONBLOCK) == 0);
+        auto stream = std::make_unique<Ubiquitty::PAL::PipeStream>(std::move(readEnd));
+        stream->isTreeTracked = true;
+        stream->shellGroup = shellGroup;
+        stream->foregroundGroup = programGroup;
+        Ubiquitty::PAL::PipeStream& transport = *stream;
+
+        SessionHandle handle;
+        TerminalSession& session = *handle.session;
+        session.start(24, 80);
+        REQUIRE(session.adoptStream(std::move(stream)).has_value());
+        session.setForegroundObservation(observation);
+        constexpr std::string_view setTitle = "\x1b]2;program title\x07";
+        REQUIRE(::write(writeEnd.get(), setTitle.data(), setTitle.size()) == static_cast<ssize_t>(setTitle.size()));
+        const DrainOutcome initialDrain = session.drain();
+        REQUIRE(initialDrain.bytesDrained == static_cast<int>(setTitle.size()));
+        REQUIRE(titleOf(session) == "program title");
+        // Finish the initial sample before the loop starts; no bytes or
+        // second tree edge follow the one exit below.
+        (void)session.sampleProcessStateOffDrain();
+        // Direct drains report through their returned outcome; only ingest
+        // deliveries increment this counter. Establish its baseline anyway.
+        REQUIRE(session.takeDrainedBytes() == 0);
+        transport.programPresence = Ubiquitty::PAL::ProcessGroupPresence::Gone;
+        transport.groupAfterNextProbe.store(shellGroup, std::memory_order_release);
+        REQUIRE(session.startIngest());
+        const bool didRaiseExit = transport.raiseTreeEdge();
+        bool didRetire = false;
+        bool didConverge = false;
+        for (int waited = 0; waited < 2000 && !(didRetire && didConverge); ++waited) {
+            didRetire = titleOf(session).empty();
+            didConverge = foregroundGroupOf(session) == shellGroup;
+            ::usleep(1000);
+        }
+        session.stopIngest();
+
+        CHECK_MSG(didRaiseExit, level);
+        CHECK_MSG(transport.acknowledgedGroupReads.load(std::memory_order_acquire) > 0, level);
+        CHECK_MSG(transport.groupReadBeforeHandoff.load(std::memory_order_relaxed) == programGroup, level);
+        CHECK_MSG(transport.probeHandoffs.load(std::memory_order_acquire) == 1, level);
+        CHECK_MSG(transport.groupBeforeProbeHandoff.load(std::memory_order_relaxed) == programGroup, level);
+        CHECK_MSG(transport.foregroundGroup.load(std::memory_order_relaxed) == shellGroup, level);
+        const std::uint64_t drainedBytes = session.takeDrainedBytes();
+        CHECK_MSG(drainedBytes == 0, "the handoff produced no output to trigger another foreground sample");
+        const std::string failure = std::string(level) + ": title survived one exit edge; group reads="
+            + std::to_string(transport.acknowledgedGroupReads.load(std::memory_order_relaxed))
+            + ", read group=" + std::to_string(transport.groupReadBeforeHandoff.load(std::memory_order_relaxed))
+            + ", previous group=" + std::to_string(transport.groupBeforeProbeHandoff.load(std::memory_order_relaxed))
+            + ", current group=" + std::to_string(transport.foregroundGroup.load(std::memory_order_relaxed))
+            + ", handoffs=" + std::to_string(transport.probeHandoffs.load(std::memory_order_relaxed))
+            + ", drained bytes=" + std::to_string(drainedBytes);
+        CHECK_MSG(didRetire, failure.c_str());
+        CHECK_MSG(didConverge, "the debt-only probe discovers the actual shell without another edge or output");
     }
 }
 
