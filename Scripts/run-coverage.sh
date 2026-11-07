@@ -34,14 +34,27 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
+sourceArguments=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --source-root|--core-source-root|--kit-source-root)
+            [ "$#" -ge 2 ] || { echo "run-coverage: $1 requires a source directory" >&2; exit 2; }
+            sourceArguments+=("$1" "$2"); shift 2 ;;
+        *) break ;;
+    esac
+done
+ROOT="" CORE_ROOT="" KIT_ROOT=""
+sourceContext="$(python3 "$SCRIPTS/ubq_roots.py" shell-context ${sourceArguments[@]+"${sourceArguments[@]}"})"
+# The shared resolver emits fixed names and shell-quoted values only.
+eval "$sourceContext"
 
 # How many compilers this machine can run at once; see Scripts/build-jobs.sh.
 # shellcheck source=Scripts/build-jobs.sh
-. "$ROOT/Scripts/build-jobs.sh"
+. "$CORE_ROOT/Scripts/build-jobs.sh"
 # Build output lives outside the checkout; see Scripts/build-root.sh.
 # shellcheck source=Scripts/build-root.sh
-. "$ROOT/Scripts/build-root.sh"
+. "$CORE_ROOT/Scripts/build-root.sh"
 OUT="$UBQ_BUILD_ROOT/BuildHostTests/coverage"
 BUILD="$OUT/build"
 JOBS="${JOBS:-$(ubq_build_jobs)}"
@@ -77,9 +90,12 @@ LLVMCOV="$(xcrun --find llvm-cov 2>/dev/null || echo llvm-cov)"
 # -DNDEBUG. That deletes the assertions and moves llvm-cov's region attribution,
 # which the per-file floors in check-coverage-floor.sh and the covering-test
 # index are both calibrated against.
+sourceOptions=("-DUBIQUITTY_CORE_SOURCE_DIR=$CORE_ROOT")
+[ -z "$KIT_ROOT" ] || sourceOptions+=("-DUBIQUITTY_KIT_SOURCE_DIR=$KIT_ROOT")
 cmake -S "$ROOT" -B "$BUILD" -G Ninja \
     -DUBIQUITTY_FRONTEND=Core -DCMAKE_BUILD_TYPE=Debug \
     -DUBIQUITTY_BUILD_TESTS=ON -DUBIQUITTY_COVERAGE=ON -DUBIQUITTY_TEST_PCH=OFF \
+    "${sourceOptions[@]}" \
     -DUBIQUITTY_TEST_TIMEOUT=300 \
     >/dev/null
 # The timeout is the suite's, multiplied for instrumentation: counters on every
@@ -117,7 +133,7 @@ export LLVM_PROFILE_FILE="$RAW/unattributed-%p.profraw"
 # A failing test still contributes the lines it reached, so the report is
 # produced either way and the status is reported at the end.
 TESTS_OK=0
-"$ROOT/Scripts/run-ctest.sh" "$BUILD" \
+"$CORE_ROOT/Scripts/run-ctest.sh" "$BUILD" \
     -j"$CTEST_JOBS" -E 'ubq_build|shell_remainder' --output-on-failure || TESTS_OK=$?
 
 raw_files=( "$RAW"/*.profraw )
@@ -243,18 +259,18 @@ fi
 # The per-test profiles are only readable while they are still on disk, and the
 # next coverage run deletes them. Turning them into the index here means the
 # index is never older than the lcov beside it.
-"$ROOT/Scripts/build-coverage-index.sh" || \
+"$CORE_ROOT/Scripts/build-coverage-index.sh" || \
     echo "run-coverage: the covering-test index could not be built (coverage itself is fine)" >&2
 
 # How far the committed copy had fallen behind, said by the only run that can
 # know. This rebuilds the tracked file in place, so the two copies exist
 # together for exactly this long; afterwards a reader can see that the index is
 # old but not what adopting it would have changed.
-if ! git -C "$ROOT" diff --quiet -- Tests/coverage/covering-tests.tsv 2>/dev/null; then
+if ! git -C "$CORE_ROOT" diff --quiet -- Tests/coverage/covering-tests.tsv 2>/dev/null; then
     echo "index : rebuilt, and the committed copy differs"
-    echo "  committed: $(git -C "$ROOT" show HEAD:Tests/coverage/covering-tests.tsv 2>/dev/null | head -1)"
-    echo "  rebuilt:   $(head -1 "$ROOT/Tests/coverage/covering-tests.tsv")"
-    git -C "$ROOT" diff --stat -- Tests/coverage/covering-tests.tsv | sed 's/^/  /'
+    echo "  committed: $(git -C "$CORE_ROOT" show HEAD:Tests/coverage/covering-tests.tsv 2>/dev/null | head -1)"
+    echo "  rebuilt:   $(head -1 "$CORE_ROOT/Tests/coverage/covering-tests.tsv")"
+    git -C "$CORE_ROOT" diff --stat -- Tests/coverage/covering-tests.tsv | sed 's/^/  /'
 fi
 
 tail -3 "$OUT/summary.txt"
@@ -367,13 +383,13 @@ UNCOMPILED=$(git -C "$ROOT" ls-files \
     'Source/Platform/macOS/*.mm' 'Source/Platform/macOS/*.cpp' \
     'Source/Platform/Linux/*.cpp' 2>/dev/null | grep -c . || true)
 if [ "${UNCOMPILED:-0}" -gt 0 ]; then
-    echo "  subject: the Core build. ${UNCOMPILED} frontend implementation file(s) under"
-    echo "  Source/Platform/{macOS,Linux} are not compiled here and are absent from the"
-    echo "  denominator — this number says nothing about them."
+    echo "  subject: the configured Core and dependent test targets. ${UNCOMPILED} frontend"
+    echo "  implementation file(s) exist under Source/Platform/{macOS,Linux}; files not"
+    echo "  linked by those targets remain outside this report's denominator."
 fi
 echo "report: $OUT/summary.txt"
 echo "lcov  : $OUT/coverage.lcov"
-[ -f "$ROOT/Tests/coverage/covering-tests.tsv" ] && echo "index : Tests/coverage/covering-tests.tsv"
+[ -f "$CORE_ROOT/Tests/coverage/covering-tests.tsv" ] && echo "index : $CORE_ROOT/Tests/coverage/covering-tests.tsv"
 [ "${HTML:-0}" = "1" ] && echo "html  : $OUT/html/index.html"
 
 if [ -n "$FLOOR" ]; then
@@ -387,7 +403,9 @@ fi
 # The per-file floors Scripts/check-coverage-floor.sh holds, against the summary
 # written above.
 if [ "$FILE_FLOORS" = "1" ]; then
-    "$ROOT/Scripts/check-coverage-floor.sh" || exit 1
+    floorArguments=(--source-root "$ROOT" --core-source-root "$CORE_ROOT")
+    [ -z "$KIT_ROOT" ] || floorArguments+=(--kit-source-root "$KIT_ROOT")
+    "$CORE_ROOT/Scripts/check-coverage-floor.sh" "${floorArguments[@]}" || exit 1
 fi
 
 exit "$TESTS_OK"

@@ -16,10 +16,13 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
+ROOT="" CORE_ROOT="" KIT_ROOT=""
+sourceContext="$(python3 "$SCRIPTS/ubq_roots.py" shell-context "$@")"
+eval "$sourceContext"
 # Build output lives outside the checkout; see Scripts/build-root.sh.
 # shellcheck source=Scripts/build-root.sh
-. "$ROOT/Scripts/build-root.sh"
+. "$CORE_ROOT/Scripts/build-root.sh"
 SUMMARY="$UBQ_BUILD_ROOT/BuildHostTests/coverage/summary.txt"
 
 if [ ! -f "$SUMMARY" ]; then
@@ -33,7 +36,14 @@ fi
 # coverage of a tree nobody has. A moved file is caught downstream because its
 # path stops matching; a file edited in place is not caught at all — the numbers
 # are someone else's, and they pass.
-NEWER=$(find "$ROOT/Source" -name '*.cpp' -newer "$SUMMARY" -print -quit 2>/dev/null || true)
+NEWER=""
+sourceRoots=("$ROOT" "$CORE_ROOT")
+[ -z "$KIT_ROOT" ] || sourceRoots+=("$KIT_ROOT")
+for sourceRoot in "${sourceRoots[@]}"; do
+    [ -d "$sourceRoot/Source" ] || continue
+    NEWER=$(find "$sourceRoot/Source" -name '*.cpp' -newer "$SUMMARY" -print -quit 2>/dev/null || true)
+    [ -z "$NEWER" ] || break
+done
 if [ -n "$NEWER" ]; then
     echo "check-coverage-floor: $SUMMARY is older than the sources it scores." >&2
     echo "  newer: ${NEWER#"$ROOT/"}" >&2

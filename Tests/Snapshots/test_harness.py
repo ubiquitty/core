@@ -14,6 +14,13 @@ from unittest.mock import patch
 
 import run
 import gen_matrix
+import test_sources
+
+
+def load_tests(loader, tests, pattern):
+    """Keep split composition regressions in the registered harness stanza."""
+    tests.addTests(loader.loadTestsFromModule(test_sources))
+    return tests
 
 
 class CatalogTests(unittest.TestCase):

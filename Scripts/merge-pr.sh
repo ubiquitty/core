@@ -15,7 +15,14 @@
 # file rebases cleanly and still removes main's lines, which the check catches.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
+# A consumer invokes this shared helper from its own checkout. The helper and
+# stale-landing implementation stay in Core; the repository being merged is
+# the caller's. Outside a checkout the standalone Core repository is the subject.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR \
+    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_QUARANTINE_PATH
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$ROOT" ] || ROOT="$(cd "$SCRIPTS/.." && pwd)"
 cd "$ROOT"
 
 if [ "$#" -ne 1 ] || ! [[ "$1" =~ ^[0-9]+$ ]]; then
@@ -49,7 +56,7 @@ if [ "$base" != "$tip" ]; then
 fi
 
 status=0
-report="$(python3 "$ROOT/Scripts/check-stale-landing.py" --base "$tip" --tip "$head" 2>&1)" || status=$?
+report="$(python3 "$SCRIPTS/check-stale-landing.py" --base "$tip" --tip "$head" 2>&1)" || status=$?
 printf '%s\n' "$report"
 if [ "$status" -eq 0 ]; then
     state=success

@@ -37,19 +37,22 @@ Usage: python3 Scripts/ci_batteries.py run|report|list preflight|linux|apple
 """
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import time
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gate_framework import Reporter
+from ubq_roots import SourceRoots, source_roots
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -62,6 +65,8 @@ class Stage:
     command: str
     condition: str = "always"
     toolchain: str = "native"
+    repositories: tuple[str, ...] = ("core", "kit", "app")
+    working_directory: Optional[Path] = None
 
 
 STYLE_SETUP = r'''
@@ -163,7 +168,7 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
     if platform == "linux":
         return (
             Stage("setup", "Linux tools and hooks", LINUX_SETUP),
-            Stage("frontend-tools", "GTK/Vulkan toolchain", LINUX_FRONTEND_TOOLS),
+            Stage("frontend-tools", "GTK/Vulkan toolchain", LINUX_FRONTEND_TOOLS, repositories=("app",)),
             Stage("quic", "QUIC dependencies", './Scripts/ensure-quic-deps.sh "$UBIQUITTY_QUIC_PREFIX"', "code"),
             Stage("host-tests", "GCC host tests and QUIC integration", "SNAPSHOT=skip ./Scripts/run-tests.sh", "code", "gcc"),
             Stage("fuzz", "Required bounded libFuzzer harnesses", "FUZZ_REQUIRED=1 ./Scripts/run-tests.sh --fuzz-only", "code", "clang"),
@@ -183,20 +188,20 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
                   './Scripts/build-agent.sh\nUBQ_REQUIRED_TOOLS="${UBQ_REQUIRED_TOOLS:-} ubiquitty-host ubq" ./Scripts/run-tests.sh agent_smoke agent_auth_smoke agent_mcp_smoke agent_completions_smoke ubq_smoke ubq_smoke_cleanup', "code"),
             Stage("host-musl", "Linux host static-musl-x86_64", "./Scripts/build-host-linux.sh x86_64", "code"),
             Stage("sanitizers", "Clang ASan and UBSan suite", "./Scripts/run-sanitized-tests.sh", "code", "clang"),
-            Stage("linux-build", "Linux frontend Release", "./Scripts/build-linux-gtk.sh Release"),
-            Stage("linux-smokes", "Linux headless smoke battery", "xvfb-run -a ./Scripts/run-linux-smokes.sh", "xvfb"),
-            Stage("linux-snapshots", "Linux-native snapshots", "xvfb-run -a python3 Tests/Snapshots/run.py --backend linux --quiet", "xvfb"),
-            Stage("linux-determinism", "Linux-native snapshot determinism", "xvfb-run -a python3 Tests/Snapshots/run.py --backend linux --twice linux_native_text", "xvfb"),
+            Stage("linux-build", "Linux frontend Release", "./Scripts/build-linux-gtk.sh Release", repositories=("app",)),
+            Stage("linux-smokes", "Linux headless smoke battery", "xvfb-run -a ./Scripts/run-linux-smokes.sh", "xvfb", repositories=("app",)),
+            Stage("linux-snapshots", "Linux-native snapshots", "xvfb-run -a python3 Tests/Snapshots/run.py --backend linux --quiet", "xvfb", repositories=("app",)),
+            Stage("linux-determinism", "Linux-native snapshot determinism", "xvfb-run -a python3 Tests/Snapshots/run.py --backend linux --twice linux_native_text", "xvfb", repositories=("app",)),
             Stage("wasm-tools", "Emscripten 6.0.9", WASM_SETUP, toolchain="wasm"),
             Stage("wasm-smoke", "WASM Core smoke", 'source "$EMSDK_ENV"\n./Scripts/wasm-smoke.sh', toolchain="wasm"),
-            Stage("web-build", "Web frontend build", 'source "$EMSDK_ENV"\n./Scripts/build-web.sh', toolchain="wasm"),
-            Stage("web-snapshots", "Web snapshot tier", 'source "$EMSDK_ENV"\npython3 Tests/Snapshots/run.py --backend web --quiet', toolchain="wasm"),
+            Stage("web-build", "Web frontend build", 'source "$EMSDK_ENV"\n./Scripts/build-web.sh', toolchain="wasm", repositories=("app",)),
+            Stage("web-snapshots", "Web snapshot tier", 'source "$EMSDK_ENV"\npython3 Tests/Snapshots/run.py --backend web --quiet', toolchain="wasm", repositories=("app",)),
         )
     if platform == "apple":
         return (
             Stage("setup", "Apple tools and hooks", "command -v ninja >/dev/null 2>&1 || brew install ninja\ncommand -v go >/dev/null 2>&1 || brew install go\ncommand -v tmux >/dev/null 2>&1 || brew install tmux\ncommand -v chafa >/dev/null 2>&1 || brew install chafa\n./Scripts/install-hooks.sh"),
             Stage("swift-format", "Swift formatting", "./Scripts/format-code.sh --check --swift-only"),
-            Stage("xcode", "Xcode workspace generation", "./Scripts/generate-xcode-workspace.sh", "cmake"),
+            Stage("xcode", "Xcode workspace generation", "./Scripts/generate-xcode-workspace.sh", "cmake", repositories=("app",)),
             Stage("quic", "QUIC dependencies", './Scripts/ensure-quic-deps.sh "$UBIQUITTY_QUIC_PREFIX"', "code"),
             Stage("tidy", "Clang tidy", "./Scripts/check-tidy.sh --since origin/main"),
             # The build the README gives a contributor: the helpers bundled,
@@ -205,31 +210,31 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
             # Docker for the static Linux hosts, which are built separately
             # and staged for the shipped bundle.
             Stage("macos-build", "macOS app",
-                  "env -u UBIQUITTY_QUIC_PREFIX -u UBIQUITTY_SIGN_IDENTITY ./Scripts/build-macos.sh --no-linux-hosts"),
+                  "env -u UBIQUITTY_QUIC_PREFIX -u UBIQUITTY_SIGN_IDENTITY ./Scripts/build-macos.sh --no-linux-hosts", repositories=("app",)),
             # After the app, because the gate runs the built binary's own
             # dispatch modes. They drive a real shell through the ingest
             # thread, the drain signal's hop back to main, and the sync-frame
             # boundary — the pipeline legs a direct-feed test never crosses.
-            Stage("macos-smokes", "macOS headless smokes", "python3 Scripts/check-macos-smokes.py"),
+            Stage("macos-smokes", "macOS headless smokes", "python3 Scripts/check-macos-smokes.py", repositories=("app",)),
             # A hosted runner is a virtual Mac whose window server, display
             # timing and GPU differ from the machines the scenarios assert
             # about; the maintainers' Macs run them for every batch.
-            Stage("ui-scenarios", "macOS UI scenarios", "python3 Scripts/check-ui-scenarios.py", "ui"),
+            Stage("ui-scenarios", "macOS UI scenarios", "python3 Scripts/check-ui-scenarios.py", "ui", repositories=("app",)),
             Stage("pgo", "Portable PGO profile",
                   "python3 ./Scripts/check-profile-orphans.py --profile Support/pgo/portable-core.profdata\n"
                   "UBIQUITTY_PGO=REQUIRE python3 ./Scripts/check-pgo-applies.py --profile Support/pgo/portable-core.profdata"),
-            Stage("core-frames", "Core builder frames", "./Scripts/check-core-builder-frames.sh"),
+            Stage("core-frames", "Core builder frames", "./Scripts/check-core-builder-frames.sh", repositories=("app",)),
             # Swift renderer drivers link the stamped portable Core archive.
             Stage("portable-build", "Portable snapshot build", "./Scripts/build-core-snapshot.sh"),
-            Stage("swift-renderer", "Swift renderer drivers", "./Scripts/check-swift-renderer.sh"),
-            Stage("forks", "Built symbol forks", './Scripts/check-forks.sh "$UBQ_BUILD_ROOT/macos"'),
+            Stage("swift-renderer", "Swift renderer drivers", "./Scripts/check-swift-renderer.sh", repositories=("kit", "app")),
+            Stage("forks", "Built symbol forks", './Scripts/check-forks.sh "$UBQ_BUILD_ROOT/macos"', repositories=("app",)),
             Stage("snapshots", "Portable and Apple snapshot regressions", "./Scripts/run-tests.sh snapshots"),
             Stage("host-tests", "Apple test suite", "SNAPSHOT=skip ./Scripts/run-tests.sh", "code"),
-            Stage("ios-build", "iOS simulator app and UI bundle", "./Scripts/build-ios.sh --sdk iphonesimulator --ui-tests", "code"),
-            Stage("ios-smokes", "iOS smokes", "./Scripts/run-ios-smokes.sh", "code"),
-            Stage("ios-sync", "iOS Sync conformance", "./Scripts/run-ios-sync-conformance.sh", "code"),
-            Stage("ios-protected-file", "iOS protected file", "./Scripts/run-ios-protected-file-tests.sh", "code"),
-            Stage("ios-ui", "iOS UI tests", "./Scripts/run-ios-ui-tests.sh", "code"),
+            Stage("ios-build", "iOS simulator app and UI bundle", "./Scripts/build-ios.sh --sdk iphonesimulator --ui-tests", "code", repositories=("app",)),
+            Stage("ios-smokes", "iOS smokes", "./Scripts/run-ios-smokes.sh", "code", repositories=("app",)),
+            Stage("ios-sync", "iOS Sync conformance", "./Scripts/run-ios-sync-conformance.sh", "code", repositories=("app",)),
+            Stage("ios-protected-file", "iOS protected file", "./Scripts/run-ios-protected-file-tests.sh", "code", repositories=("kit", "app")),
+            Stage("ios-ui", "iOS UI tests", "./Scripts/run-ios-ui-tests.sh", "code", repositories=("app",)),
         )
     raise ValueError(f"unknown battery: {platform}")
 
@@ -261,8 +266,8 @@ def condition_reason(stage, environment, which=shutil.which):
     return ""
 
 
-def platform_environment(platform, environment):
-    result = dict(environment)
+def platform_environment(platform, environment, context=None):
+    result = context.environment(environment) if context else dict(environment)
     result.setdefault("UBQ_CI_CODE", "true")
     result.setdefault("UBQ_CI_CMAKE", "true")
     result.setdefault("UBQ_REPORT_MODE", "quiet" if result.get("GITHUB_ACTIONS") else "verbose")
@@ -271,7 +276,8 @@ def platform_environment(platform, environment):
     result["UBQ_EVENT_LOG"] = str(Path(result["UBQ_RESULT_DIR"]) / "events.jsonl")
     result["UBQ_BATTERY"] = platform
     if platform == "preflight":
-        pin = (ROOT / "Scripts/clang-format-pin").read_text(encoding="utf-8").strip()
+        owner = context.core if context else ROOT
+        pin = (owner / "Scripts/clang-format-pin").read_text(encoding="utf-8").strip()
         result["PATH"] = str(Path(result["RUNNER_TOOL_CACHE"]) / f"clang-format-{pin}/bin") + os.pathsep + result.get("PATH", "")
         return result
     result["UBQ_TEST_FAIL_FAST"] = "1"
@@ -291,7 +297,9 @@ def platform_environment(platform, environment):
         result["EMSDK_ENV"] = str(installed if installed.is_file() else Path(result["RUNNER_TOOL_CACHE"]) / "emsdk-6.0.9/emsdk_env.sh")
     else:
         result["UBQ_BUILD_ROOT"] = subprocess.check_output(
-            [sys.executable, "Scripts/build_root.py"], cwd=ROOT, env=result, text=True).strip()
+            [sys.executable, str(context.core / "Scripts/build_root.py"), str(context.subject)]
+            if context else [sys.executable, "Scripts/build_root.py"],
+            cwd=context.subject if context else ROOT, env=result, text=True).strip()
         result["UBIQUITTY_SIGN_IDENTITY"] = "ad-hoc"
     quic_root = Path(result["RUNNER_WORKSPACE"]) / "build-gcc" if platform == "linux" else Path(result["UBQ_BUILD_ROOT"])
     result["UBIQUITTY_QUIC_PREFIX"] = str(quic_root / "quic-deps")
@@ -452,7 +460,80 @@ def validate_events(platform, manifest, path):
 
 def execute_stage(stage, environment):
     return subprocess.run(["bash", "-e", "-o", "pipefail", "-c", stage.command],
-                          cwd=ROOT, env=environment, check=False).returncode
+                          cwd=stage.working_directory or ROOT, env=environment, check=False).returncode
+
+
+SOURCE_PATH = re.compile(r"(?<![A-Za-z0-9_/-])(?:\./)?(?:Scripts|Tests|Support)/[A-Za-z0-9_./-]+")
+
+
+def route_stage(stage, context: SourceRoots):
+    """Resolves the manifest's required entry points without changing its verdict policy."""
+    command = stage.command
+    core_driver = None
+    if stage.key == "snapshots":
+        command = "python3 Tests/Snapshots/run.py --backend portable --quiet"
+        if "app" in context.repositories:
+            command += "\npython3 Tests/Snapshots/run.py --backend macos --quiet"
+            command += "\npython3 Tests/Snapshots/run.py --backend swift --quiet"
+            command += '''
+if [ -f "$UBQ_BUILD_ROOT/web-dist/ubiquitty.wasm" ]; then
+    webSnapshotStatus=0
+    python3 Tests/Snapshots/run.py --backend web --quiet || webSnapshotStatus=$?
+    if [ "$webSnapshotStatus" = 2 ]; then
+        echo "snapshots: web tier unavailable; rebuild the Web module (SNAPSHOT=demand requires it)" >&2
+        [ "${SNAPSHOT:-}" != demand ] || exit 1
+    elif [ "$webSnapshotStatus" != 0 ]; then
+        exit "$webSnapshotStatus"
+    fi
+fi'''
+    if stage.key == "host-tests" and context.subject != context.core:
+        core_driver = context.core / "Scripts/run-tests.sh"
+        command = (
+            'SNAPSHOT=skip UBQ_TESTS_ROOT="$UBQ_CORE_ROOT" UBQ_KIT_ROOT= UBIQUITTY_KIT_SOURCE_DIR= '
+            'UBQ_BUILD_ROOT="$UBQ_BUILD_ROOT/core" ' + shlex.quote(str(core_driver)) + '\n'
+            'SNAPSHOT=skip UBQ_BUILD_ROOT="$UBQ_BUILD_ROOT/subject" ./Scripts/run-tests.sh'
+        )
+    if stage.key in ("fuzz", "agent-smokes") and context.subject != context.core:
+        core_driver = context.core / "Scripts/run-tests.sh"
+        command = command.replace("./Scripts/run-tests.sh", shlex.quote(str(core_driver)))
+        command = 'export UBQ_TESTS_ROOT="$UBQ_CORE_ROOT"\nunset UBQ_KIT_ROOT UBIQUITTY_KIT_SOURCE_DIR\n' + command
+
+    def required(match):
+        relative = match.group().removeprefix("./")
+        path = context.resolve_file(relative)
+        result = shlex.quote(str(path))
+        if relative == "Tests/Snapshots/run.py":
+            result += " --source-root " + shlex.quote(str(context.subject))
+            result += " --core-source-root " + shlex.quote(str(context.core))
+            if context.kit is not None:
+                result += " --kit-source-root " + shlex.quote(str(context.kit))
+        return result
+
+    try:
+        if core_driver is not None:
+            if not core_driver.is_file():
+                raise FileNotFoundError(f"required Core test driver is absent: {core_driver}")
+            core_driver.resolve().relative_to(context.core)
+        if not set(stage.repositories).intersection(context.repositories):
+            raise ValueError(f"stage {stage.key} requires {'/'.join(stage.repositories)} sources, not {'/'.join(context.repositories)}")
+        command = SOURCE_PATH.sub(required, command)
+    except (ValueError, FileNotFoundError) as error:
+        # A missing selected capability is a failed stage with a diagnostic,
+        # never a successful skip or an omitted terminal record.
+        command = "printf '%s\\n' " + shlex.quote(str(error)) + " >&2; exit 2"
+        return replace(stage, command=command, condition="always", toolchain="native",
+                       working_directory=context.subject)
+    return replace(stage, command=command, working_directory=context.subject)
+
+
+def source_stages(platform, context, only=()):
+    """Selects the subject's declared capabilities; explicit unknown capabilities refuse."""
+    manifest = stages(platform)
+    if only:
+        manifest = select_stages(manifest, only)
+    else:
+        manifest = tuple(stage for stage in manifest if set(stage.repositories).intersection(context.repositories))
+    return tuple(route_stage(stage, context) for stage in manifest)
 
 
 def result_root(environment):
@@ -522,7 +603,7 @@ def run_battery(platform, manifest, environment, path, execute=None):
             try:
                 result = stage_reporter.run_process(
                     ["bash", "-e", "-o", "pipefail", "-c", stage.command],
-                    label=stage.label, cwd=ROOT, environment=stage_environment_values,
+                    label=stage.label, cwd=stage.working_directory or ROOT, environment=stage_environment_values,
                     log_path=str(log_path), command=stage.command)
             except SystemExit as interruption:
                 status = interruption.code if isinstance(interruption.code, int) else 1
@@ -613,25 +694,31 @@ def main():
     parser.add_argument("platform", choices=("preflight", "linux", "apple"))
     parser.add_argument("--only", action="append", default=[], metavar="STAGE",
                         help="with run: execute only this stage (repeatable)")
+    parser.add_argument("--source-root", help="the App, Kit, Core, or combined source tree being checked")
+    parser.add_argument("--core-source-root", help="an explicit Core dependency source tree")
+    parser.add_argument("--kit-source-root", help="an explicit Kit dependency source tree")
     arguments = parser.parse_args()
-    manifest = stages(arguments.platform)
+    try:
+        context = source_roots(arguments.source_root, arguments.core_source_root, arguments.kit_source_root)
+    except ValueError as error:
+        parser.error(str(error))
     if arguments.only:
         if arguments.operation != "run":
             parser.error("--only applies to run")
-        try:
-            manifest = select_stages(manifest, arguments.only)
-        except ValueError as error:
-            parser.error(str(error))
+    try:
+        manifest = source_stages(arguments.platform, context, arguments.only)
+    except ValueError as error:
+        parser.error(str(error))
     if arguments.operation == "list":
         for stage in manifest:
             print(f"{stage.key}: {stage.label} [{stage.condition}; {stage.toolchain}]")
         return 0
-    environment = dict(os.environ)
+    environment = context.environment(os.environ)
     run_key = environment.get("GITHUB_RUN_ID", "local") + "-" + environment.get("GITHUB_RUN_ATTEMPT", "1")
     path = result_directory(arguments.platform, environment) / f"battery-{run_key}.json"
     if arguments.operation == "report":
         return report(arguments.platform, manifest, path, environment)
-    environment = platform_environment(arguments.platform, environment)
+    environment = platform_environment(arguments.platform, environment, context)
     try:
         Path(environment["UBQ_EVENT_LOG"]).unlink()
     except FileNotFoundError:
