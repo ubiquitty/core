@@ -415,8 +415,16 @@ function(_ubiquitty_shell_driver_environment _variable)
     set(_environment
         "UBQ_TESTS_ROOT=${CMAKE_SOURCE_DIR}"
         "UBQ_CORE_ROOT=${UBIQUITTY_CORE_SOURCE_DIR}")
+    set(_repository "")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/Scripts/repository.txt")
+        file(STRINGS "${CMAKE_SOURCE_DIR}/Scripts/repository.txt" _repository REGEX "^(core|kit|app)$")
+    endif()
     if(DEFINED UBIQUITTY_KIT_SOURCE_DIR)
         list(APPEND _environment "UBQ_KIT_ROOT=${UBIQUITTY_KIT_SOURCE_DIR}")
+    elseif(_repository STREQUAL "core")
+        # Core has no Kit dependency. Clear both inherited forms rather than
+        # advertising this checkout as a Kit source root.
+        list(APPEND _environment "UBQ_KIT_ROOT=" "UBIQUITTY_KIT_SOURCE_DIR=")
     else()
         list(APPEND _environment "UBQ_KIT_ROOT=${CMAKE_SOURCE_DIR}")
     endif()

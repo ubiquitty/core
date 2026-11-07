@@ -402,7 +402,7 @@ def main(argv):
             roots = source_roots(arguments.source_root, arguments.core_source_root, arguments.kit_source_root)
         except ValueError as error:
             parser.error(str(error))
-        print("unset " + " ".join(REPOSITORY_VARIABLES))
+        print("unset " + " ".join((*REPOSITORY_VARIABLES, "UBQ_KIT_ROOT", "UBIQUITTY_KIT_SOURCE_DIR")))
         for key, value in (("ROOT", str(roots.subject)), ("CORE_ROOT", str(roots.core)),
                            ("KIT_ROOT", str(roots.kit) if roots.kit else "")):
             print(f"{key}={shlex.quote(value)}")
