@@ -1147,6 +1147,52 @@ class StanzaDeclineTests(unittest.TestCase):
         self.assertIn("shell_core_only", tests)
         self.assertNotIn("shell_app_only", tests)
 
+    @unittest.skipUnless(shutil.which("cmake") and shutil.which("ctest"), "CMake and CTest are needed")
+    def test_standalone_core_ctest_clears_both_inherited_kit_roots_before_snapshot_checks(self):
+        with tempfile.TemporaryDirectory(prefix="ubq-core-ctest-") as directory:
+            project = Path(directory, "core")
+            (project / "Scripts").mkdir(parents=True)
+            (project / "Scripts/repository.txt").write_text("core\n")
+            shutil.copytree(batteries.ROOT / "Tests/Snapshots", project / "Tests/Snapshots",
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copytree(batteries.ROOT / "Tools/showcase", project / "Tools/showcase",
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copy2(batteries.ROOT / "Scripts/ctest-shell-lane-census.sh",
+                         project / "Scripts/ctest-shell-lane-census.sh")
+            driver = project / "Scripts/run-core-checks.sh"
+            snapshot = batteries.ROOT / "Tests/Snapshots/run.py"
+            driver.write_text(
+                "#!/bin/bash\n"
+                'case "$1" in\n'
+                "    --list-stanzas) echo snapshot_catalog ;;\n"
+                "    --list-*) ;;\n"
+                f"    snapshot_catalog) exec {shlex.quote(sys.executable)} {shlex.quote(str(snapshot))} "
+                "--backend portable --check-catalog ;;\n"
+                "esac\n")
+            driver.chmod(0o755)
+            (project / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.20)\n"
+                "project(CoreCatalog LANGUAGES NONE)\n"
+                "enable_testing()\n"
+                f'set(UBIQUITTY_CORE_SOURCE_DIR "{project}")\n'
+                f'include("{batteries.ROOT}/Scripts/cmake/UbiquittyTests.cmake")\n'
+                'ubiquitty_schedule_shell_stanzas(DRIVER "${CMAKE_SOURCE_DIR}/Scripts/run-core-checks.sh")\n')
+            environment = dict(os.environ, UBQ_TESTS_ROOT=str(project), UBQ_CORE_ROOT=str(batteries.ROOT),
+                               UBQ_KIT_ROOT=str(batteries.ROOT), UBIQUITTY_KIT_SOURCE_DIR=str(batteries.ROOT))
+            refused = subprocess.run([str(driver), "snapshot_catalog"], cwd=project,
+                                     env=environment, capture_output=True, text=True)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("kit source root names core, not kit", refused.stderr)
+            build = Path(directory, "build")
+            configured = subprocess.run(["cmake", "-S", str(project), "-B", str(build)],
+                                        env=environment, capture_output=True, text=True)
+            self.assertEqual(configured.returncode, 0, configured.stdout + configured.stderr)
+            checked = subprocess.run(["ctest", "--test-dir", str(build), "-R", "^shell_snapshot_catalog$",
+                                      "-FA", ".*", "--no-tests=error", "--output-on-failure"],
+                                     env=environment, capture_output=True, text=True)
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+            self.assertIn("Passed", checked.stdout)
+
     def assertSharedBuildLocks(self, tests):
         properties = self.generatedShellEntries(tests, "set_tests_properties")
         locks = {}
@@ -3345,6 +3391,28 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         self.assertIn("host-tests", {stage.key for stage in manifest})
         selected = batteries.source_stages("linux", context, ("linux-build",))
         self.assertIn("requires app sources", selected[0].command)
+        with self.assertRaisesRegex(ValueError, "kit source root names core, not kit"):
+            source_roots(self.core, kit=self.core, environment={})
+        for variable in ("UBQ_KIT_ROOT", "UBIQUITTY_KIT_SOURCE_DIR"):
+            with self.subTest(variable=variable), self.assertRaisesRegex(ValueError, "kit source root names core, not kit"):
+                source_roots(self.core, environment={variable: str(self.core)})
+
+    def test_shell_context_removes_both_previous_kit_roots_when_core_has_no_kit(self):
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ("UBQ_TESTS_ROOT", "UBQ_CORE_ROOT", "UBQ_KIT_ROOT",
+                                      "UBIQUITTY_CORE_SOURCE_DIR", "UBIQUITTY_KIT_SOURCE_DIR")}
+        context = subprocess.run([
+            sys.executable, str(batteries.ROOT / "Scripts/ubq_roots.py"), "shell-context",
+            "--source-root", str(self.core)], env=environment, capture_output=True, text=True)
+        self.assertEqual(context.returncode, 0, context.stdout + context.stderr)
+        environment.update(UBQ_KIT_ROOT=str(self.kit), UBIQUITTY_KIT_SOURCE_DIR=str(self.core),
+                           UBQ_TEST_SOURCE_CONTEXT=context.stdout)
+        checked = subprocess.run([
+            "bash", "-c", 'eval "$UBQ_TEST_SOURCE_CONTEXT"\n"$1" -c '
+            + shlex.quote('import os; assert "UBQ_KIT_ROOT" not in os.environ; '
+                          'assert "UBIQUITTY_KIT_SOURCE_DIR" not in os.environ'),
+            "core-context", sys.executable], env=environment, capture_output=True, text=True)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
 
     def test_missing_selected_conditional_capability_cannot_become_a_successful_skip(self):
         context = source_roots(self.core, environment={})
