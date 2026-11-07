@@ -15,6 +15,7 @@ concludes as that run did, so a tip that failed a gate stays red, and the next
 sweep reads the same verdict from it instead of a pass.
 """
 
+import argparse
 import json
 import os
 import re
@@ -23,6 +24,8 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+
+from ubq_roots import source_roots
 
 
 OUTPUTS = ("builds", "linux", "apple", "cmake", "code")
@@ -41,6 +44,11 @@ def all_reach(value=True):
 
 def changed_reach(paths):
     if not paths:
+        return all_reach()
+    if any(path == mount or path.startswith(mount + "/")
+           for path in paths for mount in ("Libraries/ubiquitty-core", "Libraries/ubiquitty-kit")):
+        # A consumer pin is not a proof of which library capabilities moved.
+        # Do not reuse a partial App checkpoint for an unseen dependency tree.
         return all_reach()
     reaching = [path for path in paths if not SKIPPABLE.search(path)]
     if not reaching:
@@ -123,8 +131,9 @@ def select_history(runs, head, get_jobs, sweep=False):
     return "", ""
 
 
-def git_output(*arguments):
-    return subprocess.check_output(["git", *arguments], text=True, stderr=subprocess.DEVNULL)
+def git_output(*arguments, cwd=None, environment=None):
+    return subprocess.check_output(["git", *arguments], cwd=cwd, env=environment,
+                                   text=True, stderr=subprocess.DEVNULL)
 
 
 def decide(environment, github_factory=GitHub, git=git_output):
@@ -157,8 +166,18 @@ def decide(environment, github_factory=GitHub, git=git_output):
     return reach, f"against {base[:12]}: {names or 'preflight only'} ({len(paths)} changed paths)"
 
 
-def main():
-    reach, reason = decide(os.environ)
+def main(argv=()):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source-root")
+    parser.add_argument("--core-source-root")
+    parser.add_argument("--kit-source-root")
+    arguments = parser.parse_args(argv)
+    try:
+        roots = source_roots(arguments.source_root, arguments.core_source_root, arguments.kit_source_root)
+    except ValueError as error:
+        parser.error(str(error))
+    environment = roots.environment(os.environ)
+    reach, reason = decide(environment, git=lambda *args: git_output(*args, cwd=roots.subject, environment=environment))
     print("CI reach: " + reason)
     if "history unavailable" in reason:
         print("::warning title=CI reach::Could not establish the prior verdict; running full batteries")
@@ -174,4 +193,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

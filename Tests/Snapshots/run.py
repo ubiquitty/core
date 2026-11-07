@@ -110,8 +110,12 @@ ROOT = HERE.parent.parent
 # developer's machine and refuses on a fresh clone.
 sys.path.insert(0, str(ROOT / "Scripts"))
 import build_root as _build_root  # noqa: E402 — the path above is what makes it importable
+import ubq_roots as _roots  # noqa: E402
+from sources import SnapshotSources
 
 BUILD_ROOT = Path(_build_root.build_root(str(ROOT)))
+SUBJECT_ROOT = ROOT
+SOURCE_FILES = None
 GOLDEN_ROOT = HERE / "golden"
 # The goldens checked by eye. A listed golden is never written here: a render
 # that differs from it is the renderer's failure, not a reason to re-mint.
@@ -184,6 +188,50 @@ UNIFONT_FONT = {"family": "GNU Unifont", "size": 10}
 # The native tiers: which arms share a text stack, and so a golden.
 CORETEXT_BACKENDS = ("macos", "swift", "ios")
 FREETYPE_BACKENDS = ("linux",)
+
+
+def configure_sources(source=None, core=None, kit=None):
+    """Bind catalog data and built products to the actual consuming checkout."""
+    global ROOT, HERE, SUBJECT_ROOT, BUILD_ROOT, GOLDEN_ROOT, SHOWCASE, NATIVE_PROFILE_ROOT, SOURCE_FILES, _APPROVED, _CONFIG_DIRECTORY, FIXTURE_FONT_DIRECTORY, _fixture_fontconfig
+    roots = _roots.source_roots(source, core, kit)
+    files = SnapshotSources(roots, _roots.repositories)
+    ROOT = roots.core
+    HERE = ROOT / "Tests" / "Snapshots"
+    SUBJECT_ROOT = roots.subject
+    BUILD_ROOT = Path(_build_root.build_root(str(SUBJECT_ROOT)))
+    GOLDEN_ROOT = HERE / "golden"
+    SHOWCASE = ROOT / "Tools" / "showcase" / "showcase.py"
+    NATIVE_PROFILE_ROOT = HERE / "configs" / "native"
+    FIXTURE_FONT_DIRECTORY = HERE / "fixtures" / "fonts"
+    _fixture_fontconfig = None
+    SOURCE_FILES = files
+    _APPROVED = None
+    _CONFIG_DIRECTORY = None
+    return roots
+
+
+def snapshot_path(relative, *, required=False):
+    if SOURCE_FILES:
+        return SOURCE_FILES.path(relative, required=required)
+    relative = Path(relative)
+    if relative.parts[:1] == ("golden",):
+        return GOLDEN_ROOT.joinpath(*relative.parts[1:])
+    if relative.parts[:2] == ("configs", "native"):
+        return NATIVE_PROFILE_ROOT.joinpath(*relative.parts[2:])
+    return HERE / relative
+
+
+def manifest_paths(pattern):
+    return SOURCE_FILES.manifests(pattern) if SOURCE_FILES else sorted((ROOT / "Tests" / "Snapshots").glob(pattern))
+
+
+def repository_file(relative):
+    return SOURCE_FILES.repository_file(relative) if SOURCE_FILES else ROOT / relative
+
+
+def display_path(path):
+    """Keep diagnostics valid when a golden belongs to a different owner."""
+    return path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
 
 
 @dataclass(frozen=True)
@@ -307,7 +355,7 @@ def toml_literal(value):
 
 def native_profile_text(profile):
     """The `[font]` block a native profile carries, as the file has it."""
-    return (NATIVE_PROFILE_ROOT / f"{profile}.toml").read_text(encoding="utf-8")
+    return snapshot_path(f"configs/native/{profile}.toml", required=True).read_text(encoding="utf-8")
 
 
 def materialised_config(case, tier, font_text):
@@ -411,7 +459,7 @@ def load_case_regressions():
                 title=name,
                 kind="snapshot",
                 backend=backend,
-                golden=GOLDEN_ROOT / "unifont" / f"{name}.png",
+                golden=snapshot_path(f"golden/unifont/{name}.png"),
                 case=variant,
                 expected_builder="core" if backend == "macos" else None,
                 exact=True,
@@ -430,7 +478,7 @@ def load_case_regressions():
         for stack, backends in (("coretext", CORETEXT_BACKENDS), ("freetype", FREETYPE_BACKENDS)):
             if stack not in stacks:
                 continue
-            golden = GOLDEN_ROOT / "native" / stack / f"{name}.png"
+            golden = snapshot_path(f"golden/native/{stack}/{name}.png")
             for backend in backends:
                 variant = arm_variant(case, backend, native_config)
                 # A stdout contract quotes the macOS driver's own report of
@@ -471,7 +519,7 @@ def load_case_regressions():
                         title=f"{name}_{suffix}",
                         kind="snapshot",
                         backend=backend,
-                        golden=GOLDEN_ROOT / "native" / stack / f"{name}_{suffix}.png",
+                        golden=snapshot_path(f"golden/native/{stack}/{name}_{suffix}.png"),
                         case=variant,
                         also_feeds=feeds,
                         expected_builder="core",
@@ -571,7 +619,7 @@ def validate_case(case, index, names):
     if native is not None:
         if not isinstance(native, str) or not SAFE_NAME.fullmatch(native):
             raise ValueError(f"case {name}.native must be a lowercase snake_case profile name")
-        if not (NATIVE_PROFILE_ROOT / f"{native}.toml").is_file():
+        if not snapshot_path(f"configs/native/{native}.toml").is_file():
             raise ValueError(f"case {name}.native names no profile under configs/native: {native}")
     if "native_stacks" in case:
         stacks = case["native_stacks"]
@@ -599,8 +647,8 @@ def validate_case(case, index, names):
         feed_file = case["feed_file"]
         if not isinstance(feed_file, str) or not feed_file:
             raise ValueError(f"case {name}.feed_file must be a relative path")
-        resolved = (HERE / feed_file).resolve()
-        if HERE.resolve() not in resolved.parents or not resolved.is_file():
+        resolved = snapshot_path(feed_file, required=True).resolve()
+        if (not SOURCE_FILES and HERE.resolve() not in resolved.parents) or not resolved.is_file():
             raise ValueError(f"case {name}.feed_file must name a file under {HERE}")
     if "args" in case and not isinstance(case["args"], list):
         raise ValueError(f"case {name}.args must be a list")
@@ -678,7 +726,7 @@ def load_showcase_regressions():
                 title=probe["title"],
                 kind="snapshot",
                 backend="portable",
-                golden=GOLDEN_ROOT / "portable" / "showcase" / f"{golden_name}.png",
+                golden=snapshot_path(f"golden/portable/showcase/{golden_name}.png"),
                 sequence=encoded_sequence,
             ))
         if expected is not None:
@@ -792,10 +840,6 @@ def find_binary(argument, backend):
     named = os.environ.get(BINARY_ENVIRONMENT_NAMES.get(backend, ""), "")
     if argument:
         candidate = Path(argument)
-    elif named and backend == "swift":
-        # The Swift arm is the macOS app binary itself; nothing below it
-        # needs to exist beside it.
-        return Path(named)
     elif named:
         candidate = Path(named)
     else:
@@ -808,12 +852,12 @@ def find_binary(argument, backend):
         # the script that loads one. It ships in the tree instead of a build
         # directory, and answers --print-render-binary with the module the
         # freshness guards should be measuring.
-        web = ROOT / "Scripts" / "web-snapshot-shim.mjs"
-        ios = ROOT / "Scripts" / "ios-snapshot-shim.sh"
         # The Swift arm is the macOS binary with its renderer knob selected by
         # the backend name, so it resolves to the same artefact.
-        candidate = {"portable": portable, "macos": macos, "ios": ios,
-                     "linux": linux, "web": web, "swift": macos}[backend]
+        if backend in ("web", "ios"):
+            candidate = repository_file(f"Scripts/{backend}-snapshot-shim." + ("mjs" if backend == "web" else "sh"))
+        else:
+            candidate = {"portable": portable, "macos": macos, "linux": linux, "swift": macos}[backend]
     # The web arm is a launcher, not the thing it renders with. Naming the
     # module here is the reachable mistake — it is the artefact every other arm
     # names, it exists, and it is what the freshness guards report on — and
@@ -931,16 +975,17 @@ def _app_compiled_sources():
     Returns:
         The listed sources that exist, as paths.
     """
-    listings = [ROOT / "Source" / "Platform" / "macOS" / "CMakeLists.txt",
-                ROOT / "Scripts" / "cmake" / "AppleSharedSwift.cmake",
-                ROOT / "Scripts" / "cmake" / "UbiquittyKit.cmake"]
+    roots = SOURCE_FILES.roots if SOURCE_FILES else (ROOT,)
+    listings = [root / relative for root in roots for relative in
+                ("Source/Platform/macOS/CMakeLists.txt", "Scripts/cmake/AppleSharedSwift.cmake",
+                 "Scripts/cmake/UbiquittyKit.cmake")]
     pattern = re.compile(r"Source/[\w/+.\-]+\.(?:swift|mm|m|cpp|metal)\b")
     found = set()
     for listing in listings:
         if listing.is_file():
             found.update(pattern.findall(listing.read_text(encoding="utf-8")))
-    return [ROOT / path for path in sorted(found)
-            if "/UITest/" not in path and (ROOT / path).is_file()]
+    return [root / path for path in sorted(found) for root in roots
+            if "/UITest/" not in path and (root / path).is_file()]
 
 
 def _portable_core_paths():
@@ -964,7 +1009,7 @@ def _portable_core_paths():
     return sorted(directories)
 
 
-def _renders_the_same_sources(recorded, current):
+def _renders_the_same_sources(recorded, current, source_root=None):
     """Whether two commits hold identical portable-core sources.
 
     The stamp records a commit, and a commit moves for reasons that never reach
@@ -984,17 +1029,25 @@ def _renders_the_same_sources(recorded, current):
     - Returns: True only when both commits are present and no path the binary
       compiles from differs between them.
     """
+    root = source_root or ROOT
     paths = _portable_core_paths()
+    if SOURCE_FILES and root != ROOT:
+        # The app/Kit stamp names its producing repository, whose gitlinks
+        # bind the libraries. A changed library pin must not be treated as a
+        # documentation-only commit in the consumer.
+        paths = ["Source", "CMakeLists.txt"]
+        paths.extend(str(owner.relative_to(root)) for owner in SOURCE_FILES.roots
+                     if owner != root and owner.is_relative_to(root))
     if not paths:
         return False
     for commit in (recorded, current):
-        known = subprocess.run(["git", "-C", str(ROOT), "cat-file", "-e", commit + "^{commit}"],
-                               capture_output=True)
+        known = subprocess.run(["git", "-C", str(root), "cat-file", "-e", commit + "^{commit}"],
+                               capture_output=True, env=_roots.foreign_git_environment())
         if known.returncode != 0:
             return False
     diff = subprocess.run(
-        ["git", "-C", str(ROOT), "diff", "--quiet", recorded, current, "--"] + paths,
-        capture_output=True)
+        ["git", "-C", str(root), "diff", "--quiet", recorded, current, "--"] + paths,
+        capture_output=True, env=_roots.foreign_git_environment())
     return diff.returncode == 0
 
 
@@ -1028,12 +1081,13 @@ def _refuse_if_foreign(binary, backend):
             recorded = stamp.read_text(encoding="utf-8").split()[0]
         except (OSError, IndexError):
             return  # an unreadable stamp makes no claim to contradict
+        source_root = ROOT if backend == "portable" else SUBJECT_ROOT
         current = subprocess.run(
-            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
-            capture_output=True, text=True).stdout.strip()
+            ["git", "-C", str(source_root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, env=_roots.foreign_git_environment()).stdout.strip()
         if not current or not recorded or recorded == current:
             return
-        if _renders_the_same_sources(recorded, current):
+        if _renders_the_same_sources(recorded, current, source_root):
             # A different commit is not by itself a different renderer. The
             # claim this refusal makes is that the binary "renders code this
             # tree does not contain", and between these two commits it does
@@ -1210,20 +1264,23 @@ def render_snapshot(binary, regression, output_path):
                 "--columns", str(case["columns"]),
                 "--rows", str(case["rows"]),
             ]
-            arguments.extend(("--config", str(HERE / case["config"])))
+            config = Path(case["config"])
+            arguments.extend(("--config", str(config if config.is_absolute() else snapshot_path(config, required=True))))
             if case.get("feed_bytes") is not None:
                 feed_path = Path(scratch) / "feed.bin"
                 feed_path.write_bytes(case["feed_bytes"])
                 arguments.extend(("--feed-file", str(feed_path)))
             elif case.get("feed_file"):
-                arguments.extend(("--feed-file", str(HERE / case["feed_file"])))
+                arguments.extend(("--feed-file", str(snapshot_path(case["feed_file"], required=True))))
             else:
                 arguments.extend(("--feed", case["feed"]))
             # A case argument that names a file cannot be relative to the runner's
             # working directory, which is whatever the invoker had. {SNAPSHOTS}
             # anchors it to this directory the way feed_file and config already are.
             arguments.extend(
-                str(value).replace("{SNAPSHOTS}", str(HERE)) for value in case.get("args", []))
+                str(snapshot_path(str(value)[len("{SNAPSHOTS}/"):], required=True))
+                if str(value).startswith("{SNAPSHOTS}/") else str(value)
+                for value in case.get("args", []))
             for depth, feed in enumerate(also_feeds or []):
                 last = depth == len(also_feeds) - 1
                 target = output_path if last else Path(scratch) / f"frame{depth + 2}.png"
@@ -1258,7 +1315,7 @@ def render_snapshot(binary, regression, output_path):
             "--snapshot-backend", "portable",
             "--feed-file", feed.name,
             "--columns", "80", "--rows", "24",
-            "--config", str(HERE / "configs" / "showcase.toml"),
+            "--config", str(snapshot_path("configs/showcase.toml", required=True)),
         ]
         _check_render_path("portable", run_app(arguments, output_path))
 
@@ -1535,7 +1592,7 @@ def write_known_budgets(measured):
     - Returns: How many entries were written.
     """
     written = 0
-    for path in sorted((ROOT / "Tests" / "Snapshots").glob("known-failing-*.txt")):
+    for path in manifest_paths("known-failing-*.txt"):
         lines = path.read_text().splitlines(keepends=True)
         changed = False
         for index, line in enumerate(lines):
@@ -1583,7 +1640,7 @@ def print_result(status, regression, detail=None, quiet=False):
     print(f"  {status:<4} {regression.section} / {regression.title}{suffix}")
 
 
-def load_approved(manifest=APPROVED_MANIFEST):
+def load_approved(manifest=None):
     """The approved goldens, by absolute path.
 
     Each maps to the manifest fields that matter to a reader of a result line:
@@ -1591,15 +1648,24 @@ def load_approved(manifest=APPROVED_MANIFEST):
     that does not exist approves nothing.
     """
     approved = {}
-    if not manifest.exists():
-        return approved
-    for line in manifest.read_text(encoding="utf-8").split("\n"):
-        if not line.strip() or line.lstrip().startswith("#"):
+    manifests = [manifest] if manifest is not None else manifest_paths("approved.tsv")
+    for path in manifests:
+        if not path.exists():
             continue
-        fields = line.split("\t")
-        while len(fields) < 4:
-            fields.append("")
-        approved[(ROOT / fields[0]).resolve()] = {"sha256": fields[1], "on": fields[2], "note": fields[3]}
+        for line in path.read_text(encoding="utf-8").split("\n"):
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            fields = line.split("\t")
+            while len(fields) < 4:
+                fields.append("")
+            relative = Path(fields[0])
+            if SOURCE_FILES:
+                if relative.parts[:2] != ("Tests", "Snapshots"):
+                    raise ValueError(f"{path}: approved golden is outside the snapshot catalog: {relative}")
+                golden = snapshot_path(Path(*relative.parts[2:]))
+            else:
+                golden = ROOT / relative
+            approved[golden.resolve()] = {"sha256": fields[1], "on": fields[2], "note": fields[3]}
     return approved
 
 
@@ -1974,7 +2040,7 @@ def known_failing_identifiers(backend):
     Absent manifest means every failure counts, which is the right default for a
     backend nobody has had to write one for.
     """
-    path = ROOT / "Tests" / "Snapshots" / f"known-failing-{backend}.txt"
+    path = snapshot_path(f"known-failing-{backend}.txt") if SOURCE_FILES else ROOT / "Tests" / "Snapshots" / f"known-failing-{backend}.txt"
     if not path.exists():
         return None
     return set(known_failing_entries(path))
@@ -1993,7 +2059,7 @@ def exempt_identifiers(backend):
     run on that backend at all, and a run reports it as EXEMPT. An absent file
     exempts nothing.
     """
-    path = ROOT / "Tests" / "Snapshots" / f"exempt-{backend}.txt"
+    path = snapshot_path(f"exempt-{backend}.txt") if SOURCE_FILES else ROOT / "Tests" / "Snapshots" / f"exempt-{backend}.txt"
     if not path.exists():
         return set()
     return set(exempt_entries(path))
@@ -2093,12 +2159,12 @@ def unmatched_manifest_entries(catalog_regressions):
     """
     known_identifiers = {regression.identifier for regression in catalog_regressions}
     unmatched = []
-    for path in sorted((ROOT / "Tests" / "Snapshots").glob("known-failing-*.txt")):
+    for path in manifest_paths("known-failing-*.txt"):
         backend = path.stem[len("known-failing-"):]
         for entry in known_failing_entries(path):
             if entry not in known_identifiers:
                 unmatched.append((backend, entry))
-    for path in sorted((ROOT / "Tests" / "Snapshots").glob("exempt-*.txt")):
+    for path in manifest_paths("exempt-*.txt"):
         backend = path.stem[len("exempt-"):]
         for entry in exempt_entries(path):
             if entry not in known_identifiers:
@@ -2117,7 +2183,7 @@ def contradictory_manifest_entries():
     - Returns: Sorted `(backend, identifier)` pairs, empty when the lists agree.
     """
     contradictory = []
-    for path in sorted((ROOT / "Tests" / "Snapshots").glob("exempt-*.txt")):
+    for path in manifest_paths("exempt-*.txt"):
         backend = path.stem[len("exempt-"):]
         known = known_failing_identifiers(backend) or set()
         for entry in exempt_entries(path):
@@ -2193,8 +2259,11 @@ def judge_against_known_failures(failed, regressions, overrun=(), *, backends=No
     return 0, ""
 
 
-def main(argv=None):
+def _main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source-root", help="consuming checkout whose snapshot products are tested")
+    parser.add_argument("--core-source-root", help="explicit Core definitions/source checkout")
+    parser.add_argument("--kit-source-root", help="explicit Kit native data/source checkout")
     parser.add_argument("filters", nargs="*", help="exact test ID, title, or golden name")
     parser.add_argument("--catalog", choices=("all", "cases", "showcase"),
                         default="all")
@@ -2249,6 +2318,13 @@ def main(argv=None):
         return fail("--remint-passing only applies with --update")
 
     try:
+        configure_sources(args.source_root, args.core_source_root, args.kit_source_root)
+        if not args.list:
+            selected_backends = ALL_BACKENDS if args.backend == "all" else (args.backend,)
+            for backend in selected_backends:
+                # A backend whose owner is absent must not look like an
+                # unaudited arm and silently certify an incomplete catalog.
+                snapshot_path(f"exempt-{backend}.txt", required=True)
         catalog_regressions = load_regressions(args.catalog)
     except (KeyError, OSError, TypeError, ValueError, RuntimeError,
             json.JSONDecodeError) as error:
@@ -2287,9 +2363,9 @@ def main(argv=None):
     missing, orphaned = baseline_problems(validation_regressions)
     if args.check_catalog:
         for path in missing:
-            print(f"MISSING {path.relative_to(ROOT)}")
+            print(f"MISSING {display_path(path)}")
         for path in orphaned:
-            print(f"ORPHAN {path.relative_to(ROOT)}")
+            print(f"ORPHAN {display_path(path)}")
         if missing or orphaned:
             return 1
         snapshots = sum(regression.kind == "snapshot"
@@ -2316,11 +2392,11 @@ def main(argv=None):
     _, orphaned_in_catalog = baseline_problems(catalog_regressions)
     if orphaned_in_catalog and not args.filters:
         for path in orphaned_in_catalog:
-            print(f"ORPHAN golden: {path.relative_to(ROOT)}", file=sys.stderr)
+            print(f"ORPHAN golden: {display_path(path)}", file=sys.stderr)
         return fail("remove orphaned goldens before running the suite")
     if missing and not (args.update or args.update_missing):
         for path in missing:
-            print(f"MISSING golden: {path.relative_to(ROOT)}", file=sys.stderr)
+            print(f"MISSING golden: {display_path(path)}", file=sys.stderr)
         return fail("snapshot baselines are incomplete; use --update with explicit filters")
 
     # A golden written by two arms in one --update run keeps whichever wrote last.
@@ -2375,7 +2451,7 @@ def main(argv=None):
     try:
         for backend in {regression.backend for regression in regressions}:
             binaries[backend] = find_binary(binary_arguments[backend], backend)
-    except RuntimeError as error:
+    except (OSError, ValueError, RuntimeError) as error:
         return fail(str(error))
     # The iOS arm renders every case through Scripts/ios-snapshot-shim.sh, and
     # each invocation would otherwise boot the simulator and shut it down again.
@@ -2383,7 +2459,7 @@ def main(argv=None):
     # somebody else had up stays up.
     bootedIOSHere = False
     if "ios" in binaries:
-        boot = subprocess.run([str(ROOT / "Scripts" / "ios-simulator.sh"), "--boot"],
+        boot = subprocess.run([str(repository_file("Scripts/ios-simulator.sh")), "--boot"],
                               capture_output=True, text=True)
         if boot.returncode:
             return fail(f"ios arm: no simulator for this checkout: {boot.stderr.strip()}")
@@ -2395,8 +2471,21 @@ def main(argv=None):
                                args.require_ceilings, fail_fast=args.fail_fast)
     finally:
         if bootedIOSHere:
-            subprocess.run([str(ROOT / "Scripts" / "ios-simulator.sh"), "--shutdown"],
+            subprocess.run([str(repository_file("Scripts/ios-simulator.sh")), "--shutdown"],
                            capture_output=True)
+
+
+def main(argv=None):
+    # The CLI may also be embedded by the harness tests. One invocation's
+    # caller/data roots must never change a later invocation's subject.
+    names = ("ROOT", "HERE", "SUBJECT_ROOT", "BUILD_ROOT", "GOLDEN_ROOT", "SHOWCASE",
+             "NATIVE_PROFILE_ROOT", "SOURCE_FILES", "_APPROVED", "_CONFIG_DIRECTORY",
+             "FIXTURE_FONT_DIRECTORY", "_fixture_fontconfig")
+    previous = {name: globals()[name] for name in names}
+    try:
+        return _main(argv)
+    finally:
+        globals().update(previous)
 
 
 if __name__ == "__main__":

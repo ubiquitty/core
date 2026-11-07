@@ -32,6 +32,7 @@ from unittest.mock import patch
 import ci_batteries as batteries
 import ci_reach as reach
 import ctest_report as ctest_reporting
+from ubq_roots import source_roots
 
 
 WORKFLOW = None
@@ -39,6 +40,12 @@ if "--workflow" in sys.argv:
     index = sys.argv.index("--workflow")
     WORKFLOW = sys.argv[index + 1]
     del sys.argv[index:index + 2]
+
+TEST_SOURCES = source_roots(source=Path(WORKFLOW).resolve().parents[2] if WORKFLOW else None)
+
+
+def test_file(relative):
+    return TEST_SOURCES.resolve_file(relative)
 
 
 class BatteryTests(unittest.TestCase):
@@ -134,8 +141,11 @@ class BatteryTests(unittest.TestCase):
                 with self.subTest(platform=platform, stage=stage.key):
                     self.assertIn(stage.condition, ("always", "code", "cmake", "xvfb", "ui"))
                     self.assertIn(stage.toolchain, ("native", "gcc", "clang", "wasm"))
-                    for script in re.findall(r"(?:\./)?(?:Scripts|Tests)/[A-Za-z0-9_./-]+\.(?:py|sh)", stage.command):
-                        self.assertTrue((batteries.ROOT / script).is_file(), script)
+                    # The template describes all repositories. Required owner
+                    # files are resolved/refused for the selected subject by
+                    # the executable composition tests below.
+                    self.assertTrue(stage.repositories)
+                    self.assertTrue(set(stage.repositories) <= {"core", "kit", "app"})
                     checked = subprocess.run(["bash", "-n", "-c", stage.command], capture_output=True, text=True)
                     self.assertEqual(checked.returncode, 0, checked.stderr)
 
@@ -925,6 +935,13 @@ fi
 
 
 class StanzaDeclineTests(unittest.TestCase):
+    @staticmethod
+    def generatedShellEntries(tests, command):
+        # CMake serializes test names with quotes or bracket arguments,
+        # depending on its version. Both name the same registered entry.
+        return dict(re.findall(
+            rf'^{command}\((?:\[=*\[|")?(shell_\w+)(?:\]=*\]|")? (.*)\)$', tests, re.M))
+
     @unittest.skipUnless(shutil.which("cmake") and shutil.which("ctest"),
                          "CMake and CTest are needed to schedule a stanza and report it")
     def test_a_stanza_declined_by_any_driver_is_reported_skipped(self):
@@ -1010,9 +1027,8 @@ class StanzaDeclineTests(unittest.TestCase):
             self.assertIn("more are left to Scripts/run-app-tests.sh", configured.stdout)
             self.assertNotIn("run-tests.sh", configured.stdout)
             tests = (build / "CTestTestfile.cmake").read_text()
-            commands = dict(re.findall(r'^add_test\("?(shell_\w+)"? (.*)\)$', tests, re.M))
-            properties = dict(re.findall(r'^set_tests_properties\("?(shell_\w+)"? PROPERTIES (.*)\)$',
-                                         tests, re.M))
+            commands = self.generatedShellEntries(tests, "add_test")
+            properties = self.generatedShellEntries(tests, "set_tests_properties")
             self.assertEqual(sorted(commands), ["shell_host_binary", "shell_snapshots", "shell_web_outline"])
             for entry in commands:
                 with self.subTest(entry=entry):
@@ -1029,7 +1045,9 @@ class StanzaDeclineTests(unittest.TestCase):
                     self.assertIn('FIXTURES_REQUIRED "ubq_build_fixture" ', properties[entry])
                     self.assertNotIn("FIXTURES_SETUP", properties[entry])
                     self.assertNotIn("RESOURCE_LOCK", properties[entry])
-                    self.assertIn(r"[=[run-app-tests\.sh: PASSED .+ 0 ran, [1-9]]=]", properties[entry])
+                    self.assertTrue(any(value in properties[entry] for value in (
+                        r"[=[run-app-tests\.sh: PASSED .+ 0 ran, [1-9]]=]",
+                        r'"run-app-tests\\.sh: PASSED .+ 0 ran, [1-9]"')), properties[entry])
                     timeout = '"900"' if entry == "shell_web_outline" else '"600"'
                     self.assertIn(f"TIMEOUT {timeout}", properties[entry])
 
@@ -1130,7 +1148,7 @@ class StanzaDeclineTests(unittest.TestCase):
         self.assertNotIn("shell_app_only", tests)
 
     def assertSharedBuildLocks(self, tests):
-        properties = dict(re.findall(r'^set_tests_properties\("?(shell_\w+)"? PROPERTIES (.*)\)$', tests, re.M))
+        properties = self.generatedShellEntries(tests, "set_tests_properties")
         locks = {}
         for entry, settings in properties.items():
             match = re.search(r'RESOURCE_LOCK "([^"]*)"', settings)
@@ -1148,7 +1166,8 @@ class StanzaDeclineTests(unittest.TestCase):
         self.assertSharedBuildLocks(tests)
         # Removing one host consumer's lock recreates the unsafe registration:
         # its build and daemon could overlap another consumer's configure/link.
-        line = next(line for line in tests.splitlines() if re.match(r'^set_tests_properties\("?shell_host_b"? ', line))
+        line = next(line for line in tests.splitlines()
+                    if "shell_host_b" in self.generatedShellEntries(line, "set_tests_properties"))
         unlocked = re.sub(r'RESOURCE_LOCK "[^"]*" ', "", line)
         self.assertNotEqual(unlocked, line)
         with self.assertRaisesRegex(AssertionError, "shell_host_b"):
@@ -1203,7 +1222,7 @@ run_ctest_suite() { return "$UBQ_TEST_CTEST_STATUS"; }
                     self.assertEqual(events.read_text().splitlines(), expected)
                     self.assertEqual("did not start after fail-fast" in checked.stdout, fail_fast == "1")
         sanitizer = (batteries.ROOT / "Scripts/run-sanitized-tests.sh").read_text()
-        self.assertIn('"$ROOT/Scripts/run-ctest.sh" "$BUILD"', sanitizer)
+        self.assertIn('"$CORE_ROOT/Scripts/run-ctest.sh" "$BUILD"', sanitizer)
 
 
 class CTestReportingTests(unittest.TestCase):
@@ -1850,12 +1869,17 @@ while True:
 
 
 class WebBuildCacheTests(unittest.TestCase):
+    source_repositories = ("app",)
+
     def fixture(self, directory, cached_path):
         root = Path(directory) / "web fixture"
         scripts = root / "Scripts"
         scripts.mkdir(parents=True)
-        shutil.copyfile(batteries.ROOT / "Scripts/build-web.sh", scripts / "build-web.sh")
-        (scripts / "build-root.sh").write_text(': "${UBQ_BUILD_ROOT:?}"\n')
+        shutil.copyfile(test_file("Scripts/build-web.sh"), scripts / "build-web.sh")
+        core_scripts = root / "Libraries/ubiquitty-core/Scripts"
+        core_scripts.mkdir(parents=True)
+        (core_scripts / "build-root.sh").write_text(': "${UBQ_BUILD_ROOT:?}"\n')
+        (core_scripts / "ubq-roots.sh").write_text('UBQ_CORE_ROOT="$CORE_ROOT"\nUBQ_KIT_ROOT="$KIT_ROOT"\n')
         build = root / "build/web"
         (build / "CMakeFiles").mkdir(parents=True)
         (build / "CMakeCache.txt").write_text(
@@ -1874,6 +1898,7 @@ exit "$WEB_CONFIGURE_STATUS"
             UBQ_BUILD_ROOT=str(root / "build"),
             WEB_CONFIGURE_ARGUMENTS=str(root / "configure-arguments"),
             WEB_CONFIGURE_STATUS="17",
+            UBIQUITTY_CORE_SOURCE_DIR=str(core_scripts.parent),
             PATH=str(tools) + os.pathsep + os.environ.get("PATH", ""),
         )
         return root, environment, build
@@ -1907,6 +1932,8 @@ exit "$WEB_CONFIGURE_STATUS"
 
 
 class LinuxSmokeFailFastTests(unittest.TestCase):
+    source_repositories = ("app",)
+
     def run_smokes(self, directory, fail_fast, status="17", failure_token=False):
         root = Path(directory)
         scripts = root / "Scripts"
@@ -1914,8 +1941,10 @@ class LinuxSmokeFailFastTests(unittest.TestCase):
         source = root / "Source/Platform/Linux"
         source.mkdir(parents=True)
         (source / "main.cpp").write_text('\n'.join(f'if (mode == "--smoke-{name}") {{}}' for name in ("a", "b", "c")))
-        shutil.copyfile(batteries.ROOT / "Scripts/run-linux-smokes.sh", scripts / "run-linux-smokes.sh")
-        (scripts / "build-root.sh").write_text(': "${UBQ_BUILD_ROOT:?}"\n')
+        shutil.copyfile(test_file("Scripts/run-linux-smokes.sh"), scripts / "run-linux-smokes.sh")
+        core_scripts = root / "Libraries/ubiquitty-core/Scripts"
+        core_scripts.mkdir(parents=True)
+        (core_scripts / "build-root.sh").write_text(': "${UBQ_BUILD_ROOT:?}"\n')
         tools = root / "tools"
         tools.mkdir()
         timeout = tools / "timeout"
@@ -1934,6 +1963,7 @@ echo "PASS: smoke completed"
         binary.chmod(0o755)
         events = root / "events"
         environment = dict(os.environ, UBQ_BUILD_ROOT=str(root / "build"),
+                           UBIQUITTY_CORE_SOURCE_DIR=str(core_scripts.parent),
                            PATH=str(tools) + os.pathsep + os.environ.get("PATH", ""),
                            SMOKE_EVENTS=str(events), SMOKE_EXIT_STATUS=status,
                            SMOKE_FAILURE_TOKEN="1" if failure_token else "0", SMOKE_TIMEOUT="9")
@@ -1979,8 +2009,12 @@ echo "PASS: smoke completed"
 
 
 class UIScenarioResultTests(unittest.TestCase):
+    source_repositories = ("app",)
+
     def setUp(self):
-        self.gate = import_module("check-ui-scenarios")
+        specification = spec_from_file_location("ui_result_gate_fixture", test_file("Scripts/check-ui-scenarios.py"))
+        self.gate = module_from_spec(specification)
+        specification.loader.exec_module(self.gate)
         for name, values in (("KNOWN_FAILING", {"known_failure": "owned-failure"}),
                              ("KNOWN_FLAKY", {"flaky": "owned-flake"})):
             replacement = patch.object(self.gate, name, values)
@@ -2045,7 +2079,7 @@ class UIScenarioResultTests(unittest.TestCase):
         # and tally then stand among the suite's, which the accounting above
         # rejects for the whole run. Every such launch goes through the one
         # helper that writes the child's output to a log of the scenario's.
-        sources = batteries.ROOT / "Source/Platform/macOS/UITest/Swift"
+        sources = TEST_SOURCES.subject / "Source/Platform/macOS/UITest/Swift"
         launchers = sorted(path.name for path in sources.glob("*.swift")
                            if "Bundle.main.executableURL" in path.read_text(encoding="utf-8"))
         self.assertEqual(launchers, ["NativeTestContext.swift"])
@@ -2117,15 +2151,20 @@ UI_TEST_BUNDLE_IDENTIFIER = "org.ubiquitty.Ubiquitty.uitest"
 
 
 class UITestLaunchTests(unittest.TestCase):
+    source_repositories = ("app",)
+
     def fixture(self, directory, bundle_identifier=UI_TEST_BUNDLE_IDENTIFIER, plist_format=plistlib.FMT_XML):
         root = Path(directory) / "UI fixture"
         scripts = root / "Scripts"
         scripts.mkdir(parents=True)
         # The script and what it sources: the run's hygiene is part of what
         # launches and ends a scenario, so the fixture carries the real one.
-        for name in ("run-ui-tests.sh", "test-run-hygiene.sh", "test-run-hygiene.py"):
-            shutil.copyfile(batteries.ROOT / "Scripts" / name, scripts / name)
-        (scripts / "build-root.sh").write_text(': "${UBQ_BUILD_ROOT:?}"\n')
+        shutil.copyfile(test_file("Scripts/run-ui-tests.sh"), scripts / "run-ui-tests.sh")
+        core_scripts = root / "Libraries/ubiquitty-core/Scripts"
+        core_scripts.mkdir(parents=True)
+        for name in ("test-run-hygiene.sh", "test-run-hygiene.py"):
+            shutil.copyfile(test_file("Scripts/" + name), core_scripts / name)
+        (core_scripts / "build-root.sh").write_text(': "${UBQ_BUILD_ROOT:?}"\n')
 
         def program(path, content):
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -2167,6 +2206,7 @@ printf '%s\\n' "$XDG_CONFIG_HOME" > "$UI_CONFIG"
         home = root / "home"
         home.mkdir()
         environment = dict(os.environ, UBQ_BUILD_ROOT=str(build), UI_EVENTS=str(root / "events"),
+                           UBIQUITTY_CORE_SOURCE_DIR=str(core_scripts.parent),
                            HOME=str(home), UI_DEFAULTS=str(root / "defaults-calls"),
                            UI_FLAGS=str(root / "flags"), UI_CONFIG=str(root / "config"),
                            UI_QUIC_PREFIX=str(root / "quic-prefix"),
@@ -2755,10 +2795,10 @@ class WorkflowScriptPathTests(unittest.TestCase):
     file and needs no flag.
     """
 
-    SCRIPT_PATH = re.compile(r"(?<![\w/.-])(?:\./)?((?:Scripts|Tests|Tools)/[\w./-]+\.(?:sh|py|mjs))\b")
+    SCRIPT_PATH = re.compile(r"(?<![\w/.-])(?:\./)?((?:Libraries/(?:ubiquitty-core|ubiquitty-kit)/)?(?:Scripts|Tests|Tools)/[\w./-]+\.(?:sh|py|mjs))\b")
 
     def test_every_script_a_workflow_names_exists(self):
-        root = Path(__file__).resolve().parent.parent
+        root = TEST_SOURCES.subject
         workflows = sorted((root / ".github" / "workflows").glob("*.yml"))
         self.assertTrue(workflows, "no workflow files found")
         missing = []
@@ -2771,9 +2811,10 @@ class WorkflowScriptPathTests(unittest.TestCase):
 
     def test_every_repository_file_a_packaging_script_names_exists(self):
         """The release packaging scripts run once per tag, like the workflow."""
-        root = Path(__file__).resolve().parent.parent
+        root = TEST_SOURCES.subject
         scripts = sorted((root / "Scripts").glob("package-*.sh")) + sorted((root / "Scripts").glob("release-*.sh"))
-        self.assertTrue(scripts, "no packaging scripts found")
+        if "app" in TEST_SOURCES.repositories:
+            self.assertTrue(scripts, "no packaging scripts found")
         literal = re.compile(r'"\$ROOT/([\w./-]+)"')
         missing = []
         for script in scripts:
@@ -2797,10 +2838,12 @@ class ReleaseFloorTests(unittest.TestCase):
     the prose and installs the bundle, so the two are compared here.
     """
 
+    source_repositories = ("app",)
+
     def test_readme_states_the_app_bundle_floor(self):
-        root = Path(__file__).resolve().parent.parent
+        root = TEST_SOURCES.subject
         floors = dict(re.findall(r"(?m)^(cxx|app)=(\S+)$",
-                                 (root / "Scripts" / "macos-deployment-target.txt").read_text()))
+                                 test_file("Scripts/macos-deployment-target.txt").read_text()))
         self.assertIn("app", floors)
 
         def normalised(version):
@@ -2816,7 +2859,7 @@ class ReleaseFloorTests(unittest.TestCase):
             self.assertEqual(normalised(version), normalised(floors["app"]))
 
 
-WORKFLOWS = batteries.ROOT / ".github" / "workflows"
+WORKFLOWS = TEST_SOURCES.subject / ".github" / "workflows"
 # The GitHub-hosted images the workflows name. A self-hosted label can take the
 # same shape (`ubuntu-builder`), so a pattern would count it as hosted.
 HOSTED_RUNNERS = frozenset({"ubuntu-24.04", "ubuntu-24.04-arm", "xcode-27"})
@@ -2873,6 +2916,8 @@ def fork_runners(evaluate, runs_on):
 
 
 class WorkflowTests(unittest.TestCase):
+    source_repositories = ("app",)
+
     def test_apple_runner_provides_the_required_xcode_generation(self):
         drafts = draft_workflows()
         workflow = drafts.Workflow((WORKFLOWS / "ci.yml").read_text())
@@ -2940,28 +2985,34 @@ class WorkflowTests(unittest.TestCase):
         jobs = {match.group(1): body[match.end():starts[index + 1].start() if index + 1 < len(starts) else len(body)]
                 for index, match in enumerate(starts)}
         self.assertEqual(set(jobs), {"preflight", "linux", "apple", "host-linux-arm64", "coverage"})
+        prefix = "Libraries/ubiquitty-core/" if TEST_SOURCES.repositories == ("app",) else ""
+        source = ' --source-root "$GITHUB_WORKSPACE"' if prefix else ""
         for platform in ("preflight", "linux", "apple"):
             job = jobs[platform]
             self.assertEqual(job.count("uses: actions/checkout@"), 1)
-            battery = f"python3 Scripts/ci_batteries.py run {platform}"
+            battery = f"python3 {prefix}Scripts/ci_batteries.py run {platform}{source}"
             if platform != "apple":
-                battery = f"./Scripts/ci-linux-image.sh {battery}"
+                battery = f"./{prefix}Scripts/ci-linux-image.sh{source} {battery}"
             self.assertIn(f"run: {battery}\n", job)
             # Preflight's battery stands down with a sweep that has this tip's
             # verdict, and so does its report, which would find no stages.
             reported = "always() && steps.reach.outputs.preflight != 'false'" if platform == "preflight" else "always()"
-            self.assertIn(f"if: {reported}\n        run: python3 Scripts/ci_batteries.py report {platform}", job)
+            self.assertIn(f"if: {reported}\n        run: python3 {prefix}Scripts/ci_batteries.py report {platform}{source}", job)
             if platform != "apple":
                 # The image comes from the Actions cache under its recipe's
                 # digest, and is saved back whether or not a gate failed.
-                self.assertIn("run: echo \"digest=$(./Scripts/ci-linux-image.sh --recipe-digest)\" >> \"$GITHUB_OUTPUT\"", job)
+                self.assertIn(f'run: echo "digest=$(./{prefix}Scripts/ci-linux-image.sh{source} --recipe-digest)" >> "$GITHUB_OUTPUT"', job)
                 self.assertIn("UBQ_CI_IMAGE_ARCHIVE: ${{ runner.temp }}/ubq-ci-linux-image.tar", job)
                 self.assertEqual(job.count("key: ci-linux-image-${{ steps.image.outputs.digest }}"), 2)
                 self.assertIn("name: Save the CI image\n        if: always() &&", job)
             self.assertIn("name: Print the failed stage logs\n        if: failure()", job)
             self.assertIn(f"$RUNNER_TEMP/ubiquitty-ci/{platform}", job)
         self.assertNotIn("actions/upload-artifact@", text)
-        self.assertIn("run: python3 Scripts/ci_reach.py", jobs["preflight"])
+        self.assertIn(f"run: python3 {prefix}Scripts/ci_reach.py{source}", jobs["preflight"])
+        if prefix:
+            for job in jobs.values():
+                self.assertEqual(job.count("submodules: recursive"), job.count("uses: actions/checkout@"))
+            self.assertEqual(text.count("hashFiles('Libraries/ubiquitty-core/Scripts/fetch-quic-deps.sh')"), 2)
         # A sweep that stands down for a failed tip fails too, so the failure
         # is what the next sweep reads back from it.
         self.assertRegex(jobs["preflight"], r"name: Keep this tip's failed verdict\n"
@@ -2987,7 +3038,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("if: ${{ false }}", hosted)
         self.assertIn("continue-on-error: true", hosted)
         self.assertIn("runs-on: ubuntu-24.04-arm", hosted)
-        self.assertIn("./Scripts/build-host.sh --release", hosted)
+        self.assertIn(f"./{prefix}Scripts/build-host.sh --release", hosted)
         self.assertIn("if: ${{ false }}", jobs["coverage"])
 
 
@@ -3015,6 +3066,302 @@ def run_suite(run_tests):
     return status
 
 
+class SourceCompositionBatteryTests(unittest.TestCase):
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory(prefix="ubq-battery-composition-")
+        self.addCleanup(scratch.cleanup)
+        self.root = Path(scratch.name)
+        self.app = self.root / "app with spaces"
+        self.core = self.app / "Libraries/ubiquitty-core"
+        self.kit = self.app / "Libraries/ubiquitty-kit"
+        for path, role in ((self.app, "app"), (self.core, "core"), (self.kit, "kit")):
+            (path / "Scripts").mkdir(parents=True)
+            (path / "CMakeLists.txt").write_text("# source composition fixture\n")
+            (path / "Scripts/repository.txt").write_text(role + "\n")
+        self.log = self.root / "invocations.jsonl"
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        (self.bin / "xvfb-run").write_text('#!/bin/sh\nshift\nexec "$@"\n')
+        (self.bin / "xvfb-run").chmod(0o755)
+        self.tool(self.app, "Scripts/build-linux-gtk.sh", "app-build")
+        self.tool(self.core, "Scripts/ensure-quic-deps.sh", "core-quic")
+        self.tool(self.core, "Scripts/run-tests.sh", "core-tests")
+        self.tool(self.core, "Tests/Snapshots/run.py", "core-snapshot")
+        self.tool(self.kit, "Scripts/check-linux-build-prerequisites.sh", "kit-prerequisite")
+        (self.app / "Scripts/run-tests.sh").write_text(
+            '#!/bin/sh\nexec "$UBQ_CORE_ROOT/Scripts/run-tests.sh" "$@"\n')
+        (self.app / "Scripts/run-tests.sh").chmod(0o755)
+
+    def tool(self, owner, relative, label):
+        path = owner / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('#!/usr/bin/env python3\nimport json, os, sys\n'
+                        'from pathlib import Path\n'
+                        f'row = dict(label={label!r}, arguments=sys.argv[1:], cwd=os.getcwd(), '
+                        'subject=os.environ.get("UBQ_TESTS_ROOT"), core=os.environ.get("UBQ_CORE_ROOT"), '
+                        'kit=os.environ.get("UBQ_KIT_ROOT"))\n'
+                        'with open(os.environ["UBQ_ROUTING_LOG"], "a") as stream: '
+                        'stream.write(json.dumps(row)+"\\n")\n')
+        path.chmod(0o755)
+
+    def environment(self, context):
+        return batteries.platform_environment("linux", {
+            "PATH": str(self.bin) + os.pathsep + os.environ.get("PATH", ""),
+            "RUNNER_WORKSPACE": str(self.root / "workspace"),
+            "RUNNER_TEMP": str(self.root / "temporary"),
+            "RUNNER_TOOL_CACHE": str(self.root / "tools"),
+            "UBQ_CI_ROOT": str(self.root / "results"), "UBQ_ROUTING_LOG": str(self.log),
+        }, context)
+
+    def test_gitless_app_routes_real_stage_processes_to_each_owner(self):
+        context = source_roots(self.app, environment={})
+        environment = self.environment(context)
+        manifest = batteries.source_stages("linux", context, ("quic", "host-tests", "linux-build", "linux-snapshots"))
+        path = self.root / "battery.json"
+        self.assertEqual(batteries.run_battery("linux", manifest, environment, path), 0)
+        rows = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual([row["label"] for row in rows], ["core-quic", "core-tests", "core-tests", "app-build", "core-snapshot"])
+        self.assertEqual((rows[1]["subject"], rows[1]["kit"]), (str(self.core), ""))
+        for index, row in enumerate(rows):
+            self.assertEqual(row["cwd"], str(self.app))
+            if index != 1:
+                self.assertEqual((row["subject"], row["core"], row["kit"]), tuple(map(str, (self.app, self.core, self.kit))))
+        self.assertIn("--source-root", rows[-1]["arguments"])
+        self.assertIn(str(self.app), rows[-1]["arguments"])
+        self.assertIn(str(self.kit), rows[-1]["arguments"])
+        self.assertEqual({row["state"] for row in json.loads(path.read_text())}, {"completed"})
+        self.assertEqual(batteries.validate_events("linux", manifest, Path(environment["UBQ_EVENT_LOG"])), [])
+
+    def test_required_kit_tool_is_executed_without_a_copied_app_shim(self):
+        context = source_roots(self.app, environment={})
+        stage = batteries.route_stage(batteries.Stage("kit-prerequisite", "Kit prerequisite", "./Scripts/check-linux-build-prerequisites.sh"), context)
+        self.assertEqual(batteries.execute_stage(stage, self.environment(context)), 0)
+        self.assertEqual(json.loads(self.log.read_text())["label"], "kit-prerequisite")
+
+    def test_apple_snapshot_stage_retains_all_three_required_arms_and_optional_web(self):
+        context = source_roots(self.app, environment={})
+        stage = batteries.source_stages("apple", context, ("snapshots",))[0]
+        environment = self.environment(context)
+        self.assertEqual(batteries.execute_stage(stage, environment), 0)
+        rows = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual([row["arguments"][row["arguments"].index("--backend") + 1] for row in rows], ["portable", "macos", "swift"])
+        module = Path(environment["UBQ_BUILD_ROOT"]) / "web-dist/ubiquitty.wasm"
+        module.parent.mkdir(parents=True)
+        module.write_text("built Web module fixture")
+        self.log.unlink()
+        self.assertEqual(batteries.execute_stage(stage, environment), 0)
+        rows = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual([row["arguments"][row["arguments"].index("--backend") + 1] for row in rows], ["portable", "macos", "swift", "web"])
+
+    def test_explicit_reach_root_uses_app_git_and_library_pins_require_full_reach(self):
+        output = self.root / "reach-output"
+        def decide(environment, git):
+            git("diff", "--name-only", "base", "HEAD")
+            return reach.all_reach(), "fixture"
+        with patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}), \
+                patch.object(reach, "decide", side_effect=decide), \
+                patch.object(reach.subprocess, "check_output", return_value="README.md\n") as invoked:
+            self.assertEqual(reach.main(["--source-root", str(self.app)]), 0)
+        self.assertEqual(invoked.call_args.kwargs["cwd"], self.app)
+        for mount in ("Libraries/ubiquitty-core", "Libraries/ubiquitty-kit"):
+            self.assertEqual(reach.changed_reach([mount]), reach.all_reach())
+
+    def install_shared_shell_helper(self, name):
+        path = self.core / "Scripts" / name
+        shutil.copyfile(batteries.ROOT / "Scripts" / name, path)
+        shutil.copyfile(batteries.ROOT / "Scripts/ubq_roots.py", self.core / "Scripts/ubq_roots.py")
+        return path
+
+    def test_ci_image_mounts_gitless_app_and_explicit_libraries_at_their_real_paths(self):
+        script = self.install_shared_shell_helper("ci-linux-image.sh")
+        recipe = self.core / "Scripts/run-linux.sh"
+        recipe.write_text('#!/bin/sh\n[ "$UBIQUITTY_LINUX_ROOT" = "$UBQ_TESTS_ROOT" ] || exit 93\nprintf "FROM fixture\\n"\n')
+        recipe.chmod(0o755)
+        docker = self.bin / "docker"
+        docker.write_text('#!/usr/bin/env python3\nimport json, os, sys\n'
+                          'with open(os.environ["UBQ_ROUTING_LOG"], "a") as log: log.write(json.dumps(sys.argv[1:])+"\\n")\n'
+                          'if "--format" in sys.argv: print("sha256:fixture")\n')
+        docker.chmod(0o755)
+        base = {key: value for key, value in os.environ.items() if not key.startswith(("UBQ_", "UBIQUITTY_", "CCACHE_"))}
+        environment = dict(base, PATH=str(self.bin) + os.pathsep + os.environ.get("PATH", ""),
+                           UBQ_ROUTING_LOG=str(self.log), UBQ_CI_LINUX_IMAGE="true",
+                           RUNNER_WORKSPACE=str(self.root / "workspace"), RUNNER_TEMP=str(self.root / "temporary"),
+                           RUNNER_TOOL_CACHE=str(self.root / "tools"))
+        for name in ("UBQ_TESTS_ROOT", "UBQ_CORE_ROOT", "UBQ_KIT_ROOT", "UBIQUITTY_CORE_SOURCE_DIR", "UBIQUITTY_KIT_SOURCE_DIR"):
+            environment.pop(name, None)
+        for workspace in (str(self.root / "workspace"), None, str(self.app)):
+            with self.subTest(workspace=workspace):
+                configured = dict(environment)
+                if workspace is None:
+                    configured.pop("RUNNER_WORKSPACE", None)
+                else:
+                    configured["RUNNER_WORKSPACE"] = workspace
+                self.log.unlink(missing_ok=True)
+                result = subprocess.run(["bash", str(script), "--source-root", str(self.app), "true"],
+                                        cwd=self.core, env=configured, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+                run = next(row for row in calls if row[0] == "run")
+                for path in (self.app, self.core, self.kit):
+                    self.assertIn(f"{path}:{path}", run)
+                targets = [run[index + 1].split(":")[1] for index, argument in enumerate(run) if argument == "-v"]
+                self.assertEqual(len(targets), len(set(targets)), run)
+                self.assertIn(f"{self.app}:/src:ro", run)
+                self.assertEqual(run[run.index("-w") + 1], str(self.app))
+                self.assertFalse(any("/.git" in argument for argument in run))
+
+    def test_source_collection_keeps_all_app_dependency_checks_without_inventing_upper_sources(self):
+        class CoreFixture(unittest.TestCase):
+            source_repositories = ("core",)
+        class AppFixture(unittest.TestCase):
+            source_repositories = ("app",)
+        core, app = CoreFixture(), AppFixture()
+        suite = unittest.TestSuite((core, app))
+        self.assertEqual(source_tests(suite, ("core",)), [core])
+        self.assertEqual(source_tests(suite, ("app",)), [core, app])
+
+    def test_sanitizer_configures_app_tests_but_core_host_and_host_filters(self):
+        script = self.install_shared_shell_helper("run-sanitized-tests.sh")
+        (self.core / "Scripts/build-root.sh").write_text(': "${UBQ_BUILD_ROOT:?}"\n')
+        (self.core / "Scripts/build-jobs.sh").write_text('ubq_build_jobs() { echo 1; }\n')
+        self.tool(self.core, "Scripts/run-ctest.sh", "core-ctest")
+        self.tool(self.bin, "cmake", "cmake")
+        for name in ("clang", "clang++"):
+            (self.bin / name).write_text('#!/bin/sh\necho "clang fixture"\n')
+            (self.bin / name).chmod(0o755)
+        context = source_roots(self.app, environment={})
+        environment = dict(self.environment(context), CC="clang", CXX="clang++")
+        checked = subprocess.run(["bash", str(script), "--source-root", str(self.app)],
+                                 env=environment, cwd=self.core, capture_output=True, text=True)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        rows = [json.loads(line) for line in self.log.read_text().splitlines()]
+        configured = [row for row in rows if row["label"] == "cmake" and "-S" in row["arguments"]]
+        self.assertEqual([row["arguments"][row["arguments"].index("-S") + 1] for row in configured], [str(self.app), str(self.core)])
+        native = configured[0]["arguments"]
+        self.assertIn("-DUBIQUITTY_SANITIZERS=address,undefined", native)
+        self.assertIn(f"-DUBIQUITTY_CORE_SOURCE_DIR={self.core}", native)
+        host = [row for row in rows if row["label"] == "core-tests"]
+        self.assertEqual([row["arguments"] for row in host], [["host_smoke", "host_cli"], ["host_soak"]])
+        self.assertTrue(all(row["subject"] == str(self.core) and row["kit"] == "" for row in host))
+
+    def test_coverage_configures_the_actual_app_or_standalone_core_subject(self):
+        script = self.install_shared_shell_helper("run-coverage.sh")
+        (self.core / "Scripts/build-root.sh").write_text(': "${UBQ_BUILD_ROOT:?}"\n')
+        (self.core / "Scripts/build-jobs.sh").write_text('ubq_build_jobs() { echo 1; }\n')
+        self.tool(self.bin, "cmake", "coverage-configure")
+        with open(self.bin / "cmake", "a") as output:
+            output.write("raise SystemExit(27)\n")
+        for subject in (self.app, self.core):
+            with self.subTest(subject=subject):
+                self.log.unlink(missing_ok=True)
+                context = source_roots(subject, environment={})
+                checked = subprocess.run(["bash", str(script), "--source-root", str(subject)],
+                                         env=self.environment(context), cwd=self.core,
+                                         capture_output=True, text=True)
+                self.assertEqual(checked.returncode, 27, checked.stdout + checked.stderr)
+                row = json.loads(self.log.read_text())
+                self.assertEqual(row["subject"], str(subject))
+                self.assertEqual(row["arguments"][row["arguments"].index("-S") + 1], str(subject))
+                self.assertIn("-DUBIQUITTY_COVERAGE=ON", row["arguments"])
+                self.assertIn("-DUBIQUITTY_TEST_PCH=OFF", row["arguments"])
+                self.assertIn(f"-DUBIQUITTY_CORE_SOURCE_DIR={self.core}", row["arguments"])
+
+    def test_coverage_floor_refuses_stale_app_or_core_inputs_without_changing_floors(self):
+        script = self.install_shared_shell_helper("check-coverage-floor.sh")
+        (self.core / "Scripts/build-root.sh").write_text(': "${UBQ_BUILD_ROOT:?}"\n')
+        for subject in (self.app, self.core):
+            with self.subTest(subject=subject):
+                context = source_roots(subject, environment={})
+                environment = self.environment(context)
+                summary = Path(environment["UBQ_BUILD_ROOT"]) / "BuildHostTests/coverage/summary.txt"
+                summary.parent.mkdir(parents=True, exist_ok=True)
+                summary.write_text("stale summary must not reach any percentage comparison\n")
+                source = subject / "Source/fresh.cpp"
+                source.parent.mkdir(exist_ok=True)
+                source.write_text("// newer product source\n")
+                os.utime(summary, (1, 1))
+                os.utime(source, (2, 2))
+                checked = subprocess.run(["bash", str(script), "--source-root", str(subject)],
+                                         env=environment, capture_output=True, text=True)
+                self.assertEqual(checked.returncode, 2, checked.stdout + checked.stderr)
+                self.assertIn("older than the sources it scores", checked.stderr)
+                self.assertIn("fresh.cpp", checked.stderr)
+
+    def test_missing_required_tool_fails_and_records_later_capabilities(self):
+        (self.app / "Scripts/build-linux-gtk.sh").unlink()
+        context = source_roots(self.app, environment={})
+        environment = self.environment(context)
+        manifest = batteries.source_stages("linux", context, ("quic", "linux-build", "linux-snapshots"))
+        path = self.root / "battery.json"
+        self.assertEqual(batteries.run_battery("linux", manifest, environment, path), 1)
+        records = json.loads(path.read_text())
+        self.assertEqual([row["state"] for row in records], ["completed", "failed", "unexecuted"])
+        self.assertIn("required source file", records[1]["command"])
+        self.assertIn("blocked by failed stage", records[2]["detail"])
+        self.assertEqual(batteries.validate_events("linux", manifest, Path(environment["UBQ_EVENT_LOG"])), [])
+
+    def test_gitless_caller_discovery_promotes_nested_core_to_app(self):
+        context = source_roots(start=self.core / "Scripts", environment={})
+        self.assertEqual((context.subject, context.core, context.kit), (self.app, self.core, self.kit))
+        (self.kit / "Scripts/repository.txt").write_text("core\n")
+        with self.assertRaisesRegex(ValueError, "kit source root names core"):
+            source_roots(self.app, environment={})
+
+    def test_arbitrary_library_worktree_or_foreign_consumer_is_not_the_subject(self):
+        renamed = self.app / "Libraries/my-core-worktree"
+        self.core.rename(renamed)
+        context = source_roots(start=renamed / "Scripts", environment={})
+        self.assertEqual(context.subject, renamed)
+        self.assertIsNone(context.kit)
+        renamed.rename(self.core)
+        (self.app / "Scripts/repository.txt").write_text("core\n")
+        context = source_roots(start=self.core / "Scripts", environment={})
+        self.assertEqual(context.subject, self.core)
+        self.assertIsNone(context.kit)
+
+    def test_uninitialized_app_dependency_refuses_instead_of_falling_back(self):
+        (self.core / "CMakeLists.txt").unlink()
+        with self.assertRaisesRegex(ValueError, "core source root is not populated"):
+            source_roots(self.app, environment={})
+
+    def test_required_tool_symlink_cannot_escape_its_source_owner(self):
+        path = self.app / "Scripts/build-linux-gtk.sh"
+        path.unlink()
+        outside = self.root / "outside.sh"
+        outside.write_text("exit 0\n")
+        path.symlink_to(outside)
+        context = source_roots(self.app, environment={})
+        stage = batteries.source_stages("linux", context, ("linux-build",))[0]
+        self.assertIn("escapes its owner", stage.command)
+        environment = context.environment({"GIT_DIR": "/foreign/.git", "GIT_INDEX_FILE": "/foreign/index"})
+        self.assertNotIn("GIT_DIR", environment)
+        self.assertNotIn("GIT_INDEX_FILE", environment)
+
+    def test_standalone_core_has_no_upper_dependency_or_app_capabilities(self):
+        context = source_roots(self.core, environment={})
+        self.assertIsNone(context.kit)
+        manifest = batteries.source_stages("linux", context)
+        self.assertNotIn("linux-build", {stage.key for stage in manifest})
+        self.assertIn("host-tests", {stage.key for stage in manifest})
+        selected = batteries.source_stages("linux", context, ("linux-build",))
+        self.assertIn("requires app sources", selected[0].command)
+
+    def test_missing_selected_conditional_capability_cannot_become_a_successful_skip(self):
+        context = source_roots(self.core, environment={})
+        environment = dict(self.environment(context), UBQ_CI_CODE="false")
+        manifest = batteries.source_stages("apple", context, ("ios-build", "ios-smokes"))
+        path = self.root / "missing-apple.json"
+        self.assertEqual(batteries.run_battery("apple", manifest, environment, path), 1)
+        self.assertEqual([row["state"] for row in json.loads(path.read_text())], ["failed", "unexecuted"])
+
+    def test_combined_tree_retains_its_single_owner_and_full_manifest(self):
+        (self.app / "Scripts/repository.txt").unlink()
+        context = source_roots(self.app, environment={})
+        self.assertEqual((context.core, context.kit), (self.app, self.app))
+        self.assertEqual({stage.key for stage in batteries.source_stages("linux", context)},
+                         {stage.key for stage in batteries.stages("linux")})
+
+
 class SuiteRootTests(unittest.TestCase):
     def test_the_suite_runs_under_a_root_of_its_own_and_keeps_it_only_when_it_failed(self):
         roots = []
@@ -3037,6 +3384,26 @@ class SuiteRootTests(unittest.TestCase):
                 self.assertEqual(root.exists(), kept)
                 self.assertEqual(str(root) in errors.getvalue(), kept)
         self.assertEqual(len(set(roots)), len(roots))
+
+
+def source_tests(suite, repositories):
+    """Collects tests for files the subject owns; App preflight retains all owners."""
+    available = set(repositories)
+    if "app" in available:
+        available.update(("core", "kit"))
+    elif "kit" in available:
+        available.add("core")
+    selected = []
+    for test in suite:
+        if isinstance(test, unittest.TestSuite):
+            selected.extend(source_tests(test, repositories))
+        elif set(getattr(type(test), "source_repositories", ("core", "kit", "app"))).intersection(available):
+            selected.append(test)
+    return selected
+
+
+def load_tests(loader, tests, pattern):
+    return unittest.TestSuite(source_tests(tests, TEST_SOURCES.repositories))
 
 
 if __name__ == "__main__":

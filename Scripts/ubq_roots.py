@@ -26,7 +26,10 @@ files and is judged as all of them.
 """
 
 import fnmatch
+from dataclasses import dataclass
 import os
+from pathlib import Path
+from typing import Optional
 import subprocess
 import sys
 
@@ -289,8 +292,123 @@ def scripts_of(root):
     return os.path.join(root, "Scripts")
 
 
+@dataclass(frozen=True)
+class SourceRoots:
+    """The explicit source composition of a build/check, including gitless exports."""
+
+    subject: Path
+    core: Path
+    kit: Optional[Path]
+    repositories: tuple[str, ...]
+
+    def resolve_file(self, relative):
+        """Finds a required tool/data file in its actual owner; absence refuses."""
+        if Path(relative).is_absolute() or ".." in Path(relative).parts:
+            raise ValueError(f"source-relative path required: {relative}")
+        for root in dict.fromkeys((self.subject, self.kit, self.core)):
+            if root is not None and (root / relative).is_file():
+                try:
+                    (root / relative).resolve().relative_to(root)
+                except ValueError as error:
+                    raise ValueError(f"required source file escapes its owner: {root / relative}") from error
+                return root / relative
+        raise FileNotFoundError(f"required source file is absent from the composition: {relative}")
+
+    def environment(self, original):
+        """Binds nested tools to this subject without relying on git or cwd discovery."""
+        result = {key: value for key, value in original.items() if key not in REPOSITORY_VARIABLES}
+        result.update(UBQ_TESTS_ROOT=str(self.subject), UBQ_CORE_ROOT=str(self.core),
+                      UBIQUITTY_CORE_SOURCE_DIR=str(self.core))
+        if self.kit is not None:
+            result.update(UBQ_KIT_ROOT=str(self.kit), UBIQUITTY_KIT_SOURCE_DIR=str(self.kit))
+        else:
+            result.pop("UBQ_KIT_ROOT", None)
+            result.pop("UBIQUITTY_KIT_SOURCE_DIR", None)
+        return result
+
+
+def _source_subject(start):
+    """Finds the caller, promoting nested library mounts to their consumer."""
+    where = Path(start).expanduser().resolve()
+    found = next((parent for parent in (where, *where.parents)
+                  if (parent / "CMakeLists.txt").is_file() and (parent / "Scripts").is_dir()), None)
+    while found is not None and found.parent.name == "Libraries":
+        if found.name not in (Path(CORE_SUBMODULE).name, Path(KIT_SUBMODULE).name):
+            break
+        consumer = found.parent.parent
+        if not (consumer / "CMakeLists.txt").is_file() or not (consumer / REPOSITORY_FILE).is_file():
+            break
+        roles = repositories(str(found))
+        parent_roles = repositories(str(consumer))
+        if found.name == Path(CORE_SUBMODULE).name:
+            if "core" not in roles or not set(parent_roles).intersection(("kit", "app")):
+                break
+        elif "kit" not in roles or "app" not in parent_roles:
+            break
+        found = consumer
+    return found
+
+
+def source_roots(source=None, core=None, kit=None, environment=None, start=None):
+    """Resolves a caller's immutable source composition, without requiring git.
+
+    Explicit roots win, then the UBQ_TESTS_ROOT/UBQ_CORE_ROOT/UBQ_KIT_ROOT
+    environment. A marked App requires both populated public libraries; Core
+    alone never requires a repository above it. Markerless combined trees
+    retain their one-root composition.
+    """
+    environment = os.environ if environment is None else environment
+    selected = source or environment.get("UBQ_TESTS_ROOT")
+    subject = Path(selected).expanduser().resolve() if selected else _source_subject(start or os.getcwd())
+    if subject is None:
+        subject = Path(__file__).resolve().parent.parent
+    held = repositories(str(subject))
+
+    def checked(value, role):
+        root = Path(value).expanduser().resolve()
+        if not (root / "CMakeLists.txt").is_file() or not (root / "Scripts").is_dir():
+            raise ValueError(f"{role} source root is not populated: {root}")
+        roles = repositories(str(root))
+        if role not in roles:
+            raise ValueError(f"{role} source root names {'/'.join(roles)}, not {role}: {root}")
+        return root
+
+    if not (subject / "CMakeLists.txt").is_file() or not (subject / "Scripts").is_dir():
+        raise ValueError(f"source root is not populated: {subject}")
+    core_value = core or environment.get("UBQ_CORE_ROOT") or environment.get("UBIQUITTY_CORE_SOURCE_DIR")
+    if not core_value:
+        core_value = subject if "core" in held else subject / CORE_SUBMODULE
+    core_path = checked(core_value, "core")
+    kit_value = kit or environment.get("UBQ_KIT_ROOT") or environment.get("UBIQUITTY_KIT_SOURCE_DIR")
+    if not kit_value and "kit" in held:
+        kit_value = subject
+    if not kit_value and "app" in held:
+        kit_value = subject / KIT_SUBMODULE
+    kit_path = checked(kit_value, "kit") if kit_value else None
+    return SourceRoots(subject, core_path, kit_path, held)
+
+
 def main(argv):
     """Prints one answer for a shell caller: a root, the repositories, or a budget."""
+    if argv[:1] == ["shell-context"]:
+        import argparse
+        import shlex
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--source-root")
+        parser.add_argument("--core-source-root")
+        parser.add_argument("--kit-source-root")
+        arguments = parser.parse_args(argv[1:])
+        try:
+            roots = source_roots(arguments.source_root, arguments.core_source_root, arguments.kit_source_root)
+        except ValueError as error:
+            parser.error(str(error))
+        print("unset " + " ".join(REPOSITORY_VARIABLES))
+        for key, value in (("ROOT", str(roots.subject)), ("CORE_ROOT", str(roots.core)),
+                           ("KIT_ROOT", str(roots.kit) if roots.kit else "")):
+            print(f"{key}={shlex.quote(value)}")
+        for key, value in roots.environment({}).items():
+            print(f"export {key}={shlex.quote(value)}")
+        return 0
     if len(argv) == 2 and argv[0] == "budget":
         try:
             print(budget(argv[1]))

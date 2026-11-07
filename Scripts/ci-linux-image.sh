@@ -45,13 +45,27 @@
 
 set -euo pipefail
 
+SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+sourceArguments=()
+ROOT="" CORE_ROOT="" KIT_ROOT=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --source-root|--core-source-root|--kit-source-root)
+            [ "$#" -ge 2 ] || { echo "ci-linux-image: $1 requires a source directory" >&2; exit 2; }
+            sourceArguments+=("$1" "$2"); shift 2 ;;
+        --) shift; break ;;
+        *) break ;;
+    esac
+done
+sourceContext="$(python3 "$SCRIPTS/ubq_roots.py" shell-context ${sourceArguments[@]+"${sourceArguments[@]}"})"
+# The shared resolver emits only fixed variable names with shlex-quoted values.
+eval "$sourceContext"
+cd "$ROOT"
 if [ "${1:-}" != --recipe-digest ] && [ "${UBQ_CI_LINUX_IMAGE:-}" != true ]; then
     exec "$@"
 fi
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-recipe="$("$ROOT/Scripts/run-linux.sh" dockerfile)"
+recipe="$(UBIQUITTY_LINUX_ROOT="$ROOT" "$CORE_ROOT/Scripts/run-linux.sh" dockerfile)"
 recipe+='
 RUN apt-get update -qq && apt-get install -y -qq \
       clang make sudo shellcheck python3-venv ca-certificates curl xz-utils bzip2 unzip procps \
@@ -100,28 +114,60 @@ export RUNNER_TEMP="${RUNNER_TEMP:-${TMPDIR:-/tmp}/ubiquitty-ci}"
 export RUNNER_TOOL_CACHE="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP/tools}"
 mkdir -p "$RUNNER_TEMP" "$RUNNER_TOOL_CACHE"
 extra_mounts=()
+mountTargets=()
+mountSources=()
+addMount() {
+    local source="$1" target="$2" mode="${3:-}" index
+    for index in ${mountTargets[@]+"${!mountTargets[@]}"}; do
+        if [ "${mountTargets[$index]}" = "$target" ]; then
+            if [ "${mountSources[$index]}" != "$source" ]; then
+                echo "ci-linux-image: different sources name the same container mount: $target" >&2
+                return 2
+            fi
+            return 0
+        fi
+    done
+    mountTargets+=("$target")
+    mountSources+=("$source")
+    extra_mounts+=(-v "$source:$target${mode:+:$mode}")
+}
 if [ -n "${UBQ_CI_LINUX_USER:-}" ]; then
     extra_mounts+=(--user "$UBQ_CI_LINUX_USER")
 fi
-common="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)"
-extra_mounts+=(-v "$common:$common")
+addMount "$RUNNER_WORKSPACE" "$RUNNER_WORKSPACE"
+addMount "$RUNNER_TEMP" "$RUNNER_TEMP"
+addMount "$RUNNER_TOOL_CACHE" "$RUNNER_TOOL_CACHE"
+# /src is an additional read-only alias; the real workspace path remains
+# writable for the runner's generated configurations and check results.
+addMount "$ROOT" /src ro
+addMount /var/run/docker.sock /var/run/docker.sock
+addMount "$(command -v docker)" /usr/local/bin/docker ro
+sourceRoots=("$ROOT" "$CORE_ROOT")
+[ -z "$KIT_ROOT" ] || sourceRoots+=("$KIT_ROOT")
+for directory in "${sourceRoots[@]}"; do
+    addMount "$directory" "$directory"
+    # A gitless source export needs no repository metadata. A linked worktree
+    # still needs its own shared object store at the same absolute path.
+    common="$(git -C "$directory" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    [ -z "$common" ] || addMount "$common" "$common"
+done
 if [ -n "${UBQ_PGO_RETRAIN_WORKTREE:-}" ]; then
     directory="$(dirname "$UBQ_PGO_RETRAIN_WORKTREE")"
     mkdir -p "$directory"
     directory="$(cd "$directory" && pwd)"
-    extra_mounts+=(-v "$directory:$directory")
+    addMount "$directory" "$directory"
 fi
 for directory in "${UBQ_BUILD_ROOT:-}" "${CCACHE_DIR:-}"; do
     if [ -n "$directory" ]; then
         mkdir -p "$directory"
-        extra_mounts+=(-v "$directory:$directory")
+        addMount "$directory" "$directory"
     fi
 done
 if [ -n "${UBQ_PGO_TRAIN_OUT:-}" ]; then
     directory="$(dirname "$UBQ_PGO_TRAIN_OUT")"
     mkdir -p "$directory"
     directory="$(cd "$directory" && pwd)"
-    extra_mounts+=(-v "$directory:$directory")
+    addMount "$directory" "$directory"
 fi
 if ! docker image inspect "$image" >/dev/null 2>&1; then
     context="$(mktemp -d)"
@@ -157,12 +203,6 @@ done < <(compgen -e | grep -E '^(GITHUB_|RUNNER_|ACTIONS_|UBQ_|UBIQUITTY_|CCACHE
 # is pid 1 and never reaps, so a killed descendant lingers as a zombie and
 # test-gate-framework's check that it is gone fails.
 docker run --rm --init \
-    -v "$RUNNER_WORKSPACE:$RUNNER_WORKSPACE" \
-    -v "$RUNNER_TEMP:$RUNNER_TEMP" \
-    -v "$RUNNER_TOOL_CACHE:$RUNNER_TOOL_CACHE" \
-    -v "$ROOT:/src:ro" \
-    -v /var/run/docker.sock:/var/run/docker.sock \
-    -v "$(command -v docker):/usr/local/bin/docker:ro" \
     ${extra_mounts[@]+"${extra_mounts[@]}"} \
     ${passed[@]+"${passed[@]}"} \
     -e LANG=C.UTF-8 \
@@ -170,5 +210,5 @@ docker run --rm --init \
     -e "CCACHE_MAXSIZE=${CCACHE_MAXSIZE:-2G}" \
     -e "UBQ_CI_LINUX_IMAGE_ID=$image_id" \
     -e "UBQ_CI_LINUX_RECIPE=$digest" \
-    -w "$PWD" \
+    -w "$ROOT" \
     "$image" "$@"

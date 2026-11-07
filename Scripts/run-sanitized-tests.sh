@@ -41,14 +41,27 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
+sourceArguments=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --source-root|--core-source-root|--kit-source-root)
+            [ "$#" -ge 2 ] || { echo "run-sanitized-tests: $1 requires a source directory" >&2; exit 2; }
+            sourceArguments+=("$1" "$2"); shift 2 ;;
+        *) break ;;
+    esac
+done
+ROOT="" CORE_ROOT="" KIT_ROOT=""
+sourceContext="$(python3 "$SCRIPTS/ubq_roots.py" shell-context ${sourceArguments[@]+"${sourceArguments[@]}"})"
+# The shared resolver emits fixed names and shell-quoted values only.
+eval "$sourceContext"
 
 # How many compilers this machine can run at once; see Scripts/build-jobs.sh.
 # shellcheck source=Scripts/build-jobs.sh
-. "$ROOT/Scripts/build-jobs.sh"
+. "$CORE_ROOT/Scripts/build-jobs.sh"
 # Build output lives outside the checkout; see Scripts/build-root.sh.
 # shellcheck source=Scripts/build-root.sh
-. "$ROOT/Scripts/build-root.sh"
+. "$CORE_ROOT/Scripts/build-root.sh"
 OUT="$UBQ_BUILD_ROOT/BuildHostTests/sanitizers"
 BUILD="$OUT/build"
 JOBS="${JOBS:-$(ubq_build_jobs)}"
@@ -87,6 +100,8 @@ for compiler in "$CC" "$CXX"; do
 done
 
 mkdir -p "$OUT"
+sourceOptions=("-DUBIQUITTY_CORE_SOURCE_DIR=$CORE_ROOT")
+[ -z "$KIT_ROOT" ] || sourceOptions+=("-DUBIQUITTY_KIT_SOURCE_DIR=$KIT_ROOT")
 
 # Debug is named for the reason run-coverage.sh names it: an empty build type is
 # FORCEd to Release, which defines NDEBUG and changes what the suite asserts.
@@ -96,6 +111,7 @@ mkdir -p "$OUT"
 cmake -S "$ROOT" -B "$BUILD" -G Ninja \
     -DUBIQUITTY_FRONTEND=Core -DCMAKE_BUILD_TYPE=Debug \
     -DUBIQUITTY_BUILD_TESTS=ON -DUBIQUITTY_SANITIZERS=address,undefined \
+    "${sourceOptions[@]}" \
     -DUBIQUITTY_TEST_TIMEOUT=300 \
     >/dev/null
 
@@ -114,14 +130,14 @@ fi
 # to keep frames alive, so detect_stack_use_after_return is on.
 export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_stack_use_after_return=1:strict_string_checks=1}"
 export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
-"$ROOT/Scripts/run-ctest.sh" "$BUILD" \
+"$CORE_ROOT/Scripts/run-ctest.sh" "$BUILD" \
     -j"$CTEST_JOBS" -E '^(ubq_build|shell_)' --output-on-failure \
     ${CTEST_FILTER[@]+"${CTEST_FILTER[@]}"}
 
 [ "$SHOULD_RUN_HOST" = 1 ] || exit 0
 
 HOST_BUILD="$OUT/host"
-cmake -S "$ROOT" -B "$HOST_BUILD" -G Ninja \
+cmake -S "$CORE_ROOT" -B "$HOST_BUILD" -G Ninja \
     -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
     -DUBIQUITTY_SANITIZERS=address,undefined \
     >/dev/null
@@ -130,12 +146,13 @@ if ! cmake --build "$HOST_BUILD" --parallel "$JOBS" --target ubiquitty-host > "$
     echo "run-sanitized-tests.sh: the instrumented host did not build (full log: $OUT/host-build.log)." >&2
     exit 1
 fi
-UBQ_HOST_TEST_BUILD="$HOST_BUILD" UBQ_HOST_PREBUILT=1 \
-    "$ROOT/Scripts/run-tests.sh" host_smoke host_cli
+UBQ_HOST_TEST_BUILD="$HOST_BUILD" UBQ_HOST_PREBUILT=1 UBQ_TESTS_ROOT="$CORE_ROOT" \
+    UBQ_KIT_ROOT='' UBIQUITTY_KIT_SOURCE_DIR='' "$CORE_ROOT/Scripts/run-tests.sh" host_smoke host_cli
 # The soak bounds the daemon's resident size, and ASan's quarantine keeps every
 # freed block until the quarantine is full, which reads as growth that is not
 # there. Leaks are LeakSanitizer's to report, at the daemon's exit; the two
 # stanzas above keep the quarantine, which is what catches a use after free.
 ASAN_OPTIONS="${ASAN_OPTIONS}:quarantine_size_mb=0" \
     UBQ_HOST_TEST_BUILD="$HOST_BUILD" UBQ_HOST_PREBUILT=1 \
-    "$ROOT/Scripts/run-tests.sh" host_soak
+    UBQ_TESTS_ROOT="$CORE_ROOT" UBQ_KIT_ROOT='' UBIQUITTY_KIT_SOURCE_DIR='' \
+    "$CORE_ROOT/Scripts/run-tests.sh" host_soak
