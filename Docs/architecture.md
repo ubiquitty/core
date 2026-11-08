@@ -662,6 +662,19 @@ The Apple frontend reaches Core through Swift `RuntimeDrive`, which owns a
 `TerminalSession` and uses direct C++ interoperability. The session owns model
 locking, ingest, snapshots, and remote or hosted input routing.
 
+The model writer publishes complete cursor-phase inputs and exact text-blink
+facts in `FramePresentationState`, beside the small per-key mode snapshot.
+Frame-clock and animation-schedule queries evaluate those inputs at the current
+tick without borrowing the model. Pane event polling reads scalar facts and
+admitted-frame generations; full `PaneView` facts remain borrowed under the
+canonical model lock.
+
+A hosted tmux pane retains a handle to its actual owner's publication. Facts
+can change inside synchronized output without admitting a completed frame.
+The owner retires the publication after writers stop and before disposing its
+model; a retained handle then reads empty state. Raw adopted models without a
+writer publication protocol retain their explicit model-lock read contract.
+
 Pointer geometry belongs to the submitted frame. Each Apple surface retains
 its grid dimensions, drawn cell size, origin, clip, backing scale, and pixel
 report basis together when a frame is submitted. Queries read that value;
@@ -1175,8 +1188,10 @@ wire model. This is the live forcing function for Core portability.
   selection, input) take it briefly. The writer never holds it across a hop to
   main (`coding-conventions.md` §5.2). Commands
   main needs the model to apply (e.g. focus changes) are posted to a ring and
-  applied **by the ingest loop** under the lock it already holds, so main never
-  blocks on the lock during a flood. The loop hops to main only when a drain
+  applied **by the ingest loop** under the lock it already holds. Clock,
+  animation-schedule and pane-event polls consume writer publications. Input
+  encoding, full borrowed facts and other model reads still use the canonical
+  model lock. The loop hops to main only when a drain
   produced something to react to (bytes/bell/EOF), and those deliveries are
   coalesced to `drainDeliverMinIntervalMicros`; with a waker installed the
   idle loop parks indefinitely, and without one it ticks at
