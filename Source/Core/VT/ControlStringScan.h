@@ -3,8 +3,15 @@
 
 #pragma once
 
+#include <bit>
+#include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <span>
+
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#include <immintrin.h>
+#endif
 
 namespace Ubiquitty::VT {
 
@@ -49,11 +56,40 @@ namespace Ubiquitty::VT {
     return (againstC1 - ones) & ~againstC1 & highBits;
 }
 
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+/// Scans complete AVX2 groups for a control-string terminator.
+///
+/// The caller checks AVX2 support and scans the remaining tail. Every vector
+/// load stays within `bytes`, including when a terminator lies at its end.
+///
+/// - Parameter bytes: The remaining control-string input.
+/// - Returns: The first terminator's offset, or the end of the complete vector groups.
+template<bool DoesC1Terminate>
+[[gnu::target("avx2")]] [[nodiscard]] inline std::size_t controlStringPayloadPrefixAVX2(std::span<const char> bytes)
+{
+    std::size_t offset = 0;
+    while (bytes.size() - offset >= 32) {
+        const auto word = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(bytes.data() + offset));
+        auto matches = _mm256_or_si256(_mm256_cmpeq_epi8(word, _mm256_set1_epi8(0x07)),
+            _mm256_cmpeq_epi8(word, _mm256_set1_epi8(0x1B)));
+        matches = _mm256_or_si256(matches, _mm256_cmpeq_epi8(word, _mm256_set1_epi8(0x18)));
+        matches = _mm256_or_si256(matches, _mm256_cmpeq_epi8(word, _mm256_set1_epi8(0x1A)));
+        if constexpr (DoesC1Terminate)
+            matches = _mm256_or_si256(matches, _mm256_cmpeq_epi8(word, _mm256_set1_epi8(static_cast<char>(0x9C))));
+        const auto mask = static_cast<std::uint32_t>(_mm256_movemask_epi8(matches));
+        if (mask)
+            return offset + std::countr_zero(mask);
+        offset += 32;
+    }
+    return offset;
+}
+#endif
+
 /// Finds where a control string's payload ends.
 ///
 /// The payloads are the largest byte runs the parser sees — a sixel frame, a kitty base64 image, an
-/// OSC 1337 file — and the caller copies the run whole. A word that could hold a terminator is read
-/// byte by byte; every other word is skipped whole.
+/// OSC 1337 file — and the caller copies the run whole. Long x86 runs use AVX2
+/// after a runtime feature check; other inputs and the remaining tail use the word scan.
 ///
 /// - Parameters:
 ///   - buffer: The input bytes.
@@ -63,7 +99,17 @@ namespace Ubiquitty::VT {
 /// - Returns: The index of the first terminator at or after `start`, or `length` when there is none.
 [[nodiscard]] inline int controlStringTerminatorIndex(const char* buffer, int start, int length, bool doesC1Terminate)
 {
+    assert(start >= 0 && length >= start);
     int i = start;
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    // Keep short strings on the inline word path; a long payload amortizes
+    // the feature check and the call across instruction-set boundaries.
+    if (length - i >= 256 && __builtin_cpu_supports("avx2")) {
+        const std::span<const char> bytes { buffer + i, static_cast<std::size_t>(length - i) };
+        const std::size_t prefix = doesC1Terminate ? controlStringPayloadPrefixAVX2<true>(bytes) : controlStringPayloadPrefixAVX2<false>(bytes);
+        i += static_cast<int>(prefix);
+    }
+#endif
     while (i + 8 <= length) {
         std::uint64_t word;
         std::memcpy(&word, buffer + i, 8);

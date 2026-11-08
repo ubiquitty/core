@@ -25,8 +25,11 @@
 #include "Core/VT/ControlStringScan.h"
 #include "Core/VT/Parser.h"
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
+#include <span>
 #include <string>
 
 namespace {
@@ -212,6 +215,61 @@ TEST(theWordScanFindsWhatAByteWalkFinds)
     // never exercises the word loop's full stride.
     CHECK_EQ(comparisons, 6 * 5 * (bufferLength + 1) * 3 * 2);
     CHECK_MSG(scansThatFoundNothing > 0, "no case ran off the end, so the terminator-free path went unread");
+}
+
+TEST(longScansRespectEveryByteAtEveryVectorAlignment)
+{
+    constexpr int lengths[] = { 0, 1, 15, 31, 32, 33, 63, 64, 127, 128, 255, 256, 257, 511, 512, 513, 1024 };
+    constexpr int positions[] = { 0, 1, 7, 8, 15, 16, 30, 31, 32, 33, 63, 64, 95, 127, 128, 254, 255, 256, 257, 510, 511, 512, 513, 767, 1023, 1024 };
+    std::array<char, 1056> bytes;
+    int comparisons = 0;
+    for (int start = 0; start < 32; ++start) {
+        for (const int length : lengths) {
+            for (const int position : positions) {
+                if (position > length)
+                    continue;
+                for (int value = 0; value < 256; ++value) {
+                    bytes.fill('A');
+                    if (position < length)
+                        bytes[static_cast<std::size_t>(start + position)] = static_cast<char>(value);
+                    for (const bool doesC1Terminate : { false, true }) {
+                        const bool isTerminator = value == 7 || value == 0x18 || value == 0x1A || value == 0x1B || (value == 0x9C && doesC1Terminate);
+                        const int expected = start + (position < length && isTerminator ? position : length);
+                        CHECK_EQ(Ubiquitty::VT::controlStringTerminatorIndex(bytes.data(), start, start + length, doesC1Terminate), expected);
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+                        if (__builtin_cpu_supports("avx2")) {
+                            const std::span<const char> input { bytes.data() + start, static_cast<std::size_t>(length) };
+                            const auto prefix = doesC1Terminate ? Ubiquitty::VT::controlStringPayloadPrefixAVX2<true>(input) : Ubiquitty::VT::controlStringPayloadPrefixAVX2<false>(input);
+                            CHECK_EQ(prefix, static_cast<std::size_t>(std::min(expected - start, length / 32 * 32)));
+                        }
+#endif
+                        ++comparisons;
+                    }
+                }
+            }
+        }
+    }
+    CHECK(comparisons > 1000000);
+}
+
+TEST(longControlStringsKeepTheirTerminatorAcrossInputSplits)
+{
+    for (const int length : { 255, 256, 257, 511, 512, 513, 1024 }) {
+        const std::string payload(static_cast<std::size_t>(length), 'A');
+        const std::string stream = "\033]0;" + payload + "\033\\Z";
+        for (const int split : { 0, 1, 31, 32, 255, 256, 257, length + 4 }) {
+            Ubiquitty::Terminal terminal;
+            Ubiquitty::hardReset(terminal);
+            Ubiquitty::processBytes(&terminal, std::string_view(stream).substr(0, static_cast<std::size_t>(split)));
+            Ubiquitty::processBytes(&terminal, std::string_view(stream).substr(static_cast<std::size_t>(split)));
+            CHECK(terminal.titleUTF8.view() == payload);
+            const auto* first = Ubiquitty::Screen::visibleCell(&terminal, 0, 0, 0);
+            CHECK(first && first->codePoint == 'Z');
+        }
+        const std::string unicodePayload = payload + "\xE2\x9C\x93";
+        CHECK(titleAfter("\033]0;" + unicodePayload + '\x07', c1AsPayload) == unicodePayload);
+        CHECK(titleAfter("\033]0;" + payload + "\x9CZ", c1Terminating) == payload);
+    }
 }
 
 TEST(aWordTheScanRejectsHoldsNoTerminator)
