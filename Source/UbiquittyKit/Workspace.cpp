@@ -242,6 +242,22 @@ bool Workspace::setView(std::uint32_t sessionID, int columns, int rows, Modes::F
         pane->endpoint.setSize(std::clamp(columns, 1, maxColumns), std::clamp(rows, 1, maxRows));
     return true;
 }
+bool Workspace::setPixelGeometry(std::uint32_t sessionID, const PixelGeometry& geometry)
+{
+    auto* pane = m_impl->pane(sessionID);
+    if (!pane)
+        return false;
+    pane->endpoint.setPixelGeometry(geometry);
+    return true;
+}
+bool Workspace::setViewOffset(std::uint32_t sessionID, int rowsAboveTail)
+{
+    auto* pane = m_impl->pane(sessionID);
+    if (!pane)
+        return false;
+    pane->endpoint.setViewOffset(std::max(0, rowsAboveTail));
+    return true;
+}
 bool Workspace::sendInput(std::uint32_t sessionID, std::string_view bytes)
 {
     auto* pane = m_impl->pane(sessionID);
