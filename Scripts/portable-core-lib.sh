@@ -251,6 +251,7 @@ void clipboardSetText(std::string_view) { }
 int clipboardGetText(char*, int) { return -1; }
 int preferencesLoad(PreferencesBlobKey, void*, int) { return -1; }
 int preferencesSaveAtomic(PreferencesBlobKey, std::span<const std::byte>) { return 0; }
+std::string systemHostName() { return "localhost"; }
 STUB
     if [ "$withPTYStream" -eq 0 ]; then
         cat >> "$1" <<'STUB'

@@ -7804,7 +7804,7 @@ bool ClientConnection::storeHistory(PaneReplica& replica, std::uint32_t epoch, s
     if (hasOpenLine && lines.size() != 1)
         return false;
     // Lines of another epoch, or below a clear, are not this cache's to hold.
-    const CacheInsert stored = hasOpenLine ? replica.history->setOpenLine(epoch, std::move(lines.front())) : replica.history->insert(epoch, lines);
+    const CacheInsert stored = hasOpenLine ? replica.history->setOpenLine(epoch, std::move(lines.front())) : replica.history->insertOwned(epoch, std::move(lines));
     // Past the replica allowance the pane that grew gives up its oldest
     // lines, as its own caps would have it; the host still holds them.
     if (stored == CacheInsert::Stored) {
