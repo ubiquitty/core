@@ -9,6 +9,11 @@
 # network, no real build.
 
 set -euo pipefail
+
+# This fixture owns its library checkouts; containing build roots must not
+# redirect provenance checks to the real source trees.
+unset UBQ_CORE_ROOT UBQ_KIT_ROOT
+
 SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT

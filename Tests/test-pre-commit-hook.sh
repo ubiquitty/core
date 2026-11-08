@@ -19,6 +19,7 @@ trap 'rm -rf "$TMP"' EXIT
 # The caller's shell may already name a pull-only checkout, which would decide a
 # case before the hook did.
 unset UBIQUITTY_SHARED_CHECKOUT UBIQUITTY_MAIN_COMMIT_OK UBQ_GATE_VERBOSE
+unset UBQ_CORE_ROOT UBQ_KIT_ROOT
 ubq_isolate_git_environment
 
 CLONE="$TMP/ubiquitty"
@@ -26,12 +27,13 @@ ubq_make_fixture_repo "$CLONE" || exit 1
 mkdir -p "$CLONE/Scripts/hooks"
 cp "$ROOT/Scripts/hooks/pre-commit" "$CLONE/Scripts/hooks/pre-commit"
 cp "$ROOT/Scripts/run-local-hooks.sh" "$CLONE/Scripts/run-local-hooks.sh"
+cp "$ROOT/Scripts/ubq-roots.sh" "$ROOT/Scripts/clang-format-pin" "$CLONE/Scripts/"
 
 # Every gate the hook names passes here, so a refusal can only be the rule's.
 # The list is read out of the hook the way the hook reads it, so a gate the hook
 # gains passes here too with no edit to this file.
-for gate in $(grep -oE '\$ROOT/Scripts/check-[a-z0-9-]+\.(sh|py)' "$CLONE/Scripts/hooks/pre-commit" \
-    | sed 's|^\$ROOT/||' | sort -u); do
+for gate in $(grep -oE '\$(ROOT/Scripts|CORE_SCRIPTS)/check-[a-z0-9-]+\.(sh|py)' "$CLONE/Scripts/hooks/pre-commit" \
+    | sed -E 's#^\$(ROOT/Scripts|CORE_SCRIPTS)/#Scripts/#' | sort -u); do
     case "$gate" in
         *.py) printf '#!/usr/bin/env python3\nraise SystemExit(0)\n' > "$CLONE/$gate" ;;
         *.sh) printf '#!/bin/sh\nexit 0\n' > "$CLONE/$gate" ;;
