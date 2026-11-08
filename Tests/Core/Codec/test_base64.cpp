@@ -82,6 +82,37 @@ TEST(base64RejectsAByteOutsideTheAlphabet)
     CHECK(decode("QUJD ") == std::nullopt);
 }
 
+TEST(base64RejectsWhitespaceAtEverySIMDBoundaryAndFinalGroup)
+{
+    constexpr char whitespace[] = { ' ', '\t', '\n', '\r', '\f' };
+    for (std::size_t length = 0; length <= 100; ++length) {
+        const std::vector<char> raw(length, 'x');
+        std::vector<char> encoded(base64EncodedLength(length));
+        REQUIRE(base64Encode(raw, encoded).has_value());
+        std::string input(encoded.begin(), encoded.end());
+        for (;;) {
+            std::vector<char> output(length + 4);
+            const auto valid = base64Decode(input, output);
+            REQUIRE(valid.has_value());
+            CHECK_EQ(valid->size(), length);
+            CHECK(std::equal(valid->begin(), valid->end(), raw.begin()));
+            for (std::size_t position = 0; position <= input.size(); ++position) {
+                for (const char character : whitespace) {
+                    std::string malformed = input;
+                    malformed.insert(position, 1, character);
+                    CHECK(!base64Decode(malformed, output).has_value());
+                    malformed.insert(position, 3, character);
+                    CHECK(!base64Decode(malformed, output).has_value());
+                }
+            }
+            if (input.empty() || input.back() != '=')
+                break;
+            while (input.back() == '=')
+                input.pop_back();
+        }
+    }
+}
+
 TEST(base64RejectsANonPadByteAfterPadding)
 {
     // Two payloads concatenated look exactly like one padded payload followed by
