@@ -1228,6 +1228,10 @@ static inline bool needsAnimationRedraw(const CellGrid* d, uint32_t monotonicTic
     return false;
 }
 
+/// Returns the next transition of either text-blink period.
+///
+/// - Parameter monotonicTicks: The current tick on the presentation clock.
+/// - Returns: Ticks until the next slow or fast blink transition.
 static inline uint32_t ticksUntilAnimationRedraw(uint32_t monotonicTicks)
 {
     const uint32_t slowTicks = ticksUntilBlinkAlphaChange(monotonicTicks, Cursor::Blink::caretPeriodTicks);
