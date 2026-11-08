@@ -7,7 +7,6 @@
 
 #include "simdutf.h"
 
-#include <algorithm>
 #include <cstddef>
 
 namespace Ubiquitty::Codec {
@@ -25,33 +24,14 @@ namespace {
 // outright.
 constexpr simdutf::last_chunk_handling_options lastChunkHandling = simdutf::loose;
 
-// simdutf skips ASCII whitespace at every option setting — MIME base64 permits
-// line breaks, and there is no setting that refuses them. This decoder does
-// refuse them, for the reason its header gives, so the check lives here.
-//
-// Every whitespace byte simdutf ignores is below `+`, the lowest character in
-// the alphabet, and so is every other byte it would reject anyway. One
-// comparison per byte, over a range the compiler vectorises, and it runs only
-// after a decode that already succeeded — a malformed payload never reaches it.
-//
-// A length check would be cheaper and does not work: "QQ A" ignores its space
-// and yields two bytes, which is also what the well-formed four-character
-// "QQQ=" yields, so the pair (input length, output length) cannot tell them
-// apart.
-[[nodiscard]] bool hasByteBelowTheAlphabet(std::string_view in)
-{
-    // A minimum, not a search: the early exit a search wants is a branch the
-    // vectoriser will not carry, and the answer is the same.
-    unsigned char smallest = 0xFF;
-    for (const char character : in)
-        smallest = std::min(smallest, static_cast<unsigned char>(character));
-    return smallest < static_cast<unsigned char>('+');
-}
-
 } // namespace
 
 std::optional<std::span<char>> base64Decode(std::string_view in, std::span<char> output)
 {
+    // A single remainder cannot encode a byte. Reject it before checking the
+    // decoded length: otherwise "QUJD " and "QUJD" both predict three bytes.
+    if (in.size() % 4 == 1)
+        return std::nullopt;
     // The capacity-carrying entry point rather than the plain one, which writes
     // with no ceiling and would need the caller's span pre-checked against a
     // bound computed from the character count. That bound over-counts whenever
@@ -62,7 +42,11 @@ std::optional<std::span<char>> base64Decode(std::string_view in, std::span<char>
         in.data(), in.size(), output.data(), written, simdutf::base64_default, lastChunkHandling);
     if (decoded.error != simdutf::SUCCESS)
         return std::nullopt;
-    if (hasByteBelowTheAlphabet(in))
+    // simdutf validates the alphabet and padding but skips ASCII whitespace.
+    // At the remaining lengths, any skipped byte reduces the decoded size.
+    // Count the actual trailing padding too: "QQ A" predicts three bytes,
+    // whereas "QQQ=" predicts two. This needs no second scan of the payload.
+    if (written != base64DecodedCapacity(in))
         return std::nullopt;
     return output.first(written);
 }
