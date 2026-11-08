@@ -42,6 +42,8 @@ if "--workflow" in sys.argv:
     del sys.argv[index:index + 2]
 
 TEST_SOURCES = source_roots(source=Path(WORKFLOW).resolve().parents[2] if WORKFLOW else None)
+# Core owns the smoke registry and host fixtures even when CI judges an App workflow.
+CORE_TEST_SOURCES = source_roots(source=batteries.ROOT, core=batteries.ROOT, environment={})
 
 
 def test_file(relative):
@@ -59,6 +61,7 @@ class BatteryTests(unittest.TestCase):
         for name in ("agent_smoke", "agent_auth_smoke", "agent_mcp_smoke", "agent_completions_smoke", "ubq_smoke"):
             self.assertIn(name, stage.command)
         listed = subprocess.run(["bash", str(batteries.ROOT / "Scripts/run-tests.sh"), "--list-stanzas"],
+                                cwd=CORE_TEST_SOURCES.subject, env=CORE_TEST_SOURCES.environment(os.environ),
                                 capture_output=True, text=True, check=True)
         self.assertTrue(set(stage.command.split()[-4:]).issubset(set(listed.stdout.split())))
 
@@ -459,12 +462,12 @@ class BatteryTests(unittest.TestCase):
         manifest = (batteries.Stage("one", "one stage", 'printf "%s\\n" "$UBQ_BATTERY_MARK"; [ "$UBQ_BATTERY_MARK" = pass ]'),)
         with tempfile.TemporaryDirectory(prefix="ubiquitty-ci-") as first, \
                 tempfile.TemporaryDirectory(prefix="ubiquitty-ci-") as second, \
-                redirect_stdout(io.StringIO()), patch.object(batteries, "ROOT", Path.cwd()):
+                redirect_stdout(io.StringIO()):
             runs = {}
             for root, mark in ((first, "pass"), (second, "fail")):
                 environment = batteries.platform_environment("preflight", {
                     "UBQ_CI_ROOT": root, "UBQ_BATTERY_MARK": mark, "RUNNER_TOOL_CACHE": root,
-                    "PATH": os.environ.get("PATH", "")})
+                    "PATH": os.environ.get("PATH", "")}, TEST_SOURCES)
                 path = Path(root) / "preflight" / "battery-local-1.json"
                 status = batteries.run_battery("preflight", manifest, environment, path)
                 runs[mark] = (root, environment, path, status)
@@ -600,6 +603,7 @@ class BatteryTests(unittest.TestCase):
     def test_shared_host_trees_are_built_by_one_fixture_each(self):
         listing = subprocess.run(
             [str(batteries.ROOT / "Scripts/run-tests.sh"), "--list-serial-stanzas"],
+            cwd=CORE_TEST_SOURCES.subject, env=CORE_TEST_SOURCES.environment(os.environ),
             capture_output=True, text=True, check=True).stdout.splitlines()
         by_tree = {}
         for line in listing:
@@ -609,6 +613,7 @@ class BatteryTests(unittest.TestCase):
         self.assertIn("host_quic_fixture", by_tree["host-quic"])
         stanzas = subprocess.run(
             [str(batteries.ROOT / "Scripts/run-tests.sh"), "--list-stanzas"],
+            cwd=CORE_TEST_SOURCES.subject, env=CORE_TEST_SOURCES.environment(os.environ),
             capture_output=True, text=True, check=True).stdout.splitlines()
         self.assertIn("cache_sweep_fixture", stanzas)
         self.assertIn("quic_deps_fixture", stanzas)
@@ -651,6 +656,7 @@ class BatteryTests(unittest.TestCase):
         quic_consumers = subprocess.run(
             [str(batteries.ROOT / "Scripts/run-tests.sh"),
              "--list-quic-dependency-stanzas"],
+            cwd=CORE_TEST_SOURCES.subject, env=CORE_TEST_SOURCES.environment(os.environ),
             capture_output=True, text=True, check=True).stdout.splitlines()
         for stanza in ("quic_loopback", "quic_channel_lifecycle", "quic_daemon_accept",
                        "quic_pin_gate", "quic_outbound_capacity"):
@@ -3147,7 +3153,7 @@ class SourceCompositionBatteryTests(unittest.TestCase):
     def setUp(self):
         scratch = tempfile.TemporaryDirectory(prefix="ubq-battery-composition-")
         self.addCleanup(scratch.cleanup)
-        self.root = Path(scratch.name)
+        self.root = Path(scratch.name).resolve()
         self.app = self.root / "app with spaces"
         self.core = self.app / "Libraries/ubiquitty-core"
         self.kit = self.app / "Libraries/ubiquitty-kit"
