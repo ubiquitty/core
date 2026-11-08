@@ -101,73 +101,149 @@ if [ "${1:-}" = --recipe-digest ]; then
 fi
 image="ubq-ci-linux:$digest"
 archive="${UBQ_CI_IMAGE_ARCHIVE:-}"
-if ! docker image inspect "$image" >/dev/null 2>&1 && [ -n "$archive" ] && [ -s "$archive" ]; then
-    # An archive the cache restored under another recipe's key would load an
-    # image of another tag, which the inspect below then does not find.
-    docker load -i "$archive" || echo "ci-linux-image: $archive did not load; building the image" >&2
-fi
+# Ask the daemon: a remote engine need not share the client's security setup.
+sharedLabel="$(docker info --format '{{json .SecurityOptions}}' | python3 -c '
+import json, sys
+options = json.load(sys.stdin)
+if not isinstance(options, list) or any(not isinstance(option, str) for option in options):
+    sys.exit("ci-linux-image: invalid daemon security options")
+print("z" if any(option.split(",")[0] == "name=selinux" for option in options) else "")
+')"
 
 # Standalone invocations and linked worktrees retain the same paths inside the
 # container, including git's shared object store and external build outputs.
 export RUNNER_WORKSPACE="${RUNNER_WORKSPACE:-$ROOT}"
 export RUNNER_TEMP="${RUNNER_TEMP:-${TMPDIR:-/tmp}/ubiquitty-ci}"
 export RUNNER_TOOL_CACHE="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP/tools}"
-mkdir -p "$RUNNER_TEMP" "$RUNNER_TOOL_CACHE"
+directoriesToCreate=("$RUNNER_TEMP" "$RUNNER_TOOL_CACHE")
 extra_mounts=()
 mountTargets=()
 mountSources=()
+mountModes=()
+mountKinds=()
+# Shared labels belong to scoped project data. Runner aliases can contain
+# unrelated jobs, and the Docker client and socket must keep their host labels.
 addMount() {
-    local source="$1" target="$2" mode="${3:-}" index
+    local source="$1" target="$2" mode="${3:-}" kind="${4:-host}" index
     for index in ${mountTargets[@]+"${!mountTargets[@]}"}; do
         if [ "${mountTargets[$index]}" = "$target" ]; then
-            if [ "${mountSources[$index]}" != "$source" ]; then
-                echo "ci-linux-image: different sources name the same container mount: $target" >&2
+            if [ "${mountSources[$index]}" != "$source" ] || [ "${mountModes[$index]}" != "$mode" ]; then
+                echo "ci-linux-image: conflicting sources or modes name the same container mount: $target" >&2
                 return 2
+            fi
+            if [ "${mountKinds[$index]}" = host ] || [ "$kind" = source ]; then
+                mountKinds[index]="$kind"
             fi
             return 0
         fi
     done
     mountTargets+=("$target")
     mountSources+=("$source")
-    extra_mounts+=(-v "$source:$target${mode:+:$mode}")
+    mountModes+=("$mode")
+    mountKinds+=("$kind")
 }
 if [ -n "${UBQ_CI_LINUX_USER:-}" ]; then
     extra_mounts+=(--user "$UBQ_CI_LINUX_USER")
 fi
 addMount "$RUNNER_WORKSPACE" "$RUNNER_WORKSPACE"
-addMount "$RUNNER_TEMP" "$RUNNER_TEMP"
+addMount "$RUNNER_TEMP" "$RUNNER_TEMP" "" data
 addMount "$RUNNER_TOOL_CACHE" "$RUNNER_TOOL_CACHE"
 # /src is an additional read-only alias; the real workspace path remains
 # writable for the runner's generated configurations and check results.
-addMount "$ROOT" /src ro
-addMount /var/run/docker.sock /var/run/docker.sock
-addMount "$(command -v docker)" /usr/local/bin/docker ro
+addMount "$ROOT" /src ro source
+addMount /var/run/docker.sock /var/run/docker.sock "" system
+dockerBinary="$(command -v docker)"
+addMount "$dockerBinary" /usr/local/bin/docker ro system
 sourceRoots=("$ROOT" "$CORE_ROOT")
 [ -z "$KIT_ROOT" ] || sourceRoots+=("$KIT_ROOT")
 for directory in "${sourceRoots[@]}"; do
-    addMount "$directory" "$directory"
+    addMount "$directory" "$directory" "" source
     # A gitless source export needs no repository metadata. A linked worktree
     # still needs its own shared object store at the same absolute path.
     common="$(git -C "$directory" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-    [ -z "$common" ] || addMount "$common" "$common"
+    [ -z "$common" ] || addMount "$common" "$common" "" git
 done
 if [ -n "${UBQ_PGO_RETRAIN_WORKTREE:-}" ]; then
     directory="$(dirname "$UBQ_PGO_RETRAIN_WORKTREE")"
-    mkdir -p "$directory"
-    directory="$(cd "$directory" && pwd)"
-    addMount "$directory" "$directory"
+    directory="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$directory")"
+    directoriesToCreate+=("$directory")
+    addMount "$directory" "$directory" "" data
 fi
 for directory in "${UBQ_BUILD_ROOT:-}" "${CCACHE_DIR:-}"; do
     if [ -n "$directory" ]; then
-        mkdir -p "$directory"
-        addMount "$directory" "$directory"
+        directoriesToCreate+=("$directory")
+        addMount "$directory" "$directory" "" data
     fi
 done
 if [ -n "${UBQ_PGO_TRAIN_OUT:-}" ]; then
     directory="$(dirname "$UBQ_PGO_TRAIN_OUT")"
-    mkdir -p "$directory"
-    directory="$(cd "$directory" && pwd)"
-    addMount "$directory" "$directory"
+    directory="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$directory")"
+    directoriesToCreate+=("$directory")
+    addMount "$directory" "$directory" "" data
+fi
+if [ -n "$sharedLabel" ]; then
+    # A broad workspace remains an alias. Only its scoped compiler cache needs
+    # a writable container label; relabeling the workspace would reach other jobs.
+    cacheDirectory="${CCACHE_DIR:-$RUNNER_WORKSPACE/ccache}"
+    directoriesToCreate+=("$cacheDirectory")
+    addMount "$cacheDirectory" "$cacheDirectory" "" data
+    validation=()
+    for index in "${!mountSources[@]}"; do
+        validation+=("${mountSources[$index]}" "${mountKinds[$index]}")
+    done
+    python3 - "${sourceRoots[@]}" -- "$HOME" "${TMPDIR:-/tmp}" "$dockerBinary" /var/run/docker.sock -- ${validation[@]+"${validation[@]}"} <<'PY'
+from pathlib import Path
+import sys
+
+arguments = sys.argv[1:]
+separator = arguments.index("--")
+roots = [Path(value).resolve() for value in arguments[:separator]]
+arguments = arguments[separator + 1:]
+separator = arguments.index("--")
+protected = [Path(value).resolve() for value in arguments[:separator]]
+broadRoots = [Path(value).resolve() for value in (
+    "/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib64",
+    "/media", "/mnt", "/opt", "/proc", "/root", "/run", "/sbin",
+    "/srv", "/sys", "/tmp", "/usr", "/var", "/var/tmp", "/Users",
+)]
+protected += broadRoots
+broadRoots += protected[:2]
+systemTrees = [Path(value).resolve() for value in (
+    "/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/proc", "/run", "/sbin", "/sys", "/usr", "/var",
+)]
+variableData = Path("/var").resolve()
+variableTemporary = Path("/var/tmp").resolve()
+arguments = arguments[separator + 1:]
+for value, kind in zip(arguments[::2], arguments[1::2]):
+    path = Path(value).resolve()
+    if not Path(value).is_absolute() or ":" in value or "\n" in value:
+        sys.exit(f"ci-linux-image: invalid bind mount path: {value!r}")
+    if kind == "system":
+        continue
+    if kind == "host":
+        if not Path(value).is_absolute() or path in broadRoots:
+            sys.exit(f"ci-linux-image: refusing a broad runner mount: {value}")
+        continue
+    if (any(item == path or path in item.parents for item in protected)
+            or any((path == tree or tree in path.parents)
+                   and not (tree == variableData and variableTemporary in path.parents)
+                   for tree in systemTrees)
+            or (kind != "source" and any(root == path or path in root.parents for root in roots))):
+        sys.exit(f"ci-linux-image: refusing to relabel a broad or system path: {value}")
+PY
+fi
+mkdir -p "${directoriesToCreate[@]}"
+for index in "${!mountSources[@]}"; do
+    mode="${mountModes[$index]}"
+    case "${mountKinds[$index]}" in
+        source|git|data) [ -z "$sharedLabel" ] || mode="${mode:+$mode,}$sharedLabel" ;;
+    esac
+    extra_mounts+=(-v "${mountSources[$index]}:${mountTargets[$index]}${mode:+:$mode}")
+done
+if ! docker image inspect "$image" >/dev/null 2>&1 && [ -n "$archive" ] && [ -s "$archive" ]; then
+    # An archive the cache restored under another recipe's key would load an
+    # image of another tag, which the inspect below then does not find.
+    docker load -i "$archive" || echo "ci-linux-image: $archive did not load; building the image" >&2
 fi
 if ! docker image inspect "$image" >/dev/null 2>&1; then
     context="$(mktemp -d)"

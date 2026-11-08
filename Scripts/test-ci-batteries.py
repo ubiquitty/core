@@ -3285,7 +3285,7 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         shutil.copyfile(batteries.ROOT / "Scripts/ubq_roots.py", self.core / "Scripts/ubq_roots.py")
         return path
 
-    def test_ci_image_mounts_gitless_app_and_explicit_libraries_at_their_real_paths(self):
+    def ci_image_fixture(self):
         script = self.install_shared_shell_helper("ci-linux-image.sh")
         recipe = self.core / "Scripts/run-linux.sh"
         recipe.write_text('#!/bin/sh\n[ "$UBIQUITTY_LINUX_ROOT" = "$UBQ_TESTS_ROOT" ] || exit 93\nprintf "FROM fixture\\n"\n')
@@ -3293,7 +3293,8 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         docker = self.bin / "docker"
         docker.write_text('#!/usr/bin/env python3\nimport json, os, sys\n'
                           'with open(os.environ["UBQ_ROUTING_LOG"], "a") as log: log.write(json.dumps(sys.argv[1:])+"\\n")\n'
-                          'if "--format" in sys.argv: print("sha256:fixture")\n')
+                          'if sys.argv[1:2] == ["info"]: print(os.environ.get("UBQ_DOCKER_SECURITY_OPTIONS", "[]"))\n'
+                          'elif "--format" in sys.argv: print("sha256:fixture")\n')
         docker.chmod(0o755)
         base = {key: value for key, value in os.environ.items() if not key.startswith(("UBQ_", "UBIQUITTY_", "CCACHE_"))}
         environment = dict(base, PATH=str(self.bin) + os.pathsep + os.environ.get("PATH", ""),
@@ -3302,6 +3303,17 @@ class SourceCompositionBatteryTests(unittest.TestCase):
                            RUNNER_TOOL_CACHE=str(self.root / "tools"))
         for name in ("UBQ_TESTS_ROOT", "UBQ_CORE_ROOT", "UBQ_KIT_ROOT", "UBIQUITTY_CORE_SOURCE_DIR", "UBIQUITTY_KIT_SOURCE_DIR"):
             environment.pop(name, None)
+        return script, environment
+
+    def ci_image_run(self, script, environment):
+        self.log.unlink(missing_ok=True)
+        result = subprocess.run(["bash", str(script), "--source-root", str(self.app), "true"],
+                                cwd=self.core, env=environment, capture_output=True, text=True)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
+        return result, calls
+
+    def test_ci_image_mounts_gitless_app_and_explicit_libraries_at_their_real_paths(self):
+        script, environment = self.ci_image_fixture()
         for workspace in (str(self.root / "workspace"), None, str(self.app)):
             with self.subTest(workspace=workspace):
                 configured = dict(environment)
@@ -3309,11 +3321,8 @@ class SourceCompositionBatteryTests(unittest.TestCase):
                     configured.pop("RUNNER_WORKSPACE", None)
                 else:
                     configured["RUNNER_WORKSPACE"] = workspace
-                self.log.unlink(missing_ok=True)
-                result = subprocess.run(["bash", str(script), "--source-root", str(self.app), "true"],
-                                        cwd=self.core, env=configured, capture_output=True, text=True)
+                result, calls = self.ci_image_run(script, configured)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                calls = [json.loads(line) for line in self.log.read_text().splitlines()]
                 run = next(row for row in calls if row[0] == "run")
                 for path in (self.app, self.core, self.kit):
                     self.assertIn(f"{path}:{path}", run)
@@ -3322,6 +3331,101 @@ class SourceCompositionBatteryTests(unittest.TestCase):
                 self.assertIn(f"{self.app}:/src:ro", run)
                 self.assertEqual(run[run.index("-w") + 1], str(self.app))
                 self.assertFalse(any("/.git" in argument for argument in run))
+                self.assertFalse(any(argument.endswith((":z", ",z", ":Z", ",Z")) for argument in run))
+
+    def test_ci_image_selinux_labels_only_scoped_shared_data_and_keeps_read_only_alias(self):
+        script, environment = self.ci_image_fixture()
+        subprocess.run(["git", "init", "-q", str(self.core)], check=True)
+        configured = dict(environment, UBQ_DOCKER_SECURITY_OPTIONS='["name=seccomp,profile=builtin", "name=selinux"]',
+                          UBQ_BUILD_ROOT=str(self.root / "build"), CCACHE_DIR=str(self.root / "cache"),
+                          UBQ_PGO_TRAIN_OUT=str(self.root / "profiles/core.profdata"),
+                          UBQ_PGO_RETRAIN_WORKTREE=str(self.root / "retraining/worktree"))
+        for workspace in (str(self.root / "workspace"), str(self.app)):
+            with self.subTest(workspace=workspace):
+                result, calls = self.ci_image_run(script, dict(configured, RUNNER_WORKSPACE=workspace))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                run = next(row for row in calls if row[0] == "run")
+                for path in (self.app, self.core, self.kit, self.core / ".git", self.root / "temporary",
+                             self.root / "build", self.root / "cache", self.root / "profiles", self.root / "retraining"):
+                    self.assertIn(f"{path}:{path}:z", run)
+                self.assertIn(f"{self.app}:/src:ro,z", run)
+                self.assertIn(f"{self.root / 'tools'}:{self.root / 'tools'}", run)
+                if workspace != str(self.app):
+                    self.assertIn(f"{workspace}:{workspace}", run)
+                self.assertIn("/var/run/docker.sock:/var/run/docker.sock", run)
+                self.assertIn(f"{self.bin / 'docker'}:/usr/local/bin/docker:ro", run)
+                targets = [run[index + 1].split(":")[1] for index, argument in enumerate(run) if argument == "-v"]
+                self.assertEqual(len(targets), len(set(targets)), run)
+                self.assertFalse(any(argument.endswith((":Z", ",Z")) for argument in run))
+                self.assertNotIn("--privileged", run)
+                self.assertNotIn("--security-opt", run)
+
+    def test_ci_image_selinux_mounts_scoped_default_cache_without_relabeling_workspace(self):
+        script, environment = self.ci_image_fixture()
+        result, calls = self.ci_image_run(script, dict(environment, UBQ_DOCKER_SECURITY_OPTIONS='["name=selinux"]'))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        run = next(row for row in calls if row[0] == "run")
+        workspace = self.root / "workspace"
+        self.assertIn(f"{workspace}:{workspace}", run)
+        self.assertIn(f"{workspace / 'ccache'}:{workspace / 'ccache'}:z", run)
+
+    def test_ci_image_selinux_accepts_a_scoped_variable_temporary_build_directory(self):
+        script, environment = self.ci_image_fixture()
+        with tempfile.TemporaryDirectory(prefix="ubq-image-output-", dir="/var/tmp") as temporary:
+            build = Path(temporary).resolve() / "build"
+            result, calls = self.ci_image_run(script, dict(environment, UBQ_DOCKER_SECURITY_OPTIONS='["name=selinux"]',
+                                                        UBQ_BUILD_ROOT=str(build)))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            run = next(row for row in calls if row[0] == "run")
+            self.assertIn(f"{build}:{build}:z", run)
+            self.assertTrue(build.is_dir())
+
+    def test_ci_image_selinux_refuses_broad_system_and_symlink_targets_before_container_mutations(self):
+        script, environment = self.ci_image_fixture()
+        alias = self.root / "system-alias"
+        alias.symlink_to("/usr", target_is_directory=True)
+        cases = (("RUNNER_TEMP", "/tmp"), ("UBQ_BUILD_ROOT", "/"), ("CCACHE_DIR", str(Path.home())),
+                 ("UBQ_PGO_TRAIN_OUT", "/tmp/core.profdata"), ("UBQ_PGO_RETRAIN_WORKTREE", "/tmp/worktree"),
+                 ("UBQ_BUILD_ROOT", str(self.root)), ("UBQ_BUILD_ROOT", str(alias)),
+                 ("CCACHE_DIR", str(self.bin)), ("UBQ_BUILD_ROOT", "/var/log"),
+                 ("UBQ_BUILD_ROOT", "/var/lib/docker"), ("UBQ_BUILD_ROOT", "/var/lib/containers"),
+                 ("UBQ_BUILD_ROOT", "/var/cache"), ("UBQ_PGO_TRAIN_OUT", "/var/tmp/core.profdata"))
+        for name, value in cases:
+            with self.subTest(name=name, value=value):
+                result, calls = self.ci_image_run(script, dict(environment, UBQ_DOCKER_SECURITY_OPTIONS='["name=selinux"]',
+                                                            **{name: value}))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("refusing to relabel", result.stderr)
+                self.assertEqual([row[0] for row in calls], ["info"])
+
+    def test_ci_image_refuses_unknown_daemon_security_metadata_and_mount_collisions(self):
+        script, environment = self.ci_image_fixture()
+        for value in ("not-json", "null", '["name=selinux", 1]'):
+            with self.subTest(security_options=value):
+                result, calls = self.ci_image_run(script, dict(environment, UBQ_DOCKER_SECURITY_OPTIONS=value))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual([row[0] for row in calls], ["info"])
+        result, calls = self.ci_image_run(script, dict(environment, RUNNER_WORKSPACE="/src"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("conflicting sources or modes", result.stderr)
+        self.assertEqual([row[0] for row in calls], ["info"])
+        for name in ("RUNNER_WORKSPACE", "RUNNER_TOOL_CACHE"):
+            with self.subTest(broad_runner_mount=name):
+                result, calls = self.ci_image_run(script, dict(environment, UBQ_DOCKER_SECURITY_OPTIONS='["name=selinux"]',
+                                                            **{name: "/"}))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("refusing a broad runner mount", result.stderr)
+                self.assertEqual([row[0] for row in calls], ["info"])
+        for name in ("RUNNER_WORKSPACE", "RUNNER_TOOL_CACHE"):
+            for suffix in ("colon:path", "new\nline"):
+                with self.subTest(invalid_runner_mount=name, suffix=suffix):
+                    path = self.root / suffix
+                    result, calls = self.ci_image_run(script, dict(environment, UBQ_DOCKER_SECURITY_OPTIONS='["name=selinux"]',
+                                                                **{name: str(path)}))
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("invalid bind mount path", result.stderr)
+                    self.assertEqual([row[0] for row in calls], ["info"])
+                    self.assertFalse(path.exists())
 
     def test_source_collection_keeps_all_app_dependency_checks_without_inventing_upper_sources(self):
         class CoreFixture(unittest.TestCase):
