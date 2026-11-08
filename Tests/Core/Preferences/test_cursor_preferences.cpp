@@ -35,6 +35,37 @@ static Preferences::Values blinkingBarConfiguration()
     return c;
 }
 
+TEST(publishedCursorInputsKeepTheirClockAcrossTickWrapAndModelChanges)
+{
+    Terminal terminal;
+    hardReset(terminal);
+    resize(terminal, 3, 20);
+    Preferences::Effective::applyCursorPreferences(terminal, blinkingBarConfiguration());
+    terminal.windowFocused = true;
+    terminal.cursorHoldFrames = 9;
+    terminal.cursorBlinkPeriodMilliseconds = 1000;
+    terminal.lastActivityTick = UINT32_MAX - 5;
+    const auto inputs = Cursor::appearanceInputs(&terminal);
+    const auto previousAnimation = Cursor::Blink::animation();
+    Cursor::Blink::setAnimation(Cursor::Blink::Animation::Fade);
+    CHECK(Cursor::resolve(inputs, terminal.lastActivityTick + 8).shape == Cursor::Shape::Bar);
+    CHECK_EQ(Cursor::resolve(inputs, terminal.lastActivityTick + 8).blinkAlpha, 1.0f);
+    CHECK_EQ(Cursor::resolve(inputs, terminal.lastActivityTick + 9).blinkAlpha, 0.75f);
+    CHECK_EQ(Cursor::resolve(inputs, terminal.lastActivityTick + 11).blinkAlpha, 0.5f);
+    CHECK_EQ(Cursor::ticksUntilAlphaChange(inputs, terminal.lastActivityTick + 8), 1u);
+    CHECK_EQ(Cursor::ticksUntilAlphaChange(inputs, terminal.lastActivityTick + 9), 2u);
+    terminal.windowFocused = false;
+    terminal.cursorBlinkPref = false;
+    terminal.modes.isCursorVisible = false;
+    CHECK_EQ(Cursor::resolve(inputs, terminal.lastActivityTick + 13).blinkAlpha, 0.25f);
+    const auto hidden = Cursor::appearanceInputs(&terminal);
+    CHECK_EQ(Cursor::resolveAppearance(hidden, terminal.lastActivityTick + 13).blinkAlpha, 1.0f);
+    CHECK_EQ(Cursor::resolve(hidden, terminal.lastActivityTick + 13).blinkAlpha, 0.0f);
+    CHECK_EQ(Cursor::ticksUntilAlphaChange(hidden, terminal.lastActivityTick + 13), 0u);
+    CHECK_EQ(Cursor::resolveAppearance(Cursor::appearanceInputs(nullptr), 100).blinkAlpha, 0.0f);
+    Cursor::Blink::setAnimation(previousAnimation);
+}
+
 /// A terminal nobody applied the preferences to answers a program's
 /// "restore the default cursor" with a block rather than the configured shape.
 ///

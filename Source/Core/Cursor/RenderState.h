@@ -119,16 +119,54 @@ static inline Cursor::Style effectiveStyleForUserPreference(const Ubiquitty::Ter
     return Cursor::isBlinking(style) && t.cursorBlinkPref;
 }
 
+/// The model-owned inputs of the cursor's presentation clock.
+///
+/// Copied under the writer's lock; evaluating a later tick needs no Terminal
+/// borrow. Visibility remains separate from appearance for held frames.
+struct AppearanceInputs {
+    bool hasTerminal = false;
+    bool hasActiveScreen = false;
+    bool isCursorVisible = false;
+    bool isBlinking = false;
+    bool isWindowFocused = false;
+    int row = 0;
+    int column = 0;
+    Style style = Style::FollowUserPreference;
+    uint32_t lastActivityTick = 0;
+    uint32_t holdTicks = activityHoldTicks;
+    uint32_t periodTicks = Blink::caretPeriodTicks;
+};
+
+/// Copies the cursor clock's complete inputs while the model is stable.
+[[nodiscard]] static inline AppearanceInputs appearanceInputs(const Ubiquitty::Terminal* terminal)
+{
+    if (!terminal)
+        return {};
+    return {
+        .hasTerminal = true,
+        .hasActiveScreen = terminal->screens.active != nullptr,
+        .isCursorVisible = terminal->modes.isCursorVisible,
+        .isBlinking = isStyleBlinking(*terminal),
+        .isWindowFocused = terminal->windowFocused,
+        .row = terminal->screens.active ? terminal->screens.active->cursorY : 0,
+        .column = terminal->screens.active ? terminal->screens.active->cursorX : 0,
+        .style = terminal->cursorStyle == Style::FollowUserPreference ? effectiveStyleForUserPreference(*terminal) : terminal->cursorStyle,
+        .lastActivityTick = terminal->lastActivityTick,
+        .holdTicks = terminal->cursorHoldFrames ? terminal->cursorHoldFrames : activityHoldTicks,
+        .periodTicks = blinkPeriodTicks(terminal->cursorBlinkPeriodMilliseconds),
+    };
+}
+
 /// Resolves cursor appearance independently of program-requested visibility.
 ///
 /// Presentation holds need the continuing blink clock while DECTCEM is hidden.
 /// The program's visibility remains a separate fact; ``resolve`` applies it.
 ///
 /// - Parameters:
-///   - t: The terminal to resolve. Null or no active screen yields an invisible state.
+///   - inputs: The captured appearance; no active screen yields an invisible state.
 ///   - monotonicTicks: The current tick, for the blink phase and activity hold.
 /// - Returns: The resolved row, column, shape, visibility and blink opacity.
-static inline RenderState resolveAppearance(const Ubiquitty::Terminal* t, uint32_t monotonicTicks)
+static inline RenderState resolveAppearance(const AppearanceInputs& inputs, uint32_t monotonicTicks)
 {
     RenderState out;
     out.row = 0;
@@ -136,16 +174,15 @@ static inline RenderState resolveAppearance(const Ubiquitty::Terminal* t, uint32
     out.shape = Shape::Block;
     out.visible = false;
     out.blinkAlpha = 0.0f;
-    if (!t || !t->screens.active)
+    if (!inputs.hasActiveScreen)
         return out;
-    out.row = t->screens.active->cursorY;
-    out.column = t->screens.active->cursorX;
+    out.row = inputs.row;
+    out.column = inputs.column;
     // Shape + whether-it-blinks. An explicit DECSCUSR style (app-set) wins;
     // FollowUserPreference resolves to the user's shape/blink preferences via
     // the shared helper (single source of truth with the DECRQSS report). The
     // renderer never interprets this — it paints the resolved state.
-    const Cursor::Style style = (t->cursorStyle == Cursor::Style::FollowUserPreference) ? effectiveStyleForUserPreference(*t) : t->cursorStyle;
-    switch (style) {
+    switch (inputs.style) {
     case Cursor::Style::BlinkingUnderline:
     case Cursor::Style::SteadyUnderline:
         out.shape = Shape::Underline;
@@ -158,13 +195,12 @@ static inline RenderState resolveAppearance(const Ubiquitty::Terminal* t, uint32
         out.shape = Shape::Block;
         break;
     }
-    const bool isBlinkingStyle = isStyleBlinking(*t);
-    const uint32_t hold = (t->cursorHoldFrames != 0) ? t->cursorHoldFrames : activityHoldTicks;
+    const uint32_t hold = inputs.holdTicks;
     // A terminal that has seen no activity phases from tick 0 the way one that
     // just saw activity does: the hold first, then the fade. A fresh terminal
     // opens on a solid cursor, and a capture pinned at tick 0 draws the same
     // solid block the clockless capture path pins by construction.
-    const uint32_t sinceActivity = monotonicTicks - t->lastActivityTick;
+    const uint32_t sinceActivity = monotonicTicks - inputs.lastActivityTick;
     const bool freezeOn = sinceActivity < hold;
     // Phase the blink from the END of the post-activity hold, not the absolute
     // clock — so it always resumes deterministically. The hold already supplied
@@ -178,30 +214,40 @@ static inline RenderState resolveAppearance(const Ubiquitty::Terminal* t, uint32
     // and reproduces the previous blink exactly. The solidFrames phase offset
     // lives in the caret domain, so it is added after scaling — keeping the
     // "resume at the fade-out" alignment regardless of period.
-    const uint32_t periodTicks = blinkPeriodTicks(t->cursorBlinkPeriodMilliseconds);
+    const uint32_t periodTicks = inputs.periodTicks;
     const uint32_t scaledPhase = static_cast<uint32_t>(static_cast<uint64_t>(sinceHold) * Cursor::Blink::caretPeriodTicks / periodTicks);
     // Unfocused: the frontend paints a static hollow outline, so freeze the
     // blink — a background cursor that blinks is wrong, and on a busy stream the
     // per-frame re-resolve would otherwise flicker the outline on the blink
     // phase.
-    out.blinkAlpha = (!isBlinkingStyle || freezeOn || !t->windowFocused) ? 1.0f : Cursor::Blink::alphaAt(scaledPhase + Cursor::Blink::solidFrames);
+    out.blinkAlpha = (!inputs.isBlinking || freezeOn || !inputs.isWindowFocused) ? 1.0f : Cursor::Blink::alphaAt(scaledPhase + Cursor::Blink::solidFrames);
     out.visible = out.blinkAlpha >= 0.5f; // discrete on/off gate
     return out;
+}
+
+static inline RenderState resolveAppearance(const Ubiquitty::Terminal* terminal, uint32_t monotonicTicks)
+{
+    return resolveAppearance(appearanceInputs(terminal), monotonicTicks);
 }
 
 /// Returns the cursor state to paint directly from the terminal model.
 ///
 /// - Parameters:
-///   - t: The terminal to resolve. Null, DECTCEM hidden, or no active screen
+///   - inputs: The captured appearance. DECTCEM hidden or no active screen
 ///     yields an invisible state.
 ///   - monotonicTicks: The current tick, for the blink phase and activity hold.
 /// - Returns: The resolved cursor, including program-requested visibility.
-static inline RenderState resolve(const Ubiquitty::Terminal* t, uint32_t monotonicTicks)
+static inline RenderState resolve(const AppearanceInputs& inputs, uint32_t monotonicTicks)
 {
-    if (!t || !t->modes.isCursorVisible) {
+    if (!inputs.isCursorVisible) {
         return { 0, 0, Shape::Block, false, 0.0f };
     }
-    return resolveAppearance(t, monotonicTicks);
+    return resolveAppearance(inputs, monotonicTicks);
+}
+
+static inline RenderState resolve(const Ubiquitty::Terminal* terminal, uint32_t monotonicTicks)
+{
+    return resolve(appearanceInputs(terminal), monotonicTicks);
 }
 
 /// Returns how many ticks until the cursor's opacity next changes.
@@ -210,33 +256,38 @@ static inline RenderState resolve(const Ubiquitty::Terminal* t, uint32_t monoton
 /// every frame — the step curve changes level 8 times a cycle, not 60.
 ///
 /// - Parameters:
-///   - t: The terminal to inspect.
+///   - inputs: The captured appearance to inspect.
 ///   - monotonicTicks: The current tick.
 /// - Returns: The tick delta, or 0 when the opacity does not change within one
 ///   blink period — which includes a steady cursor and a frozen one.
-static inline uint32_t ticksUntilAlphaChange(const Ubiquitty::Terminal* t, uint32_t monotonicTicks)
+static inline uint32_t ticksUntilAlphaChange(const AppearanceInputs& inputs, uint32_t monotonicTicks)
 {
-    if (!t) {
+    if (!inputs.hasActiveScreen) {
         return 0;
     }
 
-    const float currentAlpha = resolve(t, monotonicTicks).blinkAlpha;
-    const uint32_t hold = (t->cursorHoldFrames != 0) ? t->cursorHoldFrames : activityHoldTicks;
-    const uint32_t sinceActivity = monotonicTicks - t->lastActivityTick;
+    const float currentAlpha = resolve(inputs, monotonicTicks).blinkAlpha;
+    const uint32_t hold = inputs.holdTicks;
+    const uint32_t sinceActivity = monotonicTicks - inputs.lastActivityTick;
     if (sinceActivity < hold) {
         const uint32_t untilHoldEnds = hold - sinceActivity;
-        if (resolve(t, monotonicTicks + untilHoldEnds).blinkAlpha != currentAlpha) {
+        if (resolve(inputs, monotonicTicks + untilHoldEnds).blinkAlpha != currentAlpha) {
             return untilHoldEnds;
         }
     }
 
-    const uint32_t periodTicks = blinkPeriodTicks(t->cursorBlinkPeriodMilliseconds);
+    const uint32_t periodTicks = inputs.periodTicks;
     for (uint32_t delta = 1; delta <= periodTicks; ++delta) {
-        if (resolve(t, monotonicTicks + delta).blinkAlpha != currentAlpha) {
+        if (resolve(inputs, monotonicTicks + delta).blinkAlpha != currentAlpha) {
             return delta;
         }
     }
     return 0;
+}
+
+static inline uint32_t ticksUntilAlphaChange(const Ubiquitty::Terminal* terminal, uint32_t monotonicTicks)
+{
+    return ticksUntilAlphaChange(appearanceInputs(terminal), monotonicTicks);
 }
 
 /// Returns the DECSCUSR style code the terminal is showing, for DECRQSS.
