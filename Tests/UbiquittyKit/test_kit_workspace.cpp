@@ -177,10 +177,10 @@ TEST(workspaceEmbeddingDropsOnlyPanesTheHostRemoved)
 
 TEST(hostFactoryValidatesBeforeSpawningAndPinsTheAcknowledgedDaemon)
 {
-    CHECK(!UbiquittyKit::makeHostChannelFactory({ .hostBinary = "" }));
-    CHECK(!UbiquittyKit::makeHostChannelFactory({ .sshDestination = "-oProxyCommand=anything" }));
-    CHECK(!UbiquittyKit::makeHostChannelFactory({ .socketName = "../other.sock" }));
-    auto factory = UbiquittyKit::makeHostChannelFactory({ .hostBinary = "/host with 'quotes'" });
+    CHECK(!UbiquittyKit::makeHostChannelFactory({ .hostBinary = "", .sshDestination = {}, .socketName = {} }));
+    CHECK(!UbiquittyKit::makeHostChannelFactory({ .sshDestination = "-oProxyCommand=anything", .socketName = {} }));
+    CHECK(!UbiquittyKit::makeHostChannelFactory({ .sshDestination = {}, .socketName = "../other.sock" }));
+    auto factory = UbiquittyKit::makeHostChannelFactory({ .hostBinary = "/host with 'quotes'", .sshDestination = {}, .socketName = {} });
     REQUIRE(factory);
     CHECK((*factory)->pinDaemonSocket("first.sock"));
     CHECK((*factory)->pinDaemonSocket("first.sock"));
