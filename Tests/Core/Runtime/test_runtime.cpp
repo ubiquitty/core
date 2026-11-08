@@ -6229,6 +6229,39 @@ TEST(publishedClockTracksActivityFocusHiddenTextAndClose)
     Ubiquitty::Cursor::Blink::setAnimation(previousAnimation);
 }
 
+TEST(publishedClockTracksFedCursorStyleTransitions)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(2, 20);
+    session->lockForRead();
+    auto* terminal = session->terminal();
+    terminal->windowFocused = true;
+    terminal->cursorBlinkPref = true;
+    terminal->cursorHoldFrames = 9;
+    terminal->cursorBlinkPeriodMilliseconds = 1000;
+    terminal->lastActivityTick = 100;
+    session->unlockForRead();
+    const auto previousAnimation = Ubiquitty::Cursor::Blink::animation();
+    Ubiquitty::Cursor::Blink::setAnimation(Ubiquitty::Cursor::Blink::Animation::Fade);
+    setenv("UBIQUITTY_FAKE_TICKS", "109", 1);
+
+    const std::string blinking = "\033[1 q";
+    session->feedBytes({ blinking.data(), blinking.size() });
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 0.75f);
+    CHECK(session->nextAnimationDelay().hasAnimatingContent);
+    const std::string steady = "\033[2 q";
+    session->feedBytes({ steady.data(), steady.size() });
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 1.0f);
+    CHECK(!session->nextAnimationDelay().hasAnimatingContent);
+    session->feedBytes({ blinking.data(), blinking.size() });
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 0.75f);
+    CHECK(session->nextAnimationDelay().hasAnimatingContent);
+
+    unsetenv("UBIQUITTY_FAKE_TICKS");
+    Ubiquitty::Cursor::Blink::setAnimation(previousAnimation);
+}
+
 TEST(aTimedDrainPublishesContinuingInputWithoutClaimingQuiet)
 {
     TerminalRuntime runtime;
