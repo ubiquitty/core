@@ -225,9 +225,15 @@ static inline RenderState resolveAppearance(const AppearanceInputs& inputs, uint
     return out;
 }
 
+/// Resolves the locked model's cursor appearance independently of visibility.
+///
+/// - Parameters:
+///   - terminal: The locked model, or null for an invisible cursor.
+///   - monotonicTicks: The current tick, for the blink phase and activity hold.
+/// - Returns: The resolved cursor appearance before program visibility is applied.
 static inline RenderState resolveAppearance(const Ubiquitty::Terminal* terminal, uint32_t monotonicTicks)
 {
-    return resolveAppearance(appearanceInputs(terminal), monotonicTicks);
+    return terminal ? resolveAppearance(appearanceInputs(terminal), monotonicTicks) : RenderState {};
 }
 
 /// Returns the cursor state to paint directly from the terminal model.
@@ -245,9 +251,15 @@ static inline RenderState resolve(const AppearanceInputs& inputs, uint32_t monot
     return resolveAppearance(inputs, monotonicTicks);
 }
 
+/// Resolves the locked model's cursor for direct painting.
+///
+/// - Parameters:
+///   - terminal: The locked model, or null for an invisible cursor.
+///   - monotonicTicks: The current tick, for the blink phase and activity hold.
+/// - Returns: The resolved cursor, including program-requested visibility.
 static inline RenderState resolve(const Ubiquitty::Terminal* terminal, uint32_t monotonicTicks)
 {
-    return resolve(appearanceInputs(terminal), monotonicTicks);
+    return terminal ? resolve(appearanceInputs(terminal), monotonicTicks) : RenderState {};
 }
 
 /// Returns how many ticks until the cursor's opacity next changes.
@@ -285,9 +297,15 @@ static inline uint32_t ticksUntilAlphaChange(const AppearanceInputs& inputs, uin
     return 0;
 }
 
+/// Returns when the locked model's cursor opacity next changes.
+///
+/// - Parameters:
+///   - terminal: The locked model, or null when no cursor animates.
+///   - monotonicTicks: The current tick on the presentation clock.
+/// - Returns: The tick delta, or zero when no change occurs within one period.
 static inline uint32_t ticksUntilAlphaChange(const Ubiquitty::Terminal* terminal, uint32_t monotonicTicks)
 {
-    return ticksUntilAlphaChange(appearanceInputs(terminal), monotonicTicks);
+    return terminal ? ticksUntilAlphaChange(appearanceInputs(terminal), monotonicTicks) : 0;
 }
 
 /// Returns the DECSCUSR style code the terminal is showing, for DECRQSS.

@@ -1470,7 +1470,7 @@ public:
     /// - Parameter terminal: The locked model, or null to clear its clock state.
     void republishPresentationForTerm(const Ubiquitty::Terminal* terminal)
     {
-        m_link.presentation.publish(captureFramePresentationState(terminal));
+        m_link.presentation.publish(terminal ? captureFramePresentationState(terminal) : FramePresentationState {});
     }
 
     /// Keeps the search publication in every subsequent read snapshot.
