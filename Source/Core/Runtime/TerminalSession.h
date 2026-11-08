@@ -52,6 +52,7 @@
 #include "Core/Runtime/HostDirectory.h"
 #include "Core/Runtime/HostDirectoryClient.h"
 #include "Core/Runtime/HostOutline.h"
+#include "Core/Runtime/HostedPanePublication.h"
 #include "Core/Runtime/HostedWindows.h"
 #include "Core/Runtime/IngestLoop.h"
 #include "Core/Runtime/KeyEncode.h"
@@ -1235,6 +1236,14 @@ public:
             return;
         m_hostedPaneSource = reinterpret_cast<HostedWindowSource*>(sourceAddress);
         m_hostedPaneID = paneID;
+        const std::scoped_lock hold(*m_activeLock);
+        auto publication = m_externalTerminal && m_hostedPaneSource
+            ? m_hostedPaneSource->panePublicationHandle(paneID, *m_externalTerminal)
+            : nullptr;
+        if (publication != m_hostedPanePublication)
+            m_localPaneLink.modelDidChange();
+        m_hostedPanePublication = std::move(publication);
+        republishModel();
     }
 
     /// Attaches this session as a thin client: the model becomes the
@@ -5670,6 +5679,7 @@ public:
         // installed hands the still-live terminal a CheckedPtr into a member
         // about to be destroyed, which aborts.
         endExternalAdoption();
+        m_runtime->setPanePublishHook(nullptr, nullptr);
         // The session's three references; a drive still holding a drained frame
         // keeps that capture alive through its own reference.
         for (Rendering::FrameCapture* capture : m_syncCaptures)
@@ -6446,9 +6456,9 @@ public:
     /// them here sees each event once and none twice — the same one-pass-per-
     /// drain discipline the Metal arm's bridge delivers through a delegate.
     ///
-    /// Polls the pane link first, which reads the model under the session's
-    /// lock and delivers the link's notifications after releasing it, so the
-    /// caller must not hold ``lockForRead()``.
+    /// Polls the pane link's published notifications first. Local and hosted
+    /// publishers need no parser lock; raw adopted models without a publication
+    /// protocol retain their canonical borrowed-model lock.
     /// Takes the bells this pane rang since the last take, from every path
     /// that delivers them: the ingest loop's drains, a frontend's own feed
     /// and a remote host's bell.
@@ -7639,17 +7649,24 @@ public:
                 else
                     m_runtime->publishDisplayChange(m_host);
                 m_events.pending.fetch_or(1u << static_cast<unsigned>(EventKind::ScreenDirty), std::memory_order_release);
+                return;
             }
         }
+        if (m_externalTerminal && m_hostedPaneSource && m_hostedPanePublication)
+            m_hostedPaneSource->refreshPanePublication(m_hostedPaneID, *m_externalTerminal);
+        m_runtime->republishPresentationForTerm(modelTerm());
     }
 
-    /// Resolves the frame-clock facts against the model, under the lock.
+    /// Resolves the frame-clock facts from the writer's published inputs.
     ///
     /// One tick serves the cursor resolve and the builder's blink curves, so
     /// the caret and SGR 5/6 text stay in the phase the curve defines.
     ///
-    /// Runs on every link tick; the drain's release hands the lock over, so
-    /// the wait is about one bite.
+    /// Runs on every link tick. Local and hosted publishers advance against
+    /// the current clock without borrowing the mutable model. A raw adopted
+    /// model without a publication protocol retains its canonical
+    /// borrowed-model lock, which the drain's release hands over within about
+    /// one bite.
     ///
     /// - Returns: The tick and the cursor's blink weight at it; the solid
     ///   defaults when no model exists.
@@ -7657,10 +7674,9 @@ public:
     {
         FrameClockFacts facts;
         facts.blinkTicks = frameTicksNow();
-        lockForRead();
-        if (Ubiquitty::Terminal* term = modelTerm())
-            facts.cursorMixAlpha = Ubiquitty::Cursor::resolveAppearance(term, facts.blinkTicks).blinkAlpha;
-        unlockForRead();
+        const auto presentation = framePresentationState();
+        if (presentation.cursor.hasTerminal)
+            facts.cursorMixAlpha = Ubiquitty::Cursor::resolveAppearance(presentation.cursor, facts.blinkTicks).blinkAlpha;
         return facts;
     }
 
@@ -8630,7 +8646,7 @@ public:
     /// instead of swallowing the idle span since the previous one stopped.
     void resetImageAdvanceClock() { m_lastImageAdvanceMicros = 0; }
 
-    /// Settles the animation schedule against the model, under the lock.
+    /// Settles the animation schedule against published model inputs.
     ///
     /// The same assembly the AppKit frame clock makes from its delegate,
     /// with the inputs this session can answer for: SGR 5/6 blink from the
@@ -8638,8 +8654,10 @@ public:
     /// flash are view tiers a surface host composes; they join the inputs
     /// when a surface carries them.
     ///
-    /// Runs after every drawn frame; the drain's release hands the lock
-    /// over, as for ``frameClockFactsNow``.
+    /// Runs after every drawn frame. Reads one coherent publication and
+    /// evaluates both phase curves at the current tick. Raw adopted models
+    /// without a publication protocol retain their canonical borrowed-model
+    /// lock, as for ``frameClockFactsNow``.
     ///
     /// - Returns: Whether anything animates, and the delay to its next
     ///   visible change.
@@ -8647,8 +8665,8 @@ public:
     {
         AnimationScheduleVerdict verdict;
         const std::uint32_t nowTicks = frameTicksNow();
-        lockForRead();
-        if (Ubiquitty::Terminal* term = modelTerm()) {
+        const auto presentation = framePresentationState();
+        if (presentation.cursor.hasTerminal) {
             Ubiquitty::Rendering::AnimationScheduleInputs inputs;
             // The hint is sticky; the live-screen reading beside it is what
             // stands a timer down once the blink content is erased. Scrolled
@@ -8659,15 +8677,14 @@ public:
             // the offset check goes first because the live-screen reading is
             // a scan over the grid, and a scrolled-back view answers without
             // it.
-            if (term->grid && term->grid->hasBlinkHint()
+            if (presentation.hasBlinkHint
                 && (m_presentedViewOffset.load(std::memory_order_relaxed) > 0
-                    || Ubiquitty::Rendering::anyCellBlinks(*term)))
-                inputs.blinkDelayTicks = Ubiquitty::ticksUntilAnimationRedraw(term->grid.get(), nowTicks);
-            inputs.cursorDelayTicks = Ubiquitty::Cursor::ticksUntilAlphaChange(term, nowTicks);
+                    || presentation.hasBlinkCellOnScreen))
+                inputs.blinkDelayTicks = Ubiquitty::ticksUntilAnimationRedraw(nowTicks);
+            inputs.cursorDelayTicks = Ubiquitty::Cursor::ticksUntilAlphaChange(presentation.cursor, nowTicks);
             verdict.hasAnimatingContent = inputs.blinkDelayTicks != 0 || inputs.cursorDelayTicks != 0;
             verdict.delaySeconds = inputs.nextDelaySeconds();
         }
-        unlockForRead();
         return verdict;
     }
 
@@ -8787,6 +8804,10 @@ public:
             if (m_externalTerminal->typography.shaper.context == m_richTextShaper.context)
                 m_externalTerminal->typography.shaper = {};
             detachSessionClients(*m_externalTerminal);
+        }
+        if (m_externalTerminal != terminal) {
+            m_hostedPanePublication.reset();
+            m_localPaneLink.modelDidChange();
         }
         m_externalTerminal = terminal;
         m_activeLock = terminal ? reinterpret_cast<ModelLock*>(lockAddress) : &m_modelLock;
@@ -8987,9 +9008,13 @@ private:
         Session::PaneView view() override
         {
             auto* const terminal = m_owner.m_externalTerminal ? m_owner.m_externalTerminal : m_owner.m_runtime->borrowTermForRender();
+            // Full adopted facts are borrowed only under this model's lock.
+            // Their actual owner can mutate without the adapter runtime running.
+            if (terminal && m_owner.m_externalTerminal && !m_owner.m_preparedRemote)
+                refreshFacts(*terminal);
             return { .terminal = terminal,
                 .facts = m_owner.m_preparedRemote ? nullptr : m_facts.factsFor(terminal),
-                .hasFrameNotifications = !m_owner.m_externalTerminal || (m_owner.m_hostedPaneSource && m_owner.m_hostedPaneSource->hasPanePublications()) };
+                .hasFrameNotifications = !m_owner.m_externalTerminal || !!m_owner.m_hostedPanePublication };
         }
 
         void setView(Protocol::Sync::ViewState state) override { m_view = state; }
@@ -9040,51 +9065,70 @@ private:
                 m_notifiedFacts = 0;
         }
 
+        /// Refreshes borrowed facts under the writer's model lock and publishes
+        /// only scalar notification state for the presentation owner to poll.
+        ///
+        /// - Parameter terminal: This link's model, under its canonical lock.
+        void publishModel(const Ubiquitty::Terminal& terminal)
+        {
+            const auto* expected = m_owner.m_externalTerminal ? m_owner.m_externalTerminal : m_owner.m_runtime->borrowTermForRender();
+            if (&terminal != expected || m_owner.m_preparedRemote)
+                return;
+            refreshFacts(terminal);
+            Publication publication;
+            publication.factsGeneration = m_facts.generation();
+            if (!m_owner.m_externalTerminal) {
+                if (const auto frameClass = m_owner.m_runtime->lastFrameClass()) {
+                    publication.hasFrame = true;
+                    publication.frame.frameClass = wireFrameClass(*frameClass);
+                    for (std::size_t index = 0; index < frameClassCount; ++index)
+                        publication.frame.generation += m_owner.m_runtime->frameCount(static_cast<FrameClass>(index));
+                    publication.frame.lagMicroseconds = m_owner.m_runtime->lastFrameLagMicroseconds();
+                }
+            }
+            m_publication.publish(publication);
+        }
+
+        /// Clears notification state after the model's writer has stopped.
+        void retireModel()
+        {
+            m_facts.invalidate();
+            m_publication.publish({});
+        }
+
+        /// Clears presentation-owned deduplication when the model owner changes.
+        void modelDidChange()
+        {
+            m_notifiedFacts = 0;
+            m_events.resetFrame();
+        }
+
         void pollEvents(std::uint64_t now) override
         {
             if (!m_events.hasObserver())
                 return;
-            std::optional<Session::FrameReady> frame;
-            std::uint64_t factsGeneration = 0;
-            {
-                const std::scoped_lock hold(*m_owner.m_activeLock);
-                auto* const terminal = view().terminal;
-                if (terminal && !m_owner.m_preparedRemote) {
-                    if (m_hostFacts.isAdopted != !!m_owner.m_externalTerminal)
-                        m_hostFacts = {};
-                    if (m_owner.m_externalTerminal)
-                        m_hostFacts.isAdopted = true;
-                    else
-                        m_owner.m_runtime->updatePaneHostFacts(m_hostFacts);
-                    // Only this model's measured pixels and OSC reports are
-                    // known for an adopted pane; the adapter's idle process
-                    // cache belongs to another terminal and must not leak in.
-                    const auto textArea = Ubiquitty::reportedTextAreaPixels(*terminal);
-                    m_hostFacts.pixels = { .cellWidth = terminal->cellPixelWidth, .cellHeight = terminal->cellPixelHeight, .textAreaWidth = static_cast<std::uint16_t>(std::clamp(textArea.width, 0, 65535)), .textAreaHeight = static_cast<std::uint16_t>(std::clamp(textArea.height, 0, 65535)) };
-                    m_facts.refresh(*terminal, m_hostFacts);
-                    factsGeneration = m_facts.generation();
-                }
-                if (m_view == Protocol::Sync::ViewState::Live) {
-                    if (m_owner.m_externalTerminal && m_owner.m_hostedPaneSource) {
-                        frame = m_owner.m_hostedPaneSource->panePublication(m_owner.m_hostedPaneID, *m_owner.m_externalTerminal);
-                    } else if (m_owner.m_externalTerminal) {
-                        // Other adopted owners must supply their own publication seam.
-                    } else if (m_owner.m_preparedRemote) {
-                        frame = m_owner.m_restoredPreview;
-                    } else if (const auto frameClass = m_owner.m_runtime->lastFrameClass()) {
-                        std::uint64_t generation = 0;
-                        for (std::size_t index = 0; index < frameClassCount; ++index)
-                            generation += m_owner.m_runtime->frameCount(static_cast<FrameClass>(index));
-                        frame = Session::FrameReady { .frameClass = wireFrameClass(*frameClass),
-                            .generation = generation,
-                            .lagMicroseconds = m_owner.m_runtime->lastFrameLagMicroseconds() };
-                    }
+            auto publication = m_publication.read();
+            if (m_owner.m_externalTerminal) {
+                if (const auto& owner = m_owner.m_hostedPanePublication) {
+                    const auto state = owner->read();
+                    publication = { .factsGeneration = state.factsGeneration, .frame = state.frame, .hasFrame = state.hasFrame };
+                } else {
+                    // A raw adopted model has no writer publication protocol.
+                    // Its supported borrowed-model contract still requires a lock.
+                    const std::scoped_lock hold(*m_owner.m_activeLock);
+                    publishModel(*m_owner.m_externalTerminal);
+                    publication = m_publication.read();
                 }
             }
-            if (frame)
-                m_events.noteFrame(*frame);
-            if (factsGeneration != 0 && factsGeneration != m_notifiedFacts) {
-                m_notifiedFacts = factsGeneration;
+            if (m_view == Protocol::Sync::ViewState::Live) {
+                if (m_owner.m_preparedRemote) {
+                    if (m_owner.m_restoredPreview)
+                        m_events.noteFrame(*m_owner.m_restoredPreview);
+                } else if (publication.hasFrame)
+                    m_events.noteFrame(publication.frame);
+            }
+            if (!m_owner.m_preparedRemote && publication.factsGeneration != 0 && publication.factsGeneration != m_notifiedFacts) {
+                m_notifiedFacts = publication.factsGeneration;
                 m_events.noteFacts();
             }
             m_events.noteState(linkState(now));
@@ -9145,10 +9189,34 @@ private:
         }
 
     private:
+        /// Refreshes owned facts while the canonical model lock protects them.
+        ///
+        /// - Parameter terminal: The model whose borrowed facts this link exposes.
+        void refreshFacts(const Ubiquitty::Terminal& terminal)
+        {
+            if (m_hostFacts.isAdopted != !!m_owner.m_externalTerminal)
+                m_hostFacts = {};
+            if (m_owner.m_externalTerminal)
+                m_hostFacts.isAdopted = true;
+            else
+                m_owner.m_runtime->updatePaneHostFacts(m_hostFacts);
+            const auto textArea = Ubiquitty::reportedTextAreaPixels(terminal);
+            m_hostFacts.pixels = { .cellWidth = terminal.cellPixelWidth, .cellHeight = terminal.cellPixelHeight, .textAreaWidth = static_cast<std::uint16_t>(std::clamp(textArea.width, 0, 65535)), .textAreaHeight = static_cast<std::uint16_t>(std::clamp(textArea.height, 0, 65535)) };
+            m_facts.refresh(terminal, m_hostFacts);
+        }
+
+        /// The scalar state the presentation owner polls without borrowing facts.
+        struct Publication {
+            std::uint64_t factsGeneration = 0;
+            Session::FrameReady frame;
+            bool hasFrame = false;
+        };
+
         TerminalSession& m_owner;
         Session::PaneLinkEvents m_events;
         PaneFactsCapture m_facts;
         Protocol::Sync::PaneHostFacts m_hostFacts;
+        SnapshotPublisher<Publication> m_publication;
         std::uint64_t m_notifiedFacts = 0;
         Protocol::Sync::ViewState m_view = Protocol::Sync::ViewState::Live;
     };
@@ -9218,6 +9286,14 @@ private:
             m_chosenThemeName = theme->name;
         }
         m_runtime->setEventSink(&m_events);
+        m_runtime->setPanePublishHook([](void* context, const Ubiquitty::Terminal* terminal) {
+            auto& link = static_cast<TerminalSession*>(context)->m_localPaneLink;
+            if (terminal)
+                link.publishModel(*terminal);
+            else
+                link.retireModel();
+        },
+            this);
         // The publish hook raises the session's flag; the pacing above it is
         // the host's, shared with the Metal arm rather than restated here.
         // A boundary is captured into the sync slot: its grid is gone by the
@@ -10058,6 +10134,7 @@ private:
     // report; null for every other session.
     HostedWindowSource* m_hostedPaneSource = nullptr;
     int m_hostedPaneID = -1;
+    std::shared_ptr<const HostedPanePublication> m_hostedPanePublication;
 
     Ubiquitty::PAL::Stream* m_tmuxPrimaryStream = nullptr;
     int m_tmuxRoutingPaneID = 0;
@@ -13287,7 +13364,24 @@ private:
     /// the runtime's own.
     ///
     /// - Returns: The presented terminal.
-    [[nodiscard]] Ubiquitty::Terminal* modelTerm() { return paneLink().view().terminal; }
+    [[nodiscard]] Ubiquitty::Terminal* modelTerm()
+    {
+        if (m_remote && m_remote->core && !m_tmuxPrimaryStream)
+            return m_remote->core->view().terminal;
+        return m_externalTerminal ? m_externalTerminal : m_runtime->borrowTermForRender();
+    }
+
+    [[nodiscard]] FramePresentationState framePresentationState()
+    {
+        if (m_externalTerminal) {
+            if (m_hostedPanePublication)
+                return m_hostedPanePublication->read().presentation;
+            // Unknown adopted writers have no publish protocol to read.
+            const std::scoped_lock hold(*m_activeLock);
+            return captureFramePresentationState(m_externalTerminal);
+        }
+        return m_runtime->link().presentation.read();
+    }
 
     /// Publishes the read-snapshot for the model this session presents; the
     /// caller holds the active lock.
@@ -13296,9 +13390,11 @@ private:
     /// the runtime's own capture would read the unused anchor.
     void republishModel()
     {
-        if (m_externalTerminal)
+        if (m_externalTerminal) {
+            if (m_hostedPaneSource && m_hostedPanePublication)
+                m_hostedPaneSource->refreshPanePublication(m_hostedPaneID, *m_externalTerminal);
             m_runtime->republishSnapshotForTerm(m_externalTerminal);
-        else
+        } else
             m_runtime->republishSnapshot();
     }
 

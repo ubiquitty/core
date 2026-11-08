@@ -134,6 +134,9 @@ bool TerminalRuntime::launch(const LaunchCommand& command, const PAL::TerminalId
     // show, where the first walk is a poll interval away and the fallback
     // without it is the application's own name.
     seedTitleName(command.titleSeedName());
+    // Launch already owns the model before its ingest starts. Publish the
+    // seed with it, including for a program that writes no initial bytes.
+    republishSnapshot();
     // The runtime that reads a program's stream answers its queries, even
     // on a terminal that last held a host's picture.
     if (m_term)
@@ -290,6 +293,9 @@ std::expected<void, TerminalRuntime::CloseError> TerminalRuntime::tryClose()
     m_stream.reset();
     m_foregroundHandoffGroup = 0;
     m_term.reset();
+    m_link.presentation.publish({});
+    if (m_panePublishHook)
+        m_panePublishHook(m_panePublishContext, nullptr);
     m_sink = nullptr;
     return {};
 }
@@ -978,6 +984,10 @@ void TerminalRuntime::takeAdmittedFrame(FrameClass frameClass, std::uint64_t now
     m_isFrameHeld.store(false, std::memory_order_release);
     ++m_frameClassCounts[static_cast<std::size_t>(frameClass)];
     m_lastFrameClass = frameClass;
+    // Notification generations describe every admission, independently of
+    // the host's display-rate throttle on copying capture storage.
+    if (m_panePublishHook)
+        m_panePublishHook(m_panePublishContext, m_term.get());
 }
 
 void TerminalRuntime::publishMidReadBoundaryIfCoherent(DrainHost& host)
@@ -1210,8 +1220,13 @@ void TerminalRuntime::publishUserDefinedKeys(const Ubiquitty::Terminal& term)
 
 void TerminalRuntime::publishReads(const RuntimeSnapshot& snap, Ubiquitty::Terminal* term)
 {
+    m_link.presentation.publish({ .cursor = Cursor::appearanceInputs(term),
+        .hasBlinkHint = snap.hasBlinkHint,
+        .hasBlinkCellOnScreen = snap.hasBlinkCellOnScreen });
     if (term && m_modelPublishHook)
         m_modelPublishHook(m_modelPublishContext, *term);
+    if (m_panePublishHook)
+        m_panePublishHook(m_panePublishContext, term);
     if (term)
         publishUserDefinedKeys(*term);
     // Inside an update the grid keeps the frame from before it, and the
@@ -1775,6 +1790,12 @@ DrainOutcome TerminalRuntime::sampleProcessStateOffDrain(DrainHost& host)
         sampleProcessState(std::move(*probe.name));
         outcome.processStateChanged = outcome.processStateChanged || m_didProcessStateMove;
     }
+    if (outcome.processStateChanged && m_panePublishHook) {
+        host.lockModel();
+        if (m_term)
+            m_panePublishHook(m_panePublishContext, m_term.get());
+        host.unlockModel();
+    }
     m_lastForegroundProbeTicks = PAL::monotonicTicks();
     m_foregroundProbeValid = true;
     return outcome;
@@ -2037,6 +2058,7 @@ void TerminalRuntime::setFocused(Ubiquitty::Modes::FocusState focus)
     // a pane that gains it has had its bell and notification seen.
     if (focus == Ubiquitty::Modes::FocusState::Focused)
         (void)Ubiquitty::markAttentionSeen(*m_term);
+    republishSnapshot();
 }
 
 void TerminalRuntime::applyCommand(const Command& command)
@@ -2068,6 +2090,7 @@ void TerminalRuntime::applyCommand(const Command& command)
             m_term->windowFocused = command.flag;
             if (command.flag)
                 (void)Ubiquitty::markAttentionSeen(*m_term);
+            republishSnapshot();
         }
         // This was not a program report. If the runtime later owns a local
         // program again, its first real focus fact must still be delivered.

@@ -22,6 +22,9 @@ public:
     }
     [[nodiscard]] std::uint64_t generation() const { return m_generation; }
 
+    /// Retires the model identity without reusing its notification generation.
+    void invalidate() { m_terminal = nullptr; }
+
     void refresh(const Ubiquitty::Terminal& terminal, const Protocol::Sync::PaneHostFacts& host)
     {
         const Stamp stamp { terminal.rows, terminal.columns, terminal.progressGeneration, terminal.tabStatusGeneration,

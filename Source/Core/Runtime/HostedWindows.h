@@ -42,6 +42,8 @@ struct Values;
 
 namespace Ubiquitty::Runtime {
 
+class HostedPanePublication;
+
 /// Identifies a hosted session separately from its reconnect authority.
 struct HostedSessionReference {
     Protocol::Tmux::SessionReference tmux;
@@ -188,9 +190,14 @@ public:
     /// Whether this source supplies actual model-owner frame publications.
     [[nodiscard]] virtual bool hasPanePublications() const { return false; }
 
-    /// Captures metadata while the caller holds the adopted model's own lock.
-    /// The expected model prevents a reused pane id from borrowing another picture.
-    [[nodiscard]] virtual std::optional<Session::FrameReady> panePublication(int, const Ubiquitty::Terminal&) { return std::nullopt; }
+    /// Binds a stable publication while the caller holds the adopted model's
+    /// lock. The handle never borrows a terminal and remains readable after
+    /// retirement; the expected model prevents pane-id reuse from crossing owners.
+    [[nodiscard]] virtual std::shared_ptr<const HostedPanePublication> panePublicationHandle(int, const Ubiquitty::Terminal&) { return {}; }
+
+    /// Refreshes publication after a view-side mutation under the exact model
+    /// lock, without admitting a frame or changing coherence.
+    virtual void refreshPanePublication(int, const Ubiquitty::Terminal&) { }
 
     [[nodiscard]] virtual std::uint64_t publicationClockMicroseconds() const { return 0; }
 
