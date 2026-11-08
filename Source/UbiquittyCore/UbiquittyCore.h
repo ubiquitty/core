@@ -63,6 +63,8 @@
 #include "Core/Keys/KeyTranslation.h"
 #include "Core/Keys/Keymap.h"
 #include "Core/Kitty/KeyboardFlags.h"
+#include "Core/Modes/Scroll.h"
+#include "Core/Mouse/Mouse.h"
 
 // ---- Cell / pen value types (named explicitly for the doc, already pulled) --
 #include "Core/Cell.h"
@@ -79,6 +81,7 @@
 #include "Core/Rendering/CellInstance.h"
 #include "Core/Rendering/CellInstanceBuilder.h"
 #include "Core/Rendering/ColorResolve.h"
+#include "Core/Rendering/ImageQuads.h"
 #include "Core/Rendering/RenderPlan.h"
 #include "Core/Rendering/SoftwareRenderer.h"
 

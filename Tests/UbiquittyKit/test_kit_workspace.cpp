@@ -175,6 +175,27 @@ TEST(workspaceEmbeddingDropsOnlyPanesTheHostRemoved)
     CHECK(!fixture.workspace.hasEnded());
 }
 
+TEST(workspaceEmbeddingPublishesPanePixelsWithoutMutatingTheReplica)
+{
+    Fixture fixture;
+    const auto* replica = fixture.workspace.terminal(22);
+    REQUIRE(replica);
+    const auto previousWidth = replica->cellPixelWidth;
+    const PixelGeometry geometry { { 12, 24 }, { 480, 552 }, { 480, 552 } };
+    CHECK(fixture.workspace.setPixelGeometry(22, geometry));
+    CHECK(!fixture.workspace.setPixelGeometry(99, geometry));
+    CHECK(fixture.workspace.setViewOffset(22, 3));
+    CHECK(!fixture.workspace.setViewOffset(99, 3));
+    CHECK(fixture.workspace.setView(22, 40, 23, Modes::FocusState::Focused));
+    for (int turn = 0; turn < 4; ++turn)
+        fixture.exchange();
+    CHECK_EQ(replica->cellPixelWidth, previousWidth);
+    const auto reports = fixture.host.takeViewportReports();
+    CHECK(std::ranges::any_of(reports, [](const auto& report) {
+        return report.viewport == Sync::Viewport { 23, 40, 12, 24, 480, 552, 480, 552 };
+    }));
+}
+
 TEST(hostFactoryValidatesBeforeSpawningAndPinsTheAcknowledgedDaemon)
 {
     CHECK(!UbiquittyKit::makeHostChannelFactory({ .hostBinary = "", .sshDestination = {}, .socketName = {} }));
