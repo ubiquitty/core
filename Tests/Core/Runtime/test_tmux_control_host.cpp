@@ -171,7 +171,8 @@ std::optional<Ubiquitty::Session::FrameReady> panePublication(HostHarness& harne
     if (!facts.terminalAddress || !facts.lockAddress)
         return std::nullopt;
     const std::scoped_lock hold(*reinterpret_cast<std::mutex*>(facts.lockAddress));
-    return harness.host->panePublication(paneID, *reinterpret_cast<Ubiquitty::Terminal*>(facts.terminalAddress));
+    const auto publication = harness.host->panePublicationHandle(paneID, *reinterpret_cast<Ubiquitty::Terminal*>(facts.terminalAddress));
+    return publication ? publication->lastFrame() : std::nullopt;
 }
 
 // A screen's rows as `capture-pane -p` prints them, each trimmed of its
@@ -583,8 +584,8 @@ TEST(aHostedPublicationKeepsTheProgramsBoundaryAndExactModel)
     Ubiquitty::Terminal foreign;
     std::mutex foreignLock;
     const std::scoped_lock hold(foreignLock);
-    CHECK(!harness.host->panePublication(1, foreign));
-    CHECK(!harness.host->panePublication(999, foreign));
+    CHECK(!harness.host->panePublicationHandle(1, foreign));
+    CHECK(!harness.host->panePublicationHandle(999, foreign));
 }
 
 TEST(aHostedQuietFrameWakesPresentationWithoutFurtherOutput)

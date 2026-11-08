@@ -1444,6 +1444,14 @@ public:
     // holds that Terminal's model lock.
     void republishSnapshotForTerm(Ubiquitty::Terminal* externalTerm);
 
+    /// Refreshes only the frame clock after activity under the model lock.
+    ///
+    /// - Parameter terminal: The locked model, or null to clear its clock state.
+    void republishPresentationForTerm(const Ubiquitty::Terminal* terminal)
+    {
+        m_link.presentation.publish(captureFramePresentationState(terminal));
+    }
+
     /// Keeps the search publication in every subsequent read snapshot.
     /// The caller holds the presented terminal's model lock.
     ///
@@ -1463,6 +1471,29 @@ public:
     {
         m_modelPublishHook = hook;
         m_modelPublishContext = context;
+    }
+
+    /// Publishes a local pane's notification facts on the writer's side.
+    ///
+    /// Separate from the search observer. Runs under the model lock and may
+    /// read this runtime's sampled process cache in model-to-process lock
+    /// order; it must not reenter model operations or deliver observer calls.
+    /// The owner clears the hook under that lock or after stopping its writer.
+    /// A null terminal retires the owner's notification state.
+    using PanePublishHook = void (*)(void*, const Ubiquitty::Terminal*);
+
+    /// Sets the writer's notification callback and its borrowed context.
+    ///
+    /// The owner clears this callback under the model lock or after stopping
+    /// every writer, before disposing its context.
+    ///
+    /// - Parameters:
+    ///   - hook: The callback, or null to clear it.
+    ///   - context: Borrowed until the callback is cleared.
+    void setPanePublishHook(PanePublishHook hook, void* context)
+    {
+        m_panePublishHook = hook;
+        m_panePublishContext = context;
     }
 
     // The per-pane cross-thread seam (RuntimeLink.h): the writer publishes the
@@ -1976,6 +2007,8 @@ private:
     Search::Status m_searchStatus;
     ModelPublishHook m_modelPublishHook = nullptr;
     void* m_modelPublishContext = nullptr;
+    PanePublishHook m_panePublishHook = nullptr;
+    void* m_panePublishContext = nullptr;
     std::atomic<bool> m_drainPassActive { false }; // ingest pumping bytes; render holds
     std::atomic<bool> m_isDrainSaturated { false }; // the last pass filled; render reads the published frame
     std::atomic<bool> m_drainRidesBurst { true }; // false => collapse mid-burst backoff to 0

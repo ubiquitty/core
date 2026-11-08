@@ -64,6 +64,14 @@ public:
 
     void noteFacts() { m_hasPendingFacts = true; }
 
+    /// A new model can start its own frame generation at the previous value.
+    /// Preserve the observer and reentrancy guard while forgetting that picture.
+    void resetFrame()
+    {
+        m_lastFrame.reset();
+        m_pendingFrame.reset();
+    }
+
     [[nodiscard]] bool hasObserver() const { return !!m_observer; }
 
     void noteState(const LinkState& state)

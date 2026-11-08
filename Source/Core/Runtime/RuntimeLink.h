@@ -3,8 +3,11 @@
 
 #pragma once
 
+#include "Core/CellGrid.h"
 #include "Core/Color.h"
+#include "Core/Cursor/RenderState.h"
 #include "Core/OSC/TabStatus.h"
+#include "Core/Rendering/FrameDamage.h"
 #include "Core/Rendering/PaletteColors.h"
 #include "Core/Runtime/ModeSnapshot.h"
 #include "Core/Screen/HistoryFacts.h"
@@ -303,6 +306,24 @@ struct ChromeTint {
 // beside it on the link, and this refuses it a way back in.
 static_assert(sizeof(RuntimeSnapshot) <= 320, "RuntimeSnapshot is copied per key press; publish bulk beside it on the link, not inside it");
 
+/// One writer-owned copy of every model input the frame clock evaluates.
+/// Kept beside the per-key snapshot so clock state does not enlarge key reads.
+struct FramePresentationState {
+    Cursor::AppearanceInputs cursor;
+    bool hasBlinkHint = false;
+    bool hasBlinkCellOnScreen = false;
+};
+
+/// Captures clock inputs while the caller holds this model's canonical lock.
+[[nodiscard]] inline FramePresentationState captureFramePresentationState(const Ubiquitty::Terminal* terminal)
+{
+    FramePresentationState state;
+    state.cursor = Cursor::appearanceInputs(terminal);
+    state.hasBlinkHint = terminal && terminal->grid && terminal->grid->hasBlinkHint();
+    state.hasBlinkCellOnScreen = state.hasBlinkHint && Rendering::anyCellBlinks(*terminal);
+    return state;
+}
+
 /// A pane's colours as its frame shows them: the palette as of the newest
 /// moment no synchronized update (DEC 2026) held the frame.
 ///
@@ -458,6 +479,7 @@ struct Command {
 // the model lock; main reads `reads` + posts `commands`, both lock-free.
 struct RuntimeLink {
     SnapshotPublisher<RuntimeSnapshot> reads; // (R) model -> main
+    SnapshotPublisher<FramePresentationState> presentation; // (R) model -> frame clock
     // (R) The DECUDK table, published beside `reads` rather than inside it, so
     // a snapshot read copies the modes and the geometry and not a table that
     // dwarfs them. Published before `reads`, so a reader seeing a nonzero

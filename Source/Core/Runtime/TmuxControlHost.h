@@ -99,7 +99,16 @@ public:
     /// - Returns: Its facts; zero addresses when the Session holds no such pane.
     [[nodiscard]] HostedPaneFacts paneFacts(int paneID) override;
     [[nodiscard]] bool hasPanePublications() const override { return true; }
-    [[nodiscard]] std::optional<Session::FrameReady> panePublication(int paneID, const Ubiquitty::Terminal&) override;
+    [[nodiscard]] std::shared_ptr<const HostedPanePublication> panePublicationHandle(int paneID, const Ubiquitty::Terminal&) override;
+
+    /// Refreshes the exact owner's facts without admitting a new frame.
+    ///
+    /// The caller holds the pane's canonical model lock.
+    ///
+    /// - Parameters:
+    ///   - paneID: The tmux pane whose publication is refreshed.
+    ///   - terminal: The expected model; a different identity leaves it unchanged.
+    void refreshPanePublication(int paneID, const Ubiquitty::Terminal&) override;
     [[nodiscard]] std::uint64_t publicationClockMicroseconds() const override;
     [[nodiscard]] bool setPaneFocus(int paneID, const Ubiquitty::Terminal&, Modes::FocusState) override;
 

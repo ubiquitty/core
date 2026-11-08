@@ -58,6 +58,10 @@ TmuxControlHost::~TmuxControlHost()
     // A pane a view still adopts is the frontend's to release first; what is
     // left here no view reads.
     (void)m_session.takeRetired();
+    for (auto& entry : m_publications) {
+        if (entry.second.publication)
+            entry.second.publication->retire();
+    }
 }
 
 void TmuxControlHost::attach()
@@ -189,7 +193,7 @@ std::shared_ptr<HostedPanePublication> TmuxControlHost::publicationFor(PaneID pa
     return record.publication;
 }
 
-std::optional<Ubiquitty::Session::FrameReady> TmuxControlHost::panePublication(int paneID, const Ubiquitty::Terminal& terminal)
+std::shared_ptr<const HostedPanePublication> TmuxControlHost::panePublicationHandle(int paneID, const Ubiquitty::Terminal& terminal)
 {
     std::shared_ptr<HostedPanePublication> publication;
     {
@@ -198,8 +202,20 @@ std::optional<Ubiquitty::Session::FrameReady> TmuxControlHost::panePublication(i
         if (found != m_publications.end())
             publication = found->second.publication;
     }
-    // The caller holds this exact model's lock, not the unused adapter runtime's.
-    return publication && publication->isFor(terminal) ? publication->lastFrame() : std::nullopt;
+    return publication && publication->isFor(terminal) ? publication : nullptr;
+}
+
+void TmuxControlHost::refreshPanePublication(int paneID, const Ubiquitty::Terminal& terminal)
+{
+    std::shared_ptr<HostedPanePublication> publication;
+    {
+        const std::scoped_lock hold(m_publicationLock);
+        const auto found = m_publications.find(paneID);
+        if (found != m_publications.end())
+            publication = found->second.publication;
+    }
+    if (publication && publication->isFor(terminal))
+        publication->publishModelState(terminal);
 }
 
 HostedPanePublication::Progress TmuxControlHost::notePaneChangeLocked(HostedPanePublication& publication, Ubiquitty::Terminal& terminal, PaneChange change)
@@ -956,7 +972,12 @@ void TmuxControlHost::disposeReleasedPanes()
             const auto forgetPublication = [](void* context, const Ubiquitty::Terminal& terminal) {
                 auto* host = static_cast<TmuxControlHost*>(context);
                 const std::scoped_lock publicationHold(host->m_publicationLock);
-                std::erase_if(host->m_publications, [&](const auto& entry) { return entry.second.publication && entry.second.publication->isFor(terminal); });
+                std::erase_if(host->m_publications, [&](const auto& entry) {
+                    if (!entry.second.publication || !entry.second.publication->isFor(terminal))
+                        return false;
+                    entry.second.publication->retire();
+                    return true;
+                });
             };
             if (!m_releasedPanes.contains(paneID) || !m_session.disposeRetiredPane(paneID, this, forgetPublication))
                 continue;

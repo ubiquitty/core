@@ -54,6 +54,7 @@
 #include "Platform/Linux/PaneViewport.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <expected>
@@ -61,9 +62,11 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <semaphore>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -732,7 +735,13 @@ TEST(aLocalPaneLinkOwnsItsViewAndNeverStalls)
     const Ubiquitty::Session::PaneView view = session->paneView();
     CHECK(view.terminal);
     CHECK(!view.history);
-    CHECK(!view.facts);
+    // Initialization is now a writer publication; its canonical facts are
+    // available before the first presentation poll.
+    CHECK(view.facts);
+    if (view.facts) {
+        CHECK_EQ(view.facts->rows, 24);
+        CHECK_EQ(view.facts->columns, 80);
+    }
     session->unlockForRead();
 
     session->hideRemotePane();
@@ -853,6 +862,14 @@ TEST(anAdoptedPanePublishesOnlyItsActualModelsFacts)
         CHECK_EQ(facts->foreground.processID, 0u);
         CHECK(facts->isAdopted);
     }
+    session->unlockForRead();
+    {
+        const std::scoped_lock hold(externalLock);
+        Ubiquitty::processBytes(&external, "\x1b]2;raw owner changed\x1b\\");
+    }
+    (void)session->takeEventFlags();
+    session->lockForRead();
+    CHECK_STR_EQ(session->paneView().facts->programTitle, "raw owner changed");
     session->unlockForRead();
     session->endExternalAdoption();
     (void)session->takeEventFlags();
@@ -1199,6 +1216,8 @@ TEST(anAdoptedHostedPaneLinkUsesItsRealOwnersPublicationAndClock)
         TerminalSession* session = nullptr;
         std::vector<Ubiquitty::Session::FrameReady> frames;
         std::optional<std::uint64_t> heard;
+        unsigned factsChanges = 0;
+        void factsChanged() override { ++factsChanges; }
         void frameReady(const Ubiquitty::Session::FrameReady& frame) override
         {
             REQUIRE(session->tryLockForRead());
@@ -1214,11 +1233,48 @@ TEST(anAdoptedHostedPaneLinkUsesItsRealOwnersPublicationAndClock)
     CHECK(observer.frames.front().frameClass == Ubiquitty::Protocol::Sync::FrameClass::Structural);
     CHECK(observer.heard == now);
     CHECK(session->paneView().hasFrameNotifications);
+    session->lockForRead();
+    const auto publication = host.panePublicationHandle(1, *session->paneView().terminal);
+    session->unlockForRead();
+    REQUIRE(publication);
+    const auto initialFrame = publication->read().frame;
+    setenv("UBIQUITTY_FAKE_TICKS", "100", 1);
+    session->noteUserActivity();
+    CHECK_EQ(publication->read().presentation.cursor.lastActivityTick, 100u);
+    CHECK(publication->read().frame == initialFrame);
+    unsetenv("UBIQUITTY_FAKE_TICKS");
+    const auto initialFacts = publication->read().factsGeneration;
+    std::binary_semaphore modelHeld(0);
+    std::binary_semaphore queriesCompleted(0);
+    bool didCompleteUnderLock = false;
+    std::thread writer([&] {
+        session->lockForRead();
+        modelHeld.release();
+        didCompleteUnderLock = queriesCompleted.try_acquire_for(std::chrono::seconds(1));
+        session->unlockForRead();
+    });
+    modelHeld.acquire();
+    (void)session->frameClockFactsNow();
+    (void)session->nextAnimationDelay();
+    (void)session->takeEventFlags();
+    queriesCompleted.release();
+    writer.join();
+    CHECK(didCompleteUnderLock);
     feed("%output %1 \\033[?2026hpartial\n");
     (void)session->takeEventFlags();
     CHECK_EQ(observer.frames.size(), 1u);
+    const auto factsBeforeMetadata = observer.factsChanges;
+    feed("%output %1 \\033]2;held title\\007\\033[?25l\n");
+    (void)session->takeEventFlags();
+    CHECK_EQ(observer.frames.size(), 1u);
+    CHECK(observer.factsChanges > factsBeforeMetadata);
+    CHECK(publication->read().factsGeneration > initialFacts);
+    CHECK(!publication->read().presentation.cursor.isCursorVisible);
+    session->lockForRead();
+    CHECK_STR_EQ(session->paneView().facts->programTitle, "held title");
+    session->unlockForRead();
     now += 1'000;
-    feed("%output %1 complete\\033[?2026l\n");
+    feed("%output %1 complete\\033[?25h\\033[?2026l\n");
     (void)session->takeEventFlags();
     REQUIRE(observer.frames.size() == 2);
     CHECK(observer.frames.back().frameClass == Ubiquitty::Protocol::Sync::FrameClass::Boundary);
@@ -1246,6 +1302,13 @@ TEST(anAdoptedHostedPaneLinkUsesItsRealOwnersPublicationAndClock)
     CHECK_EQ(observer.frames.back().generation, 5u);
     session->endExternalAdoption();
     session.reset();
+    feed("%window-close @1\n");
+    host.releasePane(1);
+    CHECK(publication->read().presentation.cursor.hasTerminal);
+    CHECK(publication->read().hasFrame);
+    host.releaseWindow(1);
+    CHECK(!publication->read().presentation.cursor.hasTerminal);
+    CHECK(!publication->read().hasFrame);
     host.detach();
 }
 

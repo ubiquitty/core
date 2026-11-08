@@ -4,14 +4,19 @@
 #pragma once
 
 #include "Core/Runtime/FrameCoherence.h"
+#include "Core/Runtime/PaneFactsCapture.h"
+#include "Core/Runtime/RuntimeLink.h"
 #include "Core/Session/PaneLinkEvents.h"
 #include "Core/Terminal.h"
+#include "Core/TerminalOperations.h"
+
+#include <algorithm>
 
 namespace Ubiquitty::Runtime {
 
 /// Coherence and publication metadata for one externally owned pane model.
-/// Every call is made under that model's canonical lock. The host retains
-/// the publication until the pane's views unbind and its model is disposed.
+/// Mutations hold that model's canonical lock. Readers retain a handle and
+/// copy the published scalars without borrowing the model or its lock.
 class HostedPanePublication {
 public:
     explicit HostedPanePublication(const Ubiquitty::Terminal& terminal)
@@ -20,6 +25,36 @@ public:
     }
 
     [[nodiscard]] bool isFor(const Ubiquitty::Terminal& terminal) const { return m_terminal == &terminal; }
+
+    /// The exact owner's presentation inputs and independent notification epochs.
+    struct State {
+        FramePresentationState presentation;
+        std::uint64_t factsGeneration = 0;
+        Session::FrameReady frame;
+        bool hasFrame = false;
+    };
+
+    [[nodiscard]] State read() const { return m_state.read(); }
+
+    /// The owner has stopped every writer before disposing the model.
+    void retire() { m_state.publish({}); }
+
+    /// Publishes model facts even when coherence has admitted no new frame.
+    /// The caller holds this exact model's canonical lock.
+    ///
+    /// - Parameter terminal: The model this publication represents.
+    void publishModelState(const Ubiquitty::Terminal& terminal)
+    {
+        Protocol::Sync::PaneHostFacts host;
+        host.isAdopted = true;
+        const auto textArea = Ubiquitty::reportedTextAreaPixels(terminal);
+        host.pixels = { .cellWidth = terminal.cellPixelWidth, .cellHeight = terminal.cellPixelHeight, .textAreaWidth = static_cast<std::uint16_t>(std::clamp(textArea.width, 0, 65535)), .textAreaHeight = static_cast<std::uint16_t>(std::clamp(textArea.height, 0, 65535)) };
+        m_facts.refresh(terminal, host);
+        m_state.publish({ .presentation = captureFramePresentationState(&terminal),
+            .factsGeneration = m_facts.generation(),
+            .frame = m_lastFrame.value_or(Session::FrameReady {}),
+            .hasFrame = m_lastFrame.has_value() });
+    }
 
     /// Each model reports the first focus fact, then only its actual edges.
     [[nodiscard]] bool changeFocus(Modes::FocusState focus)
@@ -65,16 +100,23 @@ public:
                 .lagMicroseconds = dirtySince && now >= *dirtySince ? now - *dirtySince : 0 };
             m_coherence.noteFrameTaken(terminal, now);
         }
+        publishModelState(terminal);
         return { .hasPublished = admission.isAdmitted, .askAfterMicroseconds = m_coherence.microsecondsUntilAsk(terminal, now, ticks) };
     }
 
-    [[nodiscard]] std::optional<Session::FrameReady> lastFrame() const { return m_lastFrame; }
+    [[nodiscard]] std::optional<Session::FrameReady> lastFrame() const
+    {
+        const auto state = read();
+        return state.hasFrame ? std::optional { state.frame } : std::nullopt;
+    }
 
 private:
     const Ubiquitty::Terminal* m_terminal;
     FrameCoherence m_coherence { CoherenceTuning { .isPaced = false } };
     std::uint64_t m_generation = 0;
     std::optional<Session::FrameReady> m_lastFrame;
+    PaneFactsCapture m_facts;
+    SnapshotPublisher<State> m_state;
     std::optional<Modes::FocusState> m_focus;
     int m_rows = 0;
     int m_columns = 0;

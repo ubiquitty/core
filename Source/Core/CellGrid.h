@@ -1228,11 +1228,8 @@ static inline bool needsAnimationRedraw(const CellGrid* d, uint32_t monotonicTic
     return false;
 }
 
-static inline uint32_t ticksUntilAnimationRedraw(const CellGrid* display, uint32_t monotonicTicks)
+static inline uint32_t ticksUntilAnimationRedraw(uint32_t monotonicTicks)
 {
-    if (!display) {
-        return 0;
-    }
     const uint32_t slowTicks = ticksUntilBlinkAlphaChange(monotonicTicks, Cursor::Blink::caretPeriodTicks);
     const uint32_t fastTicks = ticksUntilBlinkAlphaChange(monotonicTicks, Cursor::Blink::caretPeriodTicks / 2);
     if (!slowTicks) {
@@ -1242,6 +1239,11 @@ static inline uint32_t ticksUntilAnimationRedraw(const CellGrid* display, uint32
         return slowTicks;
     }
     return std::min(slowTicks, fastTicks);
+}
+
+static inline uint32_t ticksUntilAnimationRedraw(const CellGrid* display, uint32_t monotonicTicks)
+{
+    return display ? ticksUntilAnimationRedraw(monotonicTicks) : 0;
 }
 
 // Bell policy. The parser sets bellPending on BEL; the frontend pushes its preference into bellMode.

@@ -1706,6 +1706,137 @@ TEST(sessionWithoutAHostSendsNoPasteAndClaimsNoProgress)
     releaseTerminalSession(session);
 }
 
+namespace {
+
+/// The fallback releases a broken query instead of hanging the suite. Success
+/// means the query itself released the writer while it still held the model.
+template<typename Query>
+bool completesWhileTheModelIsHeld(TerminalSession& session, Query&& query)
+{
+    std::binary_semaphore modelHeld(0);
+    std::binary_semaphore queryCompleted(0);
+    bool didCompleteUnderLock = false;
+    std::thread writer([&] {
+        session.lockForRead();
+        modelHeld.release();
+        didCompleteUnderLock = queryCompleted.try_acquire_for(std::chrono::seconds(1));
+        session.unlockForRead();
+    });
+    modelHeld.acquire();
+    query();
+    queryCompleted.release();
+    writer.join();
+    return didCompleteUnderLock;
+}
+
+} // namespace
+
+TEST(publishedFrameClockDoesNotWaitForTheParserModel)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(4, 20);
+    FrameClockFacts facts;
+    CHECK(completesWhileTheModelIsHeld(*session, [&] { facts = session->frameClockFactsNow(); }));
+    CHECK(facts.cursorMixAlpha >= 0 && facts.cursorMixAlpha <= 1);
+}
+
+TEST(publishedAnimationScheduleDoesNotWaitForTheParserModel)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(4, 20);
+    const std::string blinking = "\033[5mblink\033[0m";
+    session->feedBytes({ blinking.data(), blinking.size() });
+    AnimationScheduleVerdict verdict;
+    CHECK(completesWhileTheModelIsHeld(*session, [&] { verdict = session->nextAnimationDelay(); }));
+    CHECK(verdict.hasAnimatingContent);
+    CHECK(verdict.delaySeconds > 0);
+}
+
+TEST(publishedPaneEventsDoNotWaitForTheParserModel)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(4, 20);
+    struct Observer final : Ubiquitty::Session::PaneLinkObserver {
+        unsigned factsChanges = 0;
+        void factsChanged() override { ++factsChanges; }
+    } observer;
+    session->observePaneLink(observer);
+    const std::string output = "\033]2;published title\007text";
+    session->feedBytes({ output.data(), output.size() });
+    std::uint32_t flags = 0;
+    CHECK(completesWhileTheModelIsHeld(*session, [&] { flags = session->takeEventFlags(); }));
+    const auto expected = 1u << static_cast<unsigned>(EventKind::ScreenDirty);
+    CHECK_EQ(flags & expected, expected);
+    CHECK_EQ(observer.factsChanges, 1u);
+    CHECK_EQ(session->takeEventFlags() & expected, 0u);
+    CHECK_EQ(observer.factsChanges, 1u);
+    const std::string next = "\033]2;after release\007more";
+    session->feedBytes({ next.data(), next.size() });
+    CHECK_EQ(session->takeEventFlags() & expected, expected);
+    CHECK_EQ(observer.factsChanges, 2u);
+    session->lockForRead();
+    const auto* facts = session->paneView().facts;
+    CHECK(facts);
+    if (facts)
+        CHECK_STR_EQ(facts->programTitle, "after release");
+    session->unlockForRead();
+}
+
+TEST(publishedClockTracksActivityFocusHiddenTextAndClose)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 1.0f);
+    CHECK(!session->nextAnimationDelay().hasAnimatingContent);
+    session->start(2, 20);
+    session->lockForRead();
+    auto* terminal = session->terminal();
+    terminal->windowFocused = true;
+    terminal->cursorStyle = Ubiquitty::Cursor::Style::BlinkingBar;
+    terminal->cursorBlinkPref = true;
+    terminal->cursorHoldFrames = 9;
+    terminal->cursorBlinkPeriodMilliseconds = 1000;
+    terminal->lastActivityTick = 100;
+    session->unlockForRead();
+    session->republishSnapshot();
+    const auto previousAnimation = Ubiquitty::Cursor::Blink::animation();
+    Ubiquitty::Cursor::Blink::setAnimation(Ubiquitty::Cursor::Blink::Animation::Fade);
+    setenv("UBIQUITTY_FAKE_TICKS", "109", 1);
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 0.75f);
+    CHECK(session->nextAnimationDelay().hasAnimatingContent);
+    session->noteUserActivity();
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 1.0f);
+    setenv("UBIQUITTY_FAKE_TICKS", "118", 1);
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 0.75f);
+    session->setDesiredFocus(Ubiquitty::Modes::FocusState::Unfocused);
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 1.0f);
+    CHECK(!session->nextAnimationDelay().hasAnimatingContent);
+    const std::string history = "\033[?25l\033[5mblink\033[0m\r\nline\r\nlast";
+    session->feedBytes({ history.data(), history.size() });
+    CHECK(session->readSnapshot().hasBlinkHint);
+    CHECK(!session->readSnapshot().hasBlinkCellOnScreen);
+    CHECK(!session->nextAnimationDelay().hasAnimatingContent);
+    session->setPresentedViewOffset(1);
+    CHECK(session->nextAnimationDelay().hasAnimatingContent);
+    session->setPresentedViewOffset(0);
+    CHECK(!session->nextAnimationDelay().hasAnimatingContent);
+    session->close();
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 1.0f);
+    CHECK(!session->nextAnimationDelay().hasAnimatingContent);
+    struct Observer final : Ubiquitty::Session::PaneLinkObserver {
+        int frames = 0;
+        void frameReady(const Ubiquitty::Session::FrameReady&) override { ++frames; }
+    } observer;
+    session->observePaneLink(observer);
+    (void)session->takeEventFlags();
+    CHECK_EQ(observer.frames, 0);
+    unsetenv("UBIQUITTY_FAKE_TICKS");
+    Ubiquitty::Cursor::Blink::setAnimation(previousAnimation);
+}
+
 TEST(aPublishedRichTextCatalogRequestsOneReplacementFrame)
 {
     auto* session = Ubiquitty::Runtime::TerminalSession::make();
