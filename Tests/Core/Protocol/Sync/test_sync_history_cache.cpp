@@ -68,6 +68,53 @@ std::string textOf(const Ubiquitty::Screen::ScrollLine& row)
 
 } // namespace
 
+TEST(anOwnedHistoryBatchTransfersPayloadsWithoutCopying)
+{
+    HistoryCache cache(hostInstance, pane, 1000);
+    REQUIRE(cache.reset({ .newEpoch = 7, .clearedThrough = 0, .historyHead = 3 }) == HistoryPurgeOutcome::Purged);
+    auto lines = linesOf(0, 3);
+    const auto* firstCells = lines[0].cells.data();
+    const auto* lastCells = lines[2].cells.data();
+    REQUIRE(cache.insertOwned(7, std::move(lines)) == CacheInsert::Stored);
+    CHECK(lines.empty());
+    REQUIRE(cache.line(0));
+    REQUIRE(cache.line(2));
+    CHECK(cache.line(0)->cells.data() == firstCells);
+    CHECK(cache.line(2)->cells.data() == lastCells);
+    CHECK_EQ(cache.line(0)->cells[0].codePoint, static_cast<std::uint32_t>('l'));
+}
+
+TEST(aRejectedOwnedHistoryBatchIsNotConsumed)
+{
+    HistoryCache cache(hostInstance, pane, 1000);
+    REQUIRE(cache.reset({ .newEpoch = 7, .clearedThrough = 10, .historyHead = 20 }) == HistoryPurgeOutcome::Purged);
+    auto lines = linesOf(9, 12);
+    const auto* firstCells = lines[0].cells.data();
+    CHECK(cache.insertOwned(6, std::move(lines)) == CacheInsert::WrongEpoch);
+    CHECK_EQ(lines.size(), 3u);
+    CHECK(cache.insertOwned(7, std::move(lines)) == CacheInsert::BelowClearedThrough);
+    CHECK_EQ(lines.size(), 3u);
+    CHECK(lines[0].cells.data() == firstCells);
+    CHECK(!cache.line(10));
+}
+
+TEST(ownedAndBorrowedHistoryBatchesApplyTheSameEviction)
+{
+    HistoryCache borrowed(hostInstance, pane, 2);
+    HistoryCache owned(hostInstance, pane, 2);
+    REQUIRE(borrowed.reset({ .newEpoch = 7, .clearedThrough = 0, .historyHead = 5 }) == HistoryPurgeOutcome::Purged);
+    REQUIRE(owned.reset({ .newEpoch = 7, .clearedThrough = 0, .historyHead = 5 }) == HistoryPurgeOutcome::Purged);
+    auto lines = linesOf(0, 5);
+    REQUIRE(borrowed.insert(7, lines) == CacheInsert::Stored);
+    REQUIRE(owned.insertOwned(7, std::move(lines)) == CacheInsert::Stored);
+    CHECK_EQ(owned.retainedStorageBytes(), borrowed.retainedStorageBytes());
+    CHECK(!owned.line(2));
+    REQUIRE(owned.line(3));
+    REQUIRE(owned.line(4));
+    CHECK_EQ(owned.line(3)->lineHash, borrowed.line(3)->lineHash);
+    CHECK_EQ(owned.line(4)->cells.size(), borrowed.line(4)->cells.size());
+}
+
 TEST(aHandoverKeepsHistoryUnderTheSuccessorsKey)
 {
     const ID128 successor { 5, 6 };

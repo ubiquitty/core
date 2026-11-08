@@ -1032,7 +1032,12 @@ bool decodeHistoryBody(std::span<const std::uint8_t> body, std::uint64_t firstLi
         }
         if (!cost.fits(budget) || !budget.take(cost.retained))
             return false;
-        line.cells.assign(scratch.begin(), scratch.begin() + static_cast<std::ptrdiff_t>(extent));
+        // Canonical rows already end at their retained extent. Transfer that
+        // allocation; a padded record keeps only its retained prefix.
+        if (extent == scratch.size())
+            line.cells = std::move(scratch);
+        else
+            line.cells.assign(scratch.begin(), scratch.begin() + static_cast<std::ptrdiff_t>(extent));
         TableNames<BodyResolver> lineNames(resolver);
         const std::optional<std::uint64_t> hash = canonicalHash<BodyResolver>(line.cells, line.lineAttribute, lineNames);
         if (!hash || *hash != line.lineHash)
@@ -1057,8 +1062,12 @@ bool decodeHistoryBody(std::span<const std::uint8_t> body, std::uint64_t firstLi
         return false;
     if (decoded.size() > lines.max_size() - lines.size())
         return false;
-    lines.reserve(lines.size() + decoded.size());
-    std::ranges::move(decoded, std::back_inserter(lines));
+    if (lines.empty())
+        lines = std::move(decoded);
+    else {
+        lines.reserve(lines.size() + decoded.size());
+        std::ranges::move(decoded, std::back_inserter(lines));
+    }
     return true;
 }
 

@@ -126,6 +126,16 @@ public:
     /// - Returns: `Stored`, or why nothing was stored.
     [[nodiscard]] CacheInsert insert(std::uint32_t epoch, std::span<const DecodedLine> lines);
 
+    /// Stores owned lines by transferring their payload buffers.
+    ///
+    /// A rejected batch remains unchanged; a stored batch is emptied.
+    ///
+    /// - Parameters:
+    ///   - epoch: The epoch the lines were sent under.
+    ///   - lines: The owned batch, in any order.
+    /// - Returns: `Stored`, or why nothing was stored.
+    [[nodiscard]] CacheInsert insertOwned(std::uint32_t epoch, std::vector<DecodedLine>&& lines);
+
     /// Takes the open line, replacing the one held; a line with no cells
     /// withdraws it.
     ///
@@ -266,6 +276,19 @@ public:
     }
 
 private:
+    /// Checks epoch and clear boundaries before consuming any batch member.
+    ///
+    /// - Parameters:
+    ///   - epoch: The batch's history epoch.
+    ///   - lines: The complete batch.
+    /// - Returns: `Stored` when every line can be admitted.
+    [[nodiscard]] CacheInsert admitBatch(std::uint32_t epoch, std::span<const DecodedLine> lines) const;
+    /// Copies or transfers one admitted line and evicts to the cache's budgets.
+    ///
+    /// - Parameter line: A borrowed line or an owned line whose buffers transfer.
+    template<typename LineValue>
+    void insertLine(LineValue&& line);
+
     /// Notes a change at or above a number, which the next projection must
     /// cover.
     ///

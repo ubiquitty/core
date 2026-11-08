@@ -197,32 +197,58 @@ bool HistoryCache::restoreSnapshot(std::span<const std::uint8_t> bytes, std::siz
     return true;
 }
 
-CacheInsert HistoryCache::insert(std::uint32_t epoch, std::span<const DecodedLine> lines)
+CacheInsert HistoryCache::admitBatch(std::uint32_t epoch, std::span<const DecodedLine> lines) const
 {
     if (epoch != m_key.epoch)
         return CacheInsert::WrongEpoch;
     if (std::ranges::any_of(lines, [&](const DecodedLine& line) { return line.number < m_clearedThrough; }))
         return CacheInsert::BelowClearedThrough;
-    for (const DecodedLine& line : lines) {
-        // A line that arrives for a hidden number replaces it for good.
-        if (const auto hidden = m_hidden.find(line.number); hidden != m_hidden.end()) {
-            m_retainedBytes -= lineStorageBytes(hidden->second);
-            m_hidden.erase(hidden);
-        }
-        if (const auto held = m_lines.find(line.number); held != m_lines.end())
-            m_retainedBytes -= lineStorageBytes(held->second);
-        m_lines.insert_or_assign(line.number, line);
-        m_retainedBytes += lineStorageBytes(line);
-        noteChange(line.number);
-        if (m_openLine && m_openLine->number == line.number) {
-            m_retainedBytes -= lineStorageBytes(*m_openLine);
-            m_openLine.reset();
-        }
-        // Evicting as each line lands keeps the peak at the caps, however
-        // many lines one transfer carries.
-        evict(m_maxBytes);
-    }
     return CacheInsert::Stored;
+}
+
+CacheInsert HistoryCache::insert(std::uint32_t epoch, std::span<const DecodedLine> lines)
+{
+    const auto admission = admitBatch(epoch, lines);
+    if (admission != CacheInsert::Stored)
+        return admission;
+    for (const DecodedLine& line : lines)
+        insertLine(line);
+    return CacheInsert::Stored;
+}
+
+CacheInsert HistoryCache::insertOwned(std::uint32_t epoch, std::vector<DecodedLine>&& lines)
+{
+    const auto admission = admitBatch(epoch, lines);
+    if (admission != CacheInsert::Stored)
+        return admission;
+    for (DecodedLine& line : lines)
+        insertLine(std::move(line));
+    lines.clear();
+    return CacheInsert::Stored;
+}
+
+template<typename LineValue>
+void HistoryCache::insertLine(LineValue&& line)
+{
+    const auto number = line.number;
+    const auto bytes = lineStorageBytes(line);
+    // A line that arrives for a hidden number replaces it for good.
+    if (const auto hidden = m_hidden.find(line.number); hidden != m_hidden.end()) {
+        m_retainedBytes -= lineStorageBytes(hidden->second);
+        m_hidden.erase(hidden);
+    }
+    if (const auto held = m_lines.find(line.number); held != m_lines.end())
+        m_retainedBytes -= lineStorageBytes(held->second);
+    m_lines.insert_or_assign(number, std::forward<LineValue>(line));
+    m_retainedBytes += bytes;
+    noteChange(number);
+    if (m_openLine && m_openLine->number == number) {
+        m_retainedBytes -= lineStorageBytes(*m_openLine);
+        m_openLine.reset();
+    }
+    // Evicting as each line lands keeps the peak at the caps, however
+    // many lines one transfer carries.
+    evict(m_maxBytes);
 }
 
 CacheInsert HistoryCache::setOpenLine(std::uint32_t epoch, DecodedLine line)
