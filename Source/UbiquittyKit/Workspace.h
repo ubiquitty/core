@@ -98,6 +98,20 @@ public:
     ///   - focus: Whether this pane receives the surface's keyboard focus.
     /// - Returns: Whether this workspace currently holds that pane.
     bool setView(std::uint32_t sessionID, int columns, int rows, Ubiquitty::Modes::FocusState focus);
+    /// Stages pane pixel metrics for the next viewport report through setView().
+    ///
+    /// - Parameters:
+    ///   - sessionID: The host-owned pane session identity.
+    ///   - geometry: Cell, text area and drawable sizes in device pixels.
+    /// - Returns: Whether this workspace currently holds that pane.
+    bool setPixelGeometry(std::uint32_t sessionID, const Ubiquitty::PixelGeometry& geometry);
+    /// Sets a pane's history demand relative to its live tail.
+    ///
+    /// - Parameters:
+    ///   - sessionID: The host-owned pane session identity.
+    ///   - rowsAboveTail: Rows of history above the live viewport; zero follows output.
+    /// - Returns: Whether this workspace currently holds that pane.
+    bool setViewOffset(std::uint32_t sessionID, int rowsAboveTail);
     /// Sends exact bytes, including NULs, to an established pane.
     ///
     /// - Parameters:
