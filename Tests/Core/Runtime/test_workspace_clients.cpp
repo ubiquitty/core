@@ -361,7 +361,7 @@ TEST(aHostedPaneResizesThroughItsSourceAheadOfTheServer)
     // that has listed one window with one pane.
     auto primary = std::make_unique<Ubiquitty::Terminal>();
     Ubiquitty::resize(*primary, 24, 80);
-    std::mutex primaryLock;
+    Ubiquitty::ModelLock primaryLock;
     HostedWindowSeams seams;
     seams.primary = primary.get();
     seams.primaryLock = &primaryLock;

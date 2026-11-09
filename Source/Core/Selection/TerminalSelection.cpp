@@ -1927,7 +1927,7 @@ OutputUpdate updateAfterOutput(Session& session, Terminal& terminal, int viewOff
     return updateAfterOutput(session, terminal, viewOffset, outputSnapPolicy(session, terminal, viewOffset));
 }
 
-OutputUpdate updateAfterOutput(Session& session, Terminal& terminal, std::mutex& modelLock, int viewOffset, const Screen::HistoryFacts& history) noexcept
+OutputUpdate updateAfterOutput(Session& session, Terminal& terminal, ModelLock& modelLock, int viewOffset, const Screen::HistoryFacts& history) noexcept
 {
     if (needsOutputEvaluation(session) || session.usesLogicalViewport) {
         const std::scoped_lock hold(modelLock);

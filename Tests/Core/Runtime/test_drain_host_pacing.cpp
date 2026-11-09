@@ -1,39 +1,29 @@
 // Copyright (C) 2026 Stanislav Yaglo
 // SPDX-License-Identifier: Apache-2.0
 
-// PacedDrainHost::unlockModel donates the model lock through a fairness doorway
-// when the renderer has announced a wait. std::mutex is not fair on macOS: a
-// producer that is already running reacquires ahead of a waiting reader again
-// and again, which is what turns a flood into a stall long enough to drop
-// frames.
-//
-// Nothing exercised the doorway. Every unlockModel under Tests/ belongs to a
-// double, and bench_drain drives DrainHostDouble whose locks are no-ops — so
-// deleting the donation loop left the suite green.
+// PacedDrainHost::unlockModel releases the model lock through
+// ModelLock::unlockForDrain, which hands the lock to a waiting thread, and
+// counts what each handoff cost the drain. Tests/Core/test_model_lock.cpp
+// bounds the waits themselves; this file checks the host reaches the handoff
+// and keeps its accounts, and the publish throttle.
 //
 // This test links Source/Platform/POSIX/SystemPAL.cpp (see Tests/CMakeLists.txt)
-// because the doorway spins on PAL::monotonicMicros and yields through
-// PAL::schedulerYield. A fake clock that advances one microsecond per call would
-// turn the donation band into a fixed iteration count and measure nothing.
+// because the handoff spins on PAL::monotonicMicros and yields through
+// PAL::schedulerYield.
 
 #include "Core/Runtime/DrainHostPacing.h"
 #include "Harness.h"
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
-#include <ranges>
-#include <vector>
+#include <thread>
 
 namespace Ubiquitty::PAL {
 
-// A real clock, because the doorway's band is a wall-clock window: a counter
-// that advances one microsecond per call would turn the donation into a fixed
-// iteration count and this test would assert nothing about time. SystemPAL.cpp
-// carries schedulerYield but the clock is per-platform, so it lands here.
+// A real clock, because the handoff's band is a wall-clock window.
 uint32_t monotonicMicros()
 {
     const auto since = std::chrono::steady_clock::now().time_since_epoch();
@@ -45,34 +35,12 @@ uint32_t monotonicMicros()
 namespace {
 
 using namespace Ubiquitty::Runtime;
-
-// Median of a small sample, because one unlock can be preempted by anything on
-// a loaded machine and a mean carries that straight into the verdict.
-double medianMicros(std::vector<double> samples)
-{
-    if (samples.empty())
-        return 0.0;
-    std::ranges::sort(samples);
-    return samples[samples.size() / 2];
-}
-
-// One unlock, timed. The lock is taken and released around nothing: the
-// donation happens after the release, so the body under it is irrelevant.
-double unlockMicros(DrainHost& host)
-{
-    host.lockModel();
-    const auto start = std::chrono::steady_clock::now();
-    host.unlockModel();
-    const auto elapsed = std::chrono::steady_clock::now() - start;
-    return std::chrono::duration<double, std::micro>(elapsed).count();
-}
-
-constexpr int samplesPerArm = 9;
+using Ubiquitty::ModelLock;
 
 TEST(aPublishThrottleDoesNotEnableTimedDrainsWithoutAPresentedCapture)
 {
-    std::mutex lock;
-    PacedDrainHost host(lock, nullptr);
+    ModelLock lock;
+    PacedDrainHost host(lock);
     CHECK(host.frameIntervalMicroseconds() > 0);
     CHECK_EQ(host.drainPassIntervalMicroseconds(), 0u);
     host.setPublishMinInterval(0.01);
@@ -86,47 +54,108 @@ TEST(aPublishThrottleDoesNotEnableTimedDrainsWithoutAPresentedCapture)
     CHECK_EQ(host.drainPassIntervalMicroseconds(), 10'000u);
 }
 
-TEST(pacedDrainHostDonatesOnlyWhenTheRendererIsWaiting)
+// What one waiter cost a host whose drain releases the lock and takes it
+// straight back, as a flood's drain does, until the waiter holds it.
+struct HostHandoff {
+    int releaseCount = 0;
+    // Releases that counted nothing although a timed-out one had found the
+    // waiter counted; the waiter stays counted until it holds the lock.
+    int uncountedAfterTimeoutCount = 0;
+    bool wasTaken = false;
+    bool isHeldByWaiterAfterTaken = false;
+    std::uint64_t donationCount = 0;
+    std::uint64_t donationTimeoutCount = 0;
+    std::uint64_t donationMicros = 0;
+};
+
+// Releases one waiter may cost. A waiter the scheduler runs late misses a
+// band and stays counted, so a later release hands the lock over; the bound
+// only ends a case whose releases never do.
+constexpr int releasesPerWaiter = 1000;
+// Fresh waiters a case may try before one is handed the lock. A waiter that
+// takes the free lock in the instant between a timed-out release and the
+// drain's re-take was not handed it, and the case tries the next one.
+constexpr int waiterTrials = 8;
+
+HostHandoff handOffToOneWaiter(ModelLock& modelLock)
 {
-    std::mutex modelLock;
-    std::atomic<bool> isRenderWaiting { false };
-    PacedDrainHost donating(modelLock, &isRenderWaiting);
-    // A null flag is the documented way to disable the doorway, so it is the
-    // control: same class, same lock, same call, donation switched off.
-    PacedDrainHost plain(modelLock, nullptr);
-
-    std::vector<double> quietMicros;
-    std::vector<double> waitingMicros;
-    std::vector<double> disabledMicros;
-    for (int i = 0; i < samplesPerArm; ++i) {
-        isRenderWaiting.store(false, std::memory_order_release);
-        quietMicros.push_back(unlockMicros(donating));
-        // A wait that never clears, so the loop runs to its cap rather than to
-        // whatever a real renderer's timing happened to be.
-        isRenderWaiting.store(true, std::memory_order_release);
-        waitingMicros.push_back(unlockMicros(donating));
-        disabledMicros.push_back(unlockMicros(plain));
+    PacedDrainHost host(modelLock);
+    HostHandoff result;
+    std::atomic<bool> isReleasing { false };
+    host.lockModel();
+    std::thread waiter([&] {
+        // A plain guard, as the session's members take the lock.
+        const std::lock_guard hold(modelLock);
+        while (!isReleasing.load(std::memory_order_acquire)) {
+        }
+    });
+    // Long enough for the waiter to find the lock held and block on it.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    bool isDrainHolding = true;
+    while (result.releaseCount < releasesPerWaiter) {
+        const std::uint64_t donationsBefore = host.donationCount();
+        const std::uint64_t timeoutsBefore = host.donationTimeoutCount();
+        host.unlockModel();
+        isDrainHolding = false;
+        ++result.releaseCount;
+        const bool didDonate = host.donationCount() != donationsBefore;
+        const bool didTimeOut = host.donationTimeoutCount() != timeoutsBefore;
+        if (didDonate && !didTimeOut) {
+            result.wasTaken = true;
+            result.isHeldByWaiterAfterTaken = !modelLock.try_lock();
+            if (!result.isHeldByWaiterAfterTaken)
+                modelLock.unlock();
+            break;
+        }
+        if (!didDonate && host.donationTimeoutCount())
+            ++result.uncountedAfterTimeoutCount;
+        // A try, because a waiter that took the free lock after the band ran
+        // out holds it until released.
+        if (!modelLock.try_lock())
+            break;
+        isDrainHolding = true;
     }
-    isRenderWaiting.store(false, std::memory_order_release);
+    if (isDrainHolding)
+        modelLock.unlock();
+    isReleasing.store(true, std::memory_order_release);
+    waiter.join();
+    result.donationCount = host.donationCount();
+    result.donationTimeoutCount = host.donationTimeoutCount();
+    result.donationMicros = host.donationMicros();
+    return result;
+}
 
-    const double quiet = medianMicros(quietMicros);
-    const double waiting = medianMicros(waitingMicros);
-    const double disabled = medianMicros(disabledMicros);
+TEST(theHostHandsTheLockToAWaiterAndCountsOnlyThatRelease)
+{
+    ModelLock modelLock;
+
+    // Nobody waits: the release hands nothing off and counts nothing.
+    {
+        PacedDrainHost host(modelLock);
+        host.lockModel();
+        host.unlockModel();
+        CHECK_EQ(host.donationCount(), 0u);
+    }
+
+    HostHandoff handoff;
+    int trialCount = 0;
+    while (trialCount < waiterTrials && !handoff.wasTaken) {
+        handoff = handOffToOneWaiter(modelLock);
+        ++trialCount;
+        // Every release that found the waiter counted is counted, and one that
+        // timed out spent the whole band.
+        CHECK_EQ(handoff.uncountedAfterTimeoutCount, 0);
+        CHECK(handoff.donationMicros >= handoff.donationTimeoutCount * Ubiquitty::modelLockHandoffMicroseconds);
+    }
 
     char message[192];
-    std::snprintf(message, sizeof(message),
-        "donating %.1fus, quiet %.1fus, doorway-disabled %.1fus, cap %uus",
-        waiting, quiet, disabled, renderLockDonationMicros);
-
-    // The donation runs until renderLockDonationMicros, so this is a lower
-    // bound: load can only lengthen it, never shorten it below the cap.
-    CHECK_MSG(waiting >= renderLockDonationMicros / 2.0, message);
-
-    // Both controls say the flag is what drives it, not the class: the same
-    // host returns promptly with no wait announced, and a host built without
-    // the doorway returns promptly even while the flag is set.
-    CHECK_MSG(quiet < waiting / 2.0, message);
-    CHECK_MSG(disabled < waiting / 2.0, message);
+    std::snprintf(message, sizeof(message), "%d waiters; the last cost %d releases: handoffs %llu, timeouts %llu, %lluus",
+        trialCount, handoff.releaseCount, static_cast<unsigned long long>(handoff.donationCount),
+        static_cast<unsigned long long>(handoff.donationTimeoutCount), static_cast<unsigned long long>(handoff.donationMicros));
+    std::printf("%s\n", message);
+    CHECK_MSG(handoff.wasTaken, message);
+    CHECK_MSG(handoff.isHeldByWaiterAfterTaken, message);
+    CHECK_MSG(handoff.donationCount - handoff.donationTimeoutCount == 1, message);
 }
 
 // What the publish hook was handed, by reason.
@@ -163,9 +192,9 @@ void tallyPublish(void* context, SyncFrameReason reason)
 
 TEST(aContinuingPassSharesTheCaptureBudget)
 {
-    std::mutex modelLock;
+    ModelLock modelLock;
     PublishTally counts;
-    PacedDrainHost host(modelLock, nullptr);
+    PacedDrainHost host(modelLock);
     host.setPublishHook(tallyPublish, &counts);
     host.onSyncFrameReadyLocked(SyncFrameReason::Settle);
     host.onSyncFrameReadyLocked(SyncFrameReason::ContinuingPass);
@@ -180,7 +209,7 @@ TEST(aContinuingPassSharesTheCaptureBudget)
 
 TEST(aSaturatedPassIsThrottledAsACopyAndReachesTheHookAsItself)
 {
-    std::mutex modelLock;
+    ModelLock modelLock;
 
     // Two saturated passes back to back: each would copy the grid, so the
     // second sits inside the copy window and is withheld — a flood closes
@@ -188,7 +217,7 @@ TEST(aSaturatedPassIsThrottledAsACopyAndReachesTheHookAsItself)
     // would put the render's whole-grid cost onto the ingest thread instead
     // of removing it.
     PublishTally backToBack;
-    PacedDrainHost host(modelLock, nullptr);
+    PacedDrainHost host(modelLock);
     host.setPublishHook(tallyPublish, &backToBack);
     host.onSyncFrameReadyLocked(SyncFrameReason::SaturatedPass);
     host.onSyncFrameReadyLocked(SyncFrameReason::SaturatedPass);
@@ -208,7 +237,7 @@ TEST(aSaturatedPassIsThrottledAsACopyAndReachesTheHookAsItself)
     // if it could strand the copy the flood's first frame would wait a whole
     // window for a frame the drain had already announced.
     PublishTally afterSettle;
-    PacedDrainHost settleHost(modelLock, nullptr);
+    PacedDrainHost settleHost(modelLock);
     settleHost.setPublishHook(tallyPublish, &afterSettle);
     settleHost.onSyncFrameReadyLocked(SyncFrameReason::Settle);
     settleHost.onSyncFrameReadyLocked(SyncFrameReason::SaturatedPass);
@@ -221,7 +250,7 @@ TEST(aSaturatedPassIsThrottledAsACopyAndReachesTheHookAsItself)
 
 TEST(aBoundaryIsNotThrottledBehindASettle)
 {
-    std::mutex modelLock;
+    ModelLock modelLock;
 
     // Back to back, so the second call is inside the publish window by
     // construction: the floor is a 240th of a second and two calls are
@@ -229,7 +258,7 @@ TEST(aBoundaryIsNotThrottledBehindASettle)
     // one for every drained frame that caught up — so this ordering is what
     // an ordinary session does between two synchronized-output frames.
     PublishTally afterSettle;
-    PacedDrainHost host(modelLock, nullptr);
+    PacedDrainHost host(modelLock);
     host.setPublishHook(tallyPublish, &afterSettle);
     host.onSyncFrameReadyLocked(SyncFrameReason::Settle);
     host.onSyncFrameReadyLocked(SyncFrameReason::Boundary);
@@ -249,7 +278,7 @@ TEST(aBoundaryIsNotThrottledBehindASettle)
     // well as the exemption does, so without this the test cannot tell the
     // boundary being let through from the window never holding anything back.
     PublishTally settlesOnly;
-    PacedDrainHost settleHost(modelLock, nullptr);
+    PacedDrainHost settleHost(modelLock);
     settleHost.setPublishHook(tallyPublish, &settlesOnly);
     settleHost.onSyncFrameReadyLocked(SyncFrameReason::Settle);
     settleHost.onSyncFrameReadyLocked(SyncFrameReason::Settle);
@@ -260,7 +289,7 @@ TEST(aBoundaryIsNotThrottledBehindASettle)
 
 TEST(theBurstEndPublishIsNeverWithheld)
 {
-    std::mutex modelLock;
+    ModelLock modelLock;
 
     // Back to back, so the second call is inside the window by construction.
     // Every other exemption here rests on a next capture carrying what this one
@@ -270,7 +299,7 @@ TEST(theBurstEndPublishIsNeverWithheld)
     // one window, and the glyph stays on the glass until an unrelated edge asks
     // for a frame.
     PublishTally afterBoundary;
-    PacedDrainHost host(modelLock, nullptr);
+    PacedDrainHost host(modelLock);
     host.setPublishHook(tallyPublish, &afterBoundary);
     host.onSyncFrameReadyLocked(SyncFrameReason::Boundary);
     host.onSyncFrameReadyLocked(SyncFrameReason::BurstEnd);
@@ -283,7 +312,7 @@ TEST(theBurstEndPublishIsNeverWithheld)
     // Two of them, for the one-pane case where a stream stops twice inside a
     // window: neither is the flood the window exists to pace.
     PublishTally twice;
-    PacedDrainHost twiceHost(modelLock, nullptr);
+    PacedDrainHost twiceHost(modelLock);
     twiceHost.setPublishHook(tallyPublish, &twice);
     twiceHost.onSyncFrameReadyLocked(SyncFrameReason::BurstEnd);
     twiceHost.onSyncFrameReadyLocked(SyncFrameReason::BurstEnd);
@@ -293,7 +322,7 @@ TEST(theBurstEndPublishIsNeverWithheld)
     // And it does not spend the copy window: a burst end copies only to replace
     // a capture nobody took, so a boundary right behind one still copies.
     PublishTally thenBoundary;
-    PacedDrainHost boundaryHost(modelLock, nullptr);
+    PacedDrainHost boundaryHost(modelLock);
     boundaryHost.setPublishHook(tallyPublish, &thenBoundary);
     boundaryHost.onSyncFrameReadyLocked(SyncFrameReason::BurstEnd);
     boundaryHost.onSyncFrameReadyLocked(SyncFrameReason::Boundary);

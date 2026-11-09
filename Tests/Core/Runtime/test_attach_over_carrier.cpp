@@ -827,7 +827,7 @@ TEST(anAdoptedPanePublishesOnlyItsActualModelsFacts)
     Ubiquitty::Terminal external;
     Ubiquitty::resize(external, 12, 40);
     Ubiquitty::processBytes(&external, "\x1b]2;adopted tests\x1b\\\x1b]7;file://remote/owned\x1b\\");
-    std::mutex externalLock;
+    Ubiquitty::ModelLock externalLock;
     const auto release = [](TerminalSession* value) { releaseTerminalSession(value); };
     std::unique_ptr<TerminalSession, decltype(release)> session(makeStartedSession(), release);
     REQUIRE(session);
@@ -1142,7 +1142,7 @@ TEST(anAdoptedPaneLinkDoesNotBorrowTheUnusedRuntimePublication)
 {
     Ubiquitty::Terminal external;
     Ubiquitty::resize(external, 24, 80);
-    std::mutex externalLock;
+    Ubiquitty::ModelLock externalLock;
     const auto release = [](TerminalSession* value) { releaseTerminalSession(value); };
     std::unique_ptr<TerminalSession, decltype(release)> session(makeStartedSession(), release);
     REQUIRE(session);
@@ -1172,7 +1172,7 @@ TEST(anAdoptedHostedPaneLinkUsesItsRealOwnersPublicationAndClock)
 {
     Ubiquitty::Terminal primary;
     Ubiquitty::resize(primary, 24, 80);
-    std::mutex primaryLock;
+    Ubiquitty::ModelLock primaryLock;
     Ubiquitty::TestDoubles::StreamDouble stream;
     std::uint64_t now = 12'000'000'000;
     Ubiquitty::Runtime::HostedWindowSeams seams;
@@ -1253,7 +1253,7 @@ TEST(anAdoptedHostedPaneFocusReachesItsRealOwnerAndProgram)
 {
     Ubiquitty::Terminal primary;
     Ubiquitty::resize(primary, 24, 80);
-    std::mutex primaryLock;
+    Ubiquitty::ModelLock primaryLock;
     Ubiquitty::TestDoubles::StreamDouble stream;
     Ubiquitty::Runtime::HostedWindowSeams seams;
     seams.primary = &primary;

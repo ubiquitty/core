@@ -1170,9 +1170,12 @@ wire model. This is the live forcing function for Core portability.
   per-pane queue driven by `IngestLoop` (`Core/Runtime/IngestLoop.h`), parsing
   under the model lock in bounded bites; a sustained flood moves reads to a
   reader thread. The `Terminal`/`CellGrid` model is guarded by a per-pane
-  non-recursive `std::mutex` (the "model lock", `TerminalSession::m_modelLock`):
-  the ingest writer holds it while mutating; main-thread readers (render,
-  selection, input) take it briefly. The writer never holds it across a hop to
+  non-recursive `ModelLock` (the "model lock", `TerminalSession::m_modelLock`,
+  `Core/ModelLock.h`): the ingest writer holds it while mutating; main-thread
+  readers (render, selection, input) take it briefly. The writer re-takes it
+  every bite with no gap, so its release hands the lock to any thread waiting
+  on it, bounded by a short band; a contended acquisition from any thread
+  waits about one bite. The writer never holds it across a hop to
   main (`coding-conventions.md` §5.2). Commands
   main needs the model to apply (e.g. focus changes) are posted to a ring and
   applied **by the ingest loop** under the lock it already holds, so main never

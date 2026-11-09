@@ -106,10 +106,15 @@ set(test_shell_integration_install_EXTRA_SOURCES Source/Core/App/ShellIntegratio
 # each test over them names the TU.
 set(test_gated_file_read_EXTRA_SOURCES Source/Platform/POSIX/GatedFileRead.cpp
                                        Source/Platform/POSIX/SystemPAL.cpp)
-# The fairness doorway spins on PAL::monotonicMicros and yields through
-# PAL::schedulerYield, so this one needs the real clock: a fake that advances a
-# microsecond per call turns the donation band into an iteration count.
+# The model lock's handoff spins on PAL::monotonicMicros and yields through
+# PAL::schedulerYield, so these need the real clock: a fake that advances a
+# microsecond per call turns the handoff band into an iteration count.
+set(test_model_lock_EXTRA_SOURCES Source/Platform/POSIX/SystemPAL.cpp)
 set(test_drain_host_pacing_EXTRA_SOURCES Source/Platform/POSIX/SystemPAL.cpp)
+# The tmux delivery path releases each pane's lock through ModelLock's handoff,
+# which reads the PAL clock and yields through the PAL.
+set(test_tmux_control_host_EXTRA_SOURCES Source/Platform/POSIX/SystemPAL.cpp
+                                         Source/Platform/Host/HostPAL.cpp)
 # The libFuzzer harness, linked into an ordinary test so its corpus can be
 # replayed. LLVMFuzzerTestOneInput is a plain function; only the driver needs
 # -fsanitize=fuzzer, and the replay supplies its own driver by reading files.

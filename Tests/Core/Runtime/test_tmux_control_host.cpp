@@ -74,7 +74,7 @@ std::vector<PostedWorkToken>& delayedTokens()
 struct HostHarness {
     RecordingStream stream;
     std::unique_ptr<Ubiquitty::Terminal> primary = std::make_unique<Ubiquitty::Terminal>();
-    std::mutex lock;
+    Ubiquitty::ModelLock lock;
     int announcements = 0;
     int publicationWakes = 0;
     std::uint64_t now = 12'000'000'000;
@@ -170,7 +170,7 @@ std::optional<Ubiquitty::Session::FrameReady> panePublication(HostHarness& harne
     const auto facts = harness.host->paneFacts(paneID);
     if (!facts.terminalAddress || !facts.lockAddress)
         return std::nullopt;
-    const std::scoped_lock hold(*reinterpret_cast<std::mutex*>(facts.lockAddress));
+    const std::scoped_lock hold(*reinterpret_cast<Ubiquitty::ModelLock*>(facts.lockAddress));
     return harness.host->panePublication(paneID, *reinterpret_cast<Ubiquitty::Terminal*>(facts.terminalAddress));
 }
 

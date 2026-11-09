@@ -603,7 +603,7 @@ Ubiquitty::Terminal* TmuxControlHost::deliveryTarget(PaneID paneID)
     // model nor outlives it.
     TmuxPane* pane = m_session.pinPane(paneID);
     if (pane && pane->term()) {
-        pane->lock();
+        pane->lockForDrain();
         m_deliveryPane = pane;
         m_deliveryTerminal = pane->term();
         m_deliveryPaneID = paneID;
@@ -640,7 +640,7 @@ void TmuxControlHost::releaseDelivery()
     m_deliveryPane = nullptr;
     m_deliveryTerminal = nullptr;
     m_deliveryPaneID = invalidPaneID;
-    pane->unlock();
+    pane->unlockForDrain();
     pane->unpin();
     finishPublication(paneID, publication, progress);
     disposeReleasedPanes();

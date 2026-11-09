@@ -174,7 +174,7 @@ private:
     }
 
     std::unique_ptr<Terminal> m_terminal = std::make_unique<Terminal>();
-    std::mutex m_modelLock;
+    ModelLock m_modelLock;
     Search::SearchExecutor m_executor;
     std::shared_ptr<Search::SearchController> m_controller;
     std::mutex m_publicationLock;

@@ -478,7 +478,7 @@ TEST(independentHeldViewsResolveAgainstTheCurrentModelNotAQueuedSnapshot)
     CHECK(cache.insert(1, linesOf(10, 12)) == CacheInsert::Stored);
     cache.setHead(1, 12);
     cache.project(*replica, 20);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     const auto nearUpdate = Selection::updateAfterOutput(nearView, *replica, modelLock, 2, queuedFacts);
     const auto olderUpdate = Selection::updateAfterOutput(olderView, *replica, modelLock, 5, queuedFacts);
     CHECK_EQ(nearUpdate.viewport.viewOffset, 4);

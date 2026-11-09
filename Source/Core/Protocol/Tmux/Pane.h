@@ -57,9 +57,13 @@ public:
 
     void lock() { m_lock.lock(); }
     void unlock() { m_lock.unlock(); }
-    // The underlying mutex, so a frontend's render adapter adopts the same lock
+    /// Takes the pane lock for the deliver path, which is this lock's drain.
+    void lockForDrain() { m_lock.lockForDrain(); }
+    /// Releases the deliver path's hold, handing the lock to a waiting reader.
+    void unlockForDrain() { m_lock.unlockForDrain(); }
+    // The underlying lock, so a frontend's render adapter adopts the same lock
     // the deliver path takes — one canonical lock per pane.
-    std::mutex* lockHandle() { return m_lock.nativeHandle(); }
+    ModelLock* lockHandle() { return m_lock.nativeHandle(); }
 
     // Run `body(term)` with the pane lock held, and only when this pane has a
     // terminal: every caller means "if it has none, there is nothing to do", and
