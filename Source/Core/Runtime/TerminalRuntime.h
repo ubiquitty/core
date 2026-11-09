@@ -153,7 +153,7 @@ public:
     // A frame just completed — called while the lock is held, so the platform can
     // capture/publish it race-free. The reason says whether the frame must be
     // captured here (Boundary, SaturatedPass, ContinuingPass) or only announced (Settle).
-    virtual void onSyncFrameReadyLocked(SyncFrameReason reason) = 0;
+    virtual void onSyncFrameReadyLocked(SyncFrameReason reason) UBIQUITTY_REQUIRES(modelLockRole) = 0;
 
     /// Returns the shortest interval this host presents frames at, which the
     /// coherence rule paces its frames to.

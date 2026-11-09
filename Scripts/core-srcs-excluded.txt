@@ -63,6 +63,7 @@
 # --- Source/Core/CellColor.cpp ---
 # --- Source/Core/Codec ---
 # --- Source/Core/CommandLine.cpp ---
+# --- Source/Core/ModelLock.cpp ---
 # --- Source/Core/Diagnostics ---
 # --- Source/Core/Image ---
 # --- Source/Core/Network ---
@@ -101,6 +102,7 @@ Source/Core/Input/PointerInput.cpp
 Source/Core/Input/PointerLadder.cpp
 Source/Core/Input/PointerShape.cpp
 Source/Core/Kitty/UnicodePlaceholders.cpp
+Source/Core/ModelLock.cpp
 Source/Core/Network/FileTransferDetect.cpp
 Source/Core/Network/FileTransferLaunch.cpp
 Source/Core/OSC/ClipboardStore.cpp

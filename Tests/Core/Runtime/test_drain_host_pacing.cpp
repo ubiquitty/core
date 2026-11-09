@@ -13,6 +13,7 @@
 
 #include "Core/Runtime/DrainHostPacing.h"
 #include "Harness.h"
+#include "SoleModelThread.h"
 
 #include <atomic>
 #include <chrono>
@@ -195,6 +196,7 @@ void tallyPublish(void* context, SyncFrameReason reason)
 
 TEST(aContinuingPassSharesTheCaptureBudget)
 {
+    ownModelOnTestThread();
     ModelLock modelLock;
     PublishTally counts;
     PacedDrainHost host(modelLock);
@@ -212,6 +214,7 @@ TEST(aContinuingPassSharesTheCaptureBudget)
 
 TEST(aSaturatedPassIsThrottledAsACopyAndReachesTheHookAsItself)
 {
+    ownModelOnTestThread();
     ModelLock modelLock;
 
     // Two saturated passes back to back: each would copy the grid, so the
@@ -253,6 +256,7 @@ TEST(aSaturatedPassIsThrottledAsACopyAndReachesTheHookAsItself)
 
 TEST(aBoundaryIsNotThrottledBehindASettle)
 {
+    ownModelOnTestThread();
     ModelLock modelLock;
 
     // Back to back, so the second call is inside the publish window by
@@ -292,6 +296,7 @@ TEST(aBoundaryIsNotThrottledBehindASettle)
 
 TEST(theBurstEndPublishIsNeverWithheld)
 {
+    ownModelOnTestThread();
     ModelLock modelLock;
 
     // Back to back, so the second call is inside the window by construction.

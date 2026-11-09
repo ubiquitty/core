@@ -117,6 +117,13 @@ public:
         return m_isDrainPassPresented.load(std::memory_order_relaxed) ? frameIntervalMicroseconds() : 0;
     }
 
+    /// Returns on the thread holding the lock this host drains under; in a
+    /// build with assertions, stops any other.
+    ///
+    /// For the publish hook, which this host calls through a function pointer
+    /// the thread-safety analysis cannot follow.
+    void assertModelLockHeld() const UBIQUITTY_ASSERTS_CAPABILITY(modelLockRole) { m_modelLock->assertHeld(); }
+
     /// Acquires the pane's model lock for the drain.
     void lockModel() override UBIQUITTY_ACQUIRES(modelLockRole) { m_modelLock->lockForDrain(); }
 
@@ -162,7 +169,7 @@ public:
     /// for.
     ///
     /// - Parameter reason: Why the frame was announced ready.
-    void onSyncFrameReadyLocked(SyncFrameReason reason) override
+    void onSyncFrameReadyLocked(SyncFrameReason reason) override UBIQUITTY_REQUIRES(modelLockRole)
     {
         if (!m_publishHook)
             return;
