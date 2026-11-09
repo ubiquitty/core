@@ -275,6 +275,8 @@ set(test_ingest_loop_EXTRA_SOURCES     Source/Platform/POSIX/PTYStream.cpp
                                        Source/Core/Session/ProcessSubtree.cpp)
 # test_flood_start runs the ingest loop over a pipe, on the real clock, poll and waker.
 set(test_flood_start_EXTRA_SOURCES ${test_ingest_loop_EXTRA_SOURCES})
+# The frame cadence runs a real drain and a frontend tick on the real clock.
+set(test_frame_cadence_EXTRA_SOURCES ${test_ingest_loop_EXTRA_SOURCES})
 # The settings fan-out runs against a started session, and a session is the
 # runtime whether or not the case opens a PTY: the same PAL set has to link.
 set(test_apply_terminal_preferences_EXTRA_SOURCES
@@ -552,6 +554,13 @@ endif()
 # the wall clock, so it runs with no other test competing for the cores.
 if(TEST test_flood_start)
     set_tests_properties(test_flood_start PROPERTIES RUN_SERIAL TRUE RESOURCE_LOCK timing)
+endif()
+
+# test_frame_cadence times a 60 Hz frontend tick and every frontend call against
+# a one-millisecond bound while a drain floods, so it runs alone: a test
+# beside it takes the cores its threads are timed on.
+if(TEST test_frame_cadence)
+    set_tests_properties(test_frame_cadence PROPERTIES RUN_SERIAL TRUE RESOURCE_LOCK timing)
 endif()
 
 # ----------------------------------------------------------------------
