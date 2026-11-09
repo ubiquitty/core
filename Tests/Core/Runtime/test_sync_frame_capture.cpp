@@ -2137,6 +2137,7 @@ namespace {
 struct FrontendTick {
     bool didFinishUnderTheLock = false;
     bool didTakeFrame = false;
+    int frameViewOffset = 0;
     DrawnSelection drawn;
     Selection::CaptureSpans answer;
 };
@@ -2151,6 +2152,7 @@ FrontendTick tickWhileTheDrainHoldsTheLock(TerminalSession& session, Selection::
         if (!frame)
             return result;
         result.didTakeFrame = true;
+        result.frameViewOffset = frame->viewOffset();
         result.drawn.spans.resize(static_cast<std::size_t>(Selection::viewportSpanCapacity(frame->rows(), frame->columns())));
         result.answer = session.selectionOverCapture(&selection, *frame, result.drawn.spans, result.drawn.ends);
         result.drawn.spans.resize(static_cast<std::size_t>(result.answer.count));
@@ -2352,6 +2354,95 @@ TEST(aSelectionInAViewScrolledBackIsDrawnOnEveryFrame)
     CHECK_MSG(drawn > 0, "the view drew the selection in the history");
 }
 
+// A view scrolled back holds its rows while output arrives, and the frames
+// the drain captures for it hold the same rows: registered once, each frame
+// stands where the view stands, with the selection on the rows it held.
+TEST(aViewScrolledBackHoldsItsRowsInTheFramesTheDrainCaptures)
+{
+    FloodedPane pane(12, 40);
+    pane.terminal->scrollbackLimit = 200;
+    std::string history;
+    for (int line = 0; line < 30; ++line)
+        history += std::format("history line {:03}\r\n", line);
+    pane.floodPass(history);
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+    constexpr int viewOffset = 10;
+    const Screen::HistoryFacts registeredHistory = Screen::historyFacts(pane.terminal);
+    SyncFrameCaptureGeometry geometry = testGeometry();
+    geometry.viewOffset = viewOffset;
+    geometry.viewHistory = registeredHistory;
+    geometry.isViewOffsetHeld = true;
+    pane.fixture.session->setSyncFrameCaptureGeometry(geometry);
+    pane.select(3, 0, 5, 10, viewOffset);
+    Selection::Session reference = pane.selection;
+
+    std::optional<DrawnSelection> firstDrawn;
+    for (int frame = 0; frame < 12; ++frame) {
+        pane.floodPass(std::format("arriving below {:03}\r\n", frame));
+        const int heldOffset = Selection::heldViewOffset(viewOffset, registeredHistory, Screen::historyFacts(pane.terminal));
+        REQUIRE(heldOffset == viewOffset + frame + 1);
+        const FrontendTick tick = pane.drawsWhatTheLiveReadDraws(reference, heldOffset, "a view holding its rows");
+        CHECK(tick.frameViewOffset == heldOffset);
+        CHECK(!tick.drawn.spans.empty());
+        if (!firstDrawn)
+            firstDrawn = tick.drawn;
+        CHECK_MSG(tick.drawn == *firstDrawn, "the held rows keep the selection where the view shows it");
+    }
+}
+
+// The offset a reader that missed every transition computes for a view that
+// held its rows is the offset the view reached, transition by transition:
+// growing history, history at its limit evicting the rows above, and the
+// view pinned at the oldest row once its own rows are gone.
+TEST(aHeldViewOffsetIsTheOffsetAViewThatHeldItsRowsReached)
+{
+    for (const int chunk : { 1, 3, 7 }) {
+        Terminal terminal;
+        hardReset(terminal);
+        resize(terminal, 6, 20);
+        terminal.scrollbackLimit = 40;
+        Selection::Session view;
+        Selection::init(view);
+        for (int line = 0; line < 20; ++line)
+            UbiquittyTest::feed(terminal, std::format("before {:03}\r\n", line));
+        int viewOffset = 8;
+        static_cast<void>(Selection::viewportAfterOutput(view, viewOffset, Input::OutputSnapPolicy::Indeterminate, Screen::historyFacts(&terminal)));
+        const Screen::HistoryFacts measuredAgainst = view.viewportObservedHistory;
+        int line = 0;
+        bool wasPinned = false;
+        while (line < 120) {
+            for (int count = 0; count < chunk; ++count)
+                UbiquittyTest::feed(terminal, std::format("after {:03}\r\n", line++));
+            const Screen::HistoryFacts now = Screen::historyFacts(&terminal);
+            const Input::ViewportAfterOutput after = Selection::viewportAfterOutput(view, viewOffset, Input::OutputSnapPolicy::Indeterminate, now);
+            REQUIRE(after.hold == Input::ViewportHold::Hold);
+            viewOffset = static_cast<int>(after.viewOffset);
+            CHECK_EQ(Selection::heldViewOffset(8, measuredAgainst, now), viewOffset);
+            wasPinned = wasPinned || viewOffset == now.retainedRows;
+        }
+        CHECK_MSG(wasPinned, "the view reached the oldest retained row");
+    }
+}
+
+// A view's offset is held from the history its last output transition read:
+// a view that has read none, or keeps a logical anchor, is not held by it.
+TEST(aViewOffsetIsHeldByHistoryOnceMeasuredAgainstIt)
+{
+    Terminal terminal;
+    hardReset(terminal);
+    resize(terminal, 6, 20);
+    terminal.scrollbackLimit = 40;
+    for (int line = 0; line < 20; ++line)
+        UbiquittyTest::feed(terminal, std::format("before {:03}\r\n", line));
+    Selection::Session view;
+    Selection::init(view);
+    CHECK(!Selection::isViewOffsetHeldByHistory(view));
+    static_cast<void>(Selection::viewportAfterOutput(view, 4, Input::OutputSnapPolicy::Indeterminate, Screen::historyFacts(&terminal)));
+    CHECK(Selection::isViewOffsetHeldByHistory(view));
+    Selection::observeViewport(view, terminal, 4);
+    CHECK(!Selection::isViewOffsetHeldByHistory(view));
+}
+
 // Two flooded panes, each with its own selection, one on the alternate screen
 // redrawn in place and one scrolled by output: every frame of each presents
 // with its own selection as its live read draws it.
@@ -2411,6 +2502,113 @@ TEST(aTickThatHandsOverAMovedSelectionKeepsItOverAnEarlierFrame)
     CHECK(tick.didTakeFrame);
     CHECK(!tick.answer.didAdopt);
     CHECK(isSameState(pane.selection.state, moved));
+}
+
+// A view held back over the history shows the program's screen once the
+// program enters the alternate screen, which has no history to hold: each
+// frame the drain captures for it stands at the tail, with the selection the
+// live read draws there.
+TEST(aViewHeldBackIsShownTheAlternateScreenAtTheTail)
+{
+    FloodedPane pane(12, 40);
+    pane.terminal->scrollbackLimit = 200;
+    std::string history;
+    for (int line = 0; line < 30; ++line)
+        history += std::format("history line {:03}\r\n", line);
+    pane.floodPass(history);
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+    SyncFrameCaptureGeometry geometry = testGeometry();
+    geometry.viewOffset = 10;
+    geometry.viewHistory = Screen::historyFacts(pane.terminal);
+    geometry.isViewOffsetHeld = true;
+    pane.fixture.session->setSyncFrameCaptureGeometry(geometry);
+    pane.floodPass("\x1b[?1049h" + redrawnInPlace(12, 0));
+    REQUIRE(pane.terminal->screens.isUsingAlternateScreen);
+    REQUIRE(Screen::scrollbackCount(pane.terminal) > geometry.viewOffset);
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+    pane.select(5, 2, 7, 20);
+    Selection::Session reference = pane.selection;
+
+    for (int frame = 1; frame <= 6; ++frame) {
+        pane.floodPass(redrawnInPlace(12, frame));
+        const FrontendTick tick = pane.drawsWhatTheLiveReadDraws(reference, 0, "the alternate screen under a held view");
+        CHECK(tick.frameViewOffset == 0);
+        CHECK(!tick.drawn.spans.empty());
+    }
+}
+
+// The live route hands Core the offset the view holds, as it stands, where the
+// boundary capture resolves it first. Over the alternate screen under a view
+// held back the two routes draw one frame: the press and the drag land on the
+// rows the frame shows, the frames stand at one offset over one set of rows
+// with the cursor on one row, the selection draws alike, and the live route
+// plans against the baseline the boundary capture left rather than reading a
+// different offset as a reason to rebuild whole.
+TEST(theLiveAndBoundaryRoutesDrawOneFrameOverTheAlternateScreenUnderAHeldView)
+{
+    FloodedPane pane(12, 40);
+    pane.terminal->scrollbackLimit = 200;
+    std::string history;
+    for (int line = 0; line < 30; ++line)
+        history += std::format("history line {:03}\r\n", line);
+    pane.floodPass(history);
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+    SyncFrameCaptureGeometry geometry = testGeometry();
+    geometry.viewOffset = 10;
+    geometry.viewHistory = Screen::historyFacts(pane.terminal);
+    geometry.isViewOffsetHeld = true;
+    pane.fixture.session->setSyncFrameCaptureGeometry(geometry);
+    const std::string cursorHome = "\x1b[9;5H";
+    pane.floodPass("\x1b[?1049h" + redrawnInPlace(12, 0) + cursorHome);
+    REQUIRE(pane.terminal->screens.isUsingAlternateScreen);
+    REQUIRE(Screen::scrollbackCount(pane.terminal) > geometry.viewOffset);
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+
+    Selection::Session atTail;
+    Selection::init(atTail);
+    Selection::beginGesture(atTail, *pane.terminal, 5, 2, 1, 0, {});
+    Selection::dragGesture(atTail, *pane.terminal, 7, 20, 0);
+    Selection::endGesture(atTail);
+    pane.select(5, 2, 7, 20, geometry.viewOffset);
+    CHECK_MSG(Selection::selectedText(pane.selection, *pane.terminal) == Selection::selectedText(atTail, *pane.terminal),
+        "a drag at the held offset selected other rows than the frame shows");
+    Selection::Session reference = pane.selection;
+
+    pane.floodPass(redrawnInPlace(12, 1) + cursorHome);
+    const TakenFrame boundary { pane.fixture.session->takeSyncFrame() };
+    REQUIRE(boundary);
+    REQUIRE(boundary->cursorRow() == 8);
+    pane.fixture.session->lockForRead();
+    RetainedFrameRequest request;
+    request.rows = pane.terminal->rows;
+    request.columns = pane.terminal->columns;
+    request.viewOffset = geometry.viewOffset;
+    request.isTargetMatching = true;
+    request.isGridCacheEnabled = true;
+    std::vector<std::uint8_t> rowDirty(static_cast<std::size_t>(request.rows), 0);
+    const RetainedFramePlan plan = pane.fixture.session->planRetainedFrame(*pane.terminal, request, std::span { rowDirty });
+    TerminalSnapshotOptions options;
+    options.viewOffset = geometry.viewOffset;
+    options.drawCursor = geometry.drawCursor;
+    options.isFocused = geometry.isFocused;
+    options.viewportSizeInPixels = geometry.viewportSizeInPixels;
+    options.style = geometry.style;
+    const TakenFrame live { FrameCapture::make() };
+    REQUIRE(live);
+    const bool didCaptureLive = live->capture(*pane.terminal, options, geometry.metrics, geometry.glyphSlot, plan.refresh, {});
+    pane.fixture.session->unlockForRead();
+    REQUIRE(didCaptureLive);
+    CHECK_MSG(plan.damage.canReuse, "the live route rebuilt a frame the boundary capture had already drawn");
+    CHECK_EQ(plan.refresh.viewOffset, boundary->viewOffset());
+    CHECK_EQ(plan.refresh.firstAbsoluteRow, boundary->firstAbsoluteRow());
+    CHECK_EQ(live->viewOffset(), boundary->viewOffset());
+    CHECK_EQ(live->firstAbsoluteRow(), boundary->firstAbsoluteRow());
+    CHECK_EQ(live->cursorRow(), boundary->cursorRow());
+
+    pane.floodPass(redrawnInPlace(12, 2) + cursorHome);
+    const FrontendTick tick = pane.drawsWhatTheLiveReadDraws(reference, geometry.viewOffset, "the live route's selection under a held view");
+    CHECK(tick.frameViewOffset == 0);
+    CHECK(!tick.drawn.spans.empty());
 }
 
 // Each delivery's output transition, which the view runs on its own thread

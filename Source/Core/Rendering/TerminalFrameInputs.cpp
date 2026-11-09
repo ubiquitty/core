@@ -205,8 +205,12 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
     capturedLineAttributes->resize(rowCount);
     capturedRowMarks->resize(rowCount);
 
+    // The offset the frame shows, resolved once: a view held back over the
+    // alternate screen, which has no history, is shown its tail. The rows, their
+    // attributes, marks and flags, the builder, the pictures and the rich text
+    // all read this one.
     const int history = Screen::scrollbackCount(&terminal);
-    const int viewOffset = std::clamp(options.viewOffset, 0, history);
+    const int viewOffset = Screen::resolvedViewOffset(&terminal, options.viewOffset);
     const int firstAbsoluteRow = history - viewOffset;
 
     // The view is re-derived rather than taken from the refresh, and a refresh
@@ -329,6 +333,7 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
     source.softFont = Ubiquitty::softFontOrNull(terminal);
     const SourceRowStorage sourceStorage = needsPristineSource ? SourceRowStorage::Copy : SourceRowStorage::CaptureOwned;
     TerminalSnapshotOptions captureOptions = options;
+    captureOptions.viewOffset = viewOffset;
     // Per-kind link styling for a caller that hands in the Terminal and no
     // resolver of its own. The lookup rides the same borrow the cluster
     // resolver above does; a caller's own resolver wins, so the flag fills the
@@ -369,12 +374,12 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
         const int count = collectImageQuadsOrdered(&terminal,
             { m_metrics.cellWidth, m_metrics.cellHeight },
             { m_inputs.originInPixels.x, m_inputs.originInPixels.y },
-            m_metrics.deviceScale, options.viewOffset, m_imageQuads,
+            m_metrics.deviceScale, viewOffset, m_imageQuads,
             options.viewportSizeInPixels, m_metrics.presentationScale);
         m_imageQuads.resize(static_cast<std::size_t>(count));
     }
     if (didCapture && !terminal.richTextBlocks.isEmpty())
-        collectRichTextQuads(terminal, options);
+        collectRichTextQuads(terminal, captureOptions);
     m_rowRefreshGeneration = didCapture ? refresh.generationAfterDrain : 0;
     m_terminalRowStorage = didCapture
         ? (needsPristineSource ? TerminalRowStorage::Scratch : TerminalRowStorage::Cells)
@@ -823,7 +828,7 @@ bool TerminalFrameInputs::captureSource(const FrameSource& source, const Termina
     }
 
     const std::size_t cellCount = static_cast<std::size_t>(source.rows) * source.columns;
-    const int viewOffset = std::clamp(options.viewOffset, 0, std::max(source.scrollbackCount, 0));
+    const int viewOffset = Screen::resolvedViewOffset(options.viewOffset, source.scrollbackCount, source.alternateActive);
     const bool chromeActive = hasDrawnChrome(chrome);
     // The status line replaces the last visible row; the full statement of why
     // sits at the overwrite below. Decided here because the copy needs it: a
@@ -1492,11 +1497,9 @@ CursorMotionTarget resolveCursorMotionTarget(const Terminal& terminal, int viewO
     target.durationMilliseconds = terminal.cursorMotionDurationMilliseconds;
     target.column = terminal.screens.active->cursorX;
     // The capture's own arithmetic, so the two cannot disagree about which
-    // cell the caret is on: the offset clamped to the history that exists,
-    // the screen row moved down by it, and a row outside the window drawing
-    // nothing.
-    const int history = std::max(Screen::scrollbackCount(&terminal), 0);
-    const int visibleRow = terminal.screens.active->cursorY + std::clamp(viewOffset, 0, history);
+    // cell the caret is on: the offset the frame shows, the screen row moved
+    // down by it, and a row outside the window drawing nothing.
+    const int visibleRow = terminal.screens.active->cursorY + Screen::resolvedViewOffset(&terminal, viewOffset);
     if (drawCursor && terminal.modes.isCursorVisible && visibleRow >= 0 && visibleRow < terminal.rows)
         target.visibleRow = visibleRow;
     return target;

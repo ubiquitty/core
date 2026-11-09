@@ -197,8 +197,15 @@ struct AnimationScheduleVerdict {
 /// holds only what survives frames — the scalar knobs and geometry — and the
 /// capture assembles full options from it at the boundary, span tiers absent.
 struct SyncFrameCaptureGeometry {
-    /// The frame's scroll position; refresh on every scroll.
+    /// The frame's scroll position; refresh whenever the view moves other
+    /// than by holding its rows under output.
     int viewOffset = 0;
+    /// The history `viewOffset` was measured against, read when
+    /// `isViewOffsetHeld` is set: each capture then holds the view's rows as
+    /// the view holds them at each delivery (``Selection::heldViewOffset``),
+    /// so a view scrolled back registers once, not once a delivery.
+    Screen::HistoryFacts viewHistory {};
+    bool isViewOffsetHeld = false;
     /// Whether the frame draws a cursor at all.
     bool drawCursor = true;
     /// Whether the surface holds keyboard focus.
@@ -9442,7 +9449,14 @@ private:
         // before the boundary it would steer. The sync guarantee is about grid
         // content; the view-state tiers are the drive's present-time business.
         Rendering::TerminalSnapshotOptions options;
-        options.viewOffset = m_syncCaptureGeometry.viewOffset;
+        // A view scrolled back holds its rows while output arrives, and the
+        // frame shows the rows the view does. The cells, the damage planned
+        // for them and the selection resolved over them read one resolved
+        // offset: none on the alternate screen, which has no history.
+        const int viewOffset = m_syncCaptureGeometry.isViewOffsetHeld
+            ? Ubiquitty::Selection::heldViewOffset(m_syncCaptureGeometry.viewOffset, m_syncCaptureGeometry.viewHistory, Screen::historyFacts(term))
+            : m_syncCaptureGeometry.viewOffset;
+        options.viewOffset = Screen::resolvedViewOffset(term, viewOffset);
         options.drawCursor = m_syncCaptureGeometry.drawCursor;
         options.isFocused = m_syncCaptureGeometry.isFocused;
         options.cursorMixAlpha = m_syncCaptureGeometry.cursorMixAlpha;

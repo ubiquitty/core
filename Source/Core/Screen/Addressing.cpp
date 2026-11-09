@@ -60,10 +60,14 @@ std::optional<CharacterField> activeCharacterField(const Terminal& terminal)
 
 int resolvedViewOffset(const Ubiquitty::Terminal* t, int viewOffset)
 {
-    if (!t || t->screens.isUsingAlternateScreen)
+    if (!t)
         return 0;
-    const int history = scrollbackCount(t);
-    if (viewOffset < 0)
+    return resolvedViewOffset(viewOffset, scrollbackCount(t), t->screens.isUsingAlternateScreen);
+}
+
+int resolvedViewOffset(int viewOffset, int history, bool isAlternateScreen) // bool-ok: the fact a source carries as a bool
+{
+    if (isAlternateScreen || viewOffset < 0 || history <= 0)
         return 0;
     return viewOffset > history ? history : viewOffset;
 }

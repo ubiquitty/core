@@ -4,6 +4,7 @@
 #include "Core/Rendering/ImageQuads.h"
 
 #include "Core/Kitty/UnicodePlaceholders.h"
+#include "Core/Screen/Addressing.h"
 #include "Core/Terminal.h"
 
 #include <cmath>
@@ -14,6 +15,9 @@ int collectImageQuads(const Ubiquitty::Terminal* terminal, FloatSize cellSizeInP
 {
     if (!std::isfinite(presentationScale) || presentationScale <= 0)
         return 0;
+    // Placed by the rows the frame shows: a frontend may hand in the offset a
+    // view holds over the alternate screen, which shows its tail.
+    viewOffset = Screen::resolvedViewOffset(terminal, viewOffset);
     if (presentationScale != 1) {
         // Resolve in the original pixel domain, including crop and offsets,
         // then transform every edge together. Scaling only the cells leaves

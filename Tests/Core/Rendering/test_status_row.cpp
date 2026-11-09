@@ -81,13 +81,19 @@ TEST(testHostWritableCopiesAndNormalises)
 }
 
 // A scrolled-back frame shows history; the status line belongs to the tail,
-// so a nonzero view offset deactivates the row.
+// so an offset into history deactivates the row. The alternate screen has no
+// history, so a view held back over it is shown the tail, status line and all.
 TEST(testScrolledBackViewDeactivates)
 {
     auto t = makeTerminal();
+    for (int line = 0; line < 12; ++line)
+        Ubiquitty::processBytes(t.get(), "line\r\n");
     Ubiquitty::processBytes(t.get(), "\x1b[2$~");
     std::vector<Cell> cells(static_cast<std::size_t>(t->columns));
+    CHECK_MSG(fillStatusRow(t.get(), t->rows, t->columns, 0, cells), "the tail reports active");
     CHECK_MSG(!fillStatusRow(t.get(), t->rows, t->columns, 1, cells), "a scrolled view reports inactive");
+    Ubiquitty::processBytes(t.get(), "\x1b[?1049h");
+    CHECK_MSG(fillStatusRow(t.get(), t->rows, t->columns, 1, cells), "a view held back over the alternate screen reports active");
 }
 
 // The indicator truncates to the visible width rather than wrapping: the

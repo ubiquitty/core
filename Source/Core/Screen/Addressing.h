@@ -67,6 +67,16 @@ struct CharacterField {
 /// - Returns: The offset the addressing uses, in [0, scrollbackCount].
 [[nodiscard]] int resolvedViewOffset(const Ubiquitty::Terminal* t, int viewOffset);
 
+/// The same rule over a screen's facts read out of its terminal, for a frame
+/// source that carries the facts and not the terminal.
+///
+/// - Parameters:
+///   - viewOffset: The offset as held by the caller.
+///   - history: The scrollback rows that exist.
+///   - isAlternateScreen: Whether the alternate screen is the one shown.
+/// - Returns: The offset the addressing uses, in [0, history].
+[[nodiscard]] int resolvedViewOffset(int viewOffset, int history, bool isAlternateScreen); // bool-ok: the fact a source carries as a bool
+
 /// The visible row an absolute row lands on.
 ///
 /// The inverse of the map `visibleCell` applies — `absolute = history -

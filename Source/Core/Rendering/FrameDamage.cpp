@@ -204,6 +204,11 @@ RetainedCapture planRetainedCapture(CellGrid& grid, const Terminal& terminal, Re
     RetainedCapture capture;
     if (rowDirty.empty() || request.rows != static_cast<int>(rowDirty.size()))
         return capture;
+    // The offset the frame shows, as the capture resolves it: a frontend may
+    // hand in the offset a view holds over the alternate screen, which shows
+    // its tail, and the baseline, the pictures, the blink scan, the search run
+    // and the refresh all describe the rows the frame shows.
+    const int viewOffset = Screen::resolvedViewOffset(&terminal, request.viewOffset);
 
     CaptureEligibility eligibility;
     eligibility.trustDamage = request.shouldTrustDamage && request.isGridCacheEnabled;
@@ -212,7 +217,7 @@ RetainedCapture planRetainedCapture(CellGrid& grid, const Terminal& terminal, Re
     eligibility.bufferGeneration = baseline.generation;
     eligibility.generationBeforeDrain = grid.currentDamageGeneration();
     eligibility.lastViewOffset = baseline.viewOffset;
-    eligibility.currentViewOffset = request.viewOffset;
+    eligibility.currentViewOffset = viewOffset;
     eligibility.lastRows = baseline.rows;
     eligibility.lastColumns = baseline.columns;
     eligibility.currentRows = request.rows;
@@ -226,8 +231,8 @@ RetainedCapture planRetainedCapture(CellGrid& grid, const Terminal& terminal, Re
     // frame that shows one rebuilds whole, and so does the frame after it
     // left: the rows it covered were never written, and a Load would keep it
     // standing there while the text moved on.
-    const bool hasImagesOnViewport = Image::hasPlacementOnViewport(terminal, request.viewOffset)
-        || Kitty::hasPlaceholders(&terminal, request.viewOffset);
+    const bool hasImagesOnViewport = Image::hasPlacementOnViewport(terminal, viewOffset)
+        || Kitty::hasPlaceholders(&terminal, viewOffset);
     eligibility.hadImagesOnViewport = baseline.hadImagesOnViewport;
     eligibility.hasImagesOnViewport = hasImagesOnViewport;
     capture.damage = drainFrameDamage(grid, eligibility, rowDirty);
@@ -242,7 +247,7 @@ RetainedCapture planRetainedCapture(CellGrid& grid, const Terminal& terminal, Re
     // Scrolled back, the rows on display are outside the live-screen reading
     // and the hint stands — a blink cell up there must not freeze mid-phase in
     // retained pixels, and this scan cannot say which row it is on.
-    if (capture.damage.hasBlink && request.viewOffset == 0) {
+    if (capture.damage.hasBlink && viewOffset == 0) {
         markBlinkRowsDirty(terminal, rowDirty);
         capture.damage.hasBlink = false;
     }
@@ -265,7 +270,7 @@ RetainedCapture planRetainedCapture(CellGrid& grid, const Terminal& terminal, Re
     // hold the match's cells unfilled whatever the search says, and a baseline
     // that recorded the search's run would let the next frame that draws the
     // ring Load those cells as if they carried the fill.
-    const FocusedMatchRun match = request.isFocusedMatchBaked ? focusedMatchRun(terminal, request.viewOffset) : FocusedMatchRun {};
+    const FocusedMatchRun match = request.isFocusedMatchBaked ? focusedMatchRun(terminal, viewOffset) : FocusedMatchRun {};
     const bool didMatchChange = !baseline.isInitialized
         || baseline.matchRow0 != match.row0 || baseline.matchRow1 != match.row1
         || baseline.matchColumn0 != match.column0 || baseline.matchColumn1 != match.column1;
@@ -297,9 +302,8 @@ RetainedCapture planRetainedCapture(CellGrid& grid, const Terminal& terminal, Re
     capture.refresh.scrollTop = capture.damage.scrollTop;
     capture.refresh.scrollBottom = capture.damage.scrollBottom;
     capture.refresh.scrollDelta = capture.damage.scrollDelta;
-    capture.refresh.viewOffset = request.viewOffset;
-    const int history = Screen::scrollbackCount(&terminal);
-    capture.refresh.firstAbsoluteRow = history - std::clamp(request.viewOffset, 0, history);
+    capture.refresh.viewOffset = viewOffset;
+    capture.refresh.firstAbsoluteRow = Screen::scrollbackCount(&terminal) - viewOffset;
     capture.refresh.generationAfterDrain = capture.damage.generationAfterDrain;
     capture.refresh.baseGeneration = baseline.generation;
     capture.refresh.rowDirty = rowDirty;
@@ -307,7 +311,7 @@ RetainedCapture planRetainedCapture(CellGrid& grid, const Terminal& terminal, Re
     baseline.isInitialized = true;
     baseline.grid = &grid;
     baseline.generation = capture.damage.generationAfterDrain;
-    baseline.viewOffset = request.viewOffset;
+    baseline.viewOffset = viewOffset;
     baseline.rows = request.rows;
     baseline.columns = request.columns;
     baseline.isReverseVideo = isFrameReverseVideo;
@@ -427,8 +431,8 @@ RetainedFramePlan planSkippedGridFrame(const Terminal& terminal, RetainedFrameBa
     // about cells the build reads, and this build reads none.
     plan.shouldLoadRetainedTarget = false;
     plan.refresh.canReuseRows = true;
-    plan.refresh.viewOffset = request.viewOffset;
-    plan.refresh.firstAbsoluteRow = Screen::scrollbackCount(&terminal) - request.viewOffset;
+    plan.refresh.viewOffset = Screen::resolvedViewOffset(&terminal, request.viewOffset);
+    plan.refresh.firstAbsoluteRow = Screen::scrollbackCount(&terminal) - plan.refresh.viewOffset;
     plan.refresh.rowDirty = rowDirty;
     return plan;
 }

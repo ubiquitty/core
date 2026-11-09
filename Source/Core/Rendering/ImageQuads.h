@@ -33,7 +33,8 @@ namespace Ubiquitty::Rendering {
 ///   - cellSizeInPixels: Cell dimensions after local presentation scaling.
 ///   - origin: The presented grid's origin in device pixels.
 ///   - scale: Points to device pixels, including local presentation scaling.
-///   - viewOffset: The scrollback offset; 0 is the live bottom.
+///   - viewOffset: The scrollback offset; 0 is the live bottom. Resolved
+///     here (``Screen::resolvedViewOffset``), as the frame's rows are.
 ///   - out: Destination for the resolved quads.
 ///   - drawableSizeInPixels: Drawable dimensions, for the fullscreen fits.
 ///   - presentationScale: Uniform local scaling of cells and intrinsic image pixels.
