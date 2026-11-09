@@ -129,7 +129,7 @@ Running the test suites and the harnesses they use. See [Tests](../Tests/README.
 | [`test-gate-framework.py`](test-gate-framework.py) | Negative controls for the shared gate reporting. |
 | [`test-gate-subjects.py`](test-gate-subjects.py) | Tests probe ownership, isolation, discovery, and refusal in gate_subjects.py. |
 | [`test-install-hooks.sh`](test-install-hooks.sh) | The hook install, against a throwaway clone with a linked worktree. |
-| [`test-library-roots.py`](test-library-roots.py) | A repository carrying ubiquitty-core's Scripts/ as a library runs its roots, check-style.py, hooks and push gates from it. |
+| [`test-library-roots.py`](test-library-roots.py) | A repository carrying ubiquitty-core's Scripts/ as a library, directly or through its Kit, runs its roots, check-style.py, hooks and push gates from it. |
 | [`test-libubiquittycore-package.sh`](test-libubiquittycore-package.sh) | Builds, installs, and consumes the Core and Kit package from a relocated prefix. |
 | [`test-linux-host.py`](test-linux-host.py) | Tests the Linux host route against a stand-in ssh and rsync. |
 | [`test-personal-paths.py`](test-personal-paths.py) | Tests notice attribution allowances in the privacy gate. |

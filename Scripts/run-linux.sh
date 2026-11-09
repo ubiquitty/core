@@ -32,14 +32,18 @@ SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The checkout mounted at /src: this one, or the consumer that carries it. A
 # consumer names itself in UBIQUITTY_LINUX_ROOT (ubiquitty-kit's
 # Scripts/run-linux.sh does), and a repository that carries this script as its
-# Libraries/ubiquitty-core is mounted when the script is run from it.
+# Libraries/ubiquitty-core, or as its Kit's, is mounted when the script is run
+# from it.
 ROOT="${UBIQUITTY_LINUX_ROOT:-}"
 if [ -z "$ROOT" ]; then
     ROOT="$(cd "$SCRIPTS/.." && pwd)"
     ubqToplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-    if [ -n "$ubqToplevel" ] && [ "$ubqToplevel" != "$ROOT" ] \
-        && [ "$(cd "$ubqToplevel/Libraries/ubiquitty-core" 2>/dev/null && pwd -P)" = "$(cd "$ROOT" && pwd -P)" ]; then
-        ROOT="$ubqToplevel"
+    if [ -n "$ubqToplevel" ] && [ "$ubqToplevel" != "$ROOT" ]; then
+        for ubqMount in Libraries/ubiquitty-core Libraries/ubiquitty-kit/Libraries/ubiquitty-core; do
+            if [ "$(cd "$ubqToplevel/$ubqMount" 2>/dev/null && pwd -P)" = "$(cd "$ROOT" && pwd -P)" ]; then
+                ROOT="$ubqToplevel"
+            fi
+        done
     fi
 fi
 # Build output lives outside the checkout; see Scripts/build-root.sh.
@@ -112,8 +116,9 @@ RUN apt-get update -qq && apt-get install -y -qq \
 # these are the exact files the app bundles, so the container matches what the
 # product draws with by construction. The directory belongs to ubiquitty-core: at
 # the root of the mount where the checkout is ubiquitty-core or holds every
-# repository, under Libraries/ where the checkout carries it. fontconfig skips the
-# one that is absent.
+# repository, under Libraries/ where the checkout carries it, and under
+# Libraries/ubiquitty-kit/Libraries/ where the checkout carries Core through the
+# Kit. fontconfig skips the ones that are absent.
 #
 # Without this, fontconfig SUBSTITUTES: `fc-match "JetBrains Mono"` answers
 # DejaVu Sans, so every golden minted against a config naming a shipped face
@@ -127,7 +132,7 @@ RUN apt-get update -qq && apt-get install -y -qq \
 RUN printf "%s\\n" \
       "<?xml version=\"1.0\"?>" \
       "<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">" \
-      "<fontconfig><dir>/src/Resources/fonts</dir><dir>/src/Libraries/ubiquitty-core/Resources/fonts</dir></fontconfig>" \
+      "<fontconfig><dir>/src/Resources/fonts</dir><dir>/src/Libraries/ubiquitty-core/Resources/fonts</dir><dir>/src/Libraries/ubiquitty-kit/Libraries/ubiquitty-core/Resources/fonts</dir></fontconfig>" \
     > /etc/fonts/conf.d/99-ubiquitty-shipped-fonts.conf'
 
 # `dockerfile` prints the recipe and stops. Scripts/ci-linux-image.sh builds the

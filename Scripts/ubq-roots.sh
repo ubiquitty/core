@@ -20,20 +20,24 @@
 #   UBQ_REPOSITORIES   the repositories whose files the subject holds
 #
 # UBQ_CORE_ROOT and UBQ_KIT_ROOT keep a value already set, and one a caller
-# exported stays exported. Otherwise each is
-# Libraries/ubiquitty-core or Libraries/ubiquitty-kit under the subject when that
-# path exists, and the subject itself when it does not, so a repository that
-# holds everything, and ubiquitty-core itself, read one tree. The submodule is
+# exported stays exported. Otherwise UBQ_KIT_ROOT is Libraries/ubiquitty-kit
+# under the subject when that path exists. UBQ_CORE_ROOT is the Kit's own
+# Libraries/ubiquitty-core when the subject carries the Kit, the Core that Kit
+# pins, and Libraries/ubiquitty-core under the subject when the subject carries
+# Core and no Kit. Each is the subject itself otherwise, so a repository that
+# holds everything, and ubiquitty-core itself, read one tree. A submodule is
 # chosen by existing and not by being populated, so a checkout that has not
 # initialised it fails on the missing files instead of judging its own tree as
-# the library's.
+# the library's. Scripts/ubq_roots.py's core_submodule states the same rule.
 #
 # Scripts/repository.txt names the repository a checkout is: core, kit or app.
 # A checkout without it holds all three.
 
 UBQ_SUBJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 if [ -z "${UBQ_CORE_ROOT:-}" ]; then
-    if [ -e "$UBQ_SUBJECT_ROOT/Libraries/ubiquitty-core" ]; then
+    if [ -e "$UBQ_SUBJECT_ROOT/Libraries/ubiquitty-kit" ]; then
+        UBQ_CORE_ROOT="$UBQ_SUBJECT_ROOT/Libraries/ubiquitty-kit/Libraries/ubiquitty-core"
+    elif [ -e "$UBQ_SUBJECT_ROOT/Libraries/ubiquitty-core" ]; then
         UBQ_CORE_ROOT="$UBQ_SUBJECT_ROOT/Libraries/ubiquitty-core"
     else
         UBQ_CORE_ROOT="$UBQ_SUBJECT_ROOT"

@@ -14,8 +14,10 @@
 #
 # A repository that carries ubiquitty-core as a library has no hook bodies of its
 # own to run for the shared gates: the body is the library's, found at
-# $UBQ_CORE_ROOT or Libraries/ubiquitty-core, and it judges the tree git is
-# operating on. A repository's own Scripts/hooks/<name> wins when it has one.
+# $UBQ_CORE_ROOT or where Scripts/ubq-roots.sh finds Core (the Kit's
+# Libraries/ubiquitty-core when the repository carries the Kit, else its own),
+# and it judges the tree git is operating on. A repository's own
+# Scripts/hooks/<name> wins when it has one.
 set -uo pipefail
 
 name="$(basename "$0")"
@@ -26,7 +28,11 @@ top="$(git rev-parse --show-toplevel 2>/dev/null)"
 
 target="$top/Scripts/hooks/$name"
 if [ ! -f "$target" ]; then
-    core="${UBQ_CORE_ROOT:-$top/Libraries/ubiquitty-core}"
+    core="${UBQ_CORE_ROOT:-}"
+    if [ -z "$core" ]; then
+        core="$top/Libraries/ubiquitty-core"
+        [ -e "$top/Libraries/ubiquitty-kit" ] && core="$top/Libraries/ubiquitty-kit/Libraries/ubiquitty-core"
+    fi
     [ -f "$core/Scripts/hooks/$name" ] && target="$core/Scripts/hooks/$name"
 fi
 if [ ! -f "$target" ]; then

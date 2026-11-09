@@ -469,9 +469,12 @@ def project_license_self_test():
             self.assertIn("Face-Regular.ttf into ubiquittykit-framework", failures[0])
 
         def app_with_core_and_kit_fonts(self, *kit_surfaces):
+            # The app carries the Kit, and Core as the Kit's own submodule.
             self.kit_with_core_fonts(*self.SURFACES)
             self.write("Scripts/repository.txt", "app\n")
             self.write("Libraries/ubiquitty-kit/Scripts/repository.txt", "kit\n")
+            (self.root / "Libraries/ubiquitty-kit/Libraries").mkdir()
+            (self.root / "Libraries/ubiquitty-core").rename(self.root / "Libraries/ubiquitty-kit/Libraries/ubiquitty-core")
             self.write("Libraries/ubiquitty-kit/Resources/phosphor/Phosphor.ttf", "")
             self.write("Libraries/ubiquitty-kit/" + INVENTORY,
                        json.dumps([{"name": "Phosphor Icons", "distributionSurface": list(kit_surfaces)}]))

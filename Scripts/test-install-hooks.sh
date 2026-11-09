@@ -119,5 +119,43 @@ else
     fail "a user-owned hook symlink was removed"
 fi
 
+# 6. Core carried through the Kit, itself carried by the app: the installer run
+#    from the nested copy installs the APP's hooks, not the Kit module's, and the
+#    app's dispatcher finds the body in the nested Core.
+file_protocol=(-c protocol.file.allow=always)
+git clone -q "$MAIN" "$TMP/corelib"
+mkdir "$TMP/kitrepo"
+ubq_make_fixture_repo "$TMP/kitrepo"
+git -C "$TMP/kitrepo" config user.email t@example.com
+git -C "$TMP/kitrepo" config user.name t
+mkdir -p "$TMP/kitrepo/Libraries"
+git -C "$TMP/kitrepo" "${file_protocol[@]}" submodule add -q "$TMP/corelib" Libraries/ubiquitty-core
+git -C "$TMP/kitrepo" commit -qm "carry core"
+mkdir "$TMP/apprepo"
+ubq_make_fixture_repo "$TMP/apprepo"
+git -C "$TMP/apprepo" config user.email t@example.com
+git -C "$TMP/apprepo" config user.name t
+mkdir -p "$TMP/apprepo/Libraries"
+git -C "$TMP/apprepo" "${file_protocol[@]}" submodule add -q "$TMP/kitrepo" Libraries/ubiquitty-kit
+git -C "$TMP/apprepo" "${file_protocol[@]}" submodule update -q --init --recursive
+git -C "$TMP/apprepo" commit -qm "carry kit"
+NESTED_CORE="$TMP/apprepo/Libraries/ubiquitty-kit/Libraries/ubiquitty-core"
+"$NESTED_CORE/Scripts/install-hooks.sh" > /dev/null
+APP_HOOKS="$(cd "$(git -C "$TMP/apprepo" rev-parse --git-common-dir)" && pwd)/hooks"
+KIT_HOOKS="$(cd "$(git -C "$TMP/apprepo/Libraries/ubiquitty-kit" rev-parse --git-common-dir)" && pwd)/hooks"
+if [ -x "$APP_HOOKS/pre-push" ]; then
+    pass "the nested install puts the hooks in the app's clone"
+else
+    fail "the nested install did not install the app's hooks"
+fi
+if [ -e "$KIT_HOOKS/pre-push" ]; then
+    fail "the nested install put hooks in the Kit module"
+else
+    pass "the nested install leaves the Kit module's hooks alone"
+fi
+rm -f "$TMP/mark"
+(cd "$TMP/apprepo" && bash "$APP_HOOKS/pre-push" < /dev/null)
+check "the app's dispatcher runs the body from the Core its Kit carries" "MAIN-HOOK" "$(cat "$TMP/mark" 2>/dev/null)"
+
 echo
 report "test-install-hooks" "the hook install fails closed in every way tried"

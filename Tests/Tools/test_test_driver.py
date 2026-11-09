@@ -705,12 +705,13 @@ class BuildTestsDriverTests(unittest.TestCase):
         self.assertFalse((core / "injected").exists())
 
     def testEmbeddedDriverConfiguresItsConsumer(self):
+        # The app carries the Kit, and Core as the Kit's own submodule.
         app = self.directory / "app checkout"
-        core = app / "Libraries/ubiquitty-core"
+        kit = app / "Libraries/ubiquitty-kit"
+        core = kit / "Libraries/ubiquitty-core"
         driver = self.makeDriver(core)
         self.makeSource(app, "app")
         self.initializeRepository(app)
-        kit = app / "Libraries/ubiquitty-kit"
         self.makeSource(kit, "kit")
         arguments = self.configureArguments(driver, app)
         self.assertEqual(arguments[1], str(app))

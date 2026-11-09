@@ -80,8 +80,9 @@ import ubq_roots  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = ubq_roots.subject_root()
 
-# Where a repository mounts a library it depends on.
-LIBRARY_MOUNT = re.compile(r"^Libraries/ubiquitty-(?:core|kit)/")
+# Where a repository mounts a library it depends on: Core or the Kit directly,
+# or Core inside the Kit, as the app carries it.
+LIBRARY_MOUNT = re.compile(r"^(?:Libraries/ubiquitty-kit/)?Libraries/ubiquitty-(?:core|kit)/")
 
 SUFFIXES = (".c", ".cc", ".cpp", ".h", ".hpp", ".inc", ".m", ".mm", ".swift",
             ".js", ".mjs", ".metal", ".py", ".sh", ".cmake", ".md",

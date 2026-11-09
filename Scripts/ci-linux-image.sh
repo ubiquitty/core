@@ -40,8 +40,9 @@
 # build runs `docker run -v "$ROOT":/src` against the runner's daemon, which
 # resolves that path on the runner, so ROOT has to be the same string on both
 # sides. The checkout is also mounted at /src, because the recipe registers the
-# shipped fonts from /src/Resources/fonts or
-# /src/Libraries/ubiquitty-core/Resources/fonts.
+# shipped fonts from /src/Resources/fonts,
+# /src/Libraries/ubiquitty-core/Resources/fonts or
+# /src/Libraries/ubiquitty-kit/Libraries/ubiquitty-core/Resources/fonts.
 
 set -euo pipefail
 

@@ -15,8 +15,11 @@ and a script of one reaches the others through two roots:
     UBQ_CORE_ROOT   the ubiquitty-core checkout
     UBQ_KIT_ROOT    the ubiquitty-kit checkout
 
-Neither needs setting. A root defaults to Libraries/ubiquitty-core or
-Libraries/ubiquitty-kit under the subject when that path exists, and to the
+Neither needs setting. The Kit's root defaults to Libraries/ubiquitty-kit
+under the subject when that path exists. Core's defaults to the Kit's own
+Libraries/ubiquitty-core when the subject carries the Kit, so the app builds the
+Core its Kit pins, and to Libraries/ubiquitty-core under the subject when the
+subject carries Core and no Kit, as ubiquitty-kit does. Each defaults to the
 subject itself otherwise, so inside one repository that holds everything, and
 inside ubiquitty-core itself, every root is the same tree.
 
@@ -37,6 +40,8 @@ REPOSITORIES = ("core", "kit", "app")
 
 CORE_SUBMODULE = os.path.join("Libraries", "ubiquitty-core")
 KIT_SUBMODULE = os.path.join("Libraries", "ubiquitty-kit")
+# Core as a repository that carries the Kit holds it: the Kit's own submodule.
+CORE_THROUGH_KIT = os.path.join(KIT_SUBMODULE, CORE_SUBMODULE)
 REPOSITORY_FILE = os.path.join("Scripts", "repository.txt")
 
 
@@ -95,17 +100,39 @@ def subject_of(script):
     return os.path.dirname(own)
 
 
-def _root(variable, submodule, subject):
-    """A sibling repository's root: the variable, the submodule, else the subject."""
+def core_submodule(subject):
+    """Where the subject carries Core, relative to it.
+
+    A subject that carries the Kit reads the Kit's own Core, the one that Kit
+    pins, whatever else it holds; a subject that carries Core and no Kit reads
+    its own submodule. A mount is chosen by existing, not by being populated: a
+    checkout that has not initialised it must fail on the missing files rather
+    than quietly judge its own tree as the library's.
+
+    - Parameters:
+      - subject: the subject's root.
+    - Returns: `CORE_THROUGH_KIT`, `CORE_SUBMODULE`, or None when it carries neither.
+    """
+    if os.path.lexists(os.path.join(subject, KIT_SUBMODULE)):
+        return CORE_THROUGH_KIT
+    if os.path.lexists(os.path.join(subject, CORE_SUBMODULE)):
+        return CORE_SUBMODULE
+    return None
+
+
+def kit_submodule(subject):
+    """Where the subject carries the Kit, relative to it, or None when it does not."""
+    return KIT_SUBMODULE if os.path.lexists(os.path.join(subject, KIT_SUBMODULE)) else None
+
+
+def _root(variable, mount, subject):
+    """A sibling repository's root: the variable, the mount the subject carries, else the subject."""
     configured = os.environ.get(variable)
     if configured:
         return os.path.abspath(os.path.expanduser(configured))
     base = subject_root() if subject is None else subject
-    # The submodule is chosen by existing, not by being populated: a checkout
-    # that has not initialised it must fail on the missing files rather than
-    # quietly judge its own tree as the library's.
-    nested = os.path.join(base, submodule)
-    return nested if os.path.lexists(nested) else base
+    mounted = mount(base)
+    return os.path.join(base, mounted) if mounted else base
 
 
 def core_root(subject=None):
@@ -114,7 +141,7 @@ def core_root(subject=None):
     - Parameters:
       - subject: the subject's root; the working directory's repository by default.
     """
-    return _root("UBQ_CORE_ROOT", CORE_SUBMODULE, subject)
+    return _root("UBQ_CORE_ROOT", core_submodule, subject)
 
 
 def kit_root(subject=None):
@@ -123,7 +150,7 @@ def kit_root(subject=None):
     - Parameters:
       - subject: the subject's root; the working directory's repository by default.
     """
-    return _root("UBQ_KIT_ROOT", KIT_SUBMODULE, subject)
+    return _root("UBQ_KIT_ROOT", kit_submodule, subject)
 
 
 def repositories(subject=None):
@@ -239,14 +266,48 @@ def _git_lines(arguments, cwd, foreign=False):
     return [line for line in finished.stdout.split("\n") if line]
 
 
+def _mount_changes(checkout, mount, old, new, foreign):
+    """The files a library mount changed between two commits of the checkout holding it.
+
+    The Kit's own mount of Core is read the same way inside the Kit's checkout,
+    so a repository that carries Core through its Kit sees Core's files. A
+    mount whose pins cannot be read stays as its path.
+
+    - Parameters:
+      - checkout: the checkout holding the mount.
+      - mount: `CORE_SUBMODULE` or `KIT_SUBMODULE`.
+      - old, new: the commits of `checkout` to read the pins from.
+      - foreign: whether `checkout` is a repository other than the one being operated on.
+    - Returns: (as the library spells it, as `checkout` spells it through the mount)
+      pairs, or None when either pin, or the diff between them, cannot be read.
+    """
+    pins = [_git_lines(["rev-parse", "--verify", "--quiet", "%s:%s" % (commit, mount)], checkout, foreign)
+            for commit in (old, new)]
+    if not pins[0] or not pins[1]:
+        return None
+    library = os.path.join(checkout, mount)
+    between = _git_lines(["diff", "--name-only", pins[0][0], pins[1][0]], library, foreign=True)
+    if not between:
+        return None
+    changes = []
+    for path in between:
+        nested = None
+        if mount == KIT_SUBMODULE and path == CORE_SUBMODULE:
+            nested = _mount_changes(library, CORE_SUBMODULE, pins[0][0], pins[1][0], True)
+        for spelled, through in nested if nested is not None else ((path, path),):
+            changes.append((spelled, os.path.join(mount, through)))
+    return changes
+
+
 def changed_paths(since="origin/main", subject=None, prefixes=(), mounted=False):
     """The files the branch changed from its merge base with `since`, library mounts read as files.
 
     A library a repository carries moves by its pinned commit, so the repository's
     own diff names the mount, not the files. Each mount that moved is replaced by
     the files between its two pins, read in its own checkout and spelled as that
-    repository spells them. A mount whose pins cannot be read stays as its path,
-    which a caller reads as "anything may have changed".
+    repository spells them, and Core moved inside a Kit that moved is read the
+    same way. A mount whose pins cannot be read stays as its path, which a caller
+    reads as "anything may have changed".
 
     - Parameters:
       - since: the ref the branch forked from.
@@ -266,21 +327,14 @@ def changed_paths(since="origin/main", subject=None, prefixes=(), mounted=False)
         return None
     expanded = []
     for name in names:
-        if name not in (CORE_SUBMODULE, KIT_SUBMODULE):
+        changes = _mount_changes(base_root, name, merged[0], "HEAD", False) \
+            if name in (CORE_SUBMODULE, KIT_SUBMODULE) else None
+        if not changes:
             expanded.append(name)
             continue
-        old = _git_lines(["rev-parse", "--verify", "--quiet", "%s:%s" % (merged[0], name)], base_root)
-        new = _git_lines(["rev-parse", "--verify", "--quiet", "HEAD:%s" % name], base_root)
-        between = None
-        if old and new:
-            between = _git_lines(["diff", "--name-only", old[0], new[0]],
-                                 os.path.join(base_root, name), foreign=True)
-        if not between:
-            expanded.append(name)
-            continue
-        expanded.extend(between)
+        expanded.extend(spelled for spelled, _ in changes)
         if mounted:
-            expanded.extend(os.path.join(name, path) for path in between)
+            expanded.extend(through for _, through in changes)
     if not prefixes:
         return expanded
     return [name for name in expanded
@@ -381,7 +435,7 @@ def source_roots(source=None, core=None, kit=None, environment=None, start=None,
         raise ValueError(f"source root is not populated: {subject}")
     core_value = core or environment.get("UBQ_CORE_ROOT") or environment.get("UBIQUITTY_CORE_SOURCE_DIR")
     if not core_value:
-        core_value = subject if "core" in held else subject / CORE_SUBMODULE
+        core_value = subject if "core" in held else subject / (core_submodule(str(subject)) or CORE_SUBMODULE)
     core_path = checked(core_value, "core")
     kit_value = kit or environment.get("UBQ_KIT_ROOT") or environment.get("UBIQUITTY_KIT_SOURCE_DIR")
     if not kit_value and "kit" in held:
