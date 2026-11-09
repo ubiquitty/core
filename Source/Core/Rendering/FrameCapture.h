@@ -558,7 +558,8 @@ public:
     /// The absolute row index of the top visible row.
     [[nodiscard]] int firstAbsoluteRow() const { return m_frame->firstAbsoluteRow(); }
 
-    /// `options.viewOffset` clamped to the scrollback actually available.
+    /// `options.viewOffset` as the frame shows it (``Screen::resolvedViewOffset``):
+    /// clamped to the scrollback that exists, and none on the alternate screen.
     [[nodiscard]] int viewOffset() const { return m_frame->viewOffset(); }
 
     /// The captured cursor's visible-grid row, or -1 when this frame draws none.

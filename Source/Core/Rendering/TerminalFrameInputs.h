@@ -71,7 +71,7 @@ struct CursorMotionTarget {
 /// - Parameters:
 ///   - terminal: The terminal about to be captured, under the model lock.
 ///   - viewOffset: The rows of history the frame presents above the tail,
-///     clamped here as the capture clamps it.
+///     resolved here as the capture resolves it (``Screen::resolvedViewOffset``).
 ///   - drawCursor: Whether the frame draws a cursor at all, as
 ///     `TerminalSnapshotOptions::drawCursor` will say.
 /// - Returns: The target, with `visibleRow` -1 when the frame draws no cursor.
@@ -420,7 +420,8 @@ public:
     /// and any other scrollback-relative overlay resolve against.
     [[nodiscard]] int firstAbsoluteRow() const { return m_firstAbsoluteRow; }
 
-    /// `options.viewOffset` clamped to the scrollback actually available.
+    /// `options.viewOffset` as the frame shows it (``Screen::resolvedViewOffset``):
+    /// clamped to the scrollback that exists, and none on the alternate screen.
     [[nodiscard]] int viewOffset() const { return m_viewOffset; }
 
     /// The fill a selection drawn over this frame takes, resolved from the

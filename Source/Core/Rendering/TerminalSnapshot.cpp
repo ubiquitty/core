@@ -206,12 +206,15 @@ std::vector<std::uint8_t> renderTerminalSnapshotRGBA(const Terminal& terminal, c
     // render a frame missing a region the host explicitly asked to be shown, and
     // nothing downstream can tell that apart from a host that named none.
     std::vector<SelectionRowSpan> hiliteSpans;
+    // The offset the frame shows, resolved once for the band, the status row
+    // and the capture: a held offset over the alternate screen shows its tail.
     TerminalSnapshotOptions optionsWithBand = options;
+    optionsWithBand.viewOffset = Screen::resolvedViewOffset(&terminal, options.viewOffset);
     if (terminal.modes.hiliteRegionValid && !options.hiliteRegionSpans) {
         hiliteSpans.resize(static_cast<std::size_t>(terminal.rows));
         const int count = hiliteRegionRowSpans(terminal.modes.hiliteStartX, terminal.modes.hiliteStartY,
             terminal.modes.hiliteFirstRow, terminal.modes.hiliteLastRow, terminal.rows, terminal.columns,
-            options.viewOffset, hiliteSpans.data(), terminal.rows);
+            optionsWithBand.viewOffset, hiliteSpans.data(), terminal.rows);
         hiliteSpans.resize(static_cast<std::size_t>(count));
         optionsWithBand.hiliteRegionSpans = hiliteSpans.empty() ? nullptr : hiliteSpans.data();
         optionsWithBand.hiliteRegionSpanCount = static_cast<int>(hiliteSpans.size());
@@ -224,7 +227,7 @@ std::vector<std::uint8_t> renderTerminalSnapshotRGBA(const Terminal& terminal, c
     // alone; the scratch outlives the capture below, which only borrows it.
     StatusRowStorage statusRowScratch;
     if (!options.statusRowCells
-        && fillStatusRow(&terminal, terminal.rows, terminal.columns, options.viewOffset,
+        && fillStatusRow(&terminal, terminal.rows, terminal.columns, optionsWithBand.viewOffset,
             StatusRowCells { statusRowScratch.cells.data(), statusRowScratch.cells.size() })) {
         optionsWithBand.statusRowCells = statusRowScratch.cells.data();
         optionsWithBand.statusRowColumns = terminal.columns;

@@ -738,8 +738,12 @@ TEST(testLiveViewAnchorsAtOriginAndFollowsTheScrollback)
     Ubiquitty::Image::ImageQuad q[8];
     int n;
 
-    // cell = 10x20 device px; grid 24x80 at origin (0,0); scale 1.
+    // cell = 10x20 device px; grid 24x80 at origin (0,0); scale 1. Thirty
+    // lines leave history to scroll back over.
     auto t = makeTerm(24, 80);
+    for (int line = 0; line < 30; ++line)
+        feed(*t, "line\r\n");
+    feed(*t, "\033[H");
     placeImage(*t, 4, 2); // 4 columns x 2 rows
 
     // Live view (viewOffset 0): anchored at (0,0), sized to the 4x2 cell span.
@@ -760,6 +764,15 @@ TEST(testLiveViewAnchorsAtOriginAndFollowsTheScrollback)
     CHECK(n == 1);
     if (n == 1)
         CHECK(q[0].minYInPixels == 60.0f); // (cursorY 0 + 3) * 20px
+
+    // The alternate screen has no history: a view held back over it is shown
+    // the program's page at the tail, and its pictures stand there too.
+    feed(*t, "\033[?1049h\033[H");
+    placeImage(*t, 4, 2);
+    n = Ubiquitty::Rendering::collectImageQuads(t.get(), { 10.0f, 20.0f }, { 0.0f, 0.0f }, 1.0f, 3, { q, static_cast<std::size_t>(8) });
+    CHECK(n == 1);
+    if (n == 1)
+        CHECK(q[0].minYInPixels == 0.0f);
 
     t.reset();
 }

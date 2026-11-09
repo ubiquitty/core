@@ -218,7 +218,8 @@ void noteViewportBeforeResize(Session& session, const Terminal& terminal, int vi
 ///   - column: The pressed cell's column.
 ///   - clickCount: The press's click count, which picks character, word or
 ///     line granularity.
-///   - viewOffset: How many rows the view is scrolled back.
+///   - viewOffset: How many rows the view is scrolled back, as it holds them;
+///     rows map at the offset its frame shows (``Screen::resolvedViewOffset``).
 ///   - style: The press's modifiers, resolved by the frontend.
 ///   - xInCells: Where the press is along the row, in cells from the grid's
 ///     left edge, unrounded; a word press inside a proportional run grows
@@ -237,7 +238,8 @@ bool beginGesture(Session& session, Terminal& terminal, int visibleRow, int colu
 ///   - terminal: The terminal the view shows. Read under the model lock.
 ///   - visibleRow: The dragged-to viewport row.
 ///   - column: The dragged-to column.
-///   - viewOffset: How many rows the view is scrolled back.
+///   - viewOffset: How many rows the view is scrolled back, as it holds them;
+///     rows map at the offset its frame shows (``Screen::resolvedViewOffset``).
 ///   - xInCells: The unrounded horizontal pointer position for a word drag.
 ///   - yInRows: The unrounded vertical pointer position inside a rich text block.
 /// - Returns: Whether the selection changed.
@@ -342,6 +344,39 @@ void selectBetweenPoints(Session& session, Terminal& terminal, double fromX, dou
 ///   - history: The retained history as the output left it.
 /// - Returns: The offset to present, and the verdict behind it.
 [[nodiscard]] Input::ViewportAfterOutput viewportAfterOutput(Session& session, int viewOffset, Input::OutputSnapPolicy snapPolicy, const Screen::HistoryFacts& history) noexcept;
+
+/// The offset a view scrolled back over the history stands at once output
+/// arrived, holding its rows as ``viewportAfterOutput`` holds them.
+///
+/// For a reader that knows where the view stood and the history that was
+/// measured against, but none of the transitions since: a frame captured for
+/// the view while output arrives. Over the transitions of a view that held
+/// its rows, it is the offset the view reached, however the output was split
+/// between them; a view that followed the tail, or moved on its own, stands
+/// elsewhere. Like the view's own offset, it can stand past the history, or
+/// on the alternate screen, which has none: the rows it shows are the ones
+/// ``Screen::resolvedViewOffset`` resolves it to.
+///
+/// - Parameters:
+///   - viewOffset: Rows the view stood scrolled back; zero follows the tail.
+///   - measuredAgainst: The history `viewOffset` was measured against.
+///   - history: The history as it stands.
+/// - Returns: The rows the view stands scrolled back over `history`.
+[[nodiscard]] int heldViewOffset(int viewOffset, const Screen::HistoryFacts& measuredAgainst, const Screen::HistoryFacts& history) noexcept;
+
+/// Whether a reader that missed the view's output transitions can hold its
+/// rows by ``heldViewOffset``.
+///
+/// A view's offset is measured against the history its last transition read
+/// (``Session/viewportObservedHistory``), which ``heldViewOffset`` moves it
+/// from. A view that keeps a logical anchor instead resolves its rows against
+/// the terminal at each transition, which no reader without the model lock
+/// can repeat, and a view that has seen no transition was measured against
+/// nothing.
+///
+/// - Parameter session: The view's session.
+/// - Returns: Whether the view's offset can be held from its observed history.
+[[nodiscard]] bool isViewOffsetHeldByHistory(const Session& session) noexcept;
 
 /// Applies one output transition to a view's selection and viewport.
 ///
@@ -555,7 +590,8 @@ struct ViewportEnds {
 /// - Parameters:
 ///   - session: The view's selection session.
 ///   - terminal: The terminal the view shows. Read under the model lock.
-///   - viewOffset: How many rows the view is scrolled back.
+///   - viewOffset: How many rows the view is scrolled back, as it holds them;
+///     rows map at the offset its frame shows (``Screen::resolvedViewOffset``).
 ///   - out: Receives the spans, sorted by row where sized blocks add to them:
 ///     the selection's own, at most one per selected visible row; a second for
 ///     a row a rich text block cuts in two, so its covered cells are never

@@ -44,9 +44,17 @@ namespace {
 
 [[nodiscard]] int totalRows(const Terminal& terminal) noexcept { return historyRows(terminal) + terminal.rows; }
 
+// The absolute row of a view's top row. A view's rows map through the offset
+// its frame shows (Screen::resolvedViewOffset), never the one it holds: a view
+// held back over the alternate screen, which has no history, maps as its tail.
+[[nodiscard]] int firstVisibleAbsoluteRow(const Terminal& terminal, int viewOffset) noexcept
+{
+    return historyRows(terminal) - Screen::resolvedViewOffset(&terminal, viewOffset);
+}
+
 [[nodiscard]] int absoluteRow(const Terminal& terminal, int visibleRow, int viewOffset) noexcept
 {
-    return Screen::absoluteRowForVisible(historyRows(terminal), viewOffset, visibleRow);
+    return firstVisibleAbsoluteRow(terminal, viewOffset) + visibleRow;
 }
 
 // Reads the same screen the renderer paints: the active grid through
@@ -1772,7 +1780,7 @@ bool dragCharacterCaretGesture(Session& session, Terminal& terminal, const Caret
             absoluteRowValue, caret, subCaret);
     }
     session.gesture.dragBegan = true;
-    session.gesture.targetRow = absoluteRowValue - historyRows(terminal) + viewOffset;
+    session.gesture.targetRow = absoluteRowValue - firstVisibleAbsoluteRow(terminal, viewOffset);
     session.gesture.targetColumn = caret < terminal.columns ? caret : terminal.columns - 1;
     session.gestureTargetAbsoluteRow = absoluteRowValue;
     session.gestureTargetCaret = caret;
@@ -1803,23 +1811,32 @@ bool needsOutputEvaluation(const Session& session) noexcept
 
 namespace {
 
+// The rows a held viewport moves by between two readings of the history.
+// Facts from another epoch are not comparable: the rows were renumbered, and
+// the offset across that is the resize's own business. Facts older than the
+// first reading move nothing.
+[[nodiscard]] int rowsAppendedSince(const Screen::HistoryFacts& before, const Screen::HistoryFacts& after) noexcept
+{
+    if (before.absoluteRowEpoch != after.absoluteRowEpoch || after.appendedRows < before.appendedRows)
+        return 0;
+    return static_cast<int>(std::clamp<std::int64_t>(after.appendedRows - before.appendedRows, 0, std::numeric_limits<int>::max()));
+}
+
 // The rows a held viewport moves by since the session last judged output,
-// and the baseline the next transition is judged against. Facts from another
-// epoch are not comparable: the rows were renumbered, and the offset across
-// that is the resize's own business. Within an epoch the baseline never moves
-// backwards: facts a drain published before the live model the last
-// transition read are older than that baseline, and taking them as the new
-// one would count the rows between the two a second time.
+// and the baseline the next transition is judged against. Within an epoch the
+// baseline never moves backwards: facts a drain published before the live
+// model the last transition read are older than that baseline, and taking
+// them as the new one would count the rows between the two a second time.
 [[nodiscard]] int viewportRowsAppended(Session& session, const Screen::HistoryFacts& history) noexcept
 {
     const bool isComparable = session.hasViewportObservation
         && session.viewportObservedHistory.absoluteRowEpoch == history.absoluteRowEpoch;
     if (isComparable && history.appendedRows < session.viewportObservedHistory.appendedRows)
         return 0;
-    const std::int64_t rows = isComparable ? history.appendedRows - session.viewportObservedHistory.appendedRows : 0;
+    const int rows = session.hasViewportObservation ? rowsAppendedSince(session.viewportObservedHistory, history) : 0;
     session.viewportObservedHistory = history;
     session.hasViewportObservation = true;
-    return static_cast<int>(std::clamp<std::int64_t>(rows, 0, std::numeric_limits<int>::max()));
+    return rows;
 }
 
 // The scroll-on-output mode, read only on the drains where it decides.
@@ -1932,6 +1949,18 @@ Input::ViewportAfterOutput viewportAfterOutput(Session& session, int viewOffset,
         ? Input::SelectionPresence::Present
         : Input::SelectionPresence::Absent;
     return Input::viewportAfterOutput(presence, viewOffset, snapPolicy, history.retainedRows, viewportRowsAppended(session, history));
+}
+
+int heldViewOffset(int viewOffset, const Screen::HistoryFacts& measuredAgainst, const Screen::HistoryFacts& history) noexcept
+{
+    if (viewOffset <= 0)
+        return 0;
+    return static_cast<int>(Input::viewOffsetAfterOutput(Input::ViewportHold::Hold, viewOffset, history.retainedRows, rowsAppendedSince(measuredAgainst, history)));
+}
+
+bool isViewOffsetHeldByHistory(const Session& session) noexcept
+{
+    return session.hasViewportObservation && !session.usesLogicalViewport;
 }
 
 OutputUpdate updateAfterOutput(Session& session, Terminal& terminal, int viewOffset, Input::OutputSnapPolicy snapPolicy) noexcept
@@ -2176,7 +2205,7 @@ int splitAroundBlocks(const Terminal& terminal, int viewOffset, ViewportSpans ou
     int written = count;
     for (int index = 0; index < count; ++index) {
         Rendering::SelectionRowSpan& span = out[static_cast<std::size_t>(index)];
-        const int screenRow = span.visibleRow - viewOffset;
+        const int screenRow = span.visibleRow - Screen::resolvedViewOffset(&terminal, viewOffset);
         for (const RichText::Block& block : terminal.richTextBlocks.blocks(screen)) {
             const int blockRight = block.column + block.width - 1;
             if (screenRow < block.row || screenRow >= block.row + static_cast<int>(block.height) || span.column1 < block.column || span.column0 > blockRight)
@@ -2277,7 +2306,7 @@ int addSizedBlockSpans(Terminal& terminal, const SelectionBounds& bounds, Select
     if (terminal.textSizeTable.liveCount() == 0)
         return count;
     BoundContext bound { .session = &session, .terminal = &terminal, .viewOffset = viewOffset, .style = {} };
-    const int firstAbsoluteRow = historyRows(terminal) - viewOffset;
+    const int firstAbsoluteRow = firstVisibleAbsoluteRow(terminal, viewOffset);
     // A block reaches at most scale-1 rows past a row it touches the selection on.
     constexpr int maxBandReach = 6;
     const int firstRow = std::max(firstAbsoluteRow, bounds.row0 - maxBandReach);
@@ -2355,7 +2384,7 @@ int addScaledRunLetterSpans(Terminal& terminal, const SelectionBounds& bounds, S
     if (terminal.textSizeTable.liveCount() == 0)
         return count;
     BoundContext bound { .session = &session, .terminal = &terminal, .viewOffset = viewOffset, .style = {} };
-    const int firstAbsoluteRow = historyRows(terminal) - viewOffset;
+    const int firstAbsoluteRow = firstVisibleAbsoluteRow(terminal, viewOffset);
     constexpr int maxBandReach = 6;
     const int firstRow = std::max(firstAbsoluteRow, bounds.row0 - maxBandReach);
     const int lastRow = std::min(firstAbsoluteRow + terminal.rows - 1, bounds.row1 + maxBandReach);
@@ -2487,7 +2516,7 @@ int viewportSpansAndEnds(Session& session, Terminal& terminal, int viewOffset, V
     const Viewport viewport {
         .rows = terminal.rows,
         .columns = terminal.columns,
-        .firstAbsoluteRow = historyRows(terminal) - viewOffset,
+        .firstAbsoluteRow = firstVisibleAbsoluteRow(terminal, viewOffset),
     };
     const int count = collectViewportSpans(bounds, session.state.mode, viewport, cellAt, &bound, attributesAt, &bound, out, rowLineAttributeAt, &bound);
     // The ends are read off the selection's own row spans, before anything is

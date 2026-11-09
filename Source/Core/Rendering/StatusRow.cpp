@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "Core/Rendering/StatusRow.h"
+#include "Core/Screen/Addressing.h"
 #include "Core/Terminal.h"
 #include <algorithm>
 #include <array>
@@ -36,7 +37,7 @@ void releaseStatusRow(Ubiquitty::Terminal& t) { t.statusRow.reset(); }
 
 bool fillStatusRow(const Ubiquitty::Terminal* t, int rows, int columns, int viewOffset, StatusRowCells output UBIQUITTY_NOESCAPE)
 {
-    if (!t || rows <= 0 || columns <= 0 || viewOffset != 0)
+    if (!t || rows <= 0 || columns <= 0 || Screen::resolvedViewOffset(t, viewOffset) != 0)
         return false;
     if (output.size() < static_cast<std::size_t>(columns))
         return false;

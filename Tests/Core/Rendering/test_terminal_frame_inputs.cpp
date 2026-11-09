@@ -396,6 +396,50 @@ TEST(testViewOffsetIsClampedToAvailableScrollback)
     t.reset();
 }
 
+// A view held back keeps its offset while a program runs on the alternate
+// screen, and a frontend hands that offset to the capture as it stands. The
+// alternate screen has no history, so the frame is its tail: the cells, the
+// line attributes, the row flags, the offset the builder reads, the cursor and
+// its motion target, and the pictures are the frame captured at offset 0.
+TEST(testAHeldOffsetOverTheAlternateScreenCapturesTheTail)
+{
+    auto t = makeTerminal(6, 20);
+    // Thirteen rows of history, the oldest the held offset would show a
+    // double-width one.
+    for (int line = 0; line < 18; ++line)
+        feed(*t, line == 10 ? "\x1b#6wide\r\n" : "history\r\n");
+    feed(*t, "\x1b[?1049h\x1b[2;1H\x1b#6wide\x1b[5;3H\033_Ga=T,i=72,f=24,s=1,v=1,C=1;/wAA\033\\\x1b[4;3H");
+    Ubiquitty::drainAsyncDecodes(*t);
+    REQUIRE(t->screens.isUsingAlternateScreen);
+    REQUIRE(Screen::scrollbackCount(t.get()) == 13);
+    constexpr int heldOffset = 3;
+
+    TerminalSnapshotOptions options;
+    TerminalFrameInputs tail;
+    REQUIRE(tail.capture(*t, options, unifontMetrics(), GlyphSlotGeometry {}));
+    options.viewOffset = heldOffset;
+    TerminalFrameInputs held;
+    REQUIRE(held.capture(*t, options, unifontMetrics(), GlyphSlotGeometry {}));
+
+    const BuildInputs& atTail = tail.inputs();
+    const BuildInputs& atHeld = held.inputs();
+    const auto rows = static_cast<std::size_t>(t->rows);
+    REQUIRE(atTail.lineAttributes[1] == lineAttributeDoubleWidth);
+    REQUIRE(atTail.cursor.row == 3);
+    REQUIRE(tail.imageQuads().size() == 1);
+    CHECK_MSG(std::memcmp(atHeld.cells, atTail.cells, rows * static_cast<std::size_t>(t->columns) * sizeof(Cell)) == 0, "the cells are the tail's");
+    CHECK_MSG(std::memcmp(atHeld.lineAttributes, atTail.lineAttributes, rows) == 0, "the line attributes are the tail's");
+    CHECK_MSG(atHeld.rowFlags && atTail.rowFlags && std::memcmp(atHeld.rowFlags, atTail.rowFlags, rows) == 0, "the row flags are the tail's");
+    CHECK_EQ(atHeld.viewOffset, 0);
+    CHECK_EQ(held.viewOffset(), 0);
+    CHECK_EQ(held.firstAbsoluteRow(), tail.firstAbsoluteRow());
+    CHECK_EQ(atHeld.cursor.row, atTail.cursor.row);
+    CHECK_EQ(resolveCursorMotionTarget(*t, heldOffset, options.drawCursor).visibleRow, atTail.cursor.row);
+    REQUIRE(held.imageQuads().size() == 1);
+    CHECK_EQ(held.imageQuads()[0].minYInPixels, tail.imageQuads()[0].minYInPixels);
+    CHECK_EQ(held.imageQuads()[0].minXInPixels, tail.imageQuads()[0].minXInPixels);
+}
+
 // Style is not passed through — it is folded into the metrics the decorations
 // are drawn from, and the builder reads only the folded result.
 TEST(testStyleFoldsIntoMetrics)

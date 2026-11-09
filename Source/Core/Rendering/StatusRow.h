@@ -54,8 +54,8 @@ void releaseStatusRow(Ubiquitty::Terminal& t);
 ///   - rows: The frame's grid rows.
 ///   - columns: The frame's grid columns; `output` must hold at least this
 ///     many cells.
-///   - viewOffset: The frame's scrollback offset; a nonzero offset
-///     deactivates the row.
+///   - viewOffset: The frame's scrollback offset; one that resolves to
+///     history (``Screen::resolvedViewOffset``) deactivates the row.
 ///   - output: Destination for the cells.
 /// - Returns: Whether a status line is active and `output`'s first `columns`
 ///   cells were filled.
