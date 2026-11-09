@@ -2206,8 +2206,8 @@ namespace {
 
 // The drive's frame tick as it runs on the frontend's thread, while the test's
 // thread holds the model lock the way a drain in the middle of a bite holds
-// it: the selection handed over, the newest boundary frame taken, and its
-// selection drawn.
+// it: the frame asked of the session, which hands the selection over, takes
+// the newest boundary frame and draws its selection.
 struct FrontendTick {
     bool didFinishUnderTheLock = false;
     bool didTakeFrame = false;
@@ -2218,17 +2218,19 @@ struct FrontendTick {
 
 FrontendTick tickWhileTheDrainHoldsTheLock(TerminalSession& session, Selection::Session& selection)
 {
+    const Runtime::RuntimeSnapshot grid = session.readSnapshot();
     session.lockForRead();
-    auto tick = std::async(std::launch::async, [&session, &selection] {
+    auto tick = std::async(std::launch::async, [&session, &selection, &grid] {
         FrontendTick result;
-        session.publishSelectionForCaptures(&selection);
-        const TakenFrame frame { session.takeSyncFrame() };
+        result.drawn.spans.resize(static_cast<std::size_t>(Selection::viewportSpanCapacity(grid.rows, grid.columns)));
+        Runtime::FrameSupply supply;
+        const TakenFrame frame { session.takeFrame({ .selection = &selection, .selectionSpans = result.drawn.spans }, supply) };
         if (!frame)
             return result;
-        result.didTakeFrame = true;
+        result.didTakeFrame = supply.route == Runtime::FrameRoute::Captured;
         result.frameViewOffset = frame->viewOffset();
-        result.drawn.spans.resize(static_cast<std::size_t>(Selection::viewportSpanCapacity(frame->rows(), frame->columns())));
-        result.answer = session.selectionOverCapture(&selection, *frame, result.drawn.spans, result.drawn.ends);
+        result.answer = supply.selection;
+        result.drawn.ends = supply.selectionEnds;
         result.drawn.spans.resize(static_cast<std::size_t>(result.answer.count));
         return result;
     });
@@ -2844,4 +2846,172 @@ TEST(aRowASelectionLeavesIsRebuiltFromTheHeldCapture)
     markSelectionRepaintRows(lower, color, lower, color, scrolled, repaint);
     CHECK(repaint[5] != 0);
     CHECK(repaint[4] != 0);
+}
+
+namespace {
+
+// One tick's question, with a span buffer sized for the session's grid.
+struct FrameAsk {
+    Runtime::FrameSupply supply;
+    TakenFrame frame;
+    std::vector<SelectionRowSpan> spans;
+};
+
+FrameAsk askForFrame(TerminalSession& session, Runtime::FrameDemand demand)
+{
+    FrameAsk ask;
+    const Runtime::RuntimeSnapshot grid = session.readSnapshot();
+    ask.spans.resize(static_cast<std::size_t>(Selection::viewportSpanCapacity(grid.rows, grid.columns)));
+    demand.selectionSpans = ask.spans;
+    ask.frame = TakenFrame(session.takeFrame(demand, ask.supply));
+    ask.spans.resize(static_cast<std::size_t>(ask.supply.selection.count));
+    return ask;
+}
+
+} // namespace
+
+// A capture waiting in the slot is the tick's frame, with the selection the
+// drain resolved for it: the spans the live read draws over the terminal the
+// frame froze.
+TEST(aTickTakesTheNewestCaptureWithTheSelectionResolvedForIt)
+{
+    FloodedPane pane(24, 80);
+    pane.floodPass("first line\r\nsecond line selected\r\n");
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+    pane.select(1, 0, 1, 10);
+    Selection::Session reference = pane.selection;
+    pane.floodPass("third line\r\n");
+
+    const FrameAsk ask = askForFrame(*pane.fixture.session, { .selection = &pane.selection });
+    REQUIRE(ask.supply.route == Runtime::FrameRoute::Captured);
+    CHECK(ask.supply.decline == Runtime::FrameDecline::None);
+    REQUIRE(ask.frame != nullptr);
+    const DrawnSelection live = liveRead(reference, *pane.terminal, 0);
+    CHECK(!live.spans.empty());
+    CHECK(ask.spans == live.spans);
+    CHECK(ask.supply.selectionEnds.isVisible == live.ends.isVisible);
+    CHECK_EQ(ask.supply.selectionEnds.startRow, live.ends.startRow);
+
+    // The slot is drained: the next tick has nothing captured to take.
+    const FrameAsk next = askForFrame(*pane.fixture.session, { .selection = &pane.selection });
+    CHECK(next.supply.route != Runtime::FrameRoute::Captured);
+    CHECK(next.frame == nullptr);
+}
+
+// A view whose last frame drew search matches reads the model, saturated or
+// not, and the capture stays in the slot for the tick that stops drawing them.
+TEST(aViewKeepingSearchLiveReadsTheModelAndLeavesTheCaptureWaiting)
+{
+    FloodedPane pane(6, 20);
+    pane.floodPass("\x1b[Hsearched");
+    REQUIRE(pane.fixture.session->shouldSkipLiveReadForSaturation());
+    const FrameAsk search = askForFrame(*pane.fixture.session, { .keepsSearchLive = true });
+    CHECK(search.supply.route == Runtime::FrameRoute::LiveRead);
+    CHECK(search.frame == nullptr);
+
+    const FrameAsk plain = askForFrame(*pane.fixture.session, {});
+    CHECK(plain.supply.route == Runtime::FrameRoute::Captured);
+    CHECK(plain.frame != nullptr);
+}
+
+// With no capture waiting, a frame the coherence rule holds is declined for
+// the rule, and a view being resized does not wait for quiet output.
+TEST(aFrameTheRuleHoldsIsDeclinedUnlessTheViewIsResizing)
+{
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    fixture.session->setSyncFrameCaptureGeometry(testGeometry());
+    fixture.drainSyncFrame("ready");
+    REQUIRE(TakenFrame(fixture.session->takeSyncFrame()));
+    fixture.stream->toRead += "plain output the rule holds for quiet";
+    openPublishWindow();
+    static_cast<void>(fixture.session->drain());
+    REQUIRE(fixture.session->isFrameHeld());
+    REQUIRE(!fixture.session->isDrainSaturated());
+
+    const FrameAsk held = askForFrame(*fixture.session, {});
+    CHECK(held.supply.route == Runtime::FrameRoute::Declined);
+    CHECK(held.supply.decline == Runtime::FrameDecline::HeldByCoherence);
+    CHECK(held.frame == nullptr);
+    CHECK(fixture.session->shouldWithholdFrame(Ticks(0)));
+
+    const FrameAsk resizing = askForFrame(*fixture.session, { .isResizing = true });
+    CHECK(resizing.supply.route == Runtime::FrameRoute::LiveRead);
+    fixture.session->lockForRead();
+    CHECK(fixture.session->liveReadDecline(*fixture.session->terminal(), { .isResizing = true }) == Runtime::FrameDecline::None);
+    fixture.session->unlockForRead();
+}
+
+// An open synchronized update holds a saturated drain's frame for the block,
+// not for the rule, and holds the live read under its lock, resizing or not.
+TEST(anOpenSynchronizedUpdateHoldsTheTickAndTheLiveRead)
+{
+    FloodedPane pane(6, 20);
+    pane.fixture.stream->readMicroseconds = 10'000;
+    pane.fixture.stream->toRead += "\x1b[?2026h\x1b[Hinside the block";
+    static_cast<void>(pane.fixture.session->drain());
+    REQUIRE(pane.terminal->modes.syncOutput);
+    REQUIRE(pane.fixture.session->isDrainSaturated());
+    REQUIRE(pane.fixture.session->readSnapshot().syncHoldActive);
+    static_cast<void>(pane.fixture.session->takeSyncFrame());
+
+    const FrameAsk held = askForFrame(*pane.fixture.session, {});
+    CHECK(held.supply.route == Runtime::FrameRoute::Declined);
+    CHECK(held.supply.decline == Runtime::FrameDecline::HeldByPresentation);
+
+    const FrameAsk resizing = askForFrame(*pane.fixture.session, { .isResizing = true });
+    REQUIRE(resizing.supply.route != Runtime::FrameRoute::Captured);
+    pane.fixture.session->lockForRead();
+    CHECK(pane.fixture.session->liveReadDecline(*pane.terminal, { .isResizing = true }) == Runtime::FrameDecline::BlockOpenUnderLock);
+    CHECK(pane.fixture.session->liveReadDecline(*pane.terminal, {}) == Runtime::FrameDecline::BlockOpenUnderLock);
+    pane.fixture.session->unlockForRead();
+}
+
+// A saturated drain's tick that finds the slot empty inside the publish window
+// awaits the next capture; past the window, or for a view drawing search
+// matches, it reads the model.
+TEST(aSaturatedTickInsideThePublishWindowAwaitsTheNextCapture)
+{
+    FloodedPane pane(6, 20);
+    constexpr std::uint32_t publishWindowMicroseconds = 1'000'000 / 120;
+    pane.floodPass("\x1b[Hfirst");
+    REQUIRE(askForFrame(*pane.fixture.session, {}).supply.route == Runtime::FrameRoute::Captured);
+
+    const FrameAsk awaiting = askForFrame(*pane.fixture.session, {});
+    CHECK(awaiting.supply.route == Runtime::FrameRoute::Declined);
+    CHECK(awaiting.supply.decline == Runtime::FrameDecline::AwaitingCapture);
+    CHECK(askForFrame(*pane.fixture.session, { .keepsSearchLive = true }).supply.route == Runtime::FrameRoute::LiveRead);
+
+    PAL::s_testMicroseconds += publishWindowMicroseconds;
+    const FrameAsk late = askForFrame(*pane.fixture.session, {});
+    CHECK(late.supply.route == Runtime::FrameRoute::LiveRead);
+    CHECK(late.supply.decline == Runtime::FrameDecline::None);
+}
+
+// Every answer short of an open block's is reached while the drain holds the
+// model lock: the take, the selection over it, the rule's hold and the
+// saturation window are published state.
+TEST(takingAFrameNeverWaitsForTheModelLockOutsideAnOpenBlock)
+{
+    FloodedPane pane(24, 80);
+    pane.floodPass("before\r\nselected text\r\n");
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+    pane.select(1, 0, 1, 8);
+    pane.floodPass("after\r\n");
+
+    TerminalSession& session = *pane.fixture.session;
+    session.lockForRead();
+    auto ticks = std::async(std::launch::async, [&session, &pane] {
+        std::vector<Runtime::FrameRoute> routes;
+        for (int tick = 0; tick < 3; ++tick)
+            routes.push_back(askForFrame(session, { .selection = &pane.selection }).supply.route);
+        routes.push_back(askForFrame(session, { .isResizing = true }).supply.route);
+        return routes;
+    });
+    const bool didFinish = ticks.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    session.unlockForRead();
+    const std::vector<Runtime::FrameRoute> routes = ticks.get();
+    CHECK_MSG(didFinish, "every tick answered while the drain held the model lock");
+    REQUIRE(routes.size() == 4u);
+    CHECK(routes[0] == Runtime::FrameRoute::Captured);
 }
