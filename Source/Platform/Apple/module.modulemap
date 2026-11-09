@@ -169,6 +169,7 @@ module UbiquittyCore {
     header "../../Core/Runtime/PresentLegMeter.h"
     header "../../Core/Rendering/TerminalFrameInputs.h"
     header "../../Core/Rendering/FrameCapture.h"
+    header "../../Core/Selection/SelectionOverCapture.h"
     header "../../Core/Rendering/FrameDamage.h"
     header "../../Core/Rendering/AnimationSchedule.h"
     header "../../Core/Runtime/ScrollerChrome.h"

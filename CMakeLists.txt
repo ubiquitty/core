@@ -140,6 +140,7 @@ if(UBIQUITTY_FRONTEND STREQUAL "Host")
         # gesture, and keeping the facade while trimming its gathers is exactly
         # the link error that motivates trimming them together.
         Source/Core/Selection/TerminalSelection.cpp
+        Source/Core/Selection/SelectionOverCapture.cpp
         # The overlay span gathers walk search/hilite/trigger state into row
         # spans for a frame the daemon never draws; they reference the trimmed
         # renderers (ScrollSearch, OverlayGeometry), so they travel with them.
@@ -373,6 +374,7 @@ elseif(UBIQUITTY_FRONTEND STREQUAL "Agent")
         # daemon's subset has trimmed it since it was written.
         Source/Core/Selection/CopyClipboard.cpp
         Source/Core/Selection/TerminalSelection.cpp
+        Source/Core/Selection/SelectionOverCapture.cpp
         Source/Core/Preferences/PreferencesAccessors.cpp
         # The frontends' control socket reads its switch through the accessors
         # trimmed above, and a headless agent serves no windows to drive.

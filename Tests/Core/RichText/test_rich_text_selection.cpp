@@ -19,6 +19,7 @@
 #include "Core/Rendering/UnifontRasterizer.h"
 #include "Core/RichText/Blocks.h"
 #include "Core/RichText/Drawing.h"
+#include "Core/Selection/SelectionOverCapture.h"
 #include "Core/Selection/TerminalSelection.h"
 #include "Core/Terminal.h"
 #include "Core/TerminalOperations.h"
@@ -278,6 +279,33 @@ TEST(aSelectionLeavingABlockIsOneTextViewShapeWithTheGridAroundIt)
     CHECK_EQ(highlights[1].width, quad.width);
     CHECK_EQ(highlights[1].top, highlights[0].top + highlights[0].height);
     CHECK_EQ(highlights[1].top + highlights[1].height, quad.top + quad.height);
+}
+
+// A frame the drain captures cuts each block the view's selection reaches as
+// the live read cuts it, so the block draws the highlight the live read draws.
+TEST(aCaptureCutsABlockAsTheLiveReadCutsIt)
+{
+    Ubiquitty::Terminal t;
+    reset(t);
+    feed(t, "above the block\r\nleft \x1b]7404;w=20:h=2:C=1;{\\rtf1\\fs24 inside the block\\par second line}\x1b\\\x1b[2;27Hright\x1b[4;1Hbelow the block");
+    Ubiquitty::Selection::Session selection;
+    Ubiquitty::Selection::init(selection);
+    Ubiquitty::Selection::selectBetweenPoints(selection, t, 11.0, 1.5, 9.5, 3.5);
+    Ubiquitty::Selection::Session reference = selection;
+    std::array<BlockSelection, 4> live {};
+    const int liveCount = Ubiquitty::Selection::blockSelections(reference, t, live);
+    REQUIRE(liveCount == 1);
+
+    Ubiquitty::Selection::PublishedSelection handedOff;
+    REQUIRE(Ubiquitty::Selection::prepareHandOff(selection, handedOff));
+    Ubiquitty::Selection::CapturedSelection captured;
+    std::array<BlockSelection, 4> cut {};
+    CHECK_EQ(Ubiquitty::Selection::resolveForCapture(handedOff, t, 0, captured, cut), liveCount);
+    CHECK_EQ(cut[0].serial, live[0].serial);
+    CHECK_EQ(cut[0].first, live[0].first);
+    CHECK_EQ(cut[0].end, live[0].end);
+    CHECK(cut[0].isContinuedBefore == live[0].isContinuedBefore);
+    CHECK(cut[0].isContinuedAfter == live[0].isContinuedAfter);
 }
 
 TEST(aSelectionEnteringABlockFillsFromItsTopAndLeadingEdge)

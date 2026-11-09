@@ -15,30 +15,35 @@
 
 namespace Ubiquitty::Rendering {
 
+void markSelectionRepaintRows(DrawnSelectionSpans heldSpans, Vec4 heldColor, DrawnSelectionSpans spans, Vec4 color,
+    const FrameDamage& damage, RowBytesToWrite rowDirty)
+{
+    const auto isSameSpan = [](const SelectionRowSpan& a, const SelectionRowSpan& b) { return a == b; };
+    const bool isSameColor = heldColor.x == color.x && heldColor.y == color.y && heldColor.z == color.z
+        && heldColor.w == color.w;
+    const bool isUnchanged = std::ranges::equal(heldSpans, spans, isSameSpan)
+        && (spans.empty() || isSameColor) && (damage.scrollDelta == 0 || heldSpans.empty());
+    if (isUnchanged)
+        return;
+    const int rows = static_cast<int>(rowDirty.size());
+    const auto mark = [&](int row) {
+        if (row >= 0 && row < rows)
+            rowDirty[static_cast<std::size_t>(row)] = 1;
+    };
+    for (const SelectionRowSpan& span : spans)
+        mark(span.visibleRow);
+    for (const SelectionRowSpan& span : heldSpans) {
+        mark(span.visibleRow);
+        if (damage.scrollDelta != 0 && span.visibleRow >= damage.scrollTop && span.visibleRow <= damage.scrollBottom)
+            mark(span.visibleRow - damage.scrollDelta);
+    }
+}
+
 void markBakedSelectionRows(BakedSelection& held, std::span<const SelectionRowSpan> spans, Vec4 color,
     const FrameDamage& damage, std::span<std::uint8_t> rowDirty)
 {
-    const std::span<const SelectionRowSpan> drawn = spans;
-    const auto isSameSpan = [](const SelectionRowSpan& a, const SelectionRowSpan& b) { return a == b; };
-    const bool isSameColor = held.color.x == color.x && held.color.y == color.y && held.color.z == color.z
-        && held.color.w == color.w;
-    const bool isUnchanged = std::ranges::equal(held.spans, drawn, isSameSpan)
-        && (drawn.empty() || isSameColor) && (damage.scrollDelta == 0 || held.spans.empty());
-    if (!isUnchanged) {
-        const int rows = static_cast<int>(rowDirty.size());
-        const auto mark = [&](int row) {
-            if (row >= 0 && row < rows)
-                rowDirty[static_cast<std::size_t>(row)] = 1;
-        };
-        for (const SelectionRowSpan& span : drawn)
-            mark(span.visibleRow);
-        for (const SelectionRowSpan& span : held.spans) {
-            mark(span.visibleRow);
-            if (damage.scrollDelta != 0 && span.visibleRow >= damage.scrollTop && span.visibleRow <= damage.scrollBottom)
-                mark(span.visibleRow - damage.scrollDelta);
-        }
-    }
-    held.spans.assign(drawn.begin(), drawn.end());
+    markSelectionRepaintRows(held.spans, held.color, spans, color, damage, rowDirty);
+    held.spans.assign(spans.begin(), spans.end());
     held.color = color;
 }
 

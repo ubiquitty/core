@@ -17,7 +17,15 @@
 
 #include "Core/Rendering/CellInstanceBuilder.h"
 #include "Core/Rendering/FrameCapture.h"
+#include "Core/Rendering/FrameDamage.h"
+#include "Core/Rendering/OverlaySpanGather.h"
+#include "Core/RichText/BlockStore.h"
 #include "Core/Runtime/TerminalSession.h"
+#include "Core/Screen/Scrollback.h"
+#include "Core/Selection/SelectionOverCapture.h"
+#include "Core/Selection/TerminalSelection.h"
+#include "Core/Terminal.h"
+#include "Core/TerminalOperations.h"
 #include "Core/VT/ParseState.h"
 #include "PAL/PAL.h"
 #include "PAL/Stream.h"
@@ -1594,4 +1602,889 @@ TEST(theRegisteredMarkFaceDrawsBracketsBesideACommandThatRan)
         "the registered route drew no bracket beside a command that ran");
     CHECK_MSG(leftOfGrid == 3 && rightOfGrid == 3,
         "a bracket is a spine and two stubs in each gutter — this drew a different shape");
+}
+
+namespace {
+
+// What a frame draws of a selection: its spans and where it begins and ends.
+struct DrawnSelection {
+    std::vector<SelectionRowSpan> spans;
+    Selection::ViewportEnds ends;
+};
+
+bool operator==(const DrawnSelection& left, const DrawnSelection& right)
+{
+    const Selection::ViewportEnds& a = left.ends;
+    const Selection::ViewportEnds& b = right.ends;
+    const bool isSameEnds = a.isVisible == b.isVisible
+        && (!a.isVisible
+            || (a.startRow == b.startRow && a.startColumn == b.startColumn && a.endRow == b.endRow && a.endColumn == b.endColumn));
+    return left.spans == right.spans && isSameEnds;
+}
+
+bool isSameState(const SelectionState& left, const SelectionState& right)
+{
+    return left.active == right.active && left.anchorRow == right.anchorRow && left.anchorColumn == right.anchorColumn
+        && left.headRow == right.headRow && left.headColumn == right.headColumn && left.mode == right.mode
+        && left.isAnchoredByCommand == right.isAnchoredByCommand && left.startSubColumn == right.startSubColumn
+        && left.endSubColumn == right.endSubColumn;
+}
+
+// What the live read draws at this moment for a view whose session only the
+// live read has kept, as the drive's live route keeps the view's: it
+// synchronizes `reference` as it draws.
+DrawnSelection liveRead(Selection::Session& reference, Terminal& terminal, int viewOffset)
+{
+    DrawnSelection drawn;
+    drawn.spans.resize(static_cast<std::size_t>(Selection::viewportSpanCapacity(terminal.rows, terminal.columns)));
+    const int count = Selection::viewportSpansAndEnds(reference, terminal, viewOffset, drawn.spans, drawn.ends);
+    drawn.spans.resize(static_cast<std::size_t>(count));
+    return drawn;
+}
+
+// A frame's selection as the view drew it.
+struct DrawnFrame {
+    DrawnSelection drawn;
+    Selection::CaptureSpans answer;
+};
+
+// A view's selection over a terminal, handed to the frames a drain captures
+// and drawn from them: the two halves a session runs, the drain's under its
+// lock and the view's on its own thread, without a session between them.
+struct SelectionAtCaptureFixture {
+    Terminal terminal;
+    // The view's session: drawn from captures, and brought up to them.
+    Selection::Session selection;
+    Selection::PublishedSelection handedOff;
+    // The drain's copy of the latest hand-off.
+    Selection::PublishedSelection atCapture;
+    Selection::CapturedSelection captured;
+    std::array<RichText::BlockSelection, 2 * RichText::maxBlocksPerScreen> blocks {};
+
+    SelectionAtCaptureFixture(int rows, int columns, int scrollbackLimit)
+    {
+        hardReset(terminal);
+        resize(terminal, rows, columns);
+        terminal.scrollbackLimit = scrollbackLimit;
+        Selection::init(selection);
+    }
+
+    void feed(std::string_view bytes) { UbiquittyTest::feed(terminal, bytes); }
+    [[nodiscard]] int history() const { return Screen::scrollbackCount(&terminal); }
+
+    void drag(int fromRow, int fromColumn, int toRow, int toColumn, int clickCount = 1, Selection::GestureStyle style = {}, int viewOffset = 0)
+    {
+        Selection::beginGesture(selection, terminal, fromRow, fromColumn, clickCount, viewOffset, style);
+        Selection::dragGesture(selection, terminal, toRow, toColumn, viewOffset);
+        Selection::endGesture(selection);
+    }
+
+    // The view hands its selection over; the drain reads it at its next
+    // capture.
+    void handOff()
+    {
+        if (Selection::prepareHandOff(selection, handedOff))
+            atCapture = handedOff;
+    }
+
+    // The drain captures a frame scrolled back `viewOffset` rows.
+    void capture(int viewOffset) { static_cast<void>(Selection::resolveForCapture(atCapture, terminal, viewOffset, captured, blocks)); }
+
+    // The view draws a frame's selection.
+    DrawnFrame draw(const Selection::CapturedSelection& frame)
+    {
+        DrawnFrame drawn;
+        drawn.drawn.spans.resize(static_cast<std::size_t>(Selection::viewportSpanCapacity(terminal.rows, terminal.columns)));
+        drawn.answer = Selection::takeCapturedSelection(selection, handedOff, frame, drawn.drawn.spans, drawn.drawn.ends);
+        drawn.drawn.spans.resize(static_cast<std::size_t>(drawn.answer.count));
+        return drawn;
+    }
+    DrawnFrame draw() { return draw(captured); }
+};
+
+} // namespace
+
+// The selection a capture resolves is the one the live read draws over the
+// terminal the frame froze: by character, word, line and rectangle, with an end
+// on a wide glyph's second half, past the text, and scrolled back over the
+// history. The view takes the resolved session back, as the live read leaves
+// the session it draws.
+TEST(aSelectionResolvedAtACaptureIsWhatTheLiveReadDraws)
+{
+    struct Gesture {
+        const char* name;
+        int fromRow;
+        int fromColumn;
+        int toRow;
+        int toColumn;
+        int clickCount;
+        bool isRectangular;
+    };
+    constexpr std::array gestures {
+        Gesture { "character", 0, 3, 2, 6, 1, false },
+        Gesture { "backwards", 3, 4, 1, 2, 1, false },
+        Gesture { "word", 0, 7, 2, 1, 2, false },
+        Gesture { "line", 1, 4, 3, 0, 3, false },
+        Gesture { "rectangle", 0, 2, 3, 8, 1, true },
+        Gesture { "wide second half", 1, 6, 1, 9, 1, false },
+        Gesture { "past the text", 2, 3, 3, 18, 1, false },
+    };
+    for (const Gesture& gesture : gestures) {
+        SelectionAtCaptureFixture fixture(6, 20, 100);
+        fixture.feed("alpha beta gamma\r\nwide \xe4\xb8\xad\xe6\x96\x87\xe5\xad\x97 here\r\nthird line text\r\nfour\r\nfifth line");
+        Selection::GestureStyle style;
+        style.isRectangular = gesture.isRectangular;
+        fixture.drag(gesture.fromRow, gesture.fromColumn, gesture.toRow, gesture.toColumn, gesture.clickCount, style);
+        REQUIRE_MSG(Selection::hasSelection(fixture.selection), gesture.name);
+        Selection::Session reference = fixture.selection;
+        fixture.handOff();
+        fixture.capture(0);
+        const DrawnFrame frame = fixture.draw();
+        CHECK_MSG(!frame.drawn.spans.empty(), gesture.name);
+        CHECK_MSG(frame.drawn == liveRead(reference, fixture.terminal, 0), gesture.name);
+        CHECK_MSG(frame.answer.didAdopt, gesture.name);
+        CHECK_MSG(isSameState(fixture.selection.state, reference.state), gesture.name);
+    }
+
+    // Scrolled back: a selection made in the history, drawn at three offsets.
+    SelectionAtCaptureFixture fixture(5, 20, 100);
+    for (int line = 0; line < 12; ++line)
+        fixture.feed(std::format("line {:02} of text\r\n", line));
+    const int history = fixture.history();
+    REQUIRE(history >= 6);
+    fixture.drag(1, 2, 3, 9, 1, {}, history);
+    Selection::Session reference = fixture.selection;
+    fixture.handOff();
+    for (const int viewOffset : { history, history - 2, 0 }) {
+        fixture.capture(viewOffset);
+        const DrawnFrame frame = fixture.draw();
+        CHECK(frame.drawn == liveRead(reference, fixture.terminal, viewOffset));
+        CHECK(frame.answer.didAdopt);
+    }
+}
+
+// Output that scrolls a selection into the history, and then evicts it, moves
+// it at each capture where the live read would draw it then, and the frame
+// whose capture finds its first line evicted draws none and leaves the view
+// without it, the moment the live read drops it. The view never synchronizes
+// its session against the terminal in between, as under a flood it never
+// takes the lock.
+TEST(aSelectionOutputScrollsIsResolvedAtEachCaptureAsTheLiveReadDoes)
+{
+    SelectionAtCaptureFixture fixture(4, 20, 6);
+    for (int line = 0; line < 4; ++line)
+        fixture.feed(std::format("line {:02} of text\r\n", line));
+    fixture.drag(0, 5, 1, 9);
+    REQUIRE(Selection::hasSelection(fixture.selection));
+    Selection::Session reference = fixture.selection;
+    fixture.handOff();
+
+    int drawnAfterEviction = 0;
+    bool wasLost = false;
+    for (int line = 4; line < 20 && !wasLost; ++line) {
+        const std::int64_t appendedBefore = Screen::scrollbackTotalAppended(&fixture.terminal);
+        fixture.feed(std::format("line {:02} of text\r\n", line));
+        REQUIRE(Screen::scrollbackTotalAppended(&fixture.terminal) > appendedBefore);
+        for (const int viewOffset : { fixture.history(), 0 }) {
+            const bool hadSelection = Selection::hasSelection(reference);
+            fixture.capture(viewOffset);
+            const DrawnFrame frame = fixture.draw();
+            const DrawnSelection live = liveRead(reference, fixture.terminal, viewOffset);
+            CHECK(frame.drawn == live);
+            CHECK(frame.answer.didAdopt);
+            CHECK(Selection::hasSelection(fixture.selection) == Selection::hasSelection(reference));
+            CHECK(isSameState(fixture.selection.state, reference.state));
+            if (hadSelection && !Selection::hasSelection(reference)) {
+                CHECK(frame.answer.outcome == Selection::CaptureOutcome::Lost);
+                CHECK(frame.drawn.spans.empty());
+                wasLost = true;
+            }
+            const bool hasEvicted = Screen::scrollbackTotalAppended(&fixture.terminal) > fixture.history();
+            drawnAfterEviction += hasEvicted && !frame.drawn.spans.empty();
+        }
+    }
+    CHECK_MSG(drawnAfterEviction > 0, "a selection the history evicted rows above was drawn over a frame");
+    CHECK_MSG(wasLost, "the flood evicted the selection's first line");
+}
+
+// A frame shows the selection as it stood when it was captured, against the
+// terminal it froze, however late it is drawn. A view that already took a
+// later frame's resolved session back keeps it.
+TEST(aFrameShowsTheSelectionAsItStoodWhenItWasCaptured)
+{
+    SelectionAtCaptureFixture fixture(4, 20, 6);
+    for (int line = 0; line < 7; ++line)
+        fixture.feed(std::format("line {:02} of text\r\n", line));
+    fixture.drag(0, 3, 1, 11);
+    Selection::Session reference = fixture.selection;
+    fixture.handOff();
+    fixture.feed("line 07 of text\r\nline 08 of text\r\n");
+    REQUIRE(fixture.history() == fixture.terminal.scrollbackLimit);
+    fixture.capture(2);
+    const Selection::CapturedSelection older = fixture.captured;
+    const DrawnSelection liveThen = liveRead(reference, fixture.terminal, 2);
+    REQUIRE(!liveThen.spans.empty());
+
+    fixture.feed("line 09 of text\r\n");
+    fixture.capture(3);
+    const DrawnFrame newer = fixture.draw();
+    CHECK(newer.answer.didAdopt);
+    CHECK(newer.answer.outcome == Selection::CaptureOutcome::Moved);
+    CHECK(!newer.drawn.spans.empty());
+    CHECK(newer.drawn == liveRead(reference, fixture.terminal, 3));
+    REQUIRE(Selection::hasSelection(fixture.selection));
+    REQUIRE(fixture.selection.state.anchorRow != older.session.state.anchorRow);
+
+    const DrawnFrame late = fixture.draw(older);
+    CHECK(late.drawn == liveThen);
+    CHECK(!late.answer.didAdopt);
+    CHECK(isSameState(fixture.selection.state, reference.state));
+}
+
+// Output moves the view's own position every delivery, which the drain never
+// reads: a view whose position moved since the hand-off still takes the
+// resolved selection back, and keeps the position it moved to.
+TEST(aViewWhosePositionOutputMovedStillTakesTheResolvedSelectionBack)
+{
+    SelectionAtCaptureFixture fixture(4, 20, 6);
+    for (int line = 0; line < 7; ++line)
+        fixture.feed(std::format("line {:02} of text\r\n", line));
+    fixture.drag(0, 3, 1, 11);
+    Selection::Session reference = fixture.selection;
+    fixture.handOff();
+    fixture.feed("line 07 of text\r\n");
+    static_cast<void>(Selection::viewportAfterOutput(fixture.selection, 0, Input::OutputSnapPolicy::Indeterminate, Screen::historyFacts(&fixture.terminal)));
+    REQUIRE(fixture.selection.hasViewportObservation);
+    const Screen::HistoryFacts observed = fixture.selection.viewportObservedHistory;
+    fixture.capture(1);
+    const DrawnFrame frame = fixture.draw();
+    CHECK(frame.answer.didAdopt);
+    CHECK(frame.drawn == liveRead(reference, fixture.terminal, 1));
+    CHECK(isSameState(fixture.selection.state, reference.state));
+    CHECK(fixture.selection.hasViewportObservation);
+    CHECK(fixture.selection.viewportObservedHistory.appendedRows == observed.appendedRows);
+    CHECK(fixture.selection.viewportObservedHistory.retainedRows == observed.retainedRows);
+}
+
+// Output that erases the selected text leaves the live read nothing to draw.
+// The frame captured after it draws nothing either, and the view's selection
+// is gone with it.
+TEST(aSelectionOutputShearedAwayIsNeverDrawnOverACapture)
+{
+    SelectionAtCaptureFixture fixture(6, 20, 100);
+    fixture.feed("keep\r\nselect me\r\nand me\r\n");
+    fixture.drag(1, 0, 2, 5);
+    Selection::Session reference = fixture.selection;
+    fixture.handOff();
+    fixture.capture(0);
+    const DrawnFrame before = fixture.draw();
+    CHECK(!before.drawn.spans.empty());
+    CHECK(before.drawn == liveRead(reference, fixture.terminal, 0));
+
+    fixture.feed("\x1b[2;1H\x1b[2Kreplaced\x1b[4;1H");
+    fixture.capture(0);
+    const DrawnFrame sheared = fixture.draw();
+    const DrawnSelection live = liveRead(reference, fixture.terminal, 0);
+    CHECK_MSG(live.spans.empty(), "the live read drops a selection whose line was erased");
+    CHECK(sheared.drawn == live);
+    CHECK(sheared.answer.outcome == Selection::CaptureOutcome::Lost);
+    CHECK(sheared.answer.didAdopt);
+    CHECK(!Selection::hasSelection(fixture.selection));
+}
+
+// A selection erased on the screen and scrolled into the history before any
+// capture resolved it is drawn only where the live read draws it: nowhere,
+// and the view loses it as the live read does.
+TEST(reviewProbeShearedThenScrolledIntoHistory)
+{
+    SelectionAtCaptureFixture fixture(6, 20, 100);
+    fixture.feed("keep\r\nselect me\r\nand me\r\n");
+    fixture.drag(1, 0, 2, 5);
+    Selection::Session reference = fixture.selection;
+    fixture.handOff();
+    fixture.feed("\x1b[2;1H\x1b[2Kreplaced\x1b[3;1H\x1b[2Kother\x1b[6;1H");
+    for (int line = 0; line < 8; ++line)
+        fixture.feed(std::format("\r\nscroll {:02}", line));
+    fixture.capture(fixture.history());
+    const DrawnFrame frame = fixture.draw();
+    const DrawnSelection live = liveRead(reference, fixture.terminal, fixture.history());
+    CHECK(live.spans.empty());
+    CHECK_MSG(frame.drawn == live, "a selection sheared on screen and then scrolled into history is drawn only where the live read draws it");
+    CHECK(frame.answer.outcome == Selection::CaptureOutcome::Lost);
+    CHECK(Selection::hasSelection(fixture.selection) == Selection::hasSelection(reference));
+}
+
+// A frame captured before the view moved its selection shows the selection
+// the capture resolved, never the old bounds under the new selection's name:
+// the view keeps the selection it moved to, and the next capture, which
+// resolves the moved one, draws what the live read draws for it.
+TEST(reviewProbeSelectionChangedSinceBasis)
+{
+    SelectionAtCaptureFixture fixture(6, 20, 100);
+    fixture.feed("alpha beta gamma\r\nsecond line\r\nthird");
+    fixture.drag(0, 0, 0, 4);
+    Selection::Session first = fixture.selection;
+    fixture.handOff();
+    fixture.capture(0);
+    const DrawnSelection firstLive = liveRead(first, fixture.terminal, 0);
+    REQUIRE(!firstLive.spans.empty());
+
+    fixture.drag(1, 0, 1, 5);
+    const SelectionState moved = fixture.selection.state;
+    Selection::Session second = fixture.selection;
+    const DrawnFrame stale = fixture.draw();
+    CHECK_MSG(stale.drawn == firstLive, "the frame shows the selection its capture resolved");
+    CHECK_MSG(!stale.answer.didAdopt, "a frame resolved for the selection before the view moved it never replaces the moved one");
+    CHECK(isSameState(fixture.selection.state, moved));
+
+    fixture.handOff();
+    fixture.capture(0);
+    const DrawnFrame fresh = fixture.draw();
+    const DrawnSelection secondLive = liveRead(second, fixture.terminal, 0);
+    REQUIRE(!secondLive.spans.empty());
+    CHECK(secondLive != firstLive);
+    CHECK(fresh.drawn == secondLive);
+    CHECK(fresh.answer.didAdopt);
+}
+
+// The view moves its selection and hands the move over before it draws a
+// frame the drain captured for the hand-off before: the frame shows the
+// selection it resolved, and the view keeps the one it moved to.
+TEST(aFrameResolvedForAnEarlierHandOffNeverReplacesTheMovedSelection)
+{
+    SelectionAtCaptureFixture fixture(6, 20, 100);
+    fixture.feed("alpha beta gamma\r\nsecond line\r\nthird");
+    fixture.drag(0, 0, 0, 4);
+    fixture.handOff();
+    fixture.capture(0);
+    const Selection::CapturedSelection earlier = fixture.captured;
+    fixture.drag(1, 0, 1, 5);
+    const SelectionState moved = fixture.selection.state;
+    fixture.handOff();
+    const DrawnFrame frame = fixture.draw(earlier);
+    CHECK(!frame.drawn.spans.empty());
+    CHECK(!frame.answer.didAdopt);
+    CHECK(isSameState(fixture.selection.state, moved));
+}
+
+// An offset past the history shows the oldest rows, and on the alternate
+// screen any offset shows the program's screen: a capture resolves the
+// selection at the offset its rows are shown at, as the live read at that
+// offset draws it.
+TEST(aCaptureResolvesTheSelectionAtTheOffsetItsRowsAreShownAt)
+{
+    std::string lines;
+    for (int line = 0; line < 12; ++line)
+        lines += std::format("line {:02} of text\r\n", line);
+
+    SelectionAtCaptureFixture pastTheHistory(5, 20, 100);
+    pastTheHistory.feed(lines);
+    const int history = pastTheHistory.history();
+    pastTheHistory.drag(1, 2, 3, 9, 1, {}, history);
+    Selection::Session reference = pastTheHistory.selection;
+    pastTheHistory.handOff();
+    pastTheHistory.capture(history + 4);
+    const DrawnFrame oldest = pastTheHistory.draw();
+    CHECK(!oldest.drawn.spans.empty());
+    CHECK(oldest.drawn == liveRead(reference, pastTheHistory.terminal, history));
+
+    SelectionAtCaptureFixture alternate(5, 20, 100);
+    alternate.feed(lines);
+    alternate.feed("\x1b[?1049h\x1b[Hprogram row one\r\nprogram row two\r\nprogram row three");
+    REQUIRE(alternate.terminal.screens.isUsingAlternateScreen);
+    REQUIRE(alternate.history() > 3);
+    alternate.drag(0, 2, 2, 9);
+    Selection::Session alternateReference = alternate.selection;
+    alternate.handOff();
+    alternate.capture(3);
+    const DrawnFrame program = alternate.draw();
+    CHECK(!program.drawn.spans.empty());
+    CHECK(program.drawn == liveRead(alternateReference, alternate.terminal, 0));
+}
+
+// A press that has selected nothing yet is carried through output as the live
+// read carries it, and is gone where the live read lets it go: once the row
+// it was pressed on is evicted, no drag continues from it.
+TEST(anOpenGestureWithNothingSelectedIsCarriedAsTheLiveReadCarriesIt)
+{
+    SelectionAtCaptureFixture fixture(4, 20, 2);
+    for (int line = 0; line < 4; ++line)
+        fixture.feed(std::format("line {:02} of text\r\n", line));
+    Selection::beginGesture(fixture.selection, fixture.terminal, 1, 3, 1, 0, {});
+    REQUIRE(Selection::isGestureOpen(fixture.selection));
+    REQUIRE(!Selection::hasSelection(fixture.selection));
+    Selection::Session reference = fixture.selection;
+    fixture.handOff();
+    bool wasClosed = false;
+    for (int line = 4; line < 12 && !wasClosed; ++line) {
+        fixture.feed(std::format("line {:02} of text\r\n", line));
+        fixture.capture(0);
+        const DrawnFrame frame = fixture.draw();
+        CHECK(liveRead(reference, fixture.terminal, 0).spans.empty());
+        CHECK(frame.drawn.spans.empty());
+        CHECK(frame.answer.didAdopt);
+        CHECK(Selection::isGestureOpen(fixture.selection) == Selection::isGestureOpen(reference));
+        CHECK_EQ(fixture.selection.gestureAnchorAbsoluteRow, reference.gestureAnchorAbsoluteRow);
+        wasClosed = !Selection::isGestureOpen(reference);
+    }
+    CHECK_MSG(wasClosed, "the flood evicted the row the press was on");
+}
+
+// Sized text resolves only through its run, which the cells alone do not
+// answer: the capture asks the terminal the frame freezes, as the live read
+// does, so the frame draws what the live read draws, down to the pieces that
+// light a sized block's other rows when the selection holds one of its cells.
+TEST(reviewProbeSizedTextAsksForTheLiveRead)
+{
+    struct Drag {
+        int fromRow;
+        int fromColumn;
+        int toRow;
+        int toColumn;
+    };
+    for (const Drag drag : { Drag { 0, 0, 3, 4 }, Drag { 1, 0, 1, 1 } }) {
+        SelectionAtCaptureFixture fixture(8, 20, 100);
+        fixture.terminal.drawsSizedText = true;
+        fixture.terminal.drawsProportionalText = true;
+        fixture.feed("plain\r\n\033]66;s=2;AB\007\r\n\r\nafter");
+        fixture.drag(drag.fromRow, drag.fromColumn, drag.toRow, drag.toColumn);
+        Selection::Session reference = fixture.selection;
+        fixture.handOff();
+        fixture.capture(0);
+        const DrawnFrame frame = fixture.draw();
+        const DrawnSelection live = liveRead(reference, fixture.terminal, 0);
+        REQUIRE(!live.spans.empty());
+        CHECK(frame.drawn == live);
+        if (drag.fromRow == drag.toRow) {
+            const bool hasBlockPiece = std::ranges::any_of(live.spans, [&](const SelectionRowSpan& span) { return span.visibleRow > live.ends.endRow; });
+            CHECK_MSG(hasBlockPiece, "the live read lights the sized block's lower row, which no cell of the selection is on");
+        }
+    }
+}
+
+// Through output that moves the terminal's rows beneath a selection — the
+// alternate screen entered and left inside a flood, the history cleared and
+// filled again, a resize, a wrapped line selected whole in the history — the
+// frame each capture draws is the live read's.
+TEST(aSelectionResolvedAtEachCaptureFollowsOutputAsTheLiveReadDoes)
+{
+    struct Step {
+        std::string bytes;
+        int rows = 0;
+        int columns = 0;
+    };
+    struct Scenario {
+        const char* name;
+        int rows;
+        int columns;
+        std::string setup;
+        int fromRow;
+        int fromColumn;
+        int toRow;
+        int toColumn;
+        int clickCount;
+        bool isInHistory;
+        std::vector<Step> steps;
+    };
+    std::string lines;
+    for (int line = 0; line < 12; ++line)
+        lines += std::format("line {:02} of text\r\n", line);
+    std::string refill;
+    for (int line = 0; line < 20; ++line)
+        refill += std::format("new  {:02} of text\r\n", line);
+    const std::array scenarios {
+        Scenario { "alternate round trip", 4, 20, lines, 0, 2, 1, 9, 1, false,
+            { { "\033[?1049hALT SCREEN\r\nstuff\033[?1049lline 12 of text\r\nline 13 of text\r\n" } } },
+        Scenario { "history cleared and filled again", 4, 20, lines, 0, 2, 1, 9, 1, false,
+            { { "line 12 of text\r\nline 13 of text\r\nline 14 of text\r\nline 15 of text\r\n" }, { "\033[3J" }, { refill } } },
+        Scenario { "resize", 4, 20, lines, 0, 2, 1, 9, 1, false,
+            { { "line 12 of text\r\n" }, { "", 6, 12 }, { "more\r\n" } } },
+        Scenario { "wrapped line selected whole in the history", 4, 10,
+            "short\r\n0123456789abcdefghijklmnopqrst\r\nx\r\nl00\r\nl01\r\nl02\r\nl03\r\nl04\r\nl05\r\n", 2, 3, 2, 3, 3, true,
+            { { "l06\r\n" }, { "l07\r\nl08\r\n" } } },
+    };
+    for (const Scenario& scenario : scenarios) {
+        SelectionAtCaptureFixture fixture(scenario.rows, scenario.columns, 50);
+        fixture.feed(scenario.setup);
+        const int viewOffset = scenario.isInHistory ? fixture.history() : 0;
+        fixture.drag(scenario.fromRow, scenario.fromColumn, scenario.toRow, scenario.toColumn, scenario.clickCount, {}, viewOffset);
+        REQUIRE_MSG(Selection::hasSelection(fixture.selection), scenario.name);
+        Selection::Session reference = fixture.selection;
+        fixture.handOff();
+        int drawnFrames = 0;
+        for (const Step& step : scenario.steps) {
+            if (step.rows > 0)
+                resize(fixture.terminal, step.rows, step.columns);
+            fixture.feed(step.bytes);
+            for (const int offset : { fixture.history(), fixture.history() / 2, 0 }) {
+                fixture.capture(offset);
+                const DrawnFrame frame = fixture.draw();
+                CHECK_MSG(frame.drawn == liveRead(reference, fixture.terminal, offset), scenario.name);
+                CHECK_MSG(Selection::hasSelection(fixture.selection) == Selection::hasSelection(reference), scenario.name);
+                drawnFrames += !frame.drawn.spans.empty();
+            }
+        }
+        CHECK_MSG(drawnFrames > 0 || !Selection::hasSelection(reference), scenario.name);
+    }
+}
+
+namespace {
+
+// The drive's frame tick as it runs on the frontend's thread, while the test's
+// thread holds the model lock the way a drain in the middle of a bite holds
+// it: the selection handed over, the newest boundary frame taken, and its
+// selection drawn.
+struct FrontendTick {
+    bool didFinishUnderTheLock = false;
+    bool didTakeFrame = false;
+    DrawnSelection drawn;
+    Selection::CaptureSpans answer;
+};
+
+FrontendTick tickWhileTheDrainHoldsTheLock(TerminalSession& session, Selection::Session& selection)
+{
+    session.lockForRead();
+    auto tick = std::async(std::launch::async, [&session, &selection] {
+        FrontendTick result;
+        session.publishSelectionForCaptures(&selection);
+        const TakenFrame frame { session.takeSyncFrame() };
+        if (!frame)
+            return result;
+        result.didTakeFrame = true;
+        result.drawn.spans.resize(static_cast<std::size_t>(Selection::viewportSpanCapacity(frame->rows(), frame->columns())));
+        result.answer = session.selectionOverCapture(&selection, *frame, result.drawn.spans, result.drawn.ends);
+        result.drawn.spans.resize(static_cast<std::size_t>(result.answer.count));
+        return result;
+    });
+    const bool didFinish = tick.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    session.unlockForRead();
+    FrontendTick result = tick.get();
+    result.didFinishUnderTheLock = didFinish;
+    return result;
+}
+
+// A pane flooded faster than its drain catches up, so each pass ends on its
+// time budget and publishes the frame it leaves, through the paced host.
+struct FloodedPane {
+    SessionFixture fixture;
+    Terminal* terminal = nullptr;
+    Selection::Session selection;
+
+    FloodedPane(int rows, int columns)
+        : fixture(rows, columns)
+    {
+        REQUIRE(fixture.isReady);
+        terminal = fixture.session->terminal();
+        REQUIRE(terminal != nullptr);
+        Selection::init(selection);
+        fixture.session->setSyncFrameCaptureGeometry(testGeometry());
+        fixture.drainSyncFrame("ready");
+        REQUIRE(TakenFrame(fixture.session->takeSyncFrame()));
+        fixture.session->setSyncPublishRefreshSeconds(1.0 / 60.0);
+    }
+
+    // One pass of the flood: the frame it captures is the terminal as the
+    // pass leaves it.
+    void floodPass(std::string_view bytes)
+    {
+        fixture.stream->readMicroseconds = 10'000;
+        const auto publicationsBefore = fixture.session->syncFramePublicationCount();
+        fixture.stream->toRead += bytes;
+        CHECK(fixture.session->drain().end == Runtime::DrainPassEnd::TimeBudget);
+        REQUIRE(fixture.session->syncFramePublicationCount() == publicationsBefore + 1);
+    }
+
+    // One synchronized update, captured at its end.
+    void synchronizedFrame(std::string_view bytes)
+    {
+        fixture.stream->readMicroseconds = 0;
+        Ubiquitty::PAL::s_testMicroseconds += 10'000;
+        const auto publicationsBefore = fixture.session->syncFramePublicationCount();
+        fixture.drainSyncFrame(bytes);
+        REQUIRE(fixture.session->syncFramePublicationCount() > publicationsBefore);
+    }
+
+    void select(int fromRow, int fromColumn, int toRow, int toColumn, int viewOffset = 0)
+    {
+        Selection::beginGesture(selection, *terminal, fromRow, fromColumn, 1, viewOffset, {});
+        Selection::dragGesture(selection, *terminal, toRow, toColumn, viewOffset);
+        Selection::endGesture(selection);
+        REQUIRE(Selection::hasSelection(selection));
+        // The gesture hands the selection over as the drive's pointer path
+        // does, before the next capture.
+        fixture.session->publishSelectionForCaptures(&selection);
+    }
+
+    // The frame tick under the drain's lock beside the live read of the
+    // moment its frame was captured, which is the terminal as it stands: the
+    // tick resolves without waiting, presents a frame, and draws on it what
+    // the live read draws, and the view's selection is the live read's.
+    FrontendTick drawsWhatTheLiveReadDraws(Selection::Session& reference, int viewOffset, const char* what)
+    {
+        FrontendTick tick = tickWhileTheDrainHoldsTheLock(*fixture.session, selection);
+        CHECK_MSG(tick.didFinishUnderTheLock, what);
+        CHECK_MSG(tick.didTakeFrame, what);
+        const DrawnSelection live = liveRead(reference, *terminal, viewOffset);
+        CHECK_MSG(tick.drawn == live, what);
+        CHECK_MSG(Selection::hasSelection(selection) == Selection::hasSelection(reference), what);
+        CHECK_MSG(isSameState(selection.state, reference.state), what);
+        return tick;
+    }
+};
+
+// A full-screen program's frame, every row erased and rewritten in place.
+std::string redrawnInPlace(int rows, int frame)
+{
+    std::string bytes;
+    for (int row = 0; row < rows; ++row)
+        bytes += std::format("\x1b[{};1H\x1b[2Kframe {:03} row {:02} redrawn in place", row + 1, frame, row);
+    return bytes;
+}
+
+} // namespace
+
+// A selection on the alternate screen of a program that redraws every row in
+// place, under a flood the drain never catches up with: every frame the drain
+// captures presents with the selection the live read draws, and no tick
+// waits for the model lock. A scroll of the program's region carries the
+// selection with its rows, as the live read carries it.
+TEST(aSelectionOnTheAlternateScreenIsDrawnOnEveryFrameOfAnInPlaceRedraw)
+{
+    FloodedPane pane(24, 80);
+    pane.floodPass("\x1b[?1049h" + redrawnInPlace(24, 0));
+    REQUIRE(pane.terminal->screens.isUsingAlternateScreen);
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+    pane.select(5, 2, 7, 20);
+    Selection::Session reference = pane.selection;
+
+    for (int frame = 1; frame <= 24; ++frame) {
+        pane.floodPass(redrawnInPlace(24, frame));
+        const FrontendTick tick = pane.drawsWhatTheLiveReadDraws(reference, 0, "an in-place redraw");
+        CHECK_MSG(!tick.drawn.spans.empty(), "the redraw keeps the selection on its rows");
+        CHECK(tick.answer.outcome == Selection::CaptureOutcome::Kept);
+    }
+    pane.floodPass("\x1b[1;24r\x1b[24;1H\n\x1b[r" + redrawnInPlace(3, 25));
+    const FrontendTick scrolled = pane.drawsWhatTheLiveReadDraws(reference, 0, "a region scroll");
+    CHECK_MSG(!scrolled.drawn.spans.empty(), "the scroll carries the selection with its rows");
+    CHECK(scrolled.answer.outcome == Selection::CaptureOutcome::Moved);
+    for (int frame = 26; frame <= 30; ++frame) {
+        pane.floodPass(redrawnInPlace(24, frame));
+        CHECK(!pane.drawsWhatTheLiveReadDraws(reference, 0, "an in-place redraw after the scroll").drawn.spans.empty());
+    }
+}
+
+// A selection on a row outside the scrolling region, under synchronized
+// updates that scroll everything below it: every update presents with the
+// selection the live read draws, and no tick waits for the model lock.
+TEST(aSelectionOutsideTheScrollRegionIsDrawnOnEveryFrameOfAFlood)
+{
+    FloodedPane pane(24, 80);
+    pane.synchronizedFrame("\x1b[Hprotected marker row\x1b[2;24r\x1b[24;1H");
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+    pane.select(0, 0, 0, 8);
+    Selection::Session reference = pane.selection;
+
+    int line = 0;
+    for (int frame = 0; frame < 30; ++frame) {
+        std::string lines;
+        for (int count = 0; count < 7; ++count)
+            lines += std::format("\r\nflood line {:05} below the protected row", line++);
+        if (frame % 2 == 0)
+            pane.synchronizedFrame(lines);
+        else
+            pane.floodPass(lines);
+        const FrontendTick tick = pane.drawsWhatTheLiveReadDraws(reference, 0, "a scroll below the row");
+        CHECK_MSG(!tick.drawn.spans.empty(), "the selection outside the region stands");
+    }
+}
+
+// A selection on the screen that output scrolls into the history and out of
+// it: every frame presents with the selection the live read draws, and the
+// frame whose capture finds its first line evicted is the one the live read
+// drops it at.
+TEST(aSelectionScrolledByOutputIsDrawnOnEveryFrameUntilTheLiveReadDropsIt)
+{
+    FloodedPane pane(12, 40);
+    pane.terminal->scrollbackLimit = 20;
+    pane.floodPass("first\r\nsecond selected line\r\nthird selected line\r\n");
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+    pane.select(1, 0, 2, 12);
+    Selection::Session reference = pane.selection;
+
+    int drawn = 0;
+    int line = 0;
+    for (int frame = 0; frame < 20 && Selection::hasSelection(reference); ++frame) {
+        std::string lines;
+        for (int count = 0; count < 3; ++count)
+            lines += std::format("scrolling line {:04}\r\n", line++);
+        pane.floodPass(lines);
+        drawn += !pane.drawsWhatTheLiveReadDraws(reference, 0, "scrolling output").drawn.spans.empty();
+    }
+    CHECK_MSG(drawn > 0, "frames drew the selection while it scrolled");
+    CHECK_MSG(!Selection::hasSelection(reference), "the flood evicted the selection's first line");
+    CHECK(!Selection::hasSelection(pane.selection));
+}
+
+// A view scrolled back over a selection in the history while output arrives
+// below it: every frame presents with the selection the live read draws at
+// the view's offset.
+TEST(aSelectionInAViewScrolledBackIsDrawnOnEveryFrame)
+{
+    FloodedPane pane(12, 40);
+    pane.terminal->scrollbackLimit = 200;
+    std::string history;
+    for (int line = 0; line < 30; ++line)
+        history += std::format("history line {:03}\r\n", line);
+    pane.floodPass(history);
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+    constexpr int viewOffset = 10;
+    SyncFrameCaptureGeometry geometry = testGeometry();
+    geometry.viewOffset = viewOffset;
+    pane.fixture.session->setSyncFrameCaptureGeometry(geometry);
+    pane.select(3, 0, 5, 10, viewOffset);
+    Selection::Session reference = pane.selection;
+
+    int drawn = 0;
+    for (int frame = 0; frame < 12; ++frame) {
+        pane.floodPass(std::format("arriving below {:03}\r\n", frame));
+        drawn += !pane.drawsWhatTheLiveReadDraws(reference, viewOffset, "a view scrolled back").drawn.spans.empty();
+    }
+    CHECK_MSG(drawn > 0, "the view drew the selection in the history");
+}
+
+// Two flooded panes, each with its own selection, one on the alternate screen
+// redrawn in place and one scrolled by output: every frame of each presents
+// with its own selection as its live read draws it.
+TEST(aSelectionInEachOfTwoPanesIsDrawnOnEveryFrame)
+{
+    FloodedPane left(24, 80);
+    FloodedPane right(12, 40);
+    left.floodPass("\x1b[?1049h" + redrawnInPlace(24, 0));
+    REQUIRE(TakenFrame(left.fixture.session->takeSyncFrame()));
+    right.floodPass("one\r\ntwo selected\r\nthree\r\n");
+    REQUIRE(TakenFrame(right.fixture.session->takeSyncFrame()));
+    left.select(10, 0, 10, 30);
+    right.select(1, 0, 1, 11);
+    Selection::Session leftReference = left.selection;
+    Selection::Session rightReference = right.selection;
+
+    int rightDrawn = 0;
+    for (int frame = 1; frame <= 12; ++frame) {
+        left.floodPass(redrawnInPlace(24, frame));
+        right.floodPass(std::format("right pane line {:03}\r\n", frame));
+        CHECK(!left.drawsWhatTheLiveReadDraws(leftReference, 0, "the left pane").drawn.spans.empty());
+        rightDrawn += !right.drawsWhatTheLiveReadDraws(rightReference, 0, "the right pane").drawn.spans.empty();
+    }
+    CHECK(Selection::hasSelection(left.selection));
+    CHECK_MSG(rightDrawn > 0, "the right pane drew its selection until output scrolled it off the screen");
+    CHECK(Selection::hasSelection(right.selection));
+}
+
+// The frame the drain captured is drawn with its selection while the drain
+// holds the model lock: nothing on the way waits for it.
+TEST(aSelectionResolvesOverATakenFrameWithoutTheModelLock)
+{
+    FloodedPane pane(24, 80);
+    pane.synchronizedFrame("selected text\r\nand more of it");
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+    pane.select(0, 2, 1, 6);
+    Selection::Session reference = pane.selection;
+    pane.synchronizedFrame("\x1b[3;1Hthird line");
+    CHECK(!pane.drawsWhatTheLiveReadDraws(reference, 0, "a synchronized update").drawn.spans.empty());
+}
+
+// The view moves its selection during a flood, and the next tick hands the
+// move over before it takes the frame the drain captured for the selection
+// before: that frame never replaces the moved selection.
+TEST(aTickThatHandsOverAMovedSelectionKeepsItOverAnEarlierFrame)
+{
+    FloodedPane pane(12, 40);
+    pane.floodPass("first line here\r\nsecond line here\r\nthird line\r\n");
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+    pane.select(0, 0, 0, 4);
+    pane.floodPass("\x1b[5;1Hunder");
+    Selection::beginGesture(pane.selection, *pane.terminal, 1, 0, 1, 0, {});
+    Selection::dragGesture(pane.selection, *pane.terminal, 1, 6, 0);
+    Selection::endGesture(pane.selection);
+    const SelectionState moved = pane.selection.state;
+    const FrontendTick tick = tickWhileTheDrainHoldsTheLock(*pane.fixture.session, pane.selection);
+    CHECK(tick.didTakeFrame);
+    CHECK(!tick.answer.didAdopt);
+    CHECK(isSameState(pane.selection.state, moved));
+}
+
+// Each delivery's output transition, which the view runs on its own thread
+// beside the frames it takes, moves only the view's position over a standing
+// selection, and no hand-off carries that: every frame the drain captured
+// before a delivery still brings the view's selection up to what output did
+// to it, down to the frame that loses it.
+TEST(aDeliveryLeavesAStandingSelectionToTheFramesTheDrainCaptures)
+{
+    FloodedPane pane(12, 40);
+    pane.terminal->scrollbackLimit = 20;
+    pane.floodPass("first\r\nsecond selected line\r\nthird selected line\r\n");
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+    pane.select(1, 0, 2, 12);
+    Selection::Session reference = pane.selection;
+
+    int line = 0;
+    for (int frame = 0; frame < 20 && Selection::hasSelection(reference); ++frame) {
+        std::string lines;
+        for (int count = 0; count < 3; ++count)
+            lines += std::format("scrolling line {:04}\r\n", line++);
+        pane.floodPass(lines);
+        const Selection::OutputUpdate delivery = pane.fixture.session->updateSelectionAfterOutput(&pane.selection, 0, Screen::historyFacts(pane.terminal));
+        CHECK(!delivery.didChangeSelection);
+        const FrontendTick tick = pane.drawsWhatTheLiveReadDraws(reference, 0, "a frame taken after a delivery");
+        CHECK(tick.answer.didAdopt);
+    }
+    CHECK_MSG(!Selection::hasSelection(reference), "the flood evicted the selection's first line");
+    CHECK(!Selection::hasSelection(pane.selection));
+}
+
+// The rows a selection behind the text leaves or changes are rebuilt from the
+// held capture beside its own damage, and a held selection owes none.
+TEST(aRowASelectionLeavesIsRebuiltFromTheHeldCapture)
+{
+    SessionFixture fx(24, 80);
+    REQUIRE(fx.isReady);
+    fx.session->setSyncFrameCaptureGeometry(testGeometry());
+    fx.drainSyncFrame("a");
+    {
+        const TakenFrame first { fx.session->takeSyncFrame() };
+        REQUIRE(first != nullptr);
+    }
+    fx.drainSyncFrame("\x1b[4;1Hb");
+    const TakenFrame delta { fx.session->takeSyncFrame() };
+    REQUIRE(delta != nullptr);
+    REQUIRE(delta->recordKind() == FrameRecordKind::Delta);
+    REQUIRE(!delta->isRowDirty(0));
+
+    const SelectionRowSpan held[] = { { /*visibleRow=*/0, /*column0=*/0, /*column1=*/4 } };
+    const Vec4 color { 0.2f, 0.4f, 0.9f, 1.0f };
+    std::vector<std::uint8_t> repaint(static_cast<std::size_t>(delta->rows()), 0);
+    markSelectionRepaintRows(held, color, held, color, delta->frameDamage(), repaint);
+    CHECK_MSG(std::ranges::none_of(repaint, [](std::uint8_t row) { return row != 0; }), "a held selection owes no row");
+    markSelectionRepaintRows(held, color, {}, color, delta->frameDamage(), repaint);
+    CHECK(repaint[0] != 0);
+    CHECK(std::ranges::count_if(repaint, [](std::uint8_t row) { return row != 0; }) == 1);
+
+    FrameCapture::ViewTierOverrides damaged;
+    FrameCapture::ViewTierOverrides repainted;
+    repainted.overlayDirtyRows = repaint.data();
+    repainted.overlayDirtyRowCount = static_cast<int>(repaint.size());
+    const std::size_t damagedCells = builtCells(*delta, &damaged).size();
+    const std::size_t repaintedCells = builtCells(*delta, &repainted).size();
+    CHECK_MSG(repaintedCells > damagedCells, "the row the selection left was rebuilt beside the capture's damage");
+
+    // A scroll carries the held selection with its rows: both places owe.
+    FrameDamage scrolled;
+    scrolled.scrollTop = 0;
+    scrolled.scrollBottom = 23;
+    scrolled.scrollDelta = 1;
+    const SelectionRowSpan lower[] = { { /*visibleRow=*/5, /*column0=*/0, /*column1=*/4 } };
+    std::ranges::fill(repaint, std::uint8_t { 0 });
+    markSelectionRepaintRows(lower, color, lower, color, scrolled, repaint);
+    CHECK(repaint[5] != 0);
+    CHECK(repaint[4] != 0);
 }

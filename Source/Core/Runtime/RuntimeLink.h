@@ -25,8 +25,8 @@
 // The per-pane cross-thread seam between the off-main ingest/writer (owning
 // Ubiquitty::Terminal under the model lock) and the main-thread frontend. TWO
 // lock-free primitives, portable (no threading types beyond <atomic>):
-//   (R) SnapshotPublisher<T> — writer publishes a versioned snapshot; any reader
-//       reads it lock-free + tear-free (model->main).
+//   (R) SnapshotPublisher<T> — its one writer publishes a versioned snapshot;
+//       any reader reads it lock-free + tear-free (on the link, model->main).
 //   (W) CommandRing<T, N>    — main posts POD commands; the writer drains them
 //       under the lock it already holds (main->model).
 //
@@ -337,7 +337,8 @@ public:
         store(m_slots[1], words);
     }
 
-    // Writer only (the thread holding the model lock). Publishes `next`.
+    // Writer only: the one thread that publishes to this register, which
+    // need not hold the model lock. Publishes `next`.
     void publish(const T& next)
     {
         const std::uint64_t control = m_control.load(std::memory_order_relaxed);

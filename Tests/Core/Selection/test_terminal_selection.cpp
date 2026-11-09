@@ -2282,6 +2282,43 @@ TEST(aBusyModelDefersTheGestureToTheNextUpdateThatTakesTheLock)
     CHECK_MSG(selected.find("more") == std::string::npos, "the head stops at the pointer row");
 }
 
+// A delivery leaves a standing selection to what draws it: on a view that
+// holds its rows from the history, the transition moves nothing in the
+// session but the view's position, and on a view that keeps a logical anchor
+// it synchronizes the selection against the terminal as it resolves the
+// anchor.
+TEST(aDeliverySynchronizesAStandingSelectionOnlyOnAViewThatKeepsALogicalAnchor)
+{
+    Terminal t;
+    hardReset(t);
+    resize(t, 4, 12);
+    t.scrollbackLimit = 2;
+    feed(t, "selected\r\nsecond\r\nthird");
+    Selection::Session held = freshSession();
+    Selection::beginGesture(held, t, /*visibleRow*/ 0, /*column*/ 0, /*clickCount*/ 1, 0, {});
+    Selection::dragGesture(held, t, /*visibleRow*/ 0, /*column*/ 7, 0);
+    Selection::endGesture(held);
+    REQUIRE(Selection::hasSelection(held));
+    Selection::Session anchored = held;
+    Selection::observeViewport(anchored, t, 0);
+    REQUIRE(anchored.usesLogicalViewport);
+    const SelectionState standing = held.state;
+
+    for (int line = 0; line < 8; ++line)
+        feed(t, "\r\nscrolling");
+    ModelLock modelLock;
+    const Selection::OutputUpdate heldUpdate = Selection::updateAfterOutput(held, t, modelLock, 0, Screen::historyFacts(&t));
+    CHECK(!heldUpdate.didChangeSelection);
+    CHECK(Selection::hasSelection(held));
+    CHECK_EQ(held.state.anchorRow, standing.anchorRow);
+    CHECK_EQ(held.state.headRow, standing.headRow);
+    CHECK_EQ(held.state.headColumn, standing.headColumn);
+
+    const Selection::OutputUpdate anchoredUpdate = Selection::updateAfterOutput(anchored, t, modelLock, 0, Screen::historyFacts(&t));
+    CHECK_MSG(anchoredUpdate.didChangeSelection, "the flood evicted the selected row");
+    CHECK(!Selection::hasSelection(anchored));
+}
+
 TEST(thePressThatActivatesTheWindowOpensNothingAndKeepsTheSelection)
 {
     Terminal t;

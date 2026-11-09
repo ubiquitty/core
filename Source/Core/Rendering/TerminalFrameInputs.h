@@ -16,6 +16,7 @@
 #include "Core/Rendering/GlyphSlotCache.h"
 #include "Core/Rendering/ImageQuads.h"
 #include "Core/Rendering/OverlayAssembly.h"
+#include "Core/Rendering/OverlayGeometry.h"
 #include "Core/Rendering/TerminalSnapshot.h"
 
 #include "Core/Color.h"
@@ -422,6 +423,11 @@ public:
     /// `options.viewOffset` clamped to the scrollback actually available.
     [[nodiscard]] int viewOffset() const { return m_viewOffset; }
 
+    /// The fill a selection drawn over this frame takes, resolved from the
+    /// capture's style and the host's selection colour whether or not the
+    /// capture drew one.
+    [[nodiscard]] const SelectionFill& selectionFill() const { return m_selectionFill; }
+
     /// The palette generation captured with the frame.
     [[nodiscard]] std::uint64_t paletteGeneration() const { return m_paletteGeneration; }
 
@@ -783,6 +789,7 @@ private:
     BuildInputs m_inputs;
     int m_firstAbsoluteRow = 0;
     int m_viewOffset = 0;
+    SelectionFill m_selectionFill {};
     std::uint64_t m_modelGeneration = 0;
     std::uint64_t m_paletteGeneration = 0;
     FrameCopyStatistics m_copyStatistics;

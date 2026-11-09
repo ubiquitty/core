@@ -6,6 +6,7 @@
 #include "Base/Compiler.h"
 #include "Base/SwiftInterop.h"
 
+#include "Core/GridBounds.h"
 #include "Core/Kitty/UnicodePlaceholders.h"
 #include "Core/Rendering/BoxDrawing.h"
 #include "Core/Rendering/CellInstanceBuilder.h"
@@ -13,6 +14,7 @@
 #include "Core/Rendering/TerminalFrameInputs.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -239,6 +241,13 @@ public:
         /// The mode-1001 hilite band, in visible rows.
         const SelectionRowSpan* hiliteRegionSpans = nullptr;
         int hiliteRegionSpanCount = 0;
+        /// One byte per visible row, nonzero where a tier above left or
+        /// changed what the retained target holds: those rows are rebuilt
+        /// from the captured cells beside the capture's own damage. Read
+        /// only under `BuildScope::Damaged`, and only for a capture with a
+        /// damage mask; one without builds every row anyway.
+        const std::uint8_t* overlayDirtyRows = nullptr;
+        int overlayDirtyRowCount = 0;
     };
 
     /// Builds the captured frame with the caller's present-time view tiers.
@@ -262,6 +271,15 @@ public:
         BuildInputs inputs = m_frame->inputs();
         if (scope == BuildScope::Whole)
             inputs.dirtyRows = nullptr;
+        std::array<std::uint8_t, maxRows> mergedDirtyRows;
+        if (inputs.dirtyRows && view.overlayDirtyRows && view.overlayDirtyRowCount > 0 && inputs.rows > 0 && inputs.rows <= maxRows) {
+            for (int row = 0; row < inputs.rows; ++row) {
+                const auto index = static_cast<std::size_t>(row);
+                const bool isOverlayRow = row < view.overlayDirtyRowCount && view.overlayDirtyRows[index] != 0;
+                mergedDirtyRows[index] = isOverlayRow ? 1 : inputs.dirtyRows[index];
+            }
+            inputs.dirtyRows = mergedDirtyRows.data();
+        }
         inputs.selectionSpans = view.selectionSpans;
         inputs.selectionSpanCount = view.selectionSpanCount;
         inputs.selectionColor = view.selectionColor;
@@ -456,6 +474,17 @@ public:
     [[nodiscard]] Vec4 selectionColor() const { return m_frame->inputs().selectionColor; }
     /// Whether native selection belongs beneath glyphs, above text backgrounds.
     [[nodiscard]] bool isSelectionBehindText() const { return m_frame->inputs().isSelectionBehindText; }
+
+    /// The colour a selection drawn over this frame through
+    /// ``ViewTierOverrides`` takes, resolved from the capture's style and the
+    /// host's selection colour whether or not the capture drew a selection.
+    [[nodiscard]] Vec4 selectionFillColor() const { return m_frame->selectionFill().color; }
+    /// Whether that fill is each selected cell's background, under its glyph.
+    [[nodiscard]] bool isSelectionFillBehindText() const { return m_frame->selectionFill().isBehindText; }
+    /// Whether selected glyphs are drawn in ``selectionForeground()``.
+    [[nodiscard]] bool hasSelectionForegroundOverride() const { return m_frame->inputs().selectionForegroundOverride; }
+    /// The selected glyphs' ink, read under the override.
+    [[nodiscard]] Vec4 selectionForeground() const { return m_frame->inputs().selectionForeground; }
 
     /// Borrows the rich text blocks the frame shows (Docs/rich-text.md).
     [[nodiscard]] CapturedBlockQuads richTextQuads() const UBIQUITTY_LIFETIMEBOUND { return m_frame->richTextQuads(); }
