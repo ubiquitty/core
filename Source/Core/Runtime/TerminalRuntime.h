@@ -1495,9 +1495,10 @@ public:
     // bracket, not constness (the renderer writes Terminal: palette write-back).
     // ObjC++-only; never reachable from Swift.
     Ubiquitty::Terminal* borrowTermForRender();
-    // Commit any open scroll-lane run before a render model read (the flood
-    // pipeline's bite returns leave runs open; paint state is stale until the
-    // flush). Call under the model lock.
+    // Commit any open scroll-lane run before the model is read by anything but
+    // the drain (the flood pipeline's bite returns leave runs open; paint state
+    // is stale until the flush). The session's model lock runs it on every
+    // acquisition but the drain's. Call under the model lock.
     void flushScrollLaneForModelRead();
     PAL::Stream* stream(); // ObjC++-only; never reachable from Swift
 

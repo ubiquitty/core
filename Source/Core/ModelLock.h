@@ -62,8 +62,12 @@ struct ModelLockRelease {
 /// drain that band and no more; it stays counted, so the next release hands off
 /// again.
 ///
-/// The uncontended cost is one try-acquire and one store for a waiter, and one
-/// load before and one after the release for the drain.
+/// Every acquisition but the drain's runs the owner's reader entry once it
+/// holds the lock: the drain may leave work its bites defer, and a reader
+/// must find it done.
+///
+/// The uncontended cost is one try-acquire, one store and the reader entry for
+/// a waiter, and one load before and one after the release for the drain.
 class ModelLock {
 public:
     ModelLock() = default;
@@ -80,6 +84,7 @@ public:
             m_waiterCount.fetch_sub(1, std::memory_order_relaxed);
         }
         noteAcquired();
+        enterAsReader();
     }
 
     /// Takes the lock if no thread holds it, never waiting and never counted.
@@ -93,7 +98,23 @@ public:
         if (!m_mutex.try_lock())
             return false;
         noteAcquired();
+        enterAsReader();
         return true;
+    }
+
+    /// Installs the step every acquisition but the drain's runs once it holds
+    /// the lock, before its holder reads the model.
+    ///
+    /// Set by the model's owner before the lock is shared, and kept for the
+    /// lock's life.
+    ///
+    /// - Parameters:
+    ///   - entry: The step, called under the lock with `context`.
+    ///   - context: The step's state, outliving every acquisition.
+    void setReaderEntry(void (*entry)(void*), void* context)
+    {
+        m_readerEntry = entry;
+        m_readerEntryContext = context;
     }
 
     /// Releases a hold taken by ``lock()`` or ``try_lock()``.
@@ -135,7 +156,16 @@ private:
     /// without the mutex while it waits for the handoff.
     void noteAcquired() { m_acquisitionCount.store(m_acquisitionCount.load(std::memory_order_relaxed) + 1, std::memory_order_release); }
 
+    /// Runs the owner's reader entry, if one is installed.
+    void enterAsReader()
+    {
+        if (m_readerEntry)
+            m_readerEntry(m_readerEntryContext);
+    }
+
     std::mutex m_mutex;
+    void (*m_readerEntry)(void*) = nullptr;
+    void* m_readerEntryContext = nullptr;
     std::atomic<std::uint32_t> m_waiterCount { 0 };
     std::atomic<std::uint32_t> m_acquisitionCount { 0 };
 };

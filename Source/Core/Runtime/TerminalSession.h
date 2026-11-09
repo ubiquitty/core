@@ -3126,6 +3126,30 @@ public:
 #endif
 
 #ifdef UBIQUITTY_ENABLE_TEST_HOOKS
+    /// Parses bytes the way one flood-pipeline bite does, under the drain's
+    /// hold, leaving any scroll-lane run open across the return.
+    ///
+    /// - Parameter bytes: The bite.
+    void feedFloodBiteForTest(std::string_view bytes)
+    {
+        m_host.lockModel();
+        static_cast<void>(m_runtime->feedChunkUpToSyncClear({ bytes.data(), bytes.size() }));
+        m_host.unlockModel();
+    }
+
+    /// Whether a scroll-lane run is open, read under the drain's hold so the
+    /// reading commits nothing.
+    ///
+    /// - Returns: Whether the model holds an uncommitted run.
+    [[nodiscard]] bool isScrollLaneRunOpenForTest()
+    {
+        m_host.lockModel();
+        const Ubiquitty::Terminal* term = m_runtime->borrowTermForRender();
+        const bool isOpen = term && term->scrollLaneRun.active;
+        m_host.unlockModel();
+        return isOpen;
+    }
+
     /// Publishes a remote replica's change through the production observer door.
     void noteRemoteScreenChangedForTest() { noteRemoteScreenChanged(); }
 
@@ -9098,6 +9122,9 @@ private:
         , m_host(m_modelLock)
         , m_runtime(std::make_unique<TerminalRuntime>())
     {
+        // A flood bite leaves its scroll-lane run open for the next bite to
+        // extend; whoever reads the model between two bites commits it first.
+        m_modelLock.setReaderEntry([](void* runtime) { static_cast<TerminalRuntime*>(runtime)->flushScrollLaneForModelRead(); }, m_runtime.get());
         if (const auto* theme = Themes::get(launchThemeIndex(configuration))) {
             m_chosenThemeName = theme->name;
         }

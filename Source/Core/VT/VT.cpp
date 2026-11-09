@@ -7263,10 +7263,11 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
     }
     // Lane state never crosses a processBytes return — except the flood
     // pipeline's input-exhausted bite return (<true>, i == length), whose small
-    // bites would otherwise cap each run at a few lines. Paint readers flush at
-    // their own entry instead (captureSnapshotFromTerm, the render model-read
-    // seam); an early <true> return is a sync-clear stop, where a capture
-    // follows immediately, so it still flushes here.
+    // bites would otherwise cap each run at a few lines. Readers flush at their
+    // own entry instead (captureSnapshotFromTerm, and every acquisition of the
+    // session's model lock but the drain's); an early <true> return is a
+    // sync-clear stop, where a capture follows immediately, so it still flushes
+    // here.
     if constexpr (!StopAtSyncClear)
         Ubiquitty::Screen::scrollLaneFlush(t);
     else if (i < length)
