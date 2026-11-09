@@ -4968,11 +4968,15 @@ public:
         // drain that opened one, and the frame that would show it runs after
         // that delivery. A frame drawn with no block open therefore owes the
         // parser no handoff to be told so -- and this is asked once per frame,
-        // on the thread the parser is contending with.
-        if (!readSnapshot().syncHoldActive)
+        // on the thread the parser is contending with. An adopted terminal is
+        // parsed by its owner, whose drain does not publish this session's
+        // snapshot, so only the model can say.
+        if (!m_externalTerminal && !readSnapshot().syncHoldActive)
             return m_runtime->shouldWithholdPresentation(nullptr, nowTicks, PAL::monotonicMicros());
         const std::scoped_lock hold(*m_activeLock);
-        return m_runtime->shouldWithholdPresentation(modelTerm(), nowTicks, PAL::monotonicMicros());
+        if (auto* terminal = modelTerm())
+            return shouldWithholdCapture(*terminal, nowTicks);
+        return m_runtime->shouldWithholdPresentation(nullptr, nowTicks, PAL::monotonicMicros());
     }
 
     /// The capture's recheck of ``shouldWithholdFrame``, under the model lock
@@ -4983,13 +4987,20 @@ public:
     /// has not ended yet is armed here, so the capture never takes the erased
     /// screen the hold exists to keep off the glass.
     ///
+    /// A block this check expires is published while the caller still holds
+    /// the lock, so no lock-free reader goes on reading it as open.
+    ///
     /// - Parameters:
     ///   - terminal: The model, borrowed under the caller's lock.
     ///   - nowTicks: Now, on the 60 Hz monotonic clock.
     /// - Returns: True while the capture should wait.
     [[nodiscard]] bool shouldWithholdCapture(Ubiquitty::Terminal& terminal, Ticks nowTicks)
     {
-        return m_runtime->shouldWithholdPresentation(&terminal, nowTicks, PAL::monotonicMicros());
+        const bool wasSyncOutputActive = terminal.modes.syncOutput || readSnapshot().syncHoldActive;
+        const bool isHeld = m_runtime->shouldWithholdPresentation(&terminal, nowTicks, PAL::monotonicMicros());
+        if (wasSyncOutputActive && !terminal.modes.syncOutput)
+            republishModel();
+        return isHeld;
     }
 
     /// The live-resize capture's check, under the model lock the caller
@@ -5018,8 +5029,15 @@ public:
     /// Ticks until a withheld present may release on its own — the block's
     /// budget, or the erase hold's settle or watchdog — at least 1 while
     /// anything is held, 0 otherwise.
+    ///
+    /// Only a block's budget lives in the model; the erase hold is the
+    /// runtime's own. So the lock is taken only while the published snapshot
+    /// says a block is open, or for an adopted terminal, which its owner
+    /// parses without publishing this session's snapshot.
     [[nodiscard]] std::uint32_t presentationHoldTicksRemaining(Ticks nowTicks)
     {
+        if (!m_externalTerminal && !readSnapshot().syncHoldActive)
+            return m_runtime->presentationHoldTicksRemaining(nullptr, nowTicks, PAL::monotonicMicros());
         const std::scoped_lock hold(*m_activeLock);
         return m_runtime->presentationHoldTicksRemaining(modelTerm(), nowTicks, PAL::monotonicMicros());
     }
@@ -6134,7 +6152,7 @@ public:
     /// stays off the screen and in the kernel queue for the transfer agent.
     [[nodiscard]] bool isFileTransferHoldActive() const { return m_runtime->isFileTransferHoldActive(); }
 
-    /// Whether the drain's last pass filled its capacity; see
+    /// Whether the drain's last pass ended with its writer still ahead; see
     /// ``TerminalRuntime::isDrainSaturated``.
     [[nodiscard]] bool isDrainSaturated() const { return m_runtime->isDrainSaturated(); }
 
@@ -6218,7 +6236,7 @@ public:
     /// - Returns: Microseconds until either timer needs service, or no deadline.
     std::optional<std::uint64_t> publishHeldFrameIfDue()
     {
-        auto due = m_runtime->publishHeldFrameIfDue(m_host);
+        auto due = m_runtime->publishHeldFrameIfDue(m_host, TerminalRuntime::HeldFrameWriter::Stopped);
         const auto idle = m_runtime->serviceDisplayIdle(m_host);
         if (idle.didChange)
             m_events.pending.fetch_or(1u << static_cast<unsigned>(EventKind::ScreenDirty), std::memory_order_release);

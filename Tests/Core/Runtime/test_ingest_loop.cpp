@@ -1058,13 +1058,13 @@ TEST(testATimedPipelinePauseReleasesAHeldFrameBeforeTheBurstEnds)
         ::usleep(1000);
     CHECK(didFinishTimedPass.load(std::memory_order_acquire));
     CHECK(runtime.isFrameHeld());
-    CHECK(!runtime.isDrainSaturated());
     CHECK_EQ(releases.load(std::memory_order_acquire), 0);
     clock.store(coherenceDeadlineMicroseconds + 1, std::memory_order_relaxed);
     for (int waited = 0; waited < 2000 && releases.load(std::memory_order_acquire) == 0; ++waited)
         ::usleep(1000);
     CHECK_MSG(releases.load(std::memory_order_acquire) == 1, "a paused timed pass must release its held frame while the reader remains alive");
     CHECK(!runtime.isFrameHeld());
+    CHECK_MSG(!runtime.isDrainSaturated(), "the pause ends the saturation the timed pass set");
     CHECK_EQ(loop.floodBurstCount(), 1u);
     loop.requestStop();
     loop.raiseWake();
@@ -1548,6 +1548,110 @@ TEST(testTheReadersTimedPassesTakeFramesInsideASequence)
     CHECK_MSG(outcome.bursts >= 1, "the timed pass elected the flood reader");
     CHECK_MSG(outcome.budgetedMidSequenceFrames > 0, "a timed pass of the reader took its frame inside a sequence, before the deadline");
     CHECK(outcome.didReachTail);
+}
+
+// A writer the machine starves keeps a flood's reader alive while it arrives
+// in slices a nap apart, so every pass the reader closes ends at a
+// would-block. The presentation budget runs across those closes: a pass that
+// ends after the frame stayed held for the interval is offered to the rule
+// and captured where it is admitted, and frames keep reaching the screen at
+// the interval rather than only when the rule's clock lands between bites.
+TEST(testAStarvedWritersFloodKeepsTakingFramesAtTheInterval)
+{
+    class StarvedWriterDrainHost final : public DrainHost {
+    public:
+        void lockModel() override { m_lock.lock(); }
+        void unlockModel() override { m_lock.unlock(); }
+        void onSyncFrameReadyLocked(SyncFrameReason reason) override
+        {
+            if (isCounting.load(std::memory_order_relaxed) && reason == SyncFrameReason::ContinuingPass)
+                capturedFrames.fetch_add(1, std::memory_order_relaxed);
+        }
+        std::uint32_t frameIntervalMicroseconds() const override { return 8'000; }
+
+        std::atomic<bool> isCounting { false };
+        std::atomic<int> capturedFrames { 0 };
+
+    private:
+        std::mutex m_lock;
+    };
+
+    int pipeDescriptors[2] = { -1, -1 };
+    REQUIRE(::pipe(pipeDescriptors) == 0);
+    Ubiquitty::PAL::UnixFileDescriptor readEnd(pipeDescriptors[0]);
+    Ubiquitty::PAL::UnixFileDescriptor writeEnd(pipeDescriptors[1]);
+    REQUIRE(::fcntl(readEnd.get(), F_SETFL, ::fcntl(readEnd.get(), F_GETFL) | O_NONBLOCK) == 0);
+
+    TerminalRuntime runtime;
+    RuntimeInitParameters parameters;
+    parameters.rows = 24;
+    parameters.columns = 80;
+    parameters.allowReflowOnInit = false;
+    runtime.init(parameters);
+    auto stream = std::make_unique<Ubiquitty::PAL::PipeStream>(std::move(readEnd));
+    std::unique_ptr<Ubiquitty::PAL::PollableByteStream> loopEndpoint = stream->duplicateAsPollableStream();
+    std::unique_ptr<Ubiquitty::PAL::PollableByteStream> floodEndpoint = stream->duplicateAsPollableStream();
+    REQUIRE(loopEndpoint != nullptr && floodEndpoint != nullptr);
+    REQUIRE(runtime.adoptStream(std::move(stream)).has_value());
+
+    StarvedWriterDrainHost host;
+    IngestLoop loop(runtime, host);
+    std::atomic<std::uint64_t> deliveredBytes { 0 };
+    loop.setDeliverHook(
+        [](void* context, const DrainOutcome& outcome, std::uint32_t) {
+            static_cast<std::atomic<std::uint64_t>*>(context)->fetch_add(static_cast<std::uint64_t>(outcome.bytesDrained), std::memory_order_relaxed);
+        },
+        &deliveredBytes);
+    (void)loop.prepare();
+    loop.adoptFloodEndpoint(std::move(floodEndpoint));
+    std::jthread ingest([&loop, &loopEndpoint] { loop.run(loopEndpoint->handle()); });
+
+    // A writer ahead of the parser fills a pass, which hands the burst to the
+    // reader.
+    std::string burst;
+    constexpr std::string_view line = "0123456789abcdefghijklmnopqrstuvwxyz\n";
+    while (burst.size() < 2 * static_cast<std::size_t>(TerminalRuntime::drainPassCapacityBytes))
+        burst += line;
+    std::size_t written = 0;
+    while (written < burst.size()) {
+        const ssize_t count = ::write(writeEnd.get(), burst.data() + written, burst.size() - written);
+        REQUIRE(count > 0);
+        written += static_cast<std::size_t>(count);
+    }
+
+    // Then it is starved: a slice of truecolour cells every millisecond and a
+    // half, far inside the reader's quiet budget and the read's quiescence,
+    // and past a consumer nap, so once the backlog is parsed every pass
+    // closes at a would-block. Each slice ends inside a sequence, so the
+    // rule's clock alone releases the frame only at its deadline.
+    std::string slice;
+    while (slice.size() < 250)
+        slice += "\x1b[38;2;111;222;123mx";
+    slice.resize(250);
+    REQUIRE(slice.back() != 'x');
+    const auto dripStart = std::chrono::steady_clock::now();
+    const auto elapsed = [&dripStart] { return std::chrono::steady_clock::now() - dripStart; };
+    std::uint64_t napsBeforeEnd = 0;
+    while (elapsed() < std::chrono::milliseconds(600)) {
+        REQUIRE(::write(writeEnd.get(), slice.data(), slice.size()) == static_cast<ssize_t>(slice.size()));
+        ::usleep(1500);
+        if (!host.isCounting.load(std::memory_order_relaxed) && elapsed() >= std::chrono::milliseconds(200))
+            host.isCounting.store(true, std::memory_order_relaxed);
+        if (!napsBeforeEnd && elapsed() >= std::chrono::milliseconds(550))
+            napsBeforeEnd = loop.floodNapCount();
+    }
+    host.isCounting.store(false, std::memory_order_relaxed);
+    const std::uint64_t bursts = loop.floodBurstCount();
+    const std::uint64_t napsAtEnd = loop.floodNapCount();
+    loop.requestStop();
+    loop.raiseWake();
+    ingest.join();
+    runtime.close();
+    CHECK_MSG(bursts == 1 && napsAtEnd > napsBeforeEnd, "the starved writer stayed inside the reader's burst to the end");
+    // About 45 in the 400 ms counted at the 8 ms interval; the deadline alone
+    // gives about 12.
+    CHECK_MSG(host.capturedFrames.load(std::memory_order_relaxed) >= 20,
+        "a starved writer's flood took a captured frame about every interval, not only at the rule's deadline");
 }
 
 UBIQUITTY_TEST_MAIN()

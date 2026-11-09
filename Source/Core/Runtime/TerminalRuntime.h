@@ -493,9 +493,22 @@ public:
     /// Reads the same monotonic clock used for admitted-frame timing.
     [[nodiscard]] std::uint64_t frameClockMicroseconds() const { return coherenceNow(); }
 
-    /// Asks the coherence rule again for a frame it is holding, announces it
-    /// as the burst's end when admitted, and returns how long the writer may
-    /// wait before asking again.
+    /// Whether bytes are still arriving behind a frame the rule's clock asks
+    /// for, which decides what an admitted frame is published as.
+    enum class HeldFrameWriter : std::uint8_t {
+        /// The drain has seen the writer stop: the grid stays as admitted
+        /// until more bytes arrive, so the frame is announced as the burst's
+        /// end and a render captures it.
+        Stopped,
+        /// A flood's reader is still lifting bytes: the next bite re-holds
+        /// the frame before a render can arrive, so the frame is captured
+        /// where it is admitted, like a continuing pass.
+        Writing,
+    };
+
+    /// Asks the coherence rule again for a frame it is holding, publishes it
+    /// when admitted, and returns how long the writer may wait before asking
+    /// again.
     ///
     /// A frame held for read quiescence, an open bracket or a parser
     /// mid-sequence is otherwise asked again only when more bytes arrive, and a
@@ -506,10 +519,12 @@ public:
     /// both the ask and the wait are taken under it. TERM-WRITER; takes the
     /// model lock through `host`.
     ///
-    /// - Parameter host: The drain host whose lock and publish hook to use.
+    /// - Parameters:
+    ///   - host: The drain host whose lock and publish hook to use.
+    ///   - writer: Whether bytes are still arriving behind the frame.
     /// - Returns: Microseconds until the rule may answer differently, or
     ///   nothing when no frame is held.
-    std::optional<std::uint64_t> publishHeldFrameIfDue(DrainHost& host);
+    std::optional<std::uint64_t> publishHeldFrameIfDue(DrainHost& host, HeldFrameWriter writer);
 
     /// Reports a display transition and the remaining idle interval.
     struct DisplayIdleResult {
@@ -1365,12 +1380,14 @@ public:
     // sampling a half-drawn redraw mid-burst (non-2026 flicker).
     [[nodiscard]] bool isDrainPassActive() const { return m_drainPassActive.load(std::memory_order_relaxed); }
     void setDrainPassActive(bool active) { m_drainPassActive.store(active, std::memory_order_relaxed); }
-    /// Whether the last drain pass filled its capacity — the writer is ahead
-    /// and the next pass will fill too. Each such pass publishes its frame
-    /// through the host (`SyncFrameReason::SaturatedPass`), so a render side
-    /// that finds nothing published is between two captures and has nothing
-    /// to gain from the model but a wait on the lock the parser holds. Falls
-    /// with the first pass that closes short, and with the end of the stream.
+    /// Whether the last drain pass ended with its writer still ahead: it
+    /// filled its capacity or spent its frame interval, and the next pass will
+    /// too. Each such pass publishes its admitted frame through the host
+    /// (`SyncFrameReason::SaturatedPass` or `ContinuingPass`), so a render
+    /// side that finds nothing published is between two captures and has
+    /// nothing to gain from the model but a wait on the lock the parser holds.
+    /// Falls with the first pass that closes short, and with the end of the
+    /// stream.
     [[nodiscard]] bool isDrainSaturated() const { return m_isDrainSaturated.load(std::memory_order_relaxed); }
     /// Pushes the pane's presentation state into the drain gate.
     ///
@@ -1415,6 +1432,10 @@ public:
         /// The burst is over and the writer has stopped, so this publish is the
         /// last one until more bytes arrive.
         BurstEnd,
+        /// The rule's clock released a frame inside a burst whose reader is
+        /// still lifting bytes: read like a burst end, published like a
+        /// continuing pass.
+        ClockInsideBurst,
     };
     /// Announces the pane's frame when the coherence rule admits it.
     ///

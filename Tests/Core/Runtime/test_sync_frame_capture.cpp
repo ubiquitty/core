@@ -44,8 +44,9 @@
 namespace Ubiquitty::PAL {
 
 static std::uint32_t s_testMicroseconds = 0;
+static std::uint32_t s_testTicks = 0;
 
-Ticks monotonicTicks() { return Ticks(0); }
+Ticks monotonicTicks() { return Ticks(s_testTicks); }
 uint32_t monotonicMicros() { return ++s_testMicroseconds; }
 
 // The launch factory is the frontend's; every session here adopts a scripted
@@ -341,7 +342,8 @@ TEST(timedPartialCommandsCaptureOwnedCellsAndCompleteWithoutChangingTheStream)
         const auto outcome = fixture.session->drain();
         CHECK(outcome.end == Ubiquitty::Runtime::DrainPassEnd::TimeBudget);
         CHECK(!outcome.caughtUp && !outcome.reachedEnd);
-        CHECK(!fixture.session->isDrainSaturated());
+        CHECK(fixture.session->isDrainSaturated());
+        CHECK(!fixture.session->shouldWithholdFrame(Ticks(0)));
         CHECK(fixture.session->takeSyncFrameReady());
         const TakenFrame frame { fixture.session->takeSyncFrame() };
         CHECK(frame != nullptr);
@@ -419,7 +421,7 @@ TEST(aPersistentHiddenCursorAllowsEveryTimedPartialCommandCapture)
         const auto outcome = fixture.session->drain();
         CHECK(outcome.end == Runtime::DrainPassEnd::TimeBudget);
         CHECK(!outcome.caughtUp && !outcome.reachedEnd);
-        CHECK(!fixture.session->isDrainSaturated());
+        CHECK(fixture.session->isDrainSaturated());
         CHECK(!fixture.session->isFrameHeld());
         CHECK(!VT::isParserAtGround(fixture.session->terminal()));
         ++expectedCaptures;
@@ -534,6 +536,37 @@ TEST(aPlainSettleAnnouncesButDoesNotCapture)
     CHECK(!fx.session->publishHeldFrameIfDue().has_value());
     CHECK(fx.session->takeSyncFrameReady()); // announced: the render still wakes
     CHECK(fx.session->takeSyncFrame() == nullptr); // but nothing was captured
+}
+
+// The held-frame timer is a quiet block's watchdog. The block it expires is
+// published under the lock that expired it, or the frontend's lock-free
+// withhold goes on reading the block as open.
+TEST(aBlockTheHeldFrameTimerExpiresIsPublishedClosed)
+{
+    struct RestoreTicks {
+        std::uint32_t previous = Ubiquitty::PAL::s_testTicks;
+        ~RestoreTicks() { Ubiquitty::PAL::s_testTicks = previous; }
+    } restoreTicks;
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    fixture.session->terminal()->modes.shouldSaveCRT = false;
+    fixture.session->setSyncFrameCaptureGeometry(testGeometry());
+    fixture.drainSyncFrame("before");
+    static_cast<void>(fixture.session->takeSyncFrame());
+
+    Ubiquitty::PAL::s_testTicks = 100;
+    fixture.stream->toRead += "\x1b[?2026h\x1b[Hafter";
+    REQUIRE(fixture.session->drain().caughtUp);
+    REQUIRE(fixture.session->terminal()->modes.syncOutput);
+    REQUIRE(fixture.session->isFrameHeld());
+    CHECK(fixture.session->readSnapshot().syncHoldActive);
+
+    Ubiquitty::PAL::s_testTicks = 161;
+    Ubiquitty::PAL::s_testMicroseconds += 1'100'000;
+    static_cast<void>(fixture.session->publishHeldFrameIfDue());
+    CHECK(!fixture.session->terminal()->modes.syncOutput);
+    CHECK(!fixture.session->readSnapshot().syncHoldActive);
+    CHECK(!fixture.session->shouldWithholdFrame(Ticks(161)));
 }
 
 TEST(aContinuingUnsaturatedRedrawRetainsItsAdmittedFrame)

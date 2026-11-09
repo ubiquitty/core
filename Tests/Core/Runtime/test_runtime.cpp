@@ -462,7 +462,7 @@ struct HandClock {
 void settleHeldFrame(TerminalRuntime& runtime, DrainHost& host, HandClock& clock, std::uint64_t limit = Ubiquitty::Runtime::readQuiescenceMicroseconds)
 {
     const std::uint64_t end = clock.nowMicroseconds + limit;
-    while (const std::optional<std::uint64_t> due = runtime.publishHeldFrameIfDue(host)) {
+    while (const std::optional<std::uint64_t> due = runtime.publishHeldFrameIfDue(host, TerminalRuntime::HeldFrameWriter::Stopped)) {
         if (clock.nowMicroseconds + *due > end)
             return;
         clock.nowMicroseconds += std::max<std::uint64_t>(*due, 1);
@@ -5327,7 +5327,7 @@ TEST(aSingleThreadedFrontendPaintsADrainOnceAndNeverInsideABlock)
         CountingDrainHost host;
         s->toRead += "\x1b[?2026hHALF";
         CHECK_MSG(drainAndPaint(rt, host, clock) == 0, "a frame inside an open block was painted");
-        const std::optional<std::uint64_t> due = rt.publishHeldFrameIfDue(host);
+        const std::optional<std::uint64_t> due = rt.publishHeldFrameIfDue(host, TerminalRuntime::HeldFrameWriter::Stopped);
         CHECK_MSG(due.has_value() && *due > 0, "a withheld paint does not wake the loop when the hold expires");
         // The rule's wait wakes the loop, so the owed paint adds none of its own
         // while the rule holds the frame: a zero would spin the loop.
@@ -5732,7 +5732,42 @@ TEST(theLocalPublishFollowsTheCoherenceRule)
     CHECK(host.reasons.size() == afterFirst + 2);
     CHECK(runtime.lastFrameClass() == FrameClass::Forced);
     CHECK(runtime.frameCount(FrameClass::Forced) == 1);
-    CHECK(!runtime.publishHeldFrameIfDue(host).has_value());
+    CHECK(!runtime.publishHeldFrameIfDue(host, TerminalRuntime::HeldFrameWriter::Stopped).has_value());
+}
+
+// A frame the rule's clock releases while bytes are still arriving is
+// captured where it is admitted: the next bite re-holds it before a render
+// can arrive. A writer that stopped leaves the grid as admitted, so the same
+// release is announced as the burst's end and the render captures it.
+TEST(aClockReleaseIsCapturedOnlyWhileTheWriterIsWriting)
+{
+    for (const auto writer : { TerminalRuntime::HeldFrameWriter::Stopped, TerminalRuntime::HeldFrameWriter::Writing }) {
+        TerminalRuntime runtime;
+        HandClock clock;
+        clock.drive(runtime);
+        runtime.init(parameters80x24());
+        auto* pipe = attachPipe(runtime);
+        REQUIRE(pipe != nullptr);
+        CountingDrainHost host;
+        pipe->toRead = "$ ";
+        REQUIRE(runtime.drainAvailable(host).caughtUp);
+        settleHeldFrame(runtime, host, clock);
+        REQUIRE(!runtime.isFrameHeld());
+        const std::size_t before = host.reasons.size();
+
+        clock.nowMicroseconds += 50'000;
+        pipe->toRead += "output\x1b[38;2;1";
+        REQUIRE(runtime.drainAvailable(host).caughtUp);
+        REQUIRE(runtime.isFrameHeld());
+        REQUIRE(host.reasons.size() == before);
+        clock.nowMicroseconds += Ubiquitty::Runtime::coherenceDeadlineMicroseconds;
+        CHECK(!runtime.publishHeldFrameIfDue(host, writer).has_value());
+        REQUIRE(host.reasons.size() == before + 1);
+        CHECK(host.reasons.back() == (writer == TerminalRuntime::HeldFrameWriter::Writing ? SyncFrameReason::ContinuingPass : SyncFrameReason::BurstEnd));
+        CHECK(runtime.lastFrameClass() == FrameClass::Forced);
+        CHECK(!runtime.isFrameHeld());
+        runtime.close();
+    }
 }
 
 // A 2026 block that opens while the rule holds a frame, and is never closed, is
@@ -5779,7 +5814,7 @@ TEST(aBlockOpenedUnderAHeldFrameExpiresOnTheRulesTimer)
         // Bounded by asks, not by time: the budget is one second, and every
         // ask sleeps at least as long as the rule says.
         for (int ask = 0; ask < 8 && runtime.isFrameHeld(); ++ask) {
-            const std::optional<std::uint64_t> due = runtime.publishHeldFrameIfDue(host);
+            const std::optional<std::uint64_t> due = runtime.publishHeldFrameIfDue(host, TerminalRuntime::HeldFrameWriter::Stopped);
             if (!due)
                 break;
             clock.nowMicroseconds += *due;
@@ -5789,7 +5824,7 @@ TEST(aBlockOpenedUnderAHeldFrameExpiresOnTheRulesTimer)
         unsetenv("UBIQUITTY_FAKE_TICKS");
         CHECK_MSG(!runtime.isFrameHeld(), isFed ? "a fed block never expired under a held frame" : "a drained block never expired under a held frame");
         CHECK(host.reasons.size() == before + 1);
-        CHECK(!runtime.publishHeldFrameIfDue(host).has_value());
+        CHECK(!runtime.publishHeldFrameIfDue(host, TerminalRuntime::HeldFrameWriter::Stopped).has_value());
         runtime.close();
     };
     expiresOnTheTimer(false);
@@ -5872,7 +5907,7 @@ TEST(theRuleIsPacedToTheHostsFrameInterval)
     clock.nowMicroseconds += 100;
     pipe->toRead += "x";
     REQUIRE(runtime.drainAvailable(host).caughtUp);
-    const std::optional<std::uint64_t> due = runtime.publishHeldFrameIfDue(host);
+    const std::optional<std::uint64_t> due = runtime.publishHeldFrameIfDue(host, TerminalRuntime::HeldFrameWriter::Stopped);
     REQUIRE(due.has_value());
     CHECK(*due == taken + 8'000 - clock.nowMicroseconds);
     CHECK(host.reasons.size() == before);
@@ -5949,6 +5984,85 @@ struct TimedDrainHost final : CountingDrainHost {
 
 } // namespace
 
+namespace {
+
+// Runs `query` while another thread holds the session's model lock, and says
+// whether it returned before that thread let go.
+template<typename Query>
+bool completesWhileTheModelIsHeld(TerminalSession& session, Query query)
+{
+    std::binary_semaphore isHeld(0);
+    std::binary_semaphore isAnswered(0);
+    bool didAnswerWhileHeld = false;
+    std::thread holder([&] {
+        session.lockForRead();
+        isHeld.release();
+        didAnswerWhileHeld = isAnswered.try_acquire_for(std::chrono::seconds(2));
+        session.unlockForRead();
+    });
+    isHeld.acquire();
+    query();
+    isAnswered.release();
+    holder.join();
+    return didAnswerWhileHeld;
+}
+
+} // namespace
+
+TEST(aHoldBudgetWithNoBlockOpenDoesNotWaitForTheModel)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(4, 20);
+    CHECK(!session->readSnapshot().syncHoldActive);
+    std::uint32_t ticks = 1;
+    CHECK(completesWhileTheModelIsHeld(*session, [&] { ticks = session->presentationHoldTicksRemaining(Ubiquitty::Ticks(100)); }));
+    CHECK_EQ(ticks, 0u);
+}
+
+// The block's expiry is published under the lock that expired it, so the
+// lock-free withhold that follows stops reading the block as open.
+TEST(aBlockTheWithholdExpiresIsPublishedClosed)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(4, 20);
+    constexpr std::string_view open = "\033[?2026h";
+    session->feedBytes({ open.data(), open.size() });
+    CHECK(session->readSnapshot().syncHoldActive);
+    CHECK(session->shouldWithholdFrame(Ubiquitty::Ticks(100)));
+    CHECK(session->presentationHoldTicksRemaining(Ubiquitty::Ticks(130)) > 0u);
+    CHECK(!session->shouldWithholdFrame(Ubiquitty::Ticks(161)));
+    CHECK(!session->readSnapshot().syncHoldActive);
+    std::uint32_t ticks = 1;
+    CHECK(completesWhileTheModelIsHeld(*session, [&] { ticks = session->presentationHoldTicksRemaining(Ubiquitty::Ticks(161)); }));
+    CHECK_EQ(ticks, 0u);
+}
+
+// An adopted terminal is parsed by its owner, whose drain never publishes the
+// adopting session's snapshot: a block the owner opens after the adoption is
+// visible only in the model.
+TEST(anAdoptedTerminalsBlockIsReadFromItsModel)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(4, 20);
+    Ubiquitty::Terminal external;
+    Ubiquitty::resize(external, 4, 20);
+    Ubiquitty::ModelLock externalLock;
+    session->adoptExternalTerminal(&external, reinterpret_cast<std::uintptr_t>(&externalLock));
+    {
+        const std::lock_guard hold(externalLock);
+        Ubiquitty::processBytes(&external, "\033[?2026h");
+    }
+    CHECK(!session->readSnapshot().syncHoldActive);
+    CHECK(session->shouldWithholdFrame(Ubiquitty::Ticks(100)));
+    CHECK(session->presentationHoldTicksRemaining(Ubiquitty::Ticks(130)) > 0u);
+    CHECK(!session->shouldWithholdFrame(Ubiquitty::Ticks(161)));
+    CHECK_EQ(session->presentationHoldTicksRemaining(Ubiquitty::Ticks(161)), 0u);
+    session->adoptExternalTerminal(nullptr, 0);
+}
+
 TEST(aTimedDrainPublishesContinuingInputWithoutClaimingQuiet)
 {
     TerminalRuntime runtime;
@@ -5976,9 +6090,25 @@ TEST(aTimedDrainPublishesContinuingInputWithoutClaimingQuiet)
     CHECK_EQ(host.frames, framesBefore + 1);
     CHECK(host.reasons.back() == SyncFrameReason::ContinuingPass);
     CHECK(runtime.lastFrameClass() == FrameClass::Flood);
-    CHECK(!runtime.isDrainSaturated());
+    CHECK(runtime.isDrainSaturated());
     CHECK_EQ(host.locks, host.unlocks);
     CHECK(host.didUnlockHeldFrame);
+
+    // The next pass's first bite holds the frame again; a saturated drain is
+    // presented from its admitted captures rather than withheld behind it.
+    host.lockModel();
+    runtime.noteDrainInput();
+    host.unlockModel();
+    CHECK(runtime.isFrameHeld());
+    CHECK(runtime.isDrainSaturated());
+
+    // The writer pauses: the pass that finds the stream empty ends the flood.
+    host.biteMicroseconds = 0;
+    bool didCatchUp = false;
+    for (int pass = 0; pass < 8 && !didCatchUp; ++pass)
+        didCatchUp = runtime.drainAvailable(host).caughtUp;
+    CHECK(didCatchUp);
+    CHECK(!runtime.isDrainSaturated());
 }
 
 TEST(onlyAnElapsedPassBudgetReleasesAnIncompleteCommand)
@@ -6002,8 +6132,8 @@ TEST(onlyAnElapsedPassBudgetReleasesAnIncompleteCommand)
         host.unlockModel();
         const auto outcome = runtime.finishExternalDrainPass(host, static_cast<int>(prefix.size()), end);
         CHECK(!outcome.caughtUp && !outcome.reachedEnd);
-        CHECK(!runtime.isDrainSaturated());
-        const auto due = runtime.publishHeldFrameIfDue(host);
+        CHECK(runtime.isDrainSaturated() == (end == DrainPassEnd::TimeBudget));
+        const auto due = runtime.publishHeldFrameIfDue(host, TerminalRuntime::HeldFrameWriter::Stopped);
         if (end == DrainPassEnd::TimeBudget) {
             CHECK(!due);
             CHECK_EQ(host.frames, framesBefore + 1);

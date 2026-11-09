@@ -894,10 +894,12 @@ void TerminalRuntime::finishDrainPass(DrainHost& host, DrainOutcome& outcome)
         m_coherence.noteDrainPass(*m_term, coherenceNow(), passEnd);
         m_isFrameHeld.store(m_coherence.isDirty(), std::memory_order_release);
     }
-    // A stream that ends on a full pass has no next pass to clear this, and a
-    // render side reading it as saturated would wait for a capture that never
-    // comes.
-    m_isDrainSaturated.store(isSaturatedPass && !outcome.reachedEnd, std::memory_order_relaxed);
+    // A pass that spent its frame interval is the flood as surely as one that
+    // filled its capacity: either way the writer is ahead, and the pass's own
+    // admitted capture is the frame to present. A stream that ends on such a
+    // pass has no next pass to clear this, and a render side reading it as
+    // saturated would wait for a capture that never comes.
+    m_isDrainSaturated.store((isSaturatedPass || isTimedPass) && !outcome.reachedEnd, std::memory_order_relaxed);
     if (outcome.bytesDrained > 0 && (outcome.caughtUp || isSaturatedPass || isTimedPass || Ubiquitty::Image::placementCount(m_term.get()) > 0))
         publishSettledFrameIfCoherent(host, context);
     host.unlockModel();
@@ -916,9 +918,10 @@ void TerminalRuntime::publishSettledFrameIfCoherent(DrainHost& host, SettleConte
     }
     const bool isSaturatedPass = context == SettleContext::SaturatedPass;
     const bool isContinuingPass = context == SettleContext::ContinuingPass;
-    // Only a byte-budget pass carries the saturation flag. A timed pass
-    // captures as continuing input without claiming that its writer paused.
-    if (!isSaturatedPass)
+    const bool isCapturedWhereAdmitted = isContinuingPass || context == SettleContext::ClockInsideBurst;
+    // A pass that closed with its writer still ahead keeps the saturation
+    // flag its end set; a settle or a burst end means the writer paused.
+    if (!isSaturatedPass && !isContinuingPass)
         m_isDrainSaturated.store(false, std::memory_order_relaxed);
     if (!m_term) {
         ++m_settlePublishRefusedCount;
@@ -949,11 +952,13 @@ void TerminalRuntime::publishSettledFrameIfCoherent(DrainHost& host, SettleConte
     // announced but not captured, so the render takes it down the live path.
     // An admitted pass whose writer has not gone quiet needs a capture even
     // below capacity: its next read can reassert the hold before the render.
+    // So does a clock release inside a burst whose reader is still lifting
+    // bytes, for the same reason.
     const bool wasSyncFrame = m_didDrainSeeSyncClear;
     m_didDrainSeeSyncClear = false;
     const SyncFrameReason reason = wasSyncFrame       ? SyncFrameReason::Boundary
         : isSaturatedPass                             ? SyncFrameReason::SaturatedPass
-        : isContinuingPass                            ? SyncFrameReason::ContinuingPass
+        : isCapturedWhereAdmitted                     ? SyncFrameReason::ContinuingPass
         : context == SettleContext::BurstEnd          ? SyncFrameReason::BurstEnd
         : admission.frameClass != FrameClass::Settled ? SyncFrameReason::ContinuingPass
                                                       : SyncFrameReason::Settle;
@@ -1007,7 +1012,7 @@ void TerminalRuntime::releaseHeldFrame(DrainHost& host)
     host.unlockModel();
 }
 
-std::optional<std::uint64_t> TerminalRuntime::publishHeldFrameIfDue(DrainHost& host)
+std::optional<std::uint64_t> TerminalRuntime::publishHeldFrameIfDue(DrainHost& host, HeldFrameWriter writer)
 {
     host.lockModel();
     std::optional<std::uint64_t> due;
@@ -1020,12 +1025,18 @@ std::optional<std::uint64_t> TerminalRuntime::publishHeldFrameIfDue(DrainHost& h
         // one that has outlived its budget, and the frame is then asked for on
         // the rule's ordinary schedule.
         const Ticks ticks = PAL::monotonicTicks();
+        const bool wasSyncOutputActive = m_term->modes.syncOutput;
         static_cast<void>(Modes::SyncOutput::shouldWithholdFrame(*m_term, ticks));
+        // An expired block is published here, under the lock that expired it,
+        // so the frontend's lock-free withhold stops reading it as open.
+        if (wasSyncOutputActive && !m_term->modes.syncOutput)
+            republishSnapshot();
         due = m_coherence.microsecondsUntilAsk(*m_term, coherenceNow(), ticks);
-        // Released by the clock, not by a pass: the writer has stopped, so
-        // this is the burst's last publish.
+        // Released by the clock, not by a pass. A writer that stopped makes
+        // this the burst's last publish; one still writing re-holds the frame
+        // on its next bite, so the frame is captured here or not at all.
         if (due && *due == 0) {
-            publishSettledFrameIfCoherent(host, SettleContext::BurstEnd);
+            publishSettledFrameIfCoherent(host, writer == HeldFrameWriter::Writing ? SettleContext::ClockInsideBurst : SettleContext::BurstEnd);
             due = m_coherence.isDirty() ? m_coherence.microsecondsUntilAsk(*m_term, coherenceNow(), PAL::monotonicTicks()) : std::nullopt;
         }
     }
