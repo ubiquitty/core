@@ -759,6 +759,15 @@ SECTIONS = (
         "fail": None,
     },
     {
+        "title": 'a frontend call that waits on the parser is counted (Scripts/check-model-lock-holds.py)',
+        "kind": "gate",
+        "gate": 'check-model-lock-holds.py',
+        "command": ['python3', './Scripts/check-model-lock-holds.py'],
+        "ok": 'all',
+        "bad": 'all',
+        "fail": None,
+    },
+    {
         "title": 'the OSC payload moves one direction (Scripts/check-osc-payload-view.py)',
         "kind": "gate",
         "gate": 'check-osc-payload-view.py',

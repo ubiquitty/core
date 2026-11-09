@@ -236,6 +236,7 @@ The checks the commit hook, the pre-push gate, and CI run. `check-style.py` runs
 | [`check-method-registry.py`](check-method-registry.py) | No operation is exposed outside the registry. |
 | [`check-mirror-modules-do-not-parse.py`](check-mirror-modules-do-not-parse.py) | A mirrored Terminal has no parser. |
 | [`check-mirrored-enums.py`](check-mirrored-enums.py) | A mirrored enum numbers its enumerators explicitly. |
+| [`check-model-lock-holds.py`](check-model-lock-holds.py) | A frontend call that waits on the parser fails here. |
 | [`check-mutants.sh`](check-mutants.sh) | Would any test notice if this change were wrong? |
 | [`check-name-collisions.py`](check-name-collisions.py) | One name, two namespaces, two values. |
 | [`check-optional-bool-reads.py`](check-optional-bool-reads.py) | An `std::optional<bool>` in a boolean context answers ENGAGEMENT, not its value. |
