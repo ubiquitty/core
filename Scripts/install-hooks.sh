@@ -17,11 +17,15 @@ set -euo pipefail
 
 # The checkout holding this script, and the repository whose hooks are installed.
 # They are one tree, except where this script is ubiquitty-core's copy inside
-# another repository's Libraries/: the hooks are then that repository's, and the
-# bodies they run are found there or in the library.
+# another repository's Libraries/: the hooks are then those of the outermost
+# repository that carries it, the app where Core comes through the app's Kit,
+# and the bodies they run are found there or in the library.
 LIBRARY="$(cd "$(dirname "$0")/.." && pwd)"
-ROOT="$(git -C "$LIBRARY" rev-parse --show-superproject-working-tree 2>/dev/null)"
-[ -n "$ROOT" ] || ROOT="$LIBRARY"
+ROOT="$LIBRARY"
+while superproject="$(git -C "$ROOT" rev-parse --show-superproject-working-tree 2>/dev/null)" \
+    && [ -n "$superproject" ]; do
+    ROOT="$superproject"
+done
 DISPATCH="$LIBRARY/Scripts/hooks-dispatch"
 [ -f "$DISPATCH" ] || { echo "install-hooks: missing $DISPATCH" >&2; exit 1; }
 

@@ -50,6 +50,25 @@ def test_file(relative):
     return TEST_SOURCES.resolve_file(relative)
 
 
+# The variables that name the library checkouts. A fixture of an app script
+# binds Core through UBIQUITTY_CORE_SOURCE_DIR alone, so none of these may
+# reach it from the run that started the test.
+LIBRARY_ROOT_VARIABLES = ("UBQ_CORE_ROOT", "UBQ_KIT_ROOT", "UBIQUITTY_KIT_SOURCE_DIR")
+
+
+def carry_library_resolver(scripts):
+    """Copies the app's library resolver into a fixture's Scripts/ when the app has one.
+
+    An app script that finds its libraries by sourcing Scripts/library-scripts.sh
+    beside it needs that file beside its fixture copy.
+    """
+    try:
+        resolver = test_file("Scripts/library-scripts.sh")
+    except FileNotFoundError:
+        return
+    shutil.copyfile(resolver, scripts / "library-scripts.sh")
+
+
 class BatteryTests(unittest.TestCase):
     def test_agent_smokes_are_required_after_the_host_build(self):
         stages = list(batteries.stages("linux"))
@@ -1959,6 +1978,7 @@ class WebBuildCacheTests(unittest.TestCase):
         scripts = root / "Scripts"
         scripts.mkdir(parents=True)
         shutil.copyfile(test_file("Scripts/build-web.sh"), scripts / "build-web.sh")
+        carry_library_resolver(scripts)
         core_scripts = root / "Libraries/ubiquitty-core/Scripts"
         core_scripts.mkdir(parents=True)
         (core_scripts / "build-root.sh").write_text(': "${UBQ_BUILD_ROOT:?}"\n')
@@ -1984,6 +2004,8 @@ exit "$WEB_CONFIGURE_STATUS"
             UBIQUITTY_CORE_SOURCE_DIR=str(core_scripts.parent),
             PATH=str(tools) + os.pathsep + os.environ.get("PATH", ""),
         )
+        for name in LIBRARY_ROOT_VARIABLES:
+            environment.pop(name, None)
         return root, environment, build
 
     def test_removed_emscripten_toolchain_invalidates_only_generated_cache(self):
@@ -2025,6 +2047,7 @@ class LinuxSmokeFailFastTests(unittest.TestCase):
         source.mkdir(parents=True)
         (source / "main.cpp").write_text('\n'.join(f'if (mode == "--smoke-{name}") {{}}' for name in ("a", "b", "c")))
         shutil.copyfile(test_file("Scripts/run-linux-smokes.sh"), scripts / "run-linux-smokes.sh")
+        carry_library_resolver(scripts)
         core_scripts = root / "Libraries/ubiquitty-core/Scripts"
         core_scripts.mkdir(parents=True)
         (core_scripts / "build-root.sh").write_text(': "${UBQ_BUILD_ROOT:?}"\n')
@@ -2051,6 +2074,8 @@ echo "PASS: smoke completed"
                            SMOKE_EVENTS=str(events), SMOKE_EXIT_STATUS=status,
                            SMOKE_FAILURE_TOKEN="1" if failure_token else "0", SMOKE_TIMEOUT="9")
         environment.pop("UBQ_TEST_FAIL_FAST", None)
+        for name in LIBRARY_ROOT_VARIABLES:
+            environment.pop(name, None)
         if fail_fast is not None:
             environment["UBQ_TEST_FAIL_FAST"] = fail_fast
         checked = subprocess.run(["bash", str(scripts / "run-linux-smokes.sh"), str(binary)],
@@ -2243,6 +2268,7 @@ class UITestLaunchTests(unittest.TestCase):
         # The script and what it sources: the run's hygiene is part of what
         # launches and ends a scenario, so the fixture carries the real one.
         shutil.copyfile(test_file("Scripts/run-ui-tests.sh"), scripts / "run-ui-tests.sh")
+        carry_library_resolver(scripts)
         core_scripts = root / "Libraries/ubiquitty-core/Scripts"
         core_scripts.mkdir(parents=True)
         for name in ("test-run-hygiene.sh", "test-run-hygiene.py"):
@@ -2299,6 +2325,8 @@ printf '%s\\n' "$XDG_CONFIG_HOME" > "$UI_CONFIG"
         environment.pop("UBIQUITTY_CMAKE_EXTRA", None)
         environment.pop("UBIQUITTY_QUIC_PREFIX", None)
         environment.pop("UBIQUITTY_LINUX_HOSTS", None)
+        for name in LIBRARY_ROOT_VARIABLES:
+            environment.pop(name, None)
         return root, environment
 
     def run_ui_fixture(self, root, environment, *arguments):
@@ -2697,6 +2725,15 @@ class PythonProseTests(unittest.TestCase):
         gate = import_module("check-comment-file-references")
         self.assertIn((2, "missing-source.py"), gate.references("Scripts/fixture.py", source))
 
+    def test_a_path_through_any_library_mount_names_the_librarys_own_file(self):
+        gate = import_module("check-comment-file-references")
+        for mounted in ("Libraries/ubiquitty-core/Scripts/run-tests.sh",
+                        "Libraries/ubiquitty-kit/Scripts/run-tests.sh",
+                        "Libraries/ubiquitty-kit/Libraries/ubiquitty-core/Scripts/run-tests.sh"):
+            self.assertEqual(gate.LIBRARY_MOUNT.sub("", mounted), "Scripts/run-tests.sh", mounted)
+        for unmounted in ("Libraries/ubiquitty-core-other/Scripts/run-tests.sh", "Scripts/Libraries/ubiquitty-core/x.sh"):
+            self.assertEqual(gate.LIBRARY_MOUNT.sub("", unmounted), unmounted)
+
     def test_unicode_separator_inside_data_is_not_a_source_line_break(self):
         source = ('value = "\u2028"\n'
                   '# Source/Core/CellGrid.h\n'
@@ -2878,7 +2915,8 @@ class WorkflowScriptPathTests(unittest.TestCase):
     file and needs no flag.
     """
 
-    SCRIPT_PATH = re.compile(r"(?<![\w/.-])(?:\./)?((?:Libraries/(?:ubiquitty-core|ubiquitty-kit)/)?(?:Scripts|Tests|Tools)/[\w./-]+\.(?:sh|py|mjs))\b")
+    SCRIPT_PATH = re.compile(r"(?<![\w/.-])(?:\./)?((?:Libraries/ubiquitty-kit/Libraries/ubiquitty-core/|"
+                             r"Libraries/(?:ubiquitty-core|ubiquitty-kit)/)?(?:Scripts|Tests|Tools)/[\w./-]+\.(?:sh|py|mjs))\b")
 
     def test_every_script_a_workflow_names_exists(self):
         root = TEST_SOURCES.subject
@@ -3068,7 +3106,7 @@ class WorkflowTests(unittest.TestCase):
         jobs = {match.group(1): body[match.end():starts[index + 1].start() if index + 1 < len(starts) else len(body)]
                 for index, match in enumerate(starts)}
         self.assertEqual(set(jobs), {"preflight", "linux", "apple", "host-linux-arm64", "coverage"})
-        prefix = "Libraries/ubiquitty-core/" if TEST_SOURCES.repositories == ("app",) else ""
+        prefix = "Libraries/ubiquitty-kit/Libraries/ubiquitty-core/" if TEST_SOURCES.repositories == ("app",) else ""
         source = ' --source-root "$GITHUB_WORKSPACE"' if prefix else ""
         for platform in ("preflight", "linux", "apple"):
             job = jobs[platform]
@@ -3095,7 +3133,7 @@ class WorkflowTests(unittest.TestCase):
         if prefix:
             for job in jobs.values():
                 self.assertEqual(job.count("submodules: recursive"), job.count("uses: actions/checkout@"))
-            self.assertEqual(text.count("hashFiles('Libraries/ubiquitty-core/Scripts/fetch-quic-deps.sh')"), 2)
+            self.assertEqual(text.count(f"hashFiles('{prefix}Scripts/fetch-quic-deps.sh')"), 2)
         # A sweep that stands down for a failed tip fails too, so the failure
         # is what the next sweep reads back from it.
         self.assertRegex(jobs["preflight"], r"name: Keep this tip's failed verdict\n"
@@ -3155,8 +3193,8 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name).resolve()
         self.app = self.root / "app with spaces"
-        self.core = self.app / "Libraries/ubiquitty-core"
         self.kit = self.app / "Libraries/ubiquitty-kit"
+        self.core = self.kit / "Libraries/ubiquitty-core"
         for path, role in ((self.app, "app"), (self.core, "core"), (self.kit, "kit")):
             (path / "Scripts").mkdir(parents=True)
             (path / "CMakeLists.txt").write_text("# source composition fixture\n")
@@ -3531,10 +3569,11 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         self.assertEqual(context.subject, renamed)
         self.assertIsNone(context.kit)
         renamed.rename(self.core)
+        # Core promotes to the Kit that carries it, and the Kit to no consumer
+        # but an app.
         (self.app / "Scripts/repository.txt").write_text("core\n")
         context = source_roots(start=self.core / "Scripts", environment={})
-        self.assertEqual(context.subject, self.core)
-        self.assertIsNone(context.kit)
+        self.assertEqual((context.subject, context.core, context.kit), (self.kit, self.core, self.kit))
 
     def test_uninitialized_app_dependency_refuses_instead_of_falling_back(self):
         (self.core / "CMakeLists.txt").unlink()

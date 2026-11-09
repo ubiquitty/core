@@ -239,13 +239,14 @@ endif()
 #   - condition: The generator expression the option is added under.
 function(ubiquitty_add_path_map option condition)
     # Every source checkout maps to ".", once per distinct root: the project's
-    # own tree first, then Core's and the Kit's. A checkout nested inside the
-    # project's tree is matched by both maps. Clang's __FILE__ takes the longer
-    # prefix whatever the order; GCC, and clang's debug information, take the
-    # map named last. With the project's tree named first, the nested
-    # checkout's files map as its own under every one of those rules, as the
-    # profile keys them.
-    set(sourceRoots "${CMAKE_SOURCE_DIR}" "${UBIQUITTY_CORE_SOURCE_DIR}" "${UBIQUITTY_KIT_SOURCE_DIR}")
+    # own tree first, then the Kit's, then Core's. A checkout nested inside
+    # another is matched by both maps. Clang's __FILE__ takes the longer prefix
+    # whatever the order; GCC, and clang's debug information, take the map named
+    # last. Core's checkout may sit inside the Kit's, as the Kit's submodule, and
+    # either inside the project's tree, never the reverse, so each checkout is
+    # named after every checkout that holds it and its files map as its own
+    # under every one of those rules, as the profile keys them.
+    set(sourceRoots "${CMAKE_SOURCE_DIR}" "${UBIQUITTY_KIT_SOURCE_DIR}" "${UBIQUITTY_CORE_SOURCE_DIR}")
     list(REMOVE_DUPLICATES sourceRoots)
     list(TRANSFORM sourceRoots APPEND "=." OUTPUT_VARIABLE sourcePaths)
     # An empty prefix would match every path, so each is named only when set.

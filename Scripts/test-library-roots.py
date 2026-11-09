@@ -4,12 +4,13 @@
 
 """test-library-roots.py — a repository that carries ubiquitty-core runs its own workflow from it.
 
-ubiquitty-kit and the app hold this repository's Scripts/ under
-Libraries/ubiquitty-core. The shared machinery has to judge the repository that
-carries it and not the library: the roots it resolves, the section tables
-check-style.py loads, the hooks git dispatches and the push gates it sources.
-This builds a small consumer, with the library's Scripts/ as a submodule, and
-runs each of them from there.
+ubiquitty-kit holds this repository's Scripts/ under Libraries/ubiquitty-core,
+and the app under the Kit's, Libraries/ubiquitty-kit/Libraries/ubiquitty-core.
+The shared machinery has to judge the repository that carries it and not the
+library: the roots it resolves, the section tables check-style.py loads, the
+hooks git dispatches and the push gates it sources. This builds a small
+consumer, with the library's Scripts/ as a submodule, and an app that carries
+the library through a Kit, and runs each of them from there.
 
     python3 Scripts/test-library-roots.py
 """
@@ -198,6 +199,106 @@ class LibraryRootsTests(unittest.TestCase):
         self.assertIn("1 gate(s) answer for a repository this checkout does not hold", output)
         self.assertIn("core only (core)", output)
         self.assertIn("1 passed", output)
+
+
+class CoreThroughKitTests(unittest.TestCase):
+    """An app that carries the Kit, which carries the library: the app's Core is the Kit's."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temporary = tempfile.TemporaryDirectory(prefix="ubq-core-through-kit-")
+        base = Path(cls.temporary.name)
+        checkouts = {}
+        for role in ("core", "kit", "app"):
+            checkout = base / role
+            (checkout / "Scripts").mkdir(parents=True)
+            (checkout / "Scripts" / "repository.txt").write_text(role + "\n", encoding="utf-8")
+            (checkout / "CMakeLists.txt").write_text("# " + role + " fixture\n", encoding="utf-8")
+            checkouts[role] = checkout
+        for name in ("ubq_roots.py", "ubq-roots.sh", "hooks-dispatch", "install-hooks.sh"):
+            shutil.copy2(LIBRARY / "Scripts" / name, checkouts["core"] / "Scripts" / name)
+        shutil.copytree(LIBRARY / "Scripts" / "hooks", checkouts["core"] / "Scripts" / "hooks",
+                        ignore=shutil.ignore_patterns("pre-commit-parts"))
+        (checkouts["core"] / "Source").mkdir()
+        (checkouts["core"] / "Source" / "Moved.txt").write_text("first\n", encoding="utf-8")
+        for role, carried, mount in (("core", None, None), ("kit", "core", "Libraries/ubiquitty-core"),
+                                     ("app", "kit", "Libraries/ubiquitty-kit")):
+            checkout = checkouts[role]
+            git(checkout, "init", "-q", "--initial-branch=main")
+            if carried:
+                git(checkout, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+                    str(checkouts[carried]), mount)
+                git(checkout, "-c", "protocol.file.allow=always", "submodule", "update", "-q",
+                    "--init", "--recursive")
+            git(checkout, "add", "-A")
+            git(checkout, "commit", "-q", "-m", role, "--no-verify")
+        cls.app = checkouts["app"]
+        cls.kit = cls.app / "Libraries" / "ubiquitty-kit"
+        cls.core = cls.kit / "Libraries" / "ubiquitty-core"
+        cls.scripts = cls.core / "Scripts"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temporary.cleanup()
+
+    def run_in_app(self, *command, environment=None):
+        merged = {name: value for name, value in os.environ.items()
+                  if name not in ("UBQ_TESTS_ROOT", "UBQ_CORE_ROOT", "UBQ_KIT_ROOT", "UBIQUITTY_CORE_SOURCE_DIR",
+                                  "UBIQUITTY_KIT_SOURCE_DIR", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")}
+        merged.update(environment or {})
+        return subprocess.run(command, cwd=self.app, env=merged, capture_output=True, text=True)
+
+    def assert_roots(self):
+        for query, expected in (("subject", self.app), ("core", self.core), ("kit", self.kit)):
+            finished = self.run_in_app(sys.executable, str(self.scripts / "ubq_roots.py"), query)
+            self.assertEqual(finished.stdout.strip(), str(expected.resolve()), finished.stderr)
+        shell = self.run_in_app("bash", "-c", '. "$1/ubq-roots.sh" && printf "%s|%s" "$UBQ_CORE_ROOT" "$UBQ_KIT_ROOT"',
+                                "_", str(self.scripts))
+        self.assertEqual(shell.stdout, "%s|%s" % (self.core.resolve(), self.kit.resolve()), shell.stderr)
+        context = self.run_in_app(sys.executable, str(self.scripts / "ubq_roots.py"), "shell-context")
+        self.assertEqual(context.returncode, 0, context.stderr)
+        self.assertIn("CORE_ROOT=" + str(self.core.resolve()), context.stdout.splitlines())
+
+    def test_the_cores_root_is_the_kits_core(self):
+        self.assert_roots()
+
+    def test_a_core_directory_beside_the_kit_does_not_win(self):
+        # A clone that carried Core directly keeps that directory, untracked,
+        # after the submodule is gone; the Kit's Core stays the one read.
+        stale = self.app / "Libraries" / "ubiquitty-core"
+        (stale / "Scripts").mkdir(parents=True)
+        (stale / "Scripts" / "repository.txt").write_text("core\n", encoding="utf-8")
+        (stale / "CMakeLists.txt").write_text("# stale\n", encoding="utf-8")
+        try:
+            self.assert_roots()
+        finally:
+            shutil.rmtree(stale)
+
+    def test_hooks_install_for_the_app_and_find_the_kits_core(self):
+        finished = self.run_in_app("bash", str(self.scripts / "install-hooks.sh"))
+        self.assertEqual(finished.returncode, 0, finished.stdout + finished.stderr)
+        installed = self.app / ".git" / "hooks" / "pre-push"
+        self.assertTrue(installed.is_file(), finished.stdout)
+        # The dispatcher fails closed when it finds no body, so a pass is the
+        # Kit's Core body running and taking its bypass.
+        pushed = self.run_in_app("bash", str(installed), "origin", "https://example.invalid/app.git",
+                                 environment={"UBIQUITTY_SKIP_PRE_PUSH_HOOK": "1"})
+        self.assertEqual(pushed.returncode, 0, pushed.stdout + pushed.stderr)
+
+    def test_a_kit_pin_that_moves_core_names_cores_files(self):
+        before = git(self.app, "rev-parse", "HEAD").stdout.strip()
+        (self.core / "Source" / "Moved.txt").write_text("second\n", encoding="utf-8")
+        git(self.core, "commit", "-q", "-am", "Move Core", "--no-verify")
+        git(self.kit, "commit", "-q", "-am", "Move the Kit's Core", "--no-verify")
+        git(self.app, "commit", "-q", "-am", "Move the app's Kit", "--no-verify")
+        git(self.app, "update-ref", "refs/remotes/origin/main", before)
+        finished = self.run_in_app(
+            sys.executable, "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); import ubq_roots; "
+            "print('\\n'.join(ubq_roots.changed_paths('origin/main', mounted=True)))", str(self.scripts))
+        self.assertEqual(finished.returncode, 0, finished.stderr)
+        self.assertEqual(sorted(finished.stdout.split()),
+                         ["Libraries/ubiquitty-kit/Libraries/ubiquitty-core/Source/Moved.txt", "Source/Moved.txt"])
 
 
 if __name__ == "__main__":

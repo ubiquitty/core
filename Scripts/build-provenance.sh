@@ -22,12 +22,14 @@
 
 # _build_provenance_libraries <repository-root>
 # Prints the checkouts of the libraries a repository carries, one per line: the
-# submodules under Libraries/, or where UBQ_CORE_ROOT and UBQ_KIT_ROOT name them.
-# A repository's own git sees a submodule as the commit it pins, so the bytes of
-# a library are fingerprinted in its own checkout.
+# submodules under Libraries/ (Core inside the Kit where the repository carries
+# the Kit, as Scripts/ubq-roots.sh finds it), or where UBQ_CORE_ROOT and
+# UBQ_KIT_ROOT name them. A repository's own git sees a submodule as the commit
+# it pins, so the bytes of a library are fingerprinted in its own checkout.
 _build_provenance_libraries() {
-    local repositoryRoot="$1" library
-    for library in "${UBQ_CORE_ROOT:-$repositoryRoot/Libraries/ubiquitty-core}" \
+    local repositoryRoot="$1" library core="$1/Libraries/ubiquitty-core"
+    [ -e "$repositoryRoot/Libraries/ubiquitty-kit" ] && core="$repositoryRoot/Libraries/ubiquitty-kit/Libraries/ubiquitty-core"
+    for library in "${UBQ_CORE_ROOT:-$core}" \
                    "${UBQ_KIT_ROOT:-$repositoryRoot/Libraries/ubiquitty-kit}"; do
         [ -e "$library/.git" ] && [ "$library" != "$repositoryRoot" ] && printf '%s\n' "$library"
     done
