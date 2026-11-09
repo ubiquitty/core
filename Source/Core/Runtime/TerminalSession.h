@@ -5109,12 +5109,29 @@ public:
         return true;
     }
 
-    /// Retunes the sync-publish throttle to the live presentation rate: a
-    /// boundary inside the throttle window publishes no capture, so the window
-    /// must be shorter than the link's frame.
+    /// Retunes the sync-publish throttle and the delivery throttle to the live
+    /// presentation rate.
     ///
-    /// - Parameter seconds: The presentation refresh interval; non-positive clears the throttle.
-    void setSyncPublishRefreshSeconds(double seconds) { m_host.setPublishMinInterval(seconds > 0.0 ? seconds * 0.5 : 0.0); }
+    /// A boundary inside the publish window publishes no capture, so the
+    /// window must be shorter than the link's frame. Each coalesced delivery
+    /// is a hop to the frontend's thread, so it rides the same display edge
+    /// with the same half-frame headroom: a delivery the display cannot show
+    /// is that thread's work for nothing.
+    ///
+    /// - Parameter seconds: The presentation refresh interval; non-positive
+    ///   returns both throttles to their floors.
+    void setSyncPublishRefreshSeconds(double seconds)
+    {
+        const double interval = seconds > 0.0 ? seconds * 0.5 : 0.0;
+        m_host.setPublishMinInterval(interval);
+        m_loop.setDeliverMinInterval(interval);
+    }
+
+    /// The least time between two coalesced deliveries, in microseconds.
+    ///
+    /// - Returns: The interval ``setSyncPublishRefreshSeconds`` set, or the
+    ///   floor when none is.
+    [[nodiscard]] std::uint32_t deliverMinIntervalMicroseconds() const { return m_loop.deliverMinIntervalMicroseconds(); }
 
     /// Whether a history rewrap is owed at the current width.
     ///
