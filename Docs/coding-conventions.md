@@ -433,6 +433,19 @@ explicit sharing of writable data"]. Allowed:
 - **Terminal model access has one synchronization owner.** The parser and
   model do not assume a UI thread or dispatcher. Runtime and frontend adapters
   coordinate threads and hold the required lock before model access.
+- **The model lock is held through `ModelLockHold`, and a frontend's per-tick
+  calls do not take it.** Clang's thread-safety analysis
+  (`UBIQUITTY_OWNERSHIP_ANALYSIS`, `-Werror=thread-safety`) proves model state
+  is touched only under the lock: the model and the members it guards carry
+  `UBIQUITTY_GUARDED_BY(modelLockRole)`, and functions that read it
+  `UBIQUITTY_REQUIRES(modelLockRole)`. A `std::scoped_lock` over a `ModelLock`
+  grants the analysis nothing, so a function holding one cannot read the model.
+  A per-tick call a frontend makes is `UBIQUITTY_NONBLOCKING`, which Clang's
+  `-Wfunction-effects` proves takes no lock and waits on nothing, or is listed
+  in `Scripts/frame-path-blocking.txt` with the wait it still makes.
+  `Scripts/check-model-lock-holds.py` holds the frontend acquisitions, that
+  list, the plain std locks and the analysis escapes to ledger budgets that only
+  fall, and refuses a frame decision that branches on a selection.
 - **Encapsulation must not add a lock or atomic-RMW to a per-cell / per-frame /
   per-byte hot path** without a measured justification. Prefer thread-local or
   per-instance ownership over a shared-and-locked singleton. When a lock is
