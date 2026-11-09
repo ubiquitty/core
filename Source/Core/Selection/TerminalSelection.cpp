@@ -1782,11 +1782,16 @@ namespace {
 // The rows a held viewport moves by since the session last judged output,
 // and the baseline the next transition is judged against. Facts from another
 // epoch are not comparable: the rows were renumbered, and the offset across
-// that is the resize's own business.
+// that is the resize's own business. Within an epoch the baseline never moves
+// backwards: facts a drain published before the live model the last
+// transition read are older than that baseline, and taking them as the new
+// one would count the rows between the two a second time.
 [[nodiscard]] int viewportRowsAppended(Session& session, const Screen::HistoryFacts& history) noexcept
 {
     const bool isComparable = session.hasViewportObservation
         && session.viewportObservedHistory.absoluteRowEpoch == history.absoluteRowEpoch;
+    if (isComparable && history.appendedRows < session.viewportObservedHistory.appendedRows)
+        return 0;
     const std::int64_t rows = isComparable ? history.appendedRows - session.viewportObservedHistory.appendedRows : 0;
     session.viewportObservedHistory = history;
     session.hasViewportObservation = true;
@@ -1930,8 +1935,15 @@ OutputUpdate updateAfterOutput(Session& session, Terminal& terminal, int viewOff
 OutputUpdate updateAfterOutput(Session& session, Terminal& terminal, ModelLock& modelLock, int viewOffset, const Screen::HistoryFacts& history) noexcept
 {
     if (needsOutputEvaluation(session) || session.usesLogicalViewport) {
-        const std::scoped_lock hold(modelLock);
-        return updateAfterOutput(session, terminal, viewOffset);
+        const std::unique_lock hold(modelLock, std::try_to_lock);
+        if (hold.owns_lock())
+            return updateAfterOutput(session, terminal, viewOffset);
+        // The rebase and the gesture's re-evaluation read the terminal, and
+        // both judge its state rather than this transition's growth, so the
+        // next call that takes the lock does them in full.
+        OutputUpdate update;
+        update.viewport = viewportAfterOutput(session, viewOffset, Input::OutputSnapPolicy::Indeterminate, history);
+        return update;
     }
     Input::OutputSnapPolicy snapPolicy = Input::OutputSnapPolicy::Indeterminate;
     if (Input::isSnapPolicyConsulted(Input::SelectionPresence::Absent, viewOffset)) {

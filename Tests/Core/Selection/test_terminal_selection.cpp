@@ -26,12 +26,15 @@
 #include "TerminalFixture.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <semaphore>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -2206,6 +2209,77 @@ TEST(aHeldViewportStaysOnItsRowsOnceHistoryIsFull)
     CHECK_EQ(Screen::scrollbackCount(&t), 4);
     CHECK_MSG(viewOffset == 3, "the held offset moves by the rows appended (2), not by the rows retained (1)");
     CHECK_EQ(Screen::scrollbackCount(&t) - viewOffset, viewedAbsoluteRow - 1);
+}
+
+// Facts a drain published before the live model an earlier transition read
+// are older than that transition's baseline. Judging a view by them must move
+// nothing and keep the baseline, or the next live transition counts the rows
+// between the two again and the held view slides past its text.
+TEST(olderPublishedFactsNeitherMoveAHeldViewNorRewindItsBaseline)
+{
+    Terminal t;
+    hardReset(t);
+    resize(t, 3, 12);
+    for (int line = 0; line < 20; ++line)
+        feed(t, "line\r\n");
+    Selection::Session session = freshSession();
+    int viewOffset = 5;
+    (void)Selection::updateAfterOutput(session, t, viewOffset, Input::OutputSnapPolicy::HoldViewedRows);
+    const Screen::HistoryFacts published = Screen::historyFacts(&t);
+
+    feed(t, "a\r\nb\r\nc\r\n");
+    viewOffset = static_cast<int>(Selection::updateAfterOutput(session, t, viewOffset, Input::OutputSnapPolicy::HoldViewedRows).viewport.viewOffset);
+    CHECK_EQ(viewOffset, 8);
+
+    const auto stale = Selection::viewportAfterOutput(session, viewOffset, Input::OutputSnapPolicy::Indeterminate, published);
+    CHECK(stale.hold == Input::ViewportHold::Hold);
+    CHECK_EQ(stale.viewOffset, 8);
+
+    feed(t, "d\r\ne\r\n");
+    const auto next = Selection::updateAfterOutput(session, t, viewOffset, Input::OutputSnapPolicy::HoldViewedRows);
+    CHECK_MSG(next.viewport.viewOffset == 10, "the two rows appended since the live baseline, not the five since the stale facts");
+}
+
+// The per-drain update never waits for a busy model: it holds the view from the
+// published facts and leaves the open gesture where it was, and the next call
+// that takes the lock moves the gesture's head to the stationary pointer.
+TEST(aBusyModelDefersTheGestureToTheNextUpdateThatTakesTheLock)
+{
+    Terminal t;
+    hardReset(t);
+    resize(t, 4, 12);
+    feed(t, "anchor\r\nmiddle\r\npointer");
+    Selection::Session session = freshSession();
+    Selection::beginGesture(session, t, /*visibleRow*/ 0, /*column*/ 0, /*clickCount*/ 1, 0, {});
+    Selection::dragGesture(session, t, /*visibleRow*/ 2, /*column*/ 6, 0);
+    ModelLock modelLock;
+    (void)Selection::updateAfterOutput(session, t, modelLock, 0, Screen::historyFacts(&t));
+
+    feed(t, "\r\nnew\r\nmore");
+    const Screen::HistoryFacts published = Screen::historyFacts(&t);
+    std::binary_semaphore isHeld(0);
+    std::binary_semaphore isAnswered(0);
+    bool didAnswerWhileHeld = false;
+    std::thread holder([&] {
+        const std::lock_guard hold(modelLock);
+        isHeld.release();
+        didAnswerWhileHeld = isAnswered.try_acquire_for(std::chrono::seconds(5));
+    });
+    isHeld.acquire();
+    const Selection::OutputUpdate deferred = Selection::updateAfterOutput(session, t, modelLock, 0, published);
+    isAnswered.release();
+    holder.join();
+    CHECK(didAnswerWhileHeld);
+    CHECK(deferred.viewport.hold == Input::ViewportHold::Follow);
+    CHECK_EQ(deferred.viewport.viewOffset, 0);
+    CHECK(!deferred.didChangeSelection);
+
+    const Selection::OutputUpdate taken = Selection::updateAfterOutput(session, t, modelLock, 0, published);
+    CHECK(taken.didChangeSelection);
+    const std::string selected = Selection::selectedText(session, t);
+    CHECK_MSG(selected.find("anchor") != std::string::npos, "the press remains attached to its buffer character");
+    CHECK_MSG(selected.find("new") != std::string::npos, "the head reaches the stationary pointer once the lock is taken");
+    CHECK_MSG(selected.find("more") == std::string::npos, "the head stops at the pointer row");
 }
 
 TEST(thePressThatActivatesTheWindowOpensNothingAndKeepsTheSelection)

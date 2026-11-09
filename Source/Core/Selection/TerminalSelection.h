@@ -330,7 +330,9 @@ void selectBetweenPoints(Session& session, Terminal& terminal, double fromX, dou
 /// snapshot the drain published without the model lock. The session keeps
 /// the facts it last judged: the rows appended since are what a held view
 /// moves by, and a changed epoch (a resize, a clear) starts the count over
-/// rather than reading a rebuilt history as growth. The first transition
+/// rather than reading a rebuilt history as growth. Within an epoch the
+/// baseline only advances: facts older than the last ones judged move
+/// nothing and leave the baseline where it was. The first transition
 /// establishes the baseline and moves nothing.
 ///
 /// - Parameters:
@@ -374,15 +376,18 @@ void selectBetweenPoints(Session& session, Terminal& terminal, double fromX, dou
 /// - Returns: The viewport decision and whether the selection changed.
 [[nodiscard]] OutputUpdate updateAfterOutput(Session& session, Terminal& terminal, int viewOffset) noexcept;
 
-/// Applies one output transition, taking the model lock only as far as the
-/// transition needs it.
+/// Applies one output transition without ever waiting for the model lock.
 ///
-/// The per-drain path of every threaded frontend: with nothing selected and
-/// no gesture open the verdict comes from the published `history` without
-/// the lock, the mode read under a try-lock so a drain that finds the lock
-/// busy holds rather than stalls (Indeterminate holds, the non-disruptive
-/// answer for a reader part-way up their history). A selection or an open
-/// gesture takes the lock and judges the terminal itself.
+/// The per-drain path of every threaded frontend, which a flood's parser
+/// holds the lock against: with nothing selected and no gesture open the
+/// verdict comes from the published `history`, the mode read under a
+/// try-lock so a drain that finds the lock busy holds rather than stalls
+/// (Indeterminate holds, the non-disruptive answer for a reader part-way up
+/// their history). A selection, an open gesture or a logical viewport is
+/// judged against the terminal itself when the try takes the lock. When it
+/// does not, the viewport is judged from `history` the same way, and the
+/// selection's rebase and the open gesture's re-evaluation wait for the next
+/// call that takes the lock; neither depends on the growth in between.
 ///
 /// - Parameters:
 ///   - session: The view's selection session.
