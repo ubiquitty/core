@@ -369,7 +369,7 @@ private:
 struct PaneView {
     TerminalSession* session = nullptr;
     Ubiquitty::Terminal* terminal = nullptr;
-    std::mutex* lock = nullptr;
+    Ubiquitty::ModelLock* lock = nullptr;
 };
 
 /// What a pane's model shows, as `capture-pane` would print it.
@@ -511,7 +511,7 @@ private:
         view->adoptExternalTerminal(terminal, facts.lockAddress);
         view->routeInputViaTmuxAddresses(facts.inputClientAddress, facts.inputStreamAddress, paneID);
         view->routeResizeThroughHostedSource(m_primary->hostedWindowSourceAddress(), paneID);
-        m_panes[paneID] = { .session = view, .terminal = terminal, .lock = reinterpret_cast<std::mutex*>(facts.lockAddress) };
+        m_panes[paneID] = { .session = view, .terminal = terminal, .lock = reinterpret_cast<Ubiquitty::ModelLock*>(facts.lockAddress) };
         return true;
     }
 
@@ -911,7 +911,7 @@ std::map<int, Rows> replay(const std::string& stream, const std::function<std::s
     Discarding channel;
     auto primary = std::make_unique<Ubiquitty::Terminal>();
     Ubiquitty::resize(*primary, 24, 80);
-    std::mutex lock;
+    Ubiquitty::ModelLock lock;
     HostedWindowSeams seams;
     seams.primary = primary.get();
     seams.primaryLock = &lock;
@@ -948,7 +948,7 @@ std::map<int, Rows> replay(const std::string& stream, const std::function<std::s
             const HostedPaneFacts facts = host->paneFacts(paneID);
             if (!facts.terminalAddress)
                 continue;
-            PaneView view { .session = nullptr, .terminal = reinterpret_cast<Ubiquitty::Terminal*>(facts.terminalAddress), .lock = reinterpret_cast<std::mutex*>(facts.lockAddress) };
+            PaneView view { .session = nullptr, .terminal = reinterpret_cast<Ubiquitty::Terminal*>(facts.terminalAddress), .lock = reinterpret_cast<Ubiquitty::ModelLock*>(facts.lockAddress) };
             screens[paneID] = modelRows(view);
         }
     }

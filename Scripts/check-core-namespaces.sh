@@ -84,6 +84,7 @@ Source/Core/TermPalette.h             the live colour palette — 35 consumers, 
 Source/Core/CommandLine.h             argv splitting; Triggers is L1 and a Runtime home would be L2
 Source/Core/SGR.h                     byte-hot parse path; a namespace move renames the mangled symbol
 Source/Core/LineStore.h               the scrollback the grid spills into
+Source/Core/ModelLock.h               the lock every reader and the drain take over the model; Tmux and Search (L1) bracket with it as Runtime (L2) does
 Source/Core/LineAttributeView.h       DECDWL/DECDHL per row
 Source/Core/LineWrappedView.h         soft-wrap joins per row
 Source/Core/RowMeta.h                 per-row model state

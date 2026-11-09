@@ -25,6 +25,7 @@
 // without the model lock.
 
 #include "Core/LineStore.h"
+#include "Core/ModelLock.h"
 #include "Core/Screen/ScrollSearch.h"
 #include "Core/Search/HistoryScan.h"
 #include "Core/Search/LineCounts.h"
@@ -62,7 +63,7 @@ public:
     ///   - terminal: The terminal; outlives the controller's attachment.
     ///   - modelLock: The lock every access to the terminal holds.
     /// - Returns: The controller, or null when the allocation was refused.
-    [[nodiscard]] static std::shared_ptr<SearchController> make(Terminal& terminal, std::mutex& modelLock);
+    [[nodiscard]] static std::shared_ptr<SearchController> make(Terminal& terminal, ModelLock& modelLock);
 
     /// Makes a controller subscribed to a particular executor's wake-up.
     /// - Parameters:
@@ -70,7 +71,7 @@ public:
     ///   - modelLock: Its lock.
     ///   - executor: The executor that will schedule this controller.
     /// - Returns: The attached controller.
-    [[nodiscard]] static std::shared_ptr<SearchController> make(Terminal& terminal, std::mutex& modelLock, SearchExecutor& executor);
+    [[nodiscard]] static std::shared_ptr<SearchController> make(Terminal& terminal, ModelLock& modelLock, SearchExecutor& executor);
 
     /// Binds a controller to a terminal and the lock that guards it; `make`
     /// is the way to get one the executor can share.
@@ -79,7 +80,7 @@ public:
     ///   - terminal: The terminal.
     ///   - modelLock: The lock every access to the terminal holds.
     ///   - wake: The executor's notification state; null for manual slicing.
-    SearchController(Terminal& terminal, std::mutex& modelLock, std::shared_ptr<std::atomic<std::uint64_t>> wake = nullptr);
+    SearchController(Terminal& terminal, ModelLock& modelLock, std::shared_ptr<std::atomic<std::uint64_t>> wake = nullptr);
     SearchController(const SearchController&) = delete;
     SearchController& operator=(const SearchController&) = delete;
 
@@ -331,7 +332,7 @@ private:
 
     // The terminal and its lock, cleared by `detach` under the job mutex.
     Terminal* m_terminal = nullptr;
-    std::mutex* m_modelLock = nullptr;
+    ModelLock* m_modelLock = nullptr;
 
     // Held for each slice; `detach` takes it to wait out the one running.
     mutable std::mutex m_jobMutex;

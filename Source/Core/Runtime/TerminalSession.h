@@ -21,6 +21,7 @@
 #include "Core/Keys/KeyTranslation.h"
 #include "Core/Keys/Keymap.h"
 #include "Core/Keys/KittyKeyboard.h"
+#include "Core/ModelLock.h"
 #include "Core/Modes/DisplayIdle.h"
 #include "Core/Modes/Focus.h"
 #include "Core/Modes/Scroll.h"
@@ -4841,9 +4842,8 @@ public:
             m_loop.raiseWake();
             return;
         }
-        m_host.lockModel();
+        const std::scoped_lock hold(m_modelLock);
         m_runtime->applyCommand(command);
-        m_host.unlockModel();
     }
 
     /// Resizes the grid and the host window in the proven order.
@@ -7091,14 +7091,11 @@ public:
     ///   one cell read rather than a sweep of the row.
     bool resolveLinkAtVisibleCell(int viewOffset, int row, int column, Screen::LinkScanScope scope)
     {
-        // Announced, like the render capture: this runs on the main thread on
-        // every pointer move, and a plain acquire against an unfair mutex is
-        // one the ingest thread can hold off indefinitely under a flood — the
-        // main thread stalls and the render it drives becomes a slideshow. A
-        // try would answer the other way and be no better: measured under a
-        // flood it succeeded once in 2196 attempts, which leaves the affordance
-        // dead for the whole burst. The announcement makes the drain's unlock
-        // donate the lock instead, bounding the wait at about one bite.
+        // Waited for, not tried: this runs on the main thread on every
+        // pointer move, and a try under a flood succeeded once in 2196
+        // attempts, which leaves the affordance dead for the whole burst. The
+        // drain's release hands the waiter the lock, bounding the wait at
+        // about one bite.
         if (scope == Screen::LinkScanScope::Any)
             ++m_wideLinkScanCount;
         lockForRead();
@@ -7405,9 +7402,8 @@ public:
     /// Whether the pointer sits where there is nothing to select.
     ///
     /// Tried rather than waited for: this runs per mouse move and per drain,
-    /// where a blocking acquire has no fairness doorway against ingest and a
-    /// flood would starve the pointer into a slideshow. A contended read
-    /// answers `Unknown`, and the next uncontended one refreshes it.
+    /// and its answer can wait. A contended read answers `Unknown`, and the
+    /// next uncontended one refreshes it.
     ///
     /// - Parameters:
     ///   - visibleRow: The pointer's row, zero-based in the viewport.
@@ -7554,12 +7550,8 @@ public:
     /// One tick serves the cursor resolve and the builder's blink curves, so
     /// the caret and SGR 5/6 text stay in the phase the curve defines.
     ///
-    /// Taken through the announced acquire, like the render capture: this
-    /// runs on every link tick, and a plain acquire against the lock the
-    /// ingest thread re-takes per bite parks for a whole bite each time —
-    /// under a flood, more than half of the render thread's time, all of it
-    /// in one stack. Announced, the drain's unlock donates the lock and the
-    /// wait is microseconds.
+    /// Runs on every link tick; the drain's release hands the lock over, so
+    /// the wait is about one bite.
     ///
     /// - Returns: The tick and the cursor's blink weight at it; the solid
     ///   defaults when no model exists.
@@ -7664,7 +7656,7 @@ public:
         PointerOutcome outcome;
         Ubiquitty::Input::PointerRoute route;
         {
-            const AnnouncedModelLock hold(*this); // per motion event from the frontend's thread
+            const std::scoped_lock hold(*m_activeLock); // per motion event from the frontend's thread
             Ubiquitty::Terminal* term = modelTerm();
             if (!term)
                 return outcome;
@@ -7732,7 +7724,7 @@ public:
     /// - Parameter grab: Whether the grab is held.
     void notePointerLockGrab(Ubiquitty::Input::PointerLockGrab grab)
     {
-        const AnnouncedModelLock hold(*this); // per event or delivery from the frontend's thread
+        const std::scoped_lock hold(*m_activeLock); // per event or delivery from the frontend's thread
         Ubiquitty::Input::notePointerLockGrab(m_pointerLadder, grab);
     }
 
@@ -7747,7 +7739,7 @@ public:
     /// - Returns: Whether to hold the grab.
     [[nodiscard]] Ubiquitty::Input::PointerLockVerdict pointerLockVerdict(const Ubiquitty::Input::PointerLockFacts& facts)
     {
-        const AnnouncedModelLock hold(*this); // per event or delivery from the frontend's thread
+        const std::scoped_lock hold(*m_activeLock); // per event or delivery from the frontend's thread
         const Ubiquitty::Terminal* term = modelTerm();
         const auto mode = term && term->modes.mouseRelativePointerLock ? Ubiquitty::Input::PointerLockMode::Set : Ubiquitty::Input::PointerLockMode::Clear;
         return Ubiquitty::Input::resolvePointerLock(mode, facts);
@@ -7758,7 +7750,7 @@ public:
     /// - Parameter keys: The modifiers and whether any other key is down.
     void notePointerLockChord(const Ubiquitty::Input::PointerLockKeyState& keys)
     {
-        const AnnouncedModelLock hold(*this); // per event or delivery from the frontend's thread
+        const std::scoped_lock hold(*m_activeLock); // per event or delivery from the frontend's thread
         Ubiquitty::Input::notePointerLockChord(m_pointerLadder, keys, frameTicksNow());
     }
 
@@ -7772,7 +7764,7 @@ public:
     {
         Ubiquitty::Input::PointerLockChordVerdict verdict = Ubiquitty::Input::PointerLockChordVerdict::Keep;
         {
-            const AnnouncedModelLock hold(*this); // per event or delivery from the frontend's thread
+            const std::scoped_lock hold(*m_activeLock); // per event or delivery from the frontend's thread
             verdict = Ubiquitty::Input::tickPointerLockChord(m_pointerLadder, keysNow, frameTicksNow());
         }
         if (verdict == Ubiquitty::Input::PointerLockChordVerdict::BreakOut)
@@ -7911,7 +7903,7 @@ public:
         request.labelLimit = labelLimit;
         if (firstRow >= 0) {
             request.scope.emplace();
-            const AnnouncedModelLock hold(*this);
+            const std::scoped_lock hold(*m_activeLock);
             if (const auto* term = modelTerm(); term && firstRow <= lastRow) {
                 const auto first = Ubiquitty::Screen::capturePosition(*term, firstRow, 0);
                 const auto last = Ubiquitty::Screen::capturePosition(*term, lastRow, 0);
@@ -7927,7 +7919,7 @@ public:
     /// - Returns: Bounded text and durable positions; empty while a replacement is pending.
     [[nodiscard]] std::vector<Ubiquitty::Search::Label> searchLabels()
     {
-        const AnnouncedModelLock hold(*this);
+        const std::scoped_lock hold(*m_activeLock);
         const auto& controller = m_search.controller;
         if (!controller || controller->status().generation != controller->requestedGeneration())
             return {};
@@ -7940,7 +7932,7 @@ public:
     /// - Returns: The view offset revealing its text, or -1 when it is gone.
     [[nodiscard]] int searchPositionViewOffset(const Ubiquitty::Screen::LogicalPosition& position)
     {
-        const AnnouncedModelLock hold(*this);
+        const std::scoped_lock hold(*m_activeLock);
         const auto* term = modelTerm();
         if (!term)
             return -1;
@@ -8081,7 +8073,7 @@ public:
     {
         if (m_search.controller)
             return m_search.controller;
-        std::mutex* lock = m_activeLock;
+        ModelLock* lock = m_activeLock;
         Ubiquitty::Terminal* term = nullptr;
         {
             const std::scoped_lock hold(*lock);
@@ -8341,7 +8333,7 @@ public:
         ScrollOutcome outcome;
         Ubiquitty::Input::ScrollRoute route;
         {
-            const AnnouncedModelLock hold(*this); // per event or delivery from the frontend's thread
+            const std::scoped_lock hold(*m_activeLock); // per event or delivery from the frontend's thread
             Ubiquitty::Terminal* term = modelTerm();
             if (!term)
                 return outcome;
@@ -8498,9 +8490,8 @@ public:
     /// flash are view tiers a surface host composes; they join the inputs
     /// when a surface carries them.
     ///
-    /// Announced, like ``frameClockFactsNow``: this runs after every drawn
-    /// frame, and a plain acquire here was the other half of the render
-    /// thread's waiting under a flood.
+    /// Runs after every drawn frame; the drain's release hands the lock
+    /// over, as for ``frameClockFactsNow``.
     ///
     /// - Returns: Whether anything animates, and the delay to its next
     ///   visible change.
@@ -8535,16 +8526,10 @@ public:
     /// Acquires the model lock for a read the runtime does not make, the
     /// render capture above all.
     ///
-    /// Pairs with ``unlockForRead``, and announces the wait first: the drain's
-    /// paced unlock reads the announcement and donates the lock rather than
-    /// re-acquiring within nanoseconds, which is the doorway that turned
-    /// 49–53 ms render-snapshot waits into microseconds on the Metal arm.
-    void lockForRead()
-    {
-        m_isRenderWaiting.store(true, std::memory_order_release);
-        m_activeLock->lock();
-        m_isRenderWaiting.store(false, std::memory_order_release);
-    }
+    /// Pairs with ``unlockForRead``. An ordinary acquisition of the model
+    /// lock: a contended one is handed the lock by the drain's next release,
+    /// so it waits about one bite. See ``ModelLock``.
+    void lockForRead() { m_activeLock->lock(); }
 
     /// Releases the model lock taken by ``lockForRead``.
     void unlockForRead() { m_activeLock->unlock(); }
@@ -8603,44 +8588,17 @@ public:
     /// ``ModelReadScope``.
     [[nodiscard]] ModelReadScope modelReadScope() { return ModelReadScope(*this); }
 
-    /// The model lock taken with the render announcement, for a session
-    /// member a frontend calls once per delivery.
-    ///
-    /// A plain `scoped_lock` on the model waits for the parser's whole pass,
-    /// which under a flood is the pass's capacity in bytes; the announcement
-    /// is what the drain's paced unlock reads to donate the lock between
-    /// bites, so the wait is one bite rather than a whole pass.
-    class [[nodiscard]] AnnouncedModelLock final {
-    public:
-        /// Announces and takes the lock.
-        ///
-        /// - Parameter session: The session whose model is locked.
-        explicit AnnouncedModelLock(TerminalSession& session)
-            : m_session(session)
-        {
-            m_session.lockForRead();
-        }
-
-        /// Releases the lock.
-        ~AnnouncedModelLock() { m_session.unlockForRead(); }
-        AnnouncedModelLock(const AnnouncedModelLock&) = delete;
-        AnnouncedModelLock& operator=(const AnnouncedModelLock&) = delete;
-
-    private:
-        TerminalSession& m_session;
-    };
-
     /// The model lock itself, for a render adapter that brackets with it.
     ///
     /// The adoption seam: an adapter that renders this session's Terminal
     /// takes the same mutex the drain bites, by address, because a second
     /// lock over one model is two opinions about exclusivity. The pointer
     /// lives exactly as long as the session.
-    [[nodiscard]] std::mutex* modelLockPointer() { return m_activeLock; }
+    [[nodiscard]] ModelLock* modelLockPointer() { return m_activeLock; }
 
     /// The same pointer as an integer, for the interop seam.
     ///
-    /// `std::mutex` does not import, and the importer also drops a bare
+    /// ``ModelLock`` does not import, and the importer also drops a bare
     /// pointer return on a shared-reference type, so the address crosses as
     /// a number — which is the correct amount of access: Swift can neither
     /// dereference nor retype it, and the one consumer casts it back on the
@@ -8683,7 +8641,7 @@ public:
             detachSessionClients(*m_externalTerminal);
         }
         m_externalTerminal = terminal;
-        m_activeLock = terminal ? reinterpret_cast<std::mutex*>(lockAddress) : &m_modelLock;
+        m_activeLock = terminal ? reinterpret_cast<ModelLock*>(lockAddress) : &m_modelLock;
         if (!terminal) {
             m_hostedPaneSource = nullptr;
             m_hostedPaneID = -1;
@@ -8804,13 +8762,9 @@ public:
     }
 
     /// Tries the model lock without waiting, for the per-drain and per-move
-    /// paths — link hover, hilite deadlines, snap-to-tail — where blocking
-    /// has no fairness doorway against ingest and a flood starves the caller
-    /// into a slideshow. A failed try is harmless there: every such read
-    /// re-resolves on the next delivery, scroll, or move.
-    ///
-    /// No announcement, on either outcome: the announce flag exists so the
-    /// drain donates the lock to a WAITER, and a try never waits.
+    /// paths — link hover, hilite deadlines, snap-to-tail — whose answer can
+    /// wait for the next delivery, scroll, or move. A failed try is harmless
+    /// there: every such read re-resolves then.
     ///
     /// - Returns: Whether the lock was taken; pair a true with
     ///   ``unlockForRead``.
@@ -8945,9 +8899,7 @@ private:
             std::optional<Session::FrameReady> frame;
             std::uint64_t factsGeneration = 0;
             {
-                // Polled from the frontend's thread on every delivery, so it
-                // waits announced: unannounced it sat behind each flood pass.
-                const AnnouncedModelLock hold(m_owner);
+                const std::scoped_lock hold(*m_owner.m_activeLock);
                 auto* const terminal = view().terminal;
                 if (terminal && !m_owner.m_preparedRemote) {
                     if (m_hostFacts.isAdopted != !!m_owner.m_externalTerminal)
@@ -9108,7 +9060,7 @@ private:
 
     explicit TerminalSession(const Preferences::Values& configuration)
         : m_configuration(configuration)
-        , m_host(m_modelLock, &m_isRenderWaiting)
+        , m_host(m_modelLock)
         , m_runtime(std::make_unique<TerminalRuntime>())
     {
         if (const auto* theme = Themes::get(launchThemeIndex(configuration))) {
@@ -13077,7 +13029,6 @@ private:
     std::atomic<std::uint64_t> m_syncFramePublicationCount { 0 };
     std::atomic<std::uint64_t> m_syncFrameNoSlotCount { 0 };
     std::atomic<std::uint64_t> m_syncFrameBoundaryAnnounceCount { 0 };
-    std::atomic<bool> m_isRenderWaiting { false };
     std::uint64_t m_wideLinkScanCount = 0;
     std::atomic<std::uint64_t> m_drainedBytes { 0 };
     // The perf log's delivery tally, fed on the loop's thread while asked for.
@@ -13102,19 +13053,19 @@ private:
         void (*detach)(Ubiquitty::Terminal&, Ubiquitty::ClipboardClient&);
     };
     std::vector<OwnedClient> m_ownedClients;
-    std::mutex m_modelLock;
+    ModelLock m_modelLock;
     // The lock this session actually takes. Normally its own; an adopted
     // render adapter repoints it at the external owner's, because a second
     // lock over one model is two opinions about exclusivity. The drain host
     // keeps binding m_modelLock directly: an adopted session never starts
     // ingest, and its own runtime terminal is an unused publish anchor.
-    std::mutex* m_activeLock = &m_modelLock;
+    ModelLock* m_activeLock = &m_modelLock;
     /// The find search and the terminal and lock it was made for; detached
     /// when it is replaced and when the session ends.
     struct SearchBinding {
         std::shared_ptr<Ubiquitty::Search::SearchController> controller;
         Ubiquitty::Terminal* terminal = nullptr;
-        std::mutex* lock = nullptr;
+        ModelLock* lock = nullptr;
     };
     SearchBinding m_search;
     // Non-owning borrow of an externally owned Terminal (null for an owning

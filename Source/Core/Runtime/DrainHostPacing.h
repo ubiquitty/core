@@ -3,30 +3,19 @@
 
 #pragma once
 
+#include "Core/ModelLock.h"
 #include "Core/Runtime/TerminalRuntime.h"
 #include "PAL/PAL.h"
 
 #include <atomic>
-#include <mutex>
 
 // Source/Core/Runtime/DrainHostPacing.h — the measured pacing every drain host
-// carries: the unlock-side donation to a waiting render snapshot, and the
-// sync-frame publish throttle. One copy every frontend's host consumes rather
-// than re-deriving the tuning: every constant here was swept, and two copies of
-// a swept number diverge the first time one is re-tuned.
+// carries: the model lock's handoff to a waiting thread, and the sync-frame
+// publish throttle. One copy every frontend's host consumes rather than
+// re-deriving the tuning: every constant here was swept, and two copies of a
+// swept number diverge the first time one is re-tuned.
 
 namespace Ubiquitty::Runtime {
-
-// Bound on the unlock-side donation to a waiting render snapshot: long enough
-// to cover the woken main thread's wake latency, short enough that a stalled
-// main thread cannot wedge the drain.
-inline constexpr std::uint32_t renderLockDonationMicros = 150;
-
-// The load-only probe band in front of the donation's yield tail: the
-// renderer usually acquires within a few microseconds on another core, so
-// this covers the common wake with ZERO syscalls; only the pathological
-// same-core tail still yields (the one case the scheduler hint helps).
-inline constexpr std::uint32_t renderLockDonationProbeMicros = 20;
 
 // Floor on the sync-frame publish interval, below which publishing every ESU
 // boundary outruns any display. Microseconds, because the throttle's clock is
@@ -36,14 +25,10 @@ inline constexpr std::uint32_t syncPublishMinIntervalFloorMicros = 1'000'000 / 2
 
 /// A drain host carrying the pacing a live pane needs.
 ///
-/// `lockModel`/`unlockModel` wrap the pane's model lock with the fairness
-/// doorway: `std::mutex` does no handoff, and the flood paths re-acquire
-/// within nanoseconds of unlocking, so a parked main thread could starve for
-/// whole drain passes, long enough to drop frames. When the renderer has
-/// announced a wait, the unlock pauses until the renderer takes the lock,
-/// probing load-only first and yielding only past the probe band. The flag
-/// is false on every non-contended unlock, so the steady-state cost is one
-/// relaxed load.
+/// `lockModel`/`unlockModel` take the pane's model lock as its drain: the
+/// flood paths re-acquire within nanoseconds of releasing, so every release
+/// goes through ``ModelLock/unlockForDrain()``, which hands the lock to any
+/// thread waiting on it before the next bite may take it back.
 ///
 /// `onSyncFrameReadyLocked` throttles the publish hook to the display's
 /// cadence: the interval arrives from the frontend on display-rate edges, and
@@ -63,13 +48,9 @@ public:
 
     /// Prepares a host over a pane's lock.
     ///
-    /// - Parameters:
-    ///   - modelLock: The pane's model lock, owned by the caller.
-    ///   - isRenderWaiting: The renderer's announced wait, owned by the
-    ///     caller; null disables the donation doorway.
-    PacedDrainHost(std::mutex& modelLock, std::atomic<bool>* isRenderWaiting)
+    /// - Parameter modelLock: The pane's model lock, owned by the caller.
+    explicit PacedDrainHost(ModelLock& modelLock)
         : m_modelLock(&modelLock)
-        , m_isRenderWaiting(isRenderWaiting)
     {
     }
 
@@ -84,7 +65,7 @@ public:
     ///
     /// - Parameter modelLock: The lock every bracket takes, owned by the
     ///   caller and outliving this host's use of it.
-    void retargetModelLock(std::mutex& modelLock) { m_modelLock = &modelLock; }
+    void retargetModelLock(ModelLock& modelLock) { m_modelLock = &modelLock; }
 
     /// Installs the publish hook the throttle guards.
     ///
@@ -137,35 +118,21 @@ public:
     }
 
     /// Acquires the pane's model lock for the drain.
-    void lockModel() override { m_modelLock->lock(); }
+    void lockModel() override { m_modelLock->lockForDrain(); }
 
-    /// Releases the model lock, donating through the fairness doorway when
-    /// the renderer has announced a wait.
+    /// Releases the model lock, handing it to any thread waiting on it.
     void unlockModel() override
     {
-        m_modelLock->unlock();
-        if (m_isRenderWaiting && m_isRenderWaiting->load(std::memory_order_acquire)) {
-            // Hybrid donation (was an unconditional yield loop: ~75
-            // sched_yield syscalls per 150 us window): probe load-only first,
-            // yield only past the probe band.
-            m_donationCount.fetch_add(1, std::memory_order_relaxed);
-            const std::uint32_t start = PAL::monotonicMicros();
-            std::uint32_t waited = 0;
-            while (m_isRenderWaiting->load(std::memory_order_acquire)) {
-                waited = static_cast<std::uint32_t>(PAL::monotonicMicros() - start);
-                if (waited >= renderLockDonationMicros) {
-                    // The renderer never took it inside the window. A donation
-                    // that ends this way bought nothing and spent the whole
-                    // band, so the two counts are kept apart: a high ratio here
-                    // means the drain is paying for a wake that is not coming.
-                    m_donationTimeoutCount.fetch_add(1, std::memory_order_relaxed);
-                    break;
-                }
-                if (waited >= renderLockDonationProbeMicros)
-                    PAL::schedulerYield();
-            }
-            m_donationMicros.fetch_add(waited, std::memory_order_relaxed);
-        }
+        const ModelLockRelease release = m_modelLock->unlockForDrain();
+        if (release.handoff == ModelLockHandoff::Unwanted)
+            return;
+        m_donationCount.fetch_add(1, std::memory_order_relaxed);
+        // A handoff that ran out bought nothing and spent the whole band, so
+        // the two counts are kept apart: a high ratio means the drain is paying
+        // for a wake that is not coming.
+        if (release.handoff == ModelLockHandoff::TimedOut)
+            m_donationTimeoutCount.fetch_add(1, std::memory_order_relaxed);
+        m_donationMicros.fetch_add(release.waitedMicroseconds, std::memory_order_relaxed);
     }
 
     /// Publishes a completed sync frame through the throttled hook.
@@ -229,18 +196,17 @@ public:
     /// Boundaries the throttle withheld for arriving inside the publish window.
     [[nodiscard]] std::uint64_t boundaryThrottledCount() const { return m_boundaryThrottledCount.load(std::memory_order_relaxed); }
 
-    /// How many unlocks found a renderer waiting and donated the lock to it.
+    /// How many unlocks found a thread waiting and handed the lock to it.
     [[nodiscard]] std::uint64_t donationCount() const { return m_donationCount.load(std::memory_order_relaxed); }
 
-    /// How many of those ran the whole band without the renderer taking it.
+    /// How many of those ran the whole band without a waiter taking it.
     [[nodiscard]] std::uint64_t donationTimeoutCount() const { return m_donationTimeoutCount.load(std::memory_order_relaxed); }
 
-    /// Microseconds spent donating, summed across every donation.
+    /// Microseconds spent handing off, summed across every handoff.
     [[nodiscard]] std::uint64_t donationMicros() const { return m_donationMicros.load(std::memory_order_relaxed); }
 
 private:
-    std::mutex* m_modelLock;
-    std::atomic<bool>* m_isRenderWaiting = nullptr;
+    ModelLock* m_modelLock;
     std::atomic<std::uint64_t> m_boundaryRequestCount { 0 };
     std::atomic<std::uint64_t> m_boundaryThrottledCount { 0 };
     std::atomic<std::uint64_t> m_donationCount { 0 };

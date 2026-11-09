@@ -6228,7 +6228,7 @@ TEST(theTextMeasurerReachesATerminalStartedOrAdoptedAfterItWasSet)
     resize(external, 24, 80);
     external.drawsSizedText = true;
     external.drawsProportionalText = true;
-    std::mutex externalLock;
+    Ubiquitty::ModelLock externalLock;
     host->adoptExternalTerminal(&external, reinterpret_cast<std::uintptr_t>(&externalLock));
     CHECK_EQ(host->proportionalRunCells(Ubiquitty::Runtime::TerminalSession::CodePointSpan(text)), 3);
     CHECK_EQ(adopted.calls, 1);
@@ -6829,7 +6829,7 @@ TEST(anUnresolvedAdoptionCannotRebindItsActiveModelOrInstallBorrowedInputRoutes)
 
     Ubiquitty::Terminal external;
     Ubiquitty::resize(external, 3, 5, Ubiquitty::Modes::ReflowMode::Fixed);
-    std::mutex externalLock;
+    Ubiquitty::ModelLock externalLock;
     fixture.session->adoptExternalTerminal(&external, reinterpret_cast<std::uintptr_t>(&externalLock));
     CHECK(fixture.session->terminal() == originalModel);
     CHECK(fixture.session->modelLockPointer() == originalLock);
@@ -7394,7 +7394,7 @@ TEST(sessionSearchRebindsWhenThePresentedTerminalChanges)
     auto external = std::make_unique<Ubiquitty::Terminal>();
     Ubiquitty::resize(*external, 4, 30);
     Ubiquitty::processBytes(external.get(), "external text");
-    std::mutex externalLock;
+    Ubiquitty::ModelLock externalLock;
     RetainedTerminalSession session { TerminalSession::make() };
     REQUIRE(session);
     session->start(4, 30);
@@ -7415,7 +7415,7 @@ TEST(sessionPublicationsRefreshCompletedSearchesInOwnedAndAdoptedModels)
     for (const bool isAdopted : { false, true }) {
         auto external = std::make_unique<Ubiquitty::Terminal>();
         Ubiquitty::resize(*external, 4, 30);
-        std::mutex externalLock;
+        Ubiquitty::ModelLock externalLock;
         RetainedTerminalSession session { TerminalSession::make() };
         REQUIRE(session);
         session->start(4, 30);

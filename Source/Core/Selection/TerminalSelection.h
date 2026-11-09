@@ -5,6 +5,7 @@
 #include "Core/CellColor.h"
 #include "Core/Input/PointerInput.h"
 #include "Core/LineStore.h"
+#include "Core/ModelLock.h"
 #include "Core/RichText/Drawing.h"
 #include "Core/Screen/HistoryFacts.h"
 #include "Core/Selection/Selection.h"
@@ -391,7 +392,7 @@ void selectBetweenPoints(Session& session, Terminal& terminal, double fromX, dou
 ///   - viewOffset: Rows above the tail before the output.
 ///   - history: The history facts the drain published.
 /// - Returns: The viewport decision and whether the selection changed.
-[[nodiscard]] OutputUpdate updateAfterOutput(Session& session, Terminal& terminal, std::mutex& modelLock, int viewOffset, const Screen::HistoryFacts& history) noexcept;
+[[nodiscard]] OutputUpdate updateAfterOutput(Session& session, Terminal& terminal, ModelLock& modelLock, int viewOffset, const Screen::HistoryFacts& history) noexcept;
 
 /// Whether the session holds a selection.
 ///

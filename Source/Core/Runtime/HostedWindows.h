@@ -19,6 +19,7 @@
 
 #include "Base/SwiftInterop.h"
 #include "Base/Types.h"
+#include "Core/ModelLock.h"
 #include "Core/Protocol/Tmux/Commands.h"
 #include "Core/Runtime/PostedWorkTable.h"
 #include "Core/Session/PaneLinkEvents.h"
@@ -121,7 +122,7 @@ struct HostedWindowSeams {
     /// The terminal the hosting program writes to.
     Ubiquitty::Terminal* primary = nullptr;
     /// That terminal's model lock, held by the ingest pass that parses it.
-    std::mutex* primaryLock = nullptr;
+    ModelLock* primaryLock = nullptr;
     /// The channel commands to the program ride.
     PAL::ByteStream* stream = nullptr;
     /// The configuration the hosted panes' terminals are born under.

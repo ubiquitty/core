@@ -146,7 +146,7 @@ TEST(slicedNavigationStartsAtTheLastMatchWithinEachLine)
             feed(*terminal, std::string("AAA AAA AAA") + suffix);
             for (int row = 0; row < appendedRows; ++row)
                 feed(*terminal, "\r\nquiet");
-            std::mutex modelLock;
+            Ubiquitty::ModelLock modelLock;
             auto controller = SearchController::make(*terminal, modelLock);
             REQUIRE(controller);
             const auto status = controller->searchAndWait(literal("AAA"), waitLimit);
@@ -180,7 +180,7 @@ TEST(theSlicedSearchFindsTheOriginalInputMatches)
     std::mt19937 random(3);
     const auto pick = [&random](int low, int high) { return std::uniform_int_distribution<int>(low, high)(random); };
     auto t = terminalOf(8, 41, 5000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     std::vector<std::string> input;
     for (int index = 0; index < 300; ++index) {
         std::string line = "line " + std::to_string(index);
@@ -209,7 +209,7 @@ TEST(theSlicedSearchFindsTheOriginalInputMatches)
 TEST(aSearchOnTheAlternateScreenReadsOnlyThatScreen)
 {
     auto t = terminalOf(6, 30, 1000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     for (int index = 0; index < 20; ++index)
         feed(*t, "history needle " + std::to_string(index) + "\r\n");
     feed(*t, "\x1b[?1049h");
@@ -224,7 +224,7 @@ TEST(aSearchOnTheAlternateScreenReadsOnlyThatScreen)
 TEST(aPatternThatDoesNotCompileSaysSoAndAnEmptyOneClears)
 {
     auto t = terminalOf(6, 30, 1000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*t, "needle\r\n");
     auto controller = SearchController::make(*t, modelLock);
     CHECK_EQ(controller->searchAndWait(literal("needle"), waitLimit).foundCount, 1);
@@ -241,7 +241,7 @@ TEST(aPatternThatDoesNotCompileSaysSoAndAnEmptyOneClears)
 TEST(aRepeatedRequestDoesNotRestartTheSearch)
 {
     auto t = terminalOf(6, 30, 1000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     auto controller = SearchController::make(*t, modelLock);
     CHECK(controller->setQuery(literal("needle")));
     CHECK(!controller->setQuery(literal("needle")));
@@ -253,7 +253,7 @@ TEST(aRepeatedRequestDoesNotRestartTheSearch)
 TEST(aCountPastTheStoreIsExactAndMarkedTruncated)
 {
     auto t = terminalOf(4, 80, 30000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     std::string line;
     for (int word = 0; word < 20; ++word)
         line += "x ";
@@ -272,7 +272,7 @@ TEST(aCountPastTheStoreIsExactAndMarkedTruncated)
 TEST(steppingWalksTheHitsAndWraps)
 {
     auto t = terminalOf(6, 30, 1000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     for (int index = 0; index < 3; ++index)
         feed(*t, "needle " + std::to_string(index) + "\r\n");
     auto controller = SearchController::make(*t, modelLock);
@@ -297,7 +297,7 @@ TEST(steppingWalksTheHitsAndWraps)
 TEST(hitsStayOnTheirTextWhileOutputFloods)
 {
     auto t = terminalOf(8, 60, 3000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     for (int index = 0; index < 2000; ++index)
         feed(*t, tokenLine(index, 40) + "\r\n");
     auto controller = SearchController::make(*t, modelLock);
@@ -352,7 +352,7 @@ TEST(hitsStayOnTheirTextWhileOutputFloods)
 TEST(aNewerRequestReplacesTheRunningOne)
 {
     auto t = terminalOf(6, 50, 20000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     for (int index = 0; index < 8000; ++index)
         feed(*t, "old" + std::to_string(index) + " new" + std::to_string(index) + "\r\n");
     auto controller = SearchController::make(*t, modelLock);
@@ -379,7 +379,7 @@ TEST(aNewerRequestReplacesTheRunningOne)
 TEST(aPumpedSearchAnswersAsTheWorkerDoes)
 {
     auto t = terminalOf(6, 50, 5000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     for (int index = 0; index < 3000; ++index)
         feed(*t, "row " + std::to_string(index) + (index % 7 == 0 ? " needle" : "") + "\r\n");
     auto worked = SearchController::make(*t, modelLock);
@@ -408,7 +408,7 @@ TEST(aPumpedSearchAnswersAsTheWorkerDoes)
 TEST(aDetachedControllerLetsItsTerminalGo)
 {
     auto t = terminalOf(6, 50, 20000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     for (int index = 0; index < 8000; ++index)
         feed(*t, "row " + std::to_string(index) + "\r\n");
     auto controller = SearchController::make(*t, modelLock);
@@ -427,7 +427,7 @@ TEST(aDetachedControllerLetsItsTerminalGo)
 TEST(publishedHitsStayOnTheirTextThroughEvictionAndResizes)
 {
     auto t = terminalOf(6, 40, 200);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     for (int index = 0; index < 150; ++index)
         feed(*t, tokenLine(index, 30) + "\r\n");
     auto controller = SearchController::make(*t, modelLock);
@@ -456,7 +456,7 @@ TEST(publishedHitsStayOnTheirTextThroughEvictionAndResizes)
 TEST(progressKeepsTheFocusClockAndAnEmptyPublicationDisarmsIt)
 {
     auto terminal = terminalOf(4, 30, 100);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, "needle one\r\nneedle two\r\n");
     auto controller = SearchController::make(*terminal, modelLock);
     const Status status = controller->searchAndWait(literal("needle"), waitLimit);
@@ -480,7 +480,7 @@ TEST(progressKeepsTheFocusClockAndAnEmptyPublicationDisarmsIt)
 TEST(detachWaitsForTheChangedCallbackToReleaseItsContext)
 {
     auto terminal = terminalOf(4, 30, 100);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     auto controller = SearchController::make(*terminal, modelLock);
     struct CallbackState {
         std::mutex mutex;
@@ -524,7 +524,7 @@ TEST(detachWaitsForTheChangedCallbackToReleaseItsContext)
 TEST(aScopedSearchCountsOnlyItsLogicalLinesAndBoundsItsLabels)
 {
     auto terminal = terminalOf(6, 40, 300);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     for (int row = 0; row < 30; ++row)
         feed(*terminal, "needle " + std::to_string(row) + "\r\n");
     const auto first = Ubiquitty::Screen::capturePosition(*terminal, 5, 0);
@@ -553,7 +553,7 @@ TEST(aScopedSearchCountsOnlyItsLogicalLinesAndBoundsItsLabels)
 TEST(searchLabelsKeepOriginalClustersAndRunTextWithinTheirBound)
 {
     auto terminal = terminalOf(6, 1200, 300);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     terminal->drawsProportionalText = true;
     feed(*terminal, "needle e\xCC\x81\xCC\xA7 \033]66;p=1:c=8;run text\033\\\r\n");
     feed(*terminal, "needle " + std::string(1100, 'x') + "\r\n");
@@ -574,7 +574,7 @@ TEST(searchLabelsKeepOriginalClustersAndRunTextWithinTheirBound)
 TEST(aDestroyedScopeCannotFindUnrelatedReplacementText)
 {
     auto terminal = terminalOf(6, 40, 300);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, "needle one\r\nneedle two\r\n");
     const auto first = Ubiquitty::Screen::capturePosition(*terminal, 0, 0);
     const auto last = Ubiquitty::Screen::capturePosition(*terminal, 1, 0);
@@ -591,7 +591,7 @@ TEST(aDestroyedScopeCannotFindUnrelatedReplacementText)
 TEST(aCompletedSearchRefreshesWithoutRetypingOrMovingItsFocus)
 {
     auto terminal = terminalOf(4, 40, 100);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, "needle first");
     auto controller = SearchController::make(*terminal, modelLock);
     Ubiquitty::Search::SearchExecutor executor(Ubiquitty::Search::SearchExecutor::ExecutionMode::Pumped);
@@ -652,7 +652,7 @@ TEST(aCompletedSearchRefreshesWithoutRetypingOrMovingItsFocus)
 TEST(onlyTheSearchItselfMovesTheFocusClock)
 {
     auto terminal = terminalOf(4, 40, 100);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, "o general-purpose\r\no general-tools\r\n> ");
     auto controller = SearchController::make(*terminal, modelLock);
     const Status initial = controller->searchAndWait(literal("gene"), waitLimit);
@@ -727,7 +727,7 @@ TEST(onlyTheSearchItselfMovesTheFocusClock)
 TEST(screenHitsPromoteToHistoryExactlyOnce)
 {
     auto terminal = terminalOf(2, 40, 100);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, "needle first\r\nquiet");
     auto controller = SearchController::make(*terminal, modelLock);
     const Status initial = controller->searchAndWait(literal("needle"), waitLimit);
@@ -761,7 +761,7 @@ TEST(screenHitsPromoteToHistoryExactlyOnce)
 TEST(screenRefreshRecountsMatchesBeyondTheStoredHitCapacity)
 {
     auto terminal = terminalOf(100, 200, 100);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     for (int row = 0; row < 99; ++row)
         feed(*terminal, std::string(199, 'a') + "\r\n");
     auto controller = SearchController::make(*terminal, modelLock);
@@ -784,7 +784,7 @@ TEST(aJoinedScreenLineKeepsItsFocusThroughHistoryPromotion)
 {
     for (const bool shouldRefreshBeforePromotion : { false, true }) {
         auto terminal = terminalOf(2, 10, 100);
-        std::mutex modelLock;
+        Ubiquitty::ModelLock modelLock;
         feed(*terminal, "left\r\nneedle");
         auto controller = SearchController::make(*terminal, modelLock);
         const Status initial = controller->searchAndWait(literal("needle"), waitLimit);
@@ -822,7 +822,7 @@ TEST(aJoinedScreenLineKeepsItsFocusThroughHistoryPromotion)
 TEST(historyExtensionAndEvictionKeepExactCountsBeyondStoredHits)
 {
     auto terminal = terminalOf(6, 200, 700);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     for (int line = 0; line < 1000; ++line)
         feed(*terminal, std::string(150 + line % 50, 'a') + "\r\n");
     auto controller = SearchController::make(*terminal, modelLock);
@@ -964,7 +964,7 @@ TEST(refillNavigatesAcrossHistoryAndWithinOneLongLine)
 {
     for (const bool isWrapped : { false, true }) {
         auto terminal = terminalOf(2, 200, 30000);
-        std::mutex modelLock;
+        Ubiquitty::ModelLock modelLock;
         if (isWrapped)
             feed(*terminal, std::string(20000, 'a'));
         else {
@@ -1021,7 +1021,7 @@ TEST(refillNavigatesAcrossHistoryAndWithinOneLongLine)
 TEST(clearingOrReplacingAQueryDiscardsAnInFlightRefill)
 {
     auto terminal = terminalOf(2, 200, 1000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, std::string(20000, 'a'));
     auto controller = SearchController::make(*terminal, modelLock);
     for (const std::string& replacement : { std::string {}, std::string { "absent" } }) {
@@ -1054,7 +1054,7 @@ TEST(clearingOrReplacingAQueryDiscardsAnInFlightRefill)
 TEST(anOlderHistoryWindowKeepsItsFocusThroughExtensionAndEviction)
 {
     auto terminal = terminalOf(2, 40, 21000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     for (int line = 0; line < 20000; ++line)
         feed(*terminal, "a\r\n");
     auto controller = SearchController::make(*terminal, modelLock);
@@ -1091,7 +1091,7 @@ TEST(anOlderHistoryWindowKeepsItsFocusThroughExtensionAndEviction)
 TEST(anOlderOpenLineWindowKeepsItsFocusThroughHistoryPromotion)
 {
     auto terminal = terminalOf(2, 200, 1000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, std::string(20000, 'a'));
     auto controller = SearchController::make(*terminal, modelLock);
     REQUIRE(controller->searchAndWait(literal("a"), waitLimit).foundCount == 20000);
@@ -1136,7 +1136,7 @@ TEST(anOlderOpenLineWindowKeepsItsFocusThroughHistoryPromotion)
 TEST(anEvictedNavigationWindowRefillsFromRetainedText)
 {
     auto terminal = terminalOf(2, 40, 20000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     for (int line = 0; line < 20000; ++line)
         feed(*terminal, "a\r\n");
     auto controller = SearchController::make(*terminal, modelLock);
@@ -1169,7 +1169,7 @@ TEST(anEvictedNavigationWindowRefillsFromRetainedText)
 TEST(refillFindsAnOldMatchInACompletedLineWithPooledText)
 {
     auto terminal = terminalOf(2, 200, 1000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     std::string text;
     for (int match = 0; match < 20000; ++match)
         text += "e\xCC\x81";
@@ -1212,7 +1212,7 @@ TEST(refillFindsAnOldMatchInACompletedLineWithPooledText)
 TEST(aHistoryRefillCanFinishWhileNewOutputContinues)
 {
     auto terminal = terminalOf(2, 40, 30000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     for (int line = 0; line < 20000; ++line)
         feed(*terminal, "a\r\n");
     auto controller = SearchController::make(*terminal, modelLock);
@@ -1249,7 +1249,7 @@ TEST(aHistoryRefillCanFinishWhileNewOutputContinues)
 TEST(partialEvictionDropsACompletedLinesCountAndNavigationWindow)
 {
     auto terminal = terminalOf(2, 200, 150);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, std::string(20000, 'a') + "\r\nquiet\r\nquiet\r\n");
     auto controller = SearchController::make(*terminal, modelLock);
     REQUIRE(controller->searchAndWait(literal("a"), waitLimit).foundCount == 20000);
@@ -1282,7 +1282,7 @@ TEST(newMatchesBeyondCapacityPreserveTheSelectedText)
 {
     for (const bool isWrapped : { false, true }) {
         auto terminal = terminalOf(2, 200, 30000);
-        std::mutex modelLock;
+        Ubiquitty::ModelLock modelLock;
         feed(*terminal, "a");
         auto controller = SearchController::make(*terminal, modelLock);
         const Status initial = controller->searchAndWait(literal("a"), waitLimit);
@@ -1314,7 +1314,7 @@ TEST(newMatchesBeyondCapacityPreserveTheSelectedText)
 TEST(anOlderNavigationWindowRetainsItsFocusAcrossReflow)
 {
     auto terminal = terminalOf(2, 200, 1000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, std::string(20000, 'a'));
     auto controller = SearchController::make(*terminal, modelLock);
     REQUIRE(controller->searchAndWait(literal("a"), waitLimit).foundCount == 20000);
@@ -1348,7 +1348,7 @@ TEST(anOlderNavigationWindowRetainsItsFocusAcrossReflow)
 TEST(destroyingAWindowBoundaryPreservesAnotherRetainedMatch)
 {
     auto terminal = terminalOf(200, 20, 30000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     for (int line = 0; line < 20000; ++line)
         feed(*terminal, "a\r\n");
     auto controller = SearchController::make(*terminal, modelLock);
@@ -1382,7 +1382,7 @@ TEST(destroyingAWindowBoundaryPreservesAnotherRetainedMatch)
 TEST(refillRestartsAfterOutputEvictsItsCapturedText)
 {
     auto terminal = terminalOf(2, 200, 21000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, std::string(20000, 'a'));
     auto controller = SearchController::make(*terminal, modelLock);
     const Status initial = controller->searchAndWait(literal("a"), waitLimit);
@@ -1415,7 +1415,7 @@ TEST(refillRestartsAfterOutputEvictsItsCapturedText)
 TEST(navigationCanReplaceARefillDuringScreenReplay)
 {
     auto terminal = terminalOf(2, 200, 1000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, std::string(20000, 'a'));
     auto controller = SearchController::make(*terminal, modelLock);
     const Status initial = controller->searchAndWait(literal("a"), waitLimit);
@@ -1441,7 +1441,7 @@ TEST(navigationCanReplaceARefillDuringScreenReplay)
 TEST(historyExtensionReplacesAPromotedLineWithNoRemainingMatches)
 {
     auto terminal = terminalOf(2, 20, 100);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, "aaaa");
     auto controller = SearchController::make(*terminal, modelLock);
     const Status initial = controller->searchAndWait(literal("a"), waitLimit);
@@ -1462,7 +1462,7 @@ TEST(historyExtensionReplacesAPromotedLineWithNoRemainingMatches)
 TEST(aDestroyedScopeDropsItsPreviouslyCountedHistory)
 {
     auto terminal = terminalOf(4, 40, 1000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     for (int line = 0; line < 100; ++line)
         feed(*terminal, "needle\r\n");
     const auto first = Ubiquitty::Screen::capturePosition(*terminal, 0, 0);
@@ -1487,7 +1487,7 @@ TEST(aDestroyedScopeDropsItsPreviouslyCountedHistory)
 TEST(aScopeDestroyedDuringCaptureCannotPublishItsOtherLines)
 {
     auto terminal = terminalOf(4, 40, 100);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, "needle one\r\nneedle two\r\nneedle three");
     const auto first = Ubiquitty::Screen::capturePosition(*terminal, 0, 0);
     const auto last = Ubiquitty::Screen::capturePosition(*terminal, 2, 0);
@@ -1520,7 +1520,7 @@ TEST(aScopeDestroyedDuringCaptureCannotPublishItsOtherLines)
 TEST(aPromotedFocusDoesNotDependOnTheLiveScreenPinBudget)
 {
     auto terminal = terminalOf(2, 40, 5000);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, "needle first\r\nquiet");
     auto controller = SearchController::make(*terminal, modelLock);
     const Status initial = controller->searchAndWait(literal("needle"), waitLimit);
@@ -1573,7 +1573,7 @@ TEST(aScreenCopyOwnsItsPooledTextAndSlicesItsStoredPrefix)
 TEST(aWorkerWakesForModelChangesAfterItsQueryCompleted)
 {
     auto terminal = terminalOf(4, 40, 100);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     Ubiquitty::Search::SearchExecutor executor;
     auto controller = SearchController::make(*terminal, modelLock, executor);
     controller->setQuery(literal("needle"));
@@ -1597,7 +1597,7 @@ TEST(aWorkerWakesForModelChangesAfterItsQueryCompleted)
 TEST(aNewQueryDiscardsAnUnpublishedScreenRefresh)
 {
     auto terminal = terminalOf(100, 200, 100);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, "needle");
     auto controller = SearchController::make(*terminal, modelLock);
     CHECK_EQ(controller->searchAndWait(literal("needle"), waitLimit).foundCount, 1);
@@ -1618,7 +1618,7 @@ TEST(aNewQueryDiscardsAnUnpublishedScreenRefresh)
 TEST(bufferChangesRefreshTheSameQueryAndResizeKeepsLogicalFocus)
 {
     auto terminal = terminalOf(4, 40, 100);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, "needle first\r\nneedle second");
     auto controller = SearchController::make(*terminal, modelLock);
     const Status initial = controller->searchAndWait(literal("needle"), waitLimit);
@@ -1658,7 +1658,7 @@ TEST(bufferChangesRefreshTheSameQueryAndResizeKeepsLogicalFocus)
 TEST(partialEvictionDropsACompletedLinesCount)
 {
     auto terminal = terminalOf(2, 200, 150);
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     feed(*terminal, std::string(20000, 'a') + "\r\nquiet\r\nquiet\r\n");
     auto controller = SearchController::make(*terminal, modelLock);
     REQUIRE(controller->searchAndWait(literal("a"), waitLimit).foundCount == 20000);

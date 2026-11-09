@@ -77,17 +77,17 @@ bool isSameMatch(const Hit& left, const Hit& right)
 
 } // namespace
 
-std::shared_ptr<SearchController> SearchController::make(Terminal& terminal, std::mutex& modelLock)
+std::shared_ptr<SearchController> SearchController::make(Terminal& terminal, ModelLock& modelLock)
 {
     return make(terminal, modelLock, SearchExecutor::shared());
 }
 
-std::shared_ptr<SearchController> SearchController::make(Terminal& terminal, std::mutex& modelLock, SearchExecutor& executor)
+std::shared_ptr<SearchController> SearchController::make(Terminal& terminal, ModelLock& modelLock, SearchExecutor& executor)
 {
     return std::make_shared<SearchController>(terminal, modelLock, executor.wakeSignal());
 }
 
-SearchController::SearchController(Terminal& terminal, std::mutex& modelLock, std::shared_ptr<std::atomic<std::uint64_t>> wake)
+SearchController::SearchController(Terminal& terminal, ModelLock& modelLock, std::shared_ptr<std::atomic<std::uint64_t>> wake)
     : m_terminal(&terminal)
     , m_modelLock(&modelLock)
     , m_wakeSignal(std::move(wake))
@@ -1351,7 +1351,7 @@ void SearchController::notifyChanged()
 
 Status searchScrollbackAndWait(Terminal& terminal, const Request& request, std::uint32_t timeoutMilliseconds)
 {
-    std::mutex modelLock;
+    ModelLock modelLock;
     SearchController controller(terminal, modelLock);
     const Status status = controller.searchAndWait(request, std::chrono::milliseconds(timeoutMilliseconds));
     controller.detach();

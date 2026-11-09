@@ -18,7 +18,7 @@ class SearchFixture {
 public:
     /// Binds a search to the terminal, which outlives the fixture.
     explicit SearchFixture(Ubiquitty::Terminal& terminal)
-        : m_controller(terminal, m_mutex)
+        : m_controller(terminal, m_modelLock)
     {
     }
 
@@ -54,7 +54,7 @@ public:
     /// - Returns: Whether an active hit was available to move.
     bool step(Ubiquitty::Search::StepDirection direction)
     {
-        const std::scoped_lock hold(m_mutex);
+        const std::scoped_lock hold(m_modelLock);
         return m_controller.step(direction);
     }
 
@@ -63,7 +63,7 @@ public:
     /// - Returns: The labels copied under the model lock.
     std::vector<Ubiquitty::Search::Label> labels()
     {
-        const std::scoped_lock hold(m_mutex);
+        const std::scoped_lock hold(m_modelLock);
         return m_controller.labels();
     }
 
@@ -72,13 +72,13 @@ public:
     /// - Returns: The stored hits, newest first.
     std::vector<Ubiquitty::Search::Hit> hits()
     {
-        const std::scoped_lock hold(m_mutex);
+        const std::scoped_lock hold(m_modelLock);
         const auto hits = m_controller.hits();
         return { hits.begin(), hits.end() };
     }
 
 private:
-    std::mutex m_mutex;
+    Ubiquitty::ModelLock m_modelLock;
     Ubiquitty::Search::SearchController m_controller;
 };
 

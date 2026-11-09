@@ -3,11 +3,11 @@
 
 #pragma once
 
+#include "Core/ModelLock.h"
 #include "Core/Protocol/Tmux/LayoutNode.h"
 #include "Core/Protocol/Tmux/PaneID.h"
 
 #include <cstdint>
-#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -132,19 +132,24 @@ struct PaneLayoutExtent {
 PaneLayoutExtent emitPaneLayout(const Ubiquitty::Panes::Tree& tree, int nodeIndex, PaneDimensionsLookup dimensionsForPane, void* context, std::string& out);
 
 // A small per-pane lock guarding Ubiquitty::Terminal access: the deliver/ingest path
-// is the sole writer, the render/serialize paths are readers. A portable std::mutex,
-// so no platform lock type leaks into this module; the frontend adopts the same mutex
-// via nativeHandle (one canonical lock per pane).
+// is the sole writer, the render/serialize paths are readers. The deliver path is
+// this lock's drain, so it takes and releases it through lockForDrain and
+// unlockForDrain, which hand the lock to a waiting reader; the frontend adopts the
+// same lock via nativeHandle (one canonical lock per pane).
 class PaneLock {
 public:
     void lock() { m_lock.lock(); }
     void unlock() { m_lock.unlock(); }
-    // The underlying mutex, so a frontend's render adapter adopts the same lock
+    /// Takes the lock for the deliver path, which never counts as a waiter.
+    void lockForDrain() { m_lock.lockForDrain(); }
+    /// Releases the deliver path's hold, handing the lock to a waiting reader.
+    void unlockForDrain() { static_cast<void>(m_lock.unlockForDrain()); }
+    // The underlying lock, so a frontend's render adapter adopts the same lock
     // the deliver path takes — one canonical lock per pane.
-    std::mutex* nativeHandle() { return &m_lock; }
+    ModelLock* nativeHandle() { return &m_lock; }
 
 private:
-    std::mutex m_lock;
+    ModelLock m_lock;
 };
 
 } // namespace Ubiquitty::Protocol::Tmux

@@ -1287,7 +1287,7 @@ void searchBenches(std::vector<Ubiquitty::Bench::Result>& out, int rows, int col
     }
     Ubiquitty::processBytes(host.get(), std::string_view(feed));
 
-    std::mutex modelLock;
+    Ubiquitty::ModelLock modelLock;
     Ubiquitty::Search::SearchController search(*host, modelLock);
     const Ubiquitty::Search::Request request { .pattern = "needle", .sensitivity = Ubiquitty::CaseSensitivity::Sensitive, .normalization = Ubiquitty::Screen::ScrollSearch::normalizationForm() };
     const auto timing = Ubiquitty::Bench::measure(warmup, iters, [&] {
@@ -2841,13 +2841,12 @@ void frameTailBenches(std::vector<Ubiquitty::Bench::Result>& out, int rows, int 
 // expected to collapse this toward render_build's uncontended cost.
 //
 // It mirrors the drain's lock/unlock CADENCE and not its unlock. The shipping
-// path goes through `PacedDrainHost::unlockModel`, which donates the lock
-// through a fairness doorway whenever the renderer has announced a wait —
-// probe first, yield past a band. This lane takes a plain `std::mutex` and
-// reacquires immediately, so its number is what the drain would cost with that
-// doorway removed, not what a shipping session pays.
+// path goes through `ModelLock::unlockForDrain`, which hands the lock to any
+// thread waiting on it — probe first, yield past a band. This lane takes a
+// plain `std::mutex` and reacquires immediately, so its number is what the
+// drain would cost with that handoff removed, not what a shipping session pays.
 //
-// The difference is the whole effect. Read this lane as the floor the doorway
+// The difference is the whole effect. Read this lane as the floor the handoff
 // is holding up, and do not quote it as a stall a user sees.
 //
 // The tail is also two adjacent order statistics rather than two numbers:
