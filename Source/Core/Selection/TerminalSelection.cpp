@@ -7,6 +7,7 @@
 #include "Core/Modes/Scroll.h"
 #include "Core/Mouse/Mouse.h"
 #include "Core/OSC/TextSizing.h"
+#include "Core/Protocol/Sync/Hash.h"
 #include "Core/RichText/Blocks.h"
 #include "Core/RowMeta.h"
 #include "Core/Screen/Addressing.h"
@@ -1182,36 +1183,58 @@ bool boundHasSelection(void* userData) { return Selection::hasSelection(&static_
         cellAt, &bound, attributesAt, &bound, &out, &session.engine, rowWrappedAt, &bound);
 }
 
-// One digest over the screen's live rows, the same bytes the renderer keys
-// its own row digests on, so two screens that paint alike digest alike.
+template<typename Element>
+[[nodiscard]] std::span<const std::uint8_t> bytesOf(std::span<const Element> elements) noexcept
+{
+    return { reinterpret_cast<const std::uint8_t*>(elements.data()), elements.size_bytes() };
+}
+
+// One digest over the screen's live rows. A match is taken as the screen
+// reproducing itself, so the hash is fully mixed and the same on every
+// platform: XXH3-64 over each row's written cells, chained with the digest of
+// the rows above it and the row's width, which tells an empty row from a
+// blank one. Two screens that paint alike digest alike.
 [[nodiscard]] std::uint64_t screenDigest(const Terminal& terminal) noexcept
 {
-    std::uint64_t digest = 0xCBF29CE484222325ull;
-    const auto mix = [&digest](std::span<const std::byte> bytes) {
-        for (const std::byte byte : bytes) {
-            digest ^= static_cast<std::uint64_t>(byte);
-            digest *= 0x100000001B3ull;
-        }
-    };
+    std::uint64_t digest = 0;
     if (!terminal.grid)
         return digest;
     for (int row = 0; row < terminal.rows; ++row) {
         const int width = std::clamp(terminal.grid->rowContentWidth(Row(row)), 0, terminal.columns);
-        mix(std::as_bytes(std::span(&width, 1)));
-        if (width == 0)
-            continue;
-        const Cell* cells = terminal.grid->cellAt(Row(row), Column(0));
-        if (!cells)
-            continue;
-        mix(std::as_bytes(std::span(cells, static_cast<std::size_t>(width))));
+        const Cell* cells = width > 0 ? terminal.grid->cellAt(Row(row), Column(0)) : nullptr;
+        const std::span<const Cell> written = cells ? std::span(cells, static_cast<std::size_t>(width)) : std::span<const Cell> {};
+        const std::array<std::uint64_t, 3> link { digest, written.size(), Protocol::Sync::blockHash(bytesOf(written)) };
+        digest = Protocol::Sync::blockHash(bytesOf(std::span<const std::uint64_t>(link)));
     }
     return digest;
 }
 
+// The screen's digest for one synchronization, read at most once: the
+// terminal does not change while a synchronization runs, and the comparison
+// and the observation that follows it ask for the same screen.
+class ScreenDigestOnce {
+public:
+    explicit ScreenDigestOnce(const Terminal& terminal) noexcept
+        : m_terminal(terminal)
+    {
+    }
+
+    [[nodiscard]] std::uint64_t value() noexcept
+    {
+        if (!m_digest)
+            m_digest = screenDigest(m_terminal);
+        return *m_digest;
+    }
+
+private:
+    const Terminal& m_terminal;
+    std::optional<std::uint64_t> m_digest;
+};
+
 // Records what this view has seen of the buffer, and nothing on the terminal:
 // another view of the same terminal judges its own selection against the same
 // state, so no view may consume or reset anything there.
-void observeBuffer(Session& session, const Terminal& terminal) noexcept
+void observeBuffer(Session& session, const Terminal& terminal, ScreenDigestOnce& digest) noexcept
 {
     session.observedScrollbackAppended = Screen::scrollbackTotalAppended(&terminal);
     session.observedScrollbackRows = historyRows(terminal);
@@ -1223,7 +1246,7 @@ void observeBuffer(Session& session, const Terminal& terminal) noexcept
     // they are, so every other drain pays nothing for a comparison it would
     // never make.
     session.hasScreenObservation = (Selection::hasSelection(&session.state) || session.gesture.isOpen) && !terminal.screens.isUsingAlternateScreen;
-    session.observedScreenDigest = session.hasScreenObservation ? screenDigest(terminal) : 0;
+    session.observedScreenDigest = session.hasScreenObservation ? digest.value() : 0;
 }
 
 // The ends as the session's rows hold them now.
@@ -1462,15 +1485,16 @@ enum class EndsAfterResolving : std::uint8_t {
 
 bool synchronizeBufferRows(Session& session, const Terminal& terminal) noexcept
 {
+    ScreenDigestOnce digest(terminal);
     const auto forget = [&](bool hadSelection) {
         clear(&session.state);
         gestureReset(&session.gesture);
-        observeBuffer(session, terminal);
+        observeBuffer(session, terminal, digest);
         nameEnds(session, terminal);
         return hadSelection;
     };
     if (!session.hasBufferObservation) {
-        observeBuffer(session, terminal);
+        observeBuffer(session, terminal, digest);
         nameEnds(session, terminal);
         return false;
     }
@@ -1521,7 +1545,7 @@ bool synchronizeBufferRows(Session& session, const Terminal& terminal) noexcept
         // A resize may leave the screen reading as before, but it renumbered
         // the rows, and a rectangle's columns went with it: no same frame.
         const bool isSameFrame = session.hasScreenObservation && session.observedBufferEpoch == terminal.absoluteRowEpoch
-            && appended >= 0 && appended < terminal.rows && screenDigest(terminal) == session.observedScreenDigest;
+            && appended >= 0 && appended < terminal.rows && digest.value() == session.observedScreenDigest;
         if (!isSameEnds(currentEnds(session), session.namedEnds)) {
             nameEnds(session, terminal);
         } else if (isSameFrame && (appended == 0 || followRepaintedScreen(session, static_cast<int>(appended), static_cast<int>(evicted)))) {
@@ -1544,7 +1568,7 @@ bool synchronizeBufferRows(Session& session, const Terminal& terminal) noexcept
         if (!session.namedEnds.isNamed)
             return forget(hadSelection);
     }
-    observeBuffer(session, terminal);
+    observeBuffer(session, terminal, digest);
     return didMove;
 }
 

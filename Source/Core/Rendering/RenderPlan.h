@@ -23,7 +23,10 @@ namespace Rendering {
 
 // 64-bit content+style digest of one visible row. Equality is a cache hint,
 // not a correctness boundary: the tracker periodically forces a full rebuild
-// so a collision cannot suppress pixels indefinitely.
+// so a collision cannot suppress pixels indefinitely. The bulk mix differs by
+// platform and neither is fully mixed (CRC32C is linear, and a word-at-a-time
+// multiply carries a change only toward the high bits, where two changes can
+// cancel), so a caller that takes equality as identity hashes with XXH3.
 using RowDigest = std::uint64_t;
 
 /// Hashes a row's raw bytes, folded with a salt.
@@ -38,7 +41,8 @@ using RowDigest = std::uint64_t;
 ///   - salt: Every per-row influence absent from the cell bytes — line
 ///     attribute, baked cursor and blink bucket, hovered-link coverage,
 ///     blink phase. A frame-global input belongs in the epoch, not here.
-/// - Returns: A digest that changes when the content does.
+/// - Returns: A digest that changes when the content does, short of the
+///   collisions a ``RowDigest`` tolerates.
 RowDigest rowDigest(std::span<const std::byte> bytes, std::uint64_t salt);
 
 // Inputs a retained-mode renderer hands the planner once per frame. Portable

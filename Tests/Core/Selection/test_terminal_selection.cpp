@@ -30,6 +30,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <map>
 #include <optional>
 #include <semaphore>
 #include <string>
@@ -1241,6 +1243,123 @@ TEST(anOpenGesturePressedInHistoryKeepsItsAnchorWhenAFrameReproducesItself)
     (void)Selection::updateAfterOutput(session, t, viewOffset, Input::OutputSnapPolicy::HoldViewedRows);
     CHECK_MSG(Selection::selectedText(session, t).rfind("three", 0) == 0,
         "a repainted frame moved the press off the character it went down on");
+}
+
+namespace {
+
+// A pooled cluster's cell: its id sits in the high bits of the cell's last
+// eight bytes, which is where a digest that carries changes only upward loses
+// them.
+void writePooledCluster(Terminal& t, int row, int column, std::uint16_t clusterID)
+{
+    Cell cell = *t.grid->cellAt(Row(row), Column(column));
+    cell.codePoint = 0xE9;
+    cell.setClusterID(clusterID);
+    t.grid->setCell(Row(row), Column(column), cell);
+}
+
+// A screen whose second row is twelve written cells, and a selection standing
+// on its first row, so the session digests the screen at every synchronization.
+void writeClusterScreen(Terminal& t, Selection::Session& session)
+{
+    hardReset(t);
+    resize(t, 4, 12);
+    feed(t, "alpha\r\neeeeeeeeeeee");
+    Selection::beginGesture(session, t, /*visibleRow*/ 0, /*column*/ 0, /*clickCount*/ 1, 0, {});
+    Selection::dragGesture(session, t, /*visibleRow*/ 0, /*column*/ 4, 0);
+    CHECK(Selection::endGesture(session));
+}
+
+// The screen's digest as the session observes it at a synchronization.
+std::uint64_t observedDigest(Selection::Session& session, Terminal& t)
+{
+    CHECK(Selection::hasSelection(session, t));
+    CHECK(session.hasScreenObservation);
+    return session.observedScreenDigest;
+}
+
+} // namespace
+
+TEST(aScreenDigestTellsApartRowsThatDifferOnlyInTwoPooledClusters)
+{
+    // A digest match is taken as the screen reproducing itself, which keeps a
+    // selection's ends where they stood, so screens that differ must digest
+    // apart. Every pair of ids from 1 to 199 in two cells of a row is a row of
+    // its own.
+    Terminal t;
+    Selection::Session session = freshSession();
+    writeClusterScreen(t, session);
+    std::map<std::uint64_t, std::pair<int, int>> digests;
+    int rowsDigested = 0;
+    int collisions = 0;
+    for (int first = 1; first <= 199; ++first) {
+        for (int second = 1; second <= 199; ++second) {
+            writePooledCluster(t, 1, 2, static_cast<std::uint16_t>(first));
+            writePooledCluster(t, 1, 5, static_cast<std::uint16_t>(second));
+            ++rowsDigested;
+            const auto [found, isNew] = digests.emplace(observedDigest(session, t), std::make_pair(first, second));
+            if (!isNew && collisions++ == 0)
+                std::printf("  ids (%d, %d) digest as ids (%d, %d)\n", first, second, found->second.first, found->second.second);
+        }
+    }
+    CHECK_EQ(rowsDigested, 199 * 199);
+    CHECK_EQ(collisions, 0);
+    CHECK_EQ(static_cast<int>(digests.size()), rowsDigested);
+}
+
+TEST(aScreenDigestTellsApartClusterChangesALinearChecksumCancels)
+{
+    // CRC32C maps some pairs of changes to one remainder: ids changing by 30301
+    // and 6230 in cells eight apart, which a four-lane stripe puts on one lane.
+    Terminal t;
+    Selection::Session session = freshSession();
+    writeClusterScreen(t, session);
+    writePooledCluster(t, 1, 0, 1);
+    writePooledCluster(t, 1, 8, 2);
+    const std::uint64_t before = observedDigest(session, t);
+    writePooledCluster(t, 1, 0, 1 ^ 30301);
+    writePooledCluster(t, 1, 8, 2 ^ 6230);
+    CHECK_MSG(observedDigest(session, t) != before, "two cluster changes cancelled in the screen digest");
+}
+
+TEST(aSelectionLetsGoOfARowRewrittenWithOtherClusters)
+{
+    // A program erases a selected row and writes it again with other
+    // clusters: a genuine change, which takes the selection, never one the
+    // digest reads as the frame reproducing itself, which would leave the
+    // selection standing over text the user never selected. The first change
+    // is the control: one id moves, and no digest misses that. The others are
+    // pairs a word-at-a-time multiply and a striped CRC32C each cancel.
+    struct ClusterChange {
+        int firstColumn;
+        int secondColumn;
+        std::uint16_t firstID;
+        std::uint16_t secondID;
+        std::uint16_t firstChange;
+        std::uint16_t secondChange;
+    };
+    for (const ClusterChange& change : {
+             ClusterChange { 2, 5, 1, 1, 0, 3 },
+             ClusterChange { 2, 5, 12, 1, 12 ^ 4, 1 ^ 153 },
+             ClusterChange { 0, 8, 1, 2, 30301, 6230 },
+         }) {
+        Terminal t;
+        hardReset(t);
+        resize(t, 4, 12);
+        feed(t, "alpha\r\neeeeeeeeeeee");
+        writePooledCluster(t, 1, change.firstColumn, change.firstID);
+        writePooledCluster(t, 1, change.secondColumn, change.secondID);
+        Selection::Session session = freshSession();
+        Selection::beginGesture(session, t, /*visibleRow*/ 1, /*column*/ 0, /*clickCount*/ 1, 0, {});
+        Selection::dragGesture(session, t, /*visibleRow*/ 1, /*column*/ 11, 0);
+        CHECK(Selection::endGesture(session));
+        REQUIRE(Selection::hasSelection(session, t));
+
+        feed(t, "\x1b[2;1H\x1b[2Keeeeeeeeeeee");
+        writePooledCluster(t, 1, change.firstColumn, static_cast<std::uint16_t>(change.firstID ^ change.firstChange));
+        writePooledCluster(t, 1, change.secondColumn, static_cast<std::uint16_t>(change.secondID ^ change.secondChange));
+        CHECK_MSG(!Selection::hasSelection(session, t), "a selection stood over a row rewritten with other clusters");
+    }
 }
 
 TEST(aBufferClearCancelsEveryOpenClickGesture)
