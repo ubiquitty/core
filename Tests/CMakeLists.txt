@@ -109,7 +109,12 @@ set(test_gated_file_read_EXTRA_SOURCES Source/Platform/POSIX/GatedFileRead.cpp
 # The model lock's handoff spins on PAL::monotonicMicros and yields through
 # PAL::schedulerYield, so these need the real clock: a fake that advances a
 # microsecond per call turns the handoff band into an iteration count.
-set(test_model_lock_EXTRA_SOURCES Source/Platform/POSIX/SystemPAL.cpp)
+set(test_model_lock_EXTRA_SOURCES Source/Platform/POSIX/SystemPAL.cpp Tests/Core/ModelLockArchiveCopy.cpp)
+# Built as a frontend's Core archive is, optimised and with NDEBUG, beside the
+# test's own translation unit, which keeps assertions as a frontend's C++
+# interop does: the lock's holder must not depend on which copy took it.
+set_source_files_properties(${UBIQUITTY_CORE_SOURCE_DIR}/Tests/Core/ModelLockArchiveCopy.cpp
+    PROPERTIES COMPILE_OPTIONS "-O2;-DNDEBUG" SKIP_PRECOMPILE_HEADERS ON)
 set(test_drain_host_pacing_EXTRA_SOURCES Source/Platform/POSIX/SystemPAL.cpp)
 # The tmux delivery path releases each pane's lock through ModelLock's handoff,
 # which reads the PAL clock and yields through the PAL.

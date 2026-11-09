@@ -636,6 +636,9 @@ void TmuxControlHost::releaseDelivery()
 {
     if (!m_deliveryPane)
         return;
+    // The run holds the pane's lock from deliveryTarget to here, across calls
+    // the thread-safety analysis does not follow.
+    m_deliveryPane->lockHandle()->assertHeld();
     Ubiquitty::settlePasswordPrompt(*m_deliveryTerminal, nullptr);
     // The route memo points at the pane about to be unpinned; it dies first,
     // so a later byte of this pass looks the pane up, and pins it, again.

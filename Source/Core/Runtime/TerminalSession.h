@@ -9489,8 +9489,9 @@ private:
         // exactly where one is owed, and a quiet screen's settles find the slot
         // empty and still pay nothing.
         m_host.setPublishHook(
-            [](void* context, SyncFrameReason reason) UBIQUITTY_REQUIRES(modelLockRole) {
+            [](void* context, SyncFrameReason reason) {
                 auto* session = static_cast<TerminalSession*>(context);
+                session->m_host.assertModelLockHeld();
                 if (reason == SyncFrameReason::Boundary) {
                     // Counted before the capture's own armed check, so a reader
                     // can tell a boundary that was never announced from one that

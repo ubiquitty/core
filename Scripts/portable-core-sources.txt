@@ -70,6 +70,7 @@ Source/Core/Kitty/Graphics.cpp
 Source/Core/Kitty/KeyboardState.cpp
 Source/Core/Kitty/UnicodePlaceholders.cpp
 Source/Core/LineStore.cpp
+Source/Core/ModelLock.cpp
 Source/Core/Modes/DisplayIdle.cpp
 Source/Core/Modes/Emulation.cpp
 Source/Core/Modes/Focus.cpp

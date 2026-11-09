@@ -7,8 +7,10 @@
 #include "PAL/PAL.h"
 
 #include <atomic>
+#include <cassert>
 #include <cstdint>
 #include <mutex>
+#include <thread>
 
 namespace Ubiquitty {
 
@@ -88,6 +90,10 @@ inline constexpr ModelLockRole modelLockRole {};
 /// Every acquisition grants ``modelLockRole`` to the thread-safety analysis and
 /// every release revokes it. The bodies are unchecked: they hold the lock
 /// through `std::mutex`, which the analysis does not see.
+///
+/// Every build records the holding thread, so ``assertHeld()``, where Core is
+/// built with assertions, checks at run time what a callback reached through
+/// a function pointer cannot prove to the analysis.
 class ModelLock {
 public:
     ModelLock() = default;
@@ -103,6 +109,7 @@ public:
             m_mutex.lock();
             m_waiterCount.fetch_sub(1, std::memory_order_relaxed);
         }
+        noteHolder();
         noteAcquired();
         enterAsReader();
     }
@@ -117,6 +124,7 @@ public:
     {
         if (!m_mutex.try_lock())
             return false;
+        noteHolder();
         noteAcquired();
         enterAsReader();
         return true;
@@ -138,10 +146,18 @@ public:
     }
 
     /// Releases a hold taken by ``lock()`` or ``try_lock()``.
-    void unlock() UBIQUITTY_RELEASES(modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_mutex.unlock(); }
+    void unlock() UBIQUITTY_RELEASES(modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS
+    {
+        noteReleased();
+        m_mutex.unlock();
+    }
 
     /// Takes the lock for the draining thread, which never counts as a waiter.
-    void lockForDrain() UBIQUITTY_ACQUIRES(modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_mutex.lock(); }
+    void lockForDrain() UBIQUITTY_ACQUIRES(modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS
+    {
+        m_mutex.lock();
+        noteHolder();
+    }
 
     /// Releases the drain's hold, handing the lock to a counted waiter first.
     ///
@@ -153,6 +169,7 @@ public:
     ModelLockRelease unlockForDrain() UBIQUITTY_RELEASES(modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS
     {
         const std::uint32_t acquisitions = m_acquisitionCount.load(std::memory_order_relaxed);
+        noteReleased();
         m_mutex.unlock();
         if (!m_waiterCount.load(std::memory_order_seq_cst))
             return {};
@@ -168,7 +185,34 @@ public:
         return { ModelLockHandoff::Taken, waited };
     }
 
+    /// Returns on the thread that holds this lock; where Core is built with
+    /// assertions, stops any other.
+    ///
+    /// For a callback the lock's holder reaches through a function pointer or
+    /// an interface the analysis does not annotate: the analysis takes the
+    /// lock as held after the call, and the assertion checks it. Defined out
+    /// of line, so a binary holds one definition and checks as the Core it
+    /// links was built, whatever a frontend's own translation units define.
+    void assertHeld() const UBIQUITTY_ASSERTS_CAPABILITY(modelLockRole);
+
 private:
+    /// Records the calling thread as the holder, in every build.
+    ///
+    /// Not only where assertions are on: these are inline, so a binary can
+    /// run one translation unit's copy of the acquisition and another's of
+    /// ``assertHeld()``, compiled with and without NDEBUG — an archive built
+    /// optimised under a frontend whose C++ interop keeps assertions. The
+    /// holder is kept whichever copy took the lock, and only the check
+    /// depends on NDEBUG.
+    ///
+    /// Relaxed, because only the holder's own thread compares its identity
+    /// with it: it reads its own store, and a thread that does not hold the
+    /// lock never reads its own identity there.
+    void noteHolder() { m_holder.store(std::this_thread::get_id(), std::memory_order_relaxed); }
+
+    /// Clears the holder before the lock is released, in every build.
+    void noteReleased() { m_holder.store(std::thread::id(), std::memory_order_relaxed); }
+
     /// Counts one acquisition by a thread other than the drain.
     ///
     /// Written only by such a holder, so a load and a store under the mutex
@@ -188,6 +232,8 @@ private:
     void* m_readerEntryContext = nullptr;
     std::atomic<std::uint32_t> m_waiterCount { 0 };
     std::atomic<std::uint32_t> m_acquisitionCount { 0 };
+    /// The thread holding the lock, recorded in every build.
+    std::atomic<std::thread::id> m_holder {};
 };
 
 /// A scope holding a model lock, taken through ``ModelLock/lock()`` and
@@ -216,6 +262,7 @@ public:
     ModelLockHold(ModelLock& lock, std::adopt_lock_t) UBIQUITTY_REQUIRES(modelLockRole)
         : m_lock(lock)
     {
+        m_lock.assertHeld();
     }
 
     /// Releases the lock the scope holds.

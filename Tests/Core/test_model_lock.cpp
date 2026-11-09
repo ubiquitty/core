@@ -42,6 +42,14 @@ uint32_t monotonicMicros()
 
 } // namespace Ubiquitty::PAL
 
+// Defined in ModelLockArchiveCopy.cpp, compiled as a frontend's Core archive is.
+namespace Ubiquitty::Testing {
+
+void lockAsAnOptimisedArchiveDoes(ModelLock& lock) UBIQUITTY_ACQUIRES(modelLockRole);
+void unlockAsAnOptimisedArchiveDoes(ModelLock& lock) UBIQUITTY_RELEASES(modelLockRole);
+
+} // namespace Ubiquitty::Testing
+
 namespace {
 
 using Ubiquitty::ModelLock;
@@ -134,6 +142,22 @@ WaitSummary summarize(std::vector<double> waits)
 }
 
 constexpr double boundMicros = std::chrono::duration<double, std::micro>(waitBound).count();
+
+// A frontend whose C++ interop keeps assertions runs over a Core archive built
+// with NDEBUG: the lock is taken by the archive's copy of the acquisition, and
+// a callback's holder check is the frontend's. The holder is kept in every
+// build, so the check holds on the thread that took the lock.
+TEST(aLockTakenWhereAssertionsAreOffSatisfiesACheckWhereTheyAreOn)
+{
+    Ubiquitty::ModelLock lock;
+    Ubiquitty::Testing::lockAsAnOptimisedArchiveDoes(lock);
+    lock.assertHeld();
+    Ubiquitty::Testing::unlockAsAnOptimisedArchiveDoes(lock);
+    if (lock.try_lock())
+        lock.unlock();
+    else
+        CHECK_MSG(false, "the lock was released");
+}
 
 TEST(aPlainWaiterBehindAGapFreeDrainIsHandedTheLockEveryTime)
 {
