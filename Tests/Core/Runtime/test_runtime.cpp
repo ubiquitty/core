@@ -6009,6 +6009,48 @@ bool completesWhileTheModelIsHeld(TerminalSession& session, Query query)
 
 } // namespace
 
+// A flood bite leaves its scroll-lane run open for the next bite to extend.
+// Whatever reads the model between two bites, through whichever acquisition,
+// commits the run first, or it reads rows whose scroll bookkeeping is not
+// there yet.
+TEST(everyReaderCommitsTheScrollLaneRunAFloodBiteLeftOpen)
+{
+    std::string lines;
+    for (int line = 0; line < 64; ++line)
+        lines += "scrolled line\r\n";
+    enum class Acquisition : std::uint8_t {
+        Read,
+        Try,
+        Plain,
+    };
+    for (const auto acquisition : { Acquisition::Read, Acquisition::Try, Acquisition::Plain }) {
+        RetainedTerminalSession session { TerminalSession::make() };
+        REQUIRE(session);
+        session->start(4, 20);
+        session->feedFloodBiteForTest(lines);
+        REQUIRE(session->isScrollLaneRunOpenForTest());
+        bool isOpen = true;
+        switch (acquisition) {
+        case Acquisition::Read:
+            session->lockForRead();
+            isOpen = session->terminal()->scrollLaneRun.active;
+            session->unlockForRead();
+            break;
+        case Acquisition::Try:
+            REQUIRE(session->tryLockForRead());
+            isOpen = session->terminal()->scrollLaneRun.active;
+            session->unlockForRead();
+            break;
+        case Acquisition::Plain: {
+            const std::lock_guard hold(*session->modelLockPointer());
+            isOpen = session->terminal()->scrollLaneRun.active;
+            break;
+        }
+        }
+        CHECK_MSG(!isOpen, "the reader found the run the bite left open");
+    }
+}
+
 // Each coalesced delivery is a hop to the frontend's thread, so deliveries ride
 // the display edge the sync-frame publish rides: half the refresh interval,
 // never under the floor.
