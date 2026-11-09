@@ -198,9 +198,9 @@ public:
     ///
     /// The floor constant assumed every display consumes at 240 Hz; a 60 or
     /// 120 Hz panel consumes half or a quarter of that, and each delivery is
-    /// a main-thread hop. Written by the frontend on display-rate edges (the
-    /// same edge that paces the sync-frame publish), read per pass on the
-    /// writer thread.
+    /// a main-thread hop. Written on display-rate edges by
+    /// ``TerminalSession::setSyncPublishRefreshSeconds``, the edge that paces
+    /// the sync-frame publish, and read per pass on the writer thread.
     ///
     /// - Parameter seconds: The interval; clamped to the floor.
     void setDeliverMinInterval(double seconds)
@@ -210,6 +210,11 @@ public:
             micros > drainDeliverMinIntervalMicros ? static_cast<std::uint32_t>(micros) : drainDeliverMinIntervalMicros,
             std::memory_order_relaxed);
     }
+
+    /// The least time between two coalesced deliveries.
+    ///
+    /// - Returns: Microseconds, never below ``drainDeliverMinIntervalMicros``.
+    [[nodiscard]] std::uint32_t deliverMinIntervalMicroseconds() const { return m_deliverMinIntervalMicros.load(std::memory_order_relaxed); }
 
     /// Creates the waker the watch set parks on.
     ///

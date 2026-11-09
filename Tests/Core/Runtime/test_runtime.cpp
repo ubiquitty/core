@@ -6009,6 +6009,24 @@ bool completesWhileTheModelIsHeld(TerminalSession& session, Query query)
 
 } // namespace
 
+// Each coalesced delivery is a hop to the frontend's thread, so deliveries ride
+// the display edge the sync-frame publish rides: half the refresh interval,
+// never under the floor.
+TEST(theDeliveryThrottleFollowsTheDisplayRefresh)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    CHECK_EQ(session->deliverMinIntervalMicroseconds(), drainDeliverMinIntervalMicros);
+    session->setSyncPublishRefreshSeconds(1.0 / 60.0);
+    CHECK_EQ(session->deliverMinIntervalMicroseconds(), 8'333u);
+    session->setSyncPublishRefreshSeconds(1.0 / 30.0);
+    CHECK_EQ(session->deliverMinIntervalMicroseconds(), 16'666u);
+    session->setSyncPublishRefreshSeconds(1.0 / 480.0);
+    CHECK_EQ(session->deliverMinIntervalMicroseconds(), drainDeliverMinIntervalMicros);
+    session->setSyncPublishRefreshSeconds(0.0);
+    CHECK_EQ(session->deliverMinIntervalMicroseconds(), drainDeliverMinIntervalMicros);
+}
+
 TEST(aHoldBudgetWithNoBlockOpenDoesNotWaitForTheModel)
 {
     RetainedTerminalSession session { TerminalSession::make() };
