@@ -435,7 +435,7 @@ private:
                 && (timeoutMilliseconds < 0 || timeoutMilliseconds > scrollbackFoldTickMilliseconds))
                 timeoutMilliseconds = scrollbackFoldTickMilliseconds;
             const bool wasFrameHeld = m_runtime.isFrameHeld();
-            if (const std::optional<std::uint64_t> untilHeldFrame = m_runtime.publishHeldFrameIfDue(m_host)) {
+            if (const std::optional<std::uint64_t> untilHeldFrame = m_runtime.publishHeldFrameIfDue(m_host, TerminalRuntime::HeldFrameWriter::Stopped)) {
                 // At least a millisecond: a frame due now was asked for above,
                 // and a wait of zero would spin on a refusal.
                 const int untilHeldFrameMilliseconds = static_cast<int>(std::clamp<std::uint64_t>((*untilHeldFrame + 999) / 1000, 1, ingestFallbackTickMilliseconds));
@@ -899,12 +899,21 @@ private:
         constexpr int passCapacity = TerminalRuntime::drainPassCapacityBytes;
         long passBytes = 0;
         std::uint32_t passStartMicros = PAL::monotonicMicros();
+        // The presentation budget runs while the frame stays held, across the
+        // passes a would-block closes: a writer the machine starves arrives in
+        // slices a nap apart, and restarting the budget at each slice's close
+        // keeps every pass short of it, so no pass is ever offered to the rule
+        // and the frame stays held for the whole flood. It restarts at a
+        // budgeted close, and while the ring is empty with no frame held.
+        std::uint32_t budgetStartMicros = passStartMicros;
         const auto finishPass = [&](DrainPassEnd end) {
             const DrainOutcome out = m_runtime.finishExternalDrainPass(m_host, static_cast<int>(passBytes), end);
             const std::uint32_t now = PAL::monotonicMicros();
             coalesce(out, pendingOutcome, havePendingOutcome, pendingIngestMicros, now - passStartMicros, now, lastDeliverMicros);
             passBytes = 0;
             passStartMicros = now;
+            if (end != DrainPassEnd::WouldBlock)
+                budgetStartMicros = now;
             m_runtime.applyPendingCommands(m_host);
             m_runtime.drainPendingWrite();
         };
@@ -912,7 +921,7 @@ private:
             if (passBytes >= passCapacity)
                 return DrainPassEnd::ByteBudget;
             const std::uint32_t presentationInterval = m_host.drainPassIntervalMicroseconds();
-            if (passBytes > 0 && presentationInterval && PAL::monotonicMicros() - passStartMicros >= presentationInterval)
+            if (passBytes > 0 && presentationInterval && PAL::monotonicMicros() - budgetStartMicros >= presentationInterval)
                 return DrainPassEnd::TimeBudget;
             return DrainPassEnd::None;
         };
@@ -931,6 +940,8 @@ private:
             if (available == 0) {
                 if (producerRaw & floodRingDoneBit)
                     break; // reader exited and the ring is drained
+                if (!m_runtime.isFrameHeld())
+                    budgetStartMicros = PAL::monotonicMicros();
                 // Ring empty across a whole nap with a partial pass in hand:
                 // close the pass now so its content delivers, rather than
                 // holding parsed bytes through the reader's quiet-poll
@@ -944,8 +955,8 @@ private:
                     continue;
                 }
                 // The writer paused exactly on a pass boundary: no partial pass
-                // is left to close, and the full one before it left the drain
-                // saturated, which holds the render off the live grid until the
+                // is left to close, and the budgeted one before it left the
+                // drain saturated, which holds the render off the live grid until the
                 // reader's quiet budget ends the burst. An empty pass reports the
                 // pause the way the sequential drain's empty read does, and its
                 // outcome joins the held one like any pass's: the bits it alone
@@ -974,7 +985,7 @@ private:
                 if (didNapOnEmptyRing && m_runtime.isFrameHeld() && !m_runtime.isIngestHeld()) {
                     const std::uint32_t now = PAL::monotonicMicros();
                     if (now - heldFrameAskedAt >= heldFrameWaitMicros) {
-                        const std::optional<std::uint64_t> due = m_runtime.publishHeldFrameIfDue(m_host);
+                        const std::optional<std::uint64_t> due = m_runtime.publishHeldFrameIfDue(m_host, TerminalRuntime::HeldFrameWriter::Writing);
                         heldFrameAskedAt = PAL::monotonicMicros();
                         // Match the sequential timer's bounded retry floor:
                         // a refusal that is already due must not spin.
