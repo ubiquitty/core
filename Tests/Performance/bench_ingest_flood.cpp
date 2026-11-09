@@ -8,7 +8,8 @@
 //
 //   bench_ingest_flood [--megabytes N] [--rows N] [--columns N] [--runs N]
 //                      [--scenario ascii_fill|scroll_plain] [--file PATH]
-//                      [--presented-hz N]
+//                      [--presented-hz N] [--line-width N]
+//                      [--protected-row] [--select]
 //                      [--find TEXT]
 //
 // Distinct from bench_drain, which builds a TerminalRuntime and a reader loop
@@ -33,6 +34,15 @@
 // presented one also ends a pass at its frame interval and copies the grid for
 // every frame it publishes, so only this lane measures the flood a person is
 // watching.
+//
+// --line-width N sets the scroll_plain line's width, 79 by default, so a wide
+// pane's rows are as full as a narrow one's. --protected-row opens the pane
+// with a marker on its top row and a scrolling region below it, so the flood
+// scrolls every row but that one, as a status line under a log does.
+// --select selects the marker before the flood, hands the selection to the
+// captures, and draws it over each frame taken, as the drive does: paired
+// with the same lane without it, on one binary, the difference is what a
+// standing selection costs the drain.
 
 #include "BenchHarness.h"
 
@@ -73,10 +83,10 @@ struct SessionHandle {
 // the pipe (tr over /dev/urandom) holds the loop far below what the same loop
 // drains from a file. Both scenarios push the same byte count and differ in
 // how many rows the parse retires.
-std::string writeFloodPayload(const std::string& scenario, long megabytes, std::string& path)
+std::string writeFloodPayload(const std::string& scenario, long megabytes, int lineWidth, std::string& path)
 {
     const long bytes = megabytes * 1024 * 1024;
-    path = "/tmp/ubq-bench-ingest-flood-" + scenario + "-" + std::to_string(megabytes) + ".txt";
+    path = "/tmp/ubq-bench-ingest-flood-" + scenario + "-" + std::to_string(megabytes) + "-" + std::to_string(lineWidth) + ".txt";
     std::FILE* file = std::fopen(path.c_str(), "wb");
     if (!file)
         return {};
@@ -84,7 +94,7 @@ std::string writeFloodPayload(const std::string& scenario, long megabytes, std::
     // lets the run writer batch and the grid wrap instead.
     std::string unit;
     if (scenario == "scroll_plain") {
-        unit.assign(79, 'x');
+        unit.assign(static_cast<std::size_t>(lineWidth), 'x');
         unit.push_back('\n');
     } else {
         unit.assign(4096, 'x');
@@ -123,11 +133,29 @@ SyncFrameCaptureGeometry presentedGeometry(int rows, int columns)
     return geometry;
 }
 
+// The pane's selection as the drive keeps it: handed to the captures before
+// each take, and drawn over each frame taken.
+struct ViewSelection {
+    Ubiquitty::Selection::Session session;
+    std::vector<Ubiquitty::Rendering::SelectionRowSpan> spans;
+    bool isSelected = false;
+    // Frames taken that drew the selection.
+    long drawnFrames = 0;
+
+    void drawOver(TerminalSession& terminalSession, const Ubiquitty::Rendering::FrameCapture& frame)
+    {
+        spans.resize(static_cast<std::size_t>(Ubiquitty::Selection::viewportSpanCapacity(frame.rows(), frame.columns())));
+        Ubiquitty::Selection::ViewportEnds ends;
+        const Ubiquitty::Selection::CaptureSpans answer = terminalSession.selectionOverCapture(&session, frame, spans, ends);
+        drawnFrames += answer.count > 0;
+    }
+};
+
 // Polls until the child's exit reaches the flags, accumulating what the loop
 // drained, and takes each published capture as the frame drive would.
 // Returns the byte count; `didExit` reports whether the budget held, and
 // `framesTaken` counts the captures taken.
-std::uint64_t drainUntilExit(TerminalSession& session, int budgetMilliseconds, bool& didExit, long& framesTaken)
+std::uint64_t drainUntilExit(TerminalSession& session, int budgetMilliseconds, bool& didExit, long& framesTaken, ViewSelection& selection)
 {
     std::uint64_t drained = 0;
     std::uint32_t flags = 0;
@@ -135,8 +163,12 @@ std::uint64_t drainUntilExit(TerminalSession& session, int budgetMilliseconds, b
     for (int waited = 0; waited < budgetMilliseconds; waited += 2) {
         flags |= session.takeEventFlags();
         drained += session.takeDrainedBytes();
+        if (selection.isSelected)
+            session.publishSelectionForCaptures(&selection.session);
         if (Ubiquitty::Rendering::FrameCapture* frame = session.takeSyncFrame()) {
             ++framesTaken;
+            if (selection.isSelected)
+                selection.drawOver(session, *frame);
             releaseFrameCapture(frame);
         }
         if (flags & exitedBit) {
@@ -162,6 +194,9 @@ int main(int argc, char** argv)
     std::string scenario = "ascii_fill";
     const char* floodFile = nullptr;
     int presentedHz = 0;
+    int lineWidth = 79;
+    bool hasProtectedRow = false;
+    bool shouldSelect = false;
     std::string findPattern;
     for (int i = 1; i < argc; ++i) {
         auto matches = [&](const char* flag) { return std::strcmp(argv[i], flag) == 0; };
@@ -179,6 +214,12 @@ int main(int argc, char** argv)
             floodFile = argv[++i];
         else if (matches("--presented-hz") && i + 1 < argc)
             presentedHz = std::atoi(argv[++i]);
+        else if (matches("--line-width") && i + 1 < argc)
+            lineWidth = std::atoi(argv[++i]);
+        else if (matches("--protected-row"))
+            hasProtectedRow = true;
+        else if (matches("--select"))
+            shouldSelect = true;
         else if (matches("--find") && i + 1 < argc)
             findPattern = argv[++i];
         else {
@@ -193,7 +234,7 @@ int main(int argc, char** argv)
     // An existing capture stands in for the generated payload, so a shape this
     // bench does not generate can still be put through the loop.
     const std::string command = floodFile ? (std::string("cat ") + floodFile)
-                                          : writeFloodPayload(scenario, megabytes, payloadPath);
+                                          : writeFloodPayload(scenario, megabytes, lineWidth, payloadPath);
     if (command.empty()) {
         std::fprintf(stderr, "bench_ingest_flood: the payload could not be written\n");
         return 1;
@@ -206,6 +247,7 @@ int main(int argc, char** argv)
     std::uint64_t drainedBytes = 0;
     long floodBursts = 0;
     long framesTaken = 0;
+    long selectedFrames = 0;
     std::uint64_t screenPublications = 0;
     bool didFail = false;
     const Timing timing = measure(1, runs, [&] {
@@ -239,6 +281,26 @@ int main(int argc, char** argv)
             session.setSyncPublishRefreshSeconds(1.0 / presentedHz);
             session.setSyncFrameCaptureGeometry(presentedGeometry(rows, columns));
         }
+        if (hasProtectedRow) {
+            const std::string marker = "\x1b[H\x1b[2Jprotected marker row\x1b[2;" + std::to_string(rows) + "r\x1b[" + std::to_string(rows) + ";1H";
+            session.feedBytes(ByteSpan(marker.data(), marker.size()));
+        }
+        ViewSelection selection;
+        Ubiquitty::Selection::init(selection.session);
+        if (shouldSelect) {
+            session.lockForRead();
+            if (Ubiquitty::Terminal* terminal = session.terminal()) {
+                Ubiquitty::Selection::beginGesture(selection.session, *terminal, 0, 0, 1, 0, {});
+                Ubiquitty::Selection::dragGesture(selection.session, *terminal, 0, 15, 0);
+                Ubiquitty::Selection::endGesture(selection.session);
+            }
+            session.unlockForRead();
+            selection.isSelected = Ubiquitty::Selection::hasSelection(selection.session);
+            if (!selection.isSelected) {
+                didFail = true;
+                return;
+            }
+        }
         if (!session.launchShellCommand(command.c_str())) {
             didFail = true;
             return;
@@ -249,7 +311,8 @@ int main(int argc, char** argv)
         }
         bool didExit = false;
         framesTaken = 0;
-        const std::uint64_t drained = drainUntilExit(session, 120'000, didExit, framesTaken);
+        const std::uint64_t drained = drainUntilExit(session, 120'000, didExit, framesTaken, selection);
+        selectedFrames = selection.drawnFrames;
         session.stopIngest();
         screenPublications = session.searchStatus().screenGeneration - initialScreenGeneration;
         const std::uint64_t expected = floodFile ? 0 : static_cast<std::uint64_t>(megabytes) * 1024 * 1024 / 2;
@@ -274,11 +337,17 @@ int main(int argc, char** argv)
     std::vector<Result> results;
     const std::string presentedSuffix = presentedHz > 0 ? "_presented_" + std::to_string(presentedHz) + "hz" : "";
     const std::string searchSuffix = findPattern.empty() ? "" : "_find_open";
-    results.push_back(throughput(std::string("ingest_flood_") + scenario + presentedSuffix + searchSuffix, static_cast<double>(drainedBytes), timing));
+    const std::string widthSuffix = lineWidth == 79 ? "" : "_width_" + std::to_string(lineWidth);
+    const std::string protectedRowSuffix = hasProtectedRow ? "_protected_row" : "";
+    const std::string selectionSuffix = shouldSelect ? "_selected" : "";
+    results.push_back(throughput(std::string("ingest_flood_") + scenario + widthSuffix + protectedRowSuffix + presentedSuffix + selectionSuffix + searchSuffix,
+        static_cast<double>(drainedBytes), timing));
     std::fprintf(stderr, "%-14s pipeline=%s  %ld flood burst(s)",
         scenario.c_str(), isPipelineDisarmed ? "disarmed" : "armed", floodBursts);
     if (presentedHz > 0)
         std::fprintf(stderr, "  presented at %d Hz, %ld frames taken", presentedHz, framesTaken);
+    if (shouldSelect)
+        std::fprintf(stderr, ", %ld drew the selection", selectedFrames);
     if (!findPattern.empty())
         std::fprintf(stderr, "  %llu screen search publications", static_cast<unsigned long long>(screenPublications));
     std::fprintf(stderr, "\n");
@@ -290,6 +359,8 @@ int main(int argc, char** argv)
     if (!isPipelineDisarmed && presentedHz == 0 && !witnessPathTaken(results.front().name.c_str(), "the flood ring", floodBursts))
         return 1;
     if (!findPattern.empty() && !witnessPathTaken(results.front().name.c_str(), "screen search maintenance", screenPublications))
+        return 1;
+    if (shouldSelect && !witnessPathTaken(results.front().name.c_str(), "a selection drawn over a captured frame", selectedFrames))
         return 1;
     emitJSON(results, "core", std::getenv("UBIQUITTY_BENCH_COMMIT"));
     return 0;
