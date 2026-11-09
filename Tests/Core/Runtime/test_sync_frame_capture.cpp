@@ -988,6 +988,48 @@ TEST(aThrottledBoundaryPublishesNothingUntilTheWindowReopens)
     CHECK_EQ(frame->cursorColumn(), static_cast<int>("shownquiet!"sv.size()));
 }
 
+// A saturated drain publishes once per window, so a tick that took the newest
+// capture inside that window owes nothing until the next one; a tick that comes
+// a window or more after it would leave the glass waiting on a missed publish.
+TEST(aSaturatedTickSkipsTheLiveReadOnlyWithinAWindowOfTheNewestCapture)
+{
+    SessionFixture fixture(6, 20);
+    REQUIRE(fixture.isReady);
+    fixture.session->setSyncFrameCaptureGeometry(testGeometry());
+    fixture.drainSyncFrame("ready");
+    REQUIRE(TakenFrame(fixture.session->takeSyncFrame()));
+    fixture.session->setSyncPublishRefreshSeconds(1.0 / 60.0);
+    constexpr std::uint32_t publishWindowMicroseconds = 1'000'000 / 120;
+    // A capture younger than a window, but no saturation: the tick reads live.
+    CHECK(!fixture.session->isDrainSaturated());
+    CHECK(!fixture.session->shouldSkipLiveReadForSaturation());
+
+    // Each scripted read outlasts the pass budget, so every pass ends on time
+    // with the writer ahead and publishes its frame.
+    fixture.stream->readMicroseconds = 10'000;
+    const auto floodPass = [&](std::string_view bytes) {
+        const auto publicationsBefore = fixture.session->syncFramePublicationCount();
+        fixture.stream->toRead += bytes;
+        CHECK(fixture.session->drain().end == Runtime::DrainPassEnd::TimeBudget);
+        REQUIRE(fixture.session->isDrainSaturated());
+        REQUIRE(fixture.session->syncFramePublicationCount() == publicationsBefore + 1);
+        REQUIRE(TakenFrame(fixture.session->takeSyncFrame()));
+    };
+
+    floodPass("\x1b[Hfirst");
+    CHECK(fixture.session->shouldSkipLiveReadForSaturation());
+    PAL::s_testMicroseconds += publishWindowMicroseconds - 100;
+    CHECK(fixture.session->shouldSkipLiveReadForSaturation());
+    PAL::s_testMicroseconds += 100;
+    CHECK(!fixture.session->shouldSkipLiveReadForSaturation());
+
+    // The age is the newest capture's, not the first one's.
+    floodPass("\x1b[Hsecond");
+    CHECK(fixture.session->shouldSkipLiveReadForSaturation());
+    PAL::s_testMicroseconds += publishWindowMicroseconds;
+    CHECK(!fixture.session->shouldSkipLiveReadForSaturation());
+}
+
 TEST(consecutiveTakesAlternateBuffersSoTheHeldFrameSurvivesTheNextCapture)
 {
     SessionFixture fx(24, 80);

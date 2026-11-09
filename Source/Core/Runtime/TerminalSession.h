@@ -6197,6 +6197,35 @@ public:
     /// ``TerminalRuntime::isDrainSaturated``.
     [[nodiscard]] bool isDrainSaturated() const { return m_runtime->isDrainSaturated(); }
 
+    /// Whether a render tick that found no capture waiting in the sync slot
+    /// may present nothing rather than read the live model.
+    ///
+    /// True only while the drain is saturated and its newest published capture
+    /// is younger than one publish window: a saturated drain publishes once per
+    /// window, so the next capture is not yet due and the glass already shows
+    /// one that recent. Past the window the drain has missed a publish, and
+    /// the tick reads the model so the glass does not wait for it.
+    ///
+    /// The window is half the presentation refresh interval and the link ticks
+    /// once per interval. A tick on the link's cadence that finds no capture
+    /// waiting comes at least an interval after the newest one was published,
+    /// since the tick before it took that capture, so in practice such a tick
+    /// reads the live model, as a frontend that never skips would. Only a
+    /// tick inside the window of a publish, such as a re-ask off the link's
+    /// cadence, is skipped.
+    ///
+    /// Reads atomics only, so asking never waits for the model lock.
+    ///
+    /// - Returns: Whether the tick may skip the live read and wait for the
+    ///   drain's next capture.
+    [[nodiscard]] bool shouldSkipLiveReadForSaturation() const
+    {
+        if (!m_runtime->isDrainSaturated() || !m_syncFramePublicationCount.load(std::memory_order_acquire))
+            return false;
+        const std::uint32_t age = PAL::monotonicMicros() - m_lastSyncFramePublicationMicroseconds.load(std::memory_order_relaxed);
+        return age < m_host.frameIntervalMicroseconds();
+    }
+
     /// Whether the launch is still holding the child's output for the screen
     /// the window opens with; see ``OpeningScreen``.
     [[nodiscard]] bool isOpeningHoldActive() const { return m_runtime->isOpeningHoldActive(); }
@@ -9486,7 +9515,8 @@ private:
         m_nextSyncFrameSequence = m_nextSyncFrameSequence == std::numeric_limits<std::uint64_t>::max()
             ? 1
             : m_nextSyncFrameSequence + 1;
-        m_syncFramePublicationCount.fetch_add(1, std::memory_order_relaxed);
+        m_lastSyncFramePublicationMicroseconds.store(PAL::monotonicMicros(), std::memory_order_relaxed);
+        m_syncFramePublicationCount.fetch_add(1, std::memory_order_release);
         m_syncSlot.captured(target);
     }
 
@@ -13089,6 +13119,9 @@ private:
     // capture and on the drive's by the live one.
     std::atomic<std::uint32_t> m_bellFlashStartTick { 0 };
     std::atomic<std::uint64_t> m_syncFramePublicationCount { 0 };
+    // When the newest capture was published, on the host's publish clock;
+    // meaningful once the publication count is nonzero, which is stored after it.
+    std::atomic<std::uint32_t> m_lastSyncFramePublicationMicroseconds { 0 };
     std::atomic<std::uint64_t> m_syncFrameNoSlotCount { 0 };
     std::atomic<std::uint64_t> m_syncFrameBoundaryAnnounceCount { 0 };
     std::uint64_t m_wideLinkScanCount = 0;
