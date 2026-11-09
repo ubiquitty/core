@@ -49,6 +49,7 @@
 #include "Core/RichText/Blocks.h"
 #include "Core/Runtime/DrainHostPacing.h"
 #include "Core/Runtime/FrameDriver.h"
+#include "Core/Runtime/FrameSupply.h"
 #include "Core/Runtime/HostDirectory.h"
 #include "Core/Runtime/HostDirectoryClient.h"
 #include "Core/Runtime/HostOutline.h"
@@ -5001,33 +5002,7 @@ public:
     /// between them on its own. Takes the model lock for the block's stamp.
     /// A block this check expires is published under that lock, and the host
     /// is woken to its screen change once the lock is let go.
-    [[nodiscard]] bool shouldWithholdFrame(Ticks nowTicks)
-    {
-        if (m_runtime->isFrameHeld() && !m_runtime->isDrainSaturated())
-            return true;
-        // The decision stamps the block on first sight and expires it, so it
-        // writes the model and must hold the lock to do it. Whether there is a
-        // block at all is published: the writer raises `syncHoldActive` on the
-        // drain that opened one, and the frame that would show it runs after
-        // that delivery. A frame drawn with no block open therefore owes the
-        // parser no handoff to be told so -- and this is asked once per frame,
-        // on the thread the parser is contending with. An adopted terminal is
-        // parsed by its owner, whose drain does not publish this session's
-        // snapshot, so only the model can say.
-        if (!m_externalTerminal && !readSnapshot().syncHoldActive)
-            return m_runtime->shouldWithholdPresentation(nullptr, nowTicks, PAL::monotonicMicros());
-        CaptureWithhold withhold;
-        {
-            const std::scoped_lock hold(*m_activeLock);
-            auto* terminal = modelTerm();
-            if (!terminal)
-                return m_runtime->shouldWithholdPresentation(nullptr, nowTicks, PAL::monotonicMicros());
-            withhold = withholdCapture(*terminal, nowTicks);
-        }
-        if (withhold.didExpireBlock)
-            signalDrain();
-        return withhold.isHeld;
-    }
+    [[nodiscard]] bool shouldWithholdFrame(Ticks nowTicks) { return frameHold(nowTicks) != FrameDecline::None; }
 
     /// The capture's recheck of ``shouldWithholdFrame``, under the model lock
     /// the caller holds for the capture.
@@ -6851,6 +6826,85 @@ public:
         settleOwedSyncRows(*capture);
         capture->swiftReferences.fetch_add(1, std::memory_order_relaxed);
         return capture;
+    }
+
+    /// The frame a view presents at one display tick, and the route it takes
+    /// to the glass.
+    ///
+    /// The whole per-tick decision, asked once per tick by the view whose
+    /// geometry the captures are registered for, after it registered any
+    /// change: a registration discards the frames it supersedes. In order:
+    ///
+    /// 1. The view's selection is handed to the frames the drain captures
+    ///    from here on (``publishSelectionForCaptures``).
+    /// 2. The newest frame the drain captured is taken, unless the view keeps
+    ///    search live, and returned with the selection the drain resolved for
+    ///    it written to the demand's buffer (``selectionOverCapture``):
+    ///    ``FrameRoute::Captured``.
+    /// 3. With none waiting, a view that is not being resized is declined
+    ///    while the coherence rule, an open synchronized update or an erase's
+    ///    arriving redraw holds the frame (``shouldWithholdFrame``).
+    /// 4. A view that does not keep search live is declined while a saturated
+    ///    drain's next capture is due inside the publish window
+    ///    (``shouldSkipLiveReadForSaturation``).
+    /// 5. Otherwise the view reads the model: ``FrameRoute::LiveRead``.
+    ///
+    /// Reads published state only, with one exception kept from the withhold
+    /// it ports: while a synchronized update is open, or for a terminal another
+    /// session parses, step 3 judges the block under the model lock.
+    ///
+    /// - Parameters:
+    ///   - demand: The view's facts at this tick.
+    ///   - supply: Receives the route, the reason for a decline, and a
+    ///     captured frame's selection.
+    /// - Returns: The captured frame, with a reference the caller owns, on
+    ///   ``FrameRoute::Captured``; null otherwise.
+    [[nodiscard]] Rendering::FrameCapture* takeFrame(const FrameDemand& demand, FrameSupply& supply) UBIQUITTY_RETURNS_RETAINED
+    {
+        supply = {};
+        publishSelectionForCaptures(demand.selection);
+        if (!demand.keepsSearchLive) {
+            if (Rendering::FrameCapture* capture = takeSyncFrame()) {
+                supply.route = FrameRoute::Captured;
+                supply.selection = selectionOverCapture(demand.selection, *capture, demand.selectionSpans, supply.selectionEnds);
+                return capture;
+            }
+        }
+        if (!demand.isResizing) {
+            supply.decline = frameHold(demand.nowTicks);
+            if (supply.decline != FrameDecline::None)
+                return nullptr;
+        }
+        if (!demand.keepsSearchLive && shouldSkipLiveReadForSaturation()) {
+            supply.decline = FrameDecline::AwaitingCapture;
+            return nullptr;
+        }
+        supply.route = FrameRoute::LiveRead;
+        return nullptr;
+    }
+
+    /// The live read's own check, under the model lock the caller holds for
+    /// it, after ``takeFrame`` answered ``FrameRoute::LiveRead``.
+    ///
+    /// The published check ran before the lock was taken, and the parser can
+    /// open a synchronized update or erase the screen between the two. A view
+    /// being resized is held only by an open update and by the redraw behind
+    /// a whole-screen erase; any other view by everything
+    /// ``shouldWithholdCapture`` holds.
+    ///
+    /// - Parameters:
+    ///   - terminal: The model, borrowed under the caller's lock.
+    ///   - demand: The demand ``takeFrame`` answered.
+    /// - Returns: Why the read presents nothing, or ``FrameDecline::None``.
+    [[nodiscard]] FrameDecline liveReadDecline(Ubiquitty::Terminal& terminal, const FrameDemand& demand)
+    {
+        const bool isHeld = demand.isResizing ? Modes::SyncOutput::shouldWithholdFrame(terminal, demand.nowTicks)
+                                              : shouldWithholdCapture(terminal, demand.nowTicks);
+        if (isHeld)
+            return FrameDecline::BlockOpenUnderLock;
+        if (demand.isResizing && isEraseRedrawArriving(terminal))
+            return FrameDecline::RedrawArriving;
+        return FrameDecline::None;
     }
 
     /// Boundary frames replaced by a newer capture before a drain — the judder
@@ -9579,6 +9633,43 @@ private:
     // runtime — which holds a checked pointer to this sink — dies first.
     FlagSink m_events;
     std::atomic<bool> m_frameReady { false };
+
+    /// What holds a view's frame off the glass, by the published check
+    /// ``shouldWithholdFrame`` and ``takeFrame`` share.
+    ///
+    /// A saturated drain is not held for the rule: its frames are the
+    /// captures each full pass publishes. The block's stamp is taken under the
+    /// model lock only while a block is open or the terminal is adopted.
+    ///
+    /// - Parameter nowTicks: Now, on the 60 Hz monotonic clock.
+    /// - Returns: The hold, or ``FrameDecline::None``.
+    [[nodiscard]] FrameDecline frameHold(Ticks nowTicks)
+    {
+        if (m_runtime->isFrameHeld() && !m_runtime->isDrainSaturated())
+            return FrameDecline::HeldByCoherence;
+        // The decision stamps the block on first sight and expires it, so it
+        // writes the model and must hold the lock to do it. Whether there is a
+        // block at all is published: the writer raises `syncHoldActive` on the
+        // drain that opened one, and the frame that would show it runs after
+        // that delivery. A frame drawn with no block open therefore owes the
+        // parser no handoff to be told so -- and this is asked once per frame,
+        // on the thread the parser is contending with. An adopted terminal is
+        // parsed by its owner, whose drain does not publish this session's
+        // snapshot, so only the model can say.
+        if (!m_externalTerminal && !readSnapshot().syncHoldActive)
+            return m_runtime->shouldWithholdPresentation(nullptr, nowTicks, PAL::monotonicMicros()) ? FrameDecline::HeldByPresentation : FrameDecline::None;
+        CaptureWithhold withhold;
+        {
+            const std::scoped_lock hold(*m_activeLock);
+            if (auto* terminal = modelTerm())
+                withhold = withholdCapture(*terminal, nowTicks);
+            else
+                withhold.isHeld = m_runtime->shouldWithholdPresentation(nullptr, nowTicks, PAL::monotonicMicros());
+        }
+        if (withhold.didExpireBlock)
+            signalDrain();
+        return withhold.isHeld ? FrameDecline::HeldByPresentation : FrameDecline::None;
+    }
 
     /// Captures the completed boundary frame into the slot's free buffer.
     ///
