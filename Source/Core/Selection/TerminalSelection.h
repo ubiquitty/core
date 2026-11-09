@@ -379,14 +379,18 @@ void selectBetweenPoints(Session& session, Terminal& terminal, double fromX, dou
 /// Applies one output transition without ever waiting for the model lock.
 ///
 /// The per-drain path of every threaded frontend, which a flood's parser
-/// holds the lock against: with nothing selected and no gesture open the
-/// verdict comes from the published `history`, the mode read under a
-/// try-lock so a drain that finds the lock busy holds rather than stalls
-/// (Indeterminate holds, the non-disruptive answer for a reader part-way up
-/// their history). A selection, an open gesture or a logical viewport is
-/// judged against the terminal itself when the try takes the lock. When it
-/// does not, the viewport is judged from `history` the same way, and the
-/// selection's rebase and the open gesture's re-evaluation wait for the next
+/// holds the lock against. The verdict comes from the published `history`;
+/// with nothing selected the mode is read under a try-lock, so a drain that
+/// finds the lock busy holds rather than stalls (Indeterminate holds, the
+/// non-disruptive answer for a reader part-way up their history). A standing
+/// selection holds a view back in the history and is left to what draws it:
+/// the live read synchronizes it as it draws, and each boundary capture
+/// resolves it (``resolveForCapture``), so the transition moves nothing in
+/// the session but the view's position. An open gesture, or a view that
+/// keeps a logical anchor, is judged against the terminal itself when the
+/// try takes the lock, and the session's selection is synchronized with it.
+/// When it does not, the viewport is judged from `history` the same way, and
+/// the synchronization and the gesture's re-evaluation wait for the next
 /// call that takes the lock; neither depends on the growth in between.
 ///
 /// - Parameters:

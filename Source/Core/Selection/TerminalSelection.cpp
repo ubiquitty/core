@@ -1934,7 +1934,11 @@ OutputUpdate updateAfterOutput(Session& session, Terminal& terminal, int viewOff
 
 OutputUpdate updateAfterOutput(Session& session, Terminal& terminal, ModelLock& modelLock, int viewOffset, const Screen::HistoryFacts& history) noexcept
 {
-    if (needsOutputEvaluation(session) || session.usesLogicalViewport) {
+    // A standing selection is synchronized by whatever draws it: the live
+    // read as it draws, and the drain at each capture, whose resolved session
+    // the view takes back. An open gesture's head and a logical viewport's
+    // anchor are this transition's alone.
+    if (session.gesture.isOpen || session.usesLogicalViewport) {
         const std::unique_lock hold(modelLock, std::try_to_lock);
         if (hold.owns_lock())
             return updateAfterOutput(session, terminal, viewOffset);
@@ -1945,8 +1949,11 @@ OutputUpdate updateAfterOutput(Session& session, Terminal& terminal, ModelLock& 
         update.viewport = viewportAfterOutput(session, viewOffset, Input::OutputSnapPolicy::Indeterminate, history);
         return update;
     }
+    const Input::SelectionPresence presence = Selection::hasSelection(&session.state)
+        ? Input::SelectionPresence::Present
+        : Input::SelectionPresence::Absent;
     Input::OutputSnapPolicy snapPolicy = Input::OutputSnapPolicy::Indeterminate;
-    if (Input::isSnapPolicyConsulted(Input::SelectionPresence::Absent, viewOffset)) {
+    if (Input::isSnapPolicyConsulted(presence, viewOffset)) {
         const std::unique_lock hold(modelLock, std::try_to_lock);
         if (hold.owns_lock())
             snapPolicy = outputSnapPolicy(session, terminal, viewOffset);

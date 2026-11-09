@@ -245,6 +245,7 @@ Source/Core/Security/AgentPolicy.cpp
 Source/Core/Security/InjectionGate.cpp
 Source/Core/Selection/CopyClipboard.cpp
 Source/Core/Selection/Selection.cpp
+Source/Core/Selection/SelectionOverCapture.cpp
 Source/Core/Selection/SelectionSpans.cpp
 Source/Core/Selection/StyledClipboard.cpp
 Source/Core/Selection/TerminalSelection.cpp

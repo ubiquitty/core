@@ -81,6 +81,7 @@
 #include "Core/Security/StructureConsentText.h"
 #include "Core/Selection/CopyClipboard.h"
 #include "Core/Selection/Selection.h"
+#include "Core/Selection/SelectionOverCapture.h"
 #include "Core/Selection/TerminalSelection.h"
 #include "Core/Session/DeployPolicy.h"
 #include "Core/Session/FileLink.h"
@@ -5074,11 +5075,13 @@ public:
     ///
     /// A boundary capture still waiting in the slot drained the grid and
     /// advanced that baseline, and the target never received it: the drive
-    /// takes the live route over a waiting capture whenever a selection is on
-    /// screen. Its rows, and any scroll it acknowledged, are in that capture
-    /// and nowhere else, and the capture is older than the frame about to be
-    /// drawn, so presenting it later would put older rows over newer ones.
-    /// The capture is retired here and this frame plans whole.
+    /// takes the live route over a waiting capture when the frame draws search
+    /// tiers, which a boundary capture is built without, and a capture can
+    /// land between the drive finding the slot empty and this plan. Its rows,
+    /// and any scroll it acknowledged, are in that capture and nowhere else,
+    /// and the capture is older than the frame about to be drawn, so
+    /// presenting it later would put older rows over newer ones. The capture
+    /// is retired here and this frame plans whole.
     [[nodiscard]] Rendering::RetainedFramePlan planRetainedFrame(Ubiquitty::Terminal& terminal,
         const Rendering::RetainedFrameRequest& request, Rendering::RowDirtySpan rowDirty)
     {
@@ -8341,6 +8344,56 @@ public:
         return Ubiquitty::Selection::updateAfterOutput(*selection, *term, *m_activeLock, static_cast<int>(viewOffset), history);
     }
 
+    /// Hands the view's selection to the frames the drain captures from here
+    /// on, without the model lock.
+    ///
+    /// The drain reads the latest hand-off at each boundary capture and
+    /// resolves it there, against the terminal the frame freezes, by the
+    /// evaluation the live read runs (``Selection::resolveForCapture``). A
+    /// selection unchanged since the last hand-off, or since the view took a
+    /// frame's resolved one back, hands nothing over. Called on the
+    /// frontend's thread, by the view whose geometry the captures are
+    /// registered for, after anything that may have moved its selection and
+    /// before it takes a frame.
+    ///
+    /// - Parameter selection: The caller-owned selection session.
+    void publishSelectionForCaptures(const Ubiquitty::Selection::Session* selection)
+    {
+        if (selection && Ubiquitty::Selection::prepareHandOff(*selection, m_selectionHandedOff))
+            m_selectionForCaptures.publish(m_selectionHandedOff);
+    }
+
+    /// The selection a taken boundary frame shows, resolved when the drain
+    /// captured it, without the model lock.
+    ///
+    /// The spans are the frame's: the selection as it stood at the capture,
+    /// resolved against the terminal the frame froze. A selection the view
+    /// left unchanged since the hand-off the frame resolved is brought up to
+    /// what output did to it there (``Selection::takeCapturedSelection``). A
+    /// capture this session's slot did not hand out shows no selection.
+    ///
+    /// - Parameters:
+    ///   - selection: The caller-owned selection session.
+    ///   - capture: A frame from ``takeSyncFrame``, still held.
+    ///   - out: Receives the spans, in the frame's visible rows; a buffer of
+    ///     ``Selection::viewportSpanCapacity`` spans for the frame always has
+    ///     room.
+    ///   - ends: Receives where the selection begins and ends on the frame.
+    /// - Returns: How many spans were written, the outcome, and whether the
+    ///   view took the resolved session.
+    [[nodiscard]] Ubiquitty::Selection::CaptureSpans selectionOverCapture(Ubiquitty::Selection::Session* selection,
+        const Rendering::FrameCapture& capture, Ubiquitty::Selection::ViewportSpans out, Ubiquitty::Selection::ViewportEnds& ends)
+    {
+        ends = {};
+        if (!selection)
+            return {};
+        for (std::size_t index = 0; index < m_syncCaptures.size(); ++index) {
+            if (m_syncCaptures[index] == &capture)
+                return Ubiquitty::Selection::takeCapturedSelection(*selection, m_selectionHandedOff, m_syncSelections[index], out, ends);
+        }
+        return {};
+    }
+
     /// Selects the whole buffer, under the model lock.
     ///
     /// - Parameter selection: The caller-owned selection session.
@@ -9498,6 +9551,12 @@ private:
         } else {
             oweAllSyncRows();
         }
+        // The view's selection, resolved against the terminal this frame
+        // freezes. Its rich text cuts are drawn with the blocks, which the
+        // capture lays out now; its spans are the slot's, drawn over the
+        // frame by the view.
+        options.richTextSelectionCount = resolveSelectionForCapture(*term, options.viewOffset, m_syncSelections[static_cast<std::size_t>(target)]);
+        options.richTextSelections = Ubiquitty::Selection::BlockSelections(m_syncBlockSelections);
         Rendering::FrameRecordHeader header;
         header.sequence = m_nextSyncFrameSequence;
         header.baseSequence = isDelta ? m_lastSyncFrameSequence : 0;
@@ -9518,6 +9577,31 @@ private:
         m_lastSyncFramePublicationMicroseconds.store(PAL::monotonicMicros(), std::memory_order_relaxed);
         m_syncFramePublicationCount.fetch_add(1, std::memory_order_release);
         m_syncSlot.captured(target);
+    }
+
+    /// Resolves the latest hand-off of the view's selection for the frame
+    /// being captured, on the ingest thread under the model lock.
+    ///
+    /// The drain keeps its own copy of the hand-off and carries it from
+    /// capture to capture, as the live read carries the view's session from
+    /// frame to frame; a new hand-off replaces it.
+    ///
+    /// - Parameters:
+    ///   - term: The terminal the frame is captured from.
+    ///   - viewOffset: The rows the frame is scrolled back.
+    ///   - out: The capture target's selection.
+    /// - Returns: How many rich text cuts ``m_syncBlockSelections`` holds.
+    int resolveSelectionForCapture(Ubiquitty::Terminal& term, int viewOffset, Ubiquitty::Selection::CapturedSelection& out)
+    {
+        const std::uint64_t version = m_selectionForCaptures.version();
+        if (version != m_selectionForCapturesVersionSeen) {
+            m_selectionForCapturesVersionSeen = version;
+            const Ubiquitty::Selection::PublishedSelection published = m_selectionForCaptures.read();
+            if (published.generation != m_selectionAtCapture.generation)
+                m_selectionAtCapture = published;
+        }
+        return Ubiquitty::Selection::resolveForCapture(m_selectionAtCapture, term, viewOffset, out,
+            Ubiquitty::Selection::BlockSelections(m_syncBlockSelections));
     }
 
     // Geometry the boundary capture reads; guarded by the model lock, written
@@ -13019,6 +13103,23 @@ private:
     // thread can write without waiting for either.
     std::array<Rendering::FrameCapture*, SyncFrameSlot::slotCount> m_syncCaptures {};
     SyncFrameSlot m_syncSlot;
+    // Each capture's view selection, resolved with it: written with the
+    // capture into the slot's free buffer under the model lock, and read by
+    // the frontend only while it holds that capture, which no capture
+    // rewrites.
+    std::array<Ubiquitty::Selection::CapturedSelection, SyncFrameSlot::slotCount> m_syncSelections {};
+    // The capture's rich text cuts, borrowed by the capture call alone; the
+    // ingest thread's, under the model lock.
+    std::array<Ubiquitty::RichText::BlockSelection, 2 * Ubiquitty::RichText::maxBlocksPerScreen> m_syncBlockSelections {};
+    // The view's selection handed to the captures: one writer, the frontend's
+    // thread in publishSelectionForCaptures; read at each capture.
+    SnapshotPublisher<Ubiquitty::Selection::PublishedSelection> m_selectionForCaptures;
+    // The frontend's record of its last hand-off; the frontend's thread only.
+    Ubiquitty::Selection::PublishedSelection m_selectionHandedOff;
+    // The drain's copy of the hand-off, carried from capture to capture, and
+    // the publication it last read; the ingest thread's, under the model lock.
+    Ubiquitty::Selection::PublishedSelection m_selectionAtCapture;
+    std::uint64_t m_selectionForCapturesVersionSeen = 0;
     /// Settles that found a standing capture and replaced it rather than
     /// announcing over it. A rising count with no lingering glyph is the
     /// replacement doing its work; the same count against a visible linger

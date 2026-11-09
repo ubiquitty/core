@@ -816,6 +816,7 @@ bool TerminalFrameInputs::captureSource(const FrameSource& source, const Termina
     // baked and is now cleared still owes the rows it covered.
     const SelectionFill selection = selectionFillFor(options, source.hasSelectionBackground,
         source.selectionBackgroundRed, source.selectionBackgroundGreen, source.selectionBackgroundBlue);
+    m_selectionFill = selection;
     if (!m_selectionSpans.empty() || options.richTextSelectionCount > 0) {
         m_inputs.selectionColor = selection.color;
         m_inputs.isSelectionBehindText = selection.isBehindText;

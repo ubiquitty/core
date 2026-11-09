@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#include "Core/Rendering/FrameDamage.h"
 #include "Core/Rendering/OverlayGeometry.h"
 #include "Core/Terminal.h"
 
@@ -22,8 +23,6 @@
 // Core.
 
 namespace Ubiquitty::Rendering {
-
-struct FrameDamage;
 
 /// The selection a frame drew behind its text, kept for the next frame's
 /// comparison.
@@ -56,6 +55,31 @@ struct BakedSelection {
 ///   - rowDirty: The frame's dirty rows; entries past its end are not marked.
 void markBakedSelectionRows(BakedSelection& held, std::span<const SelectionRowSpan> spans, Vec4 color,
     const FrameDamage& damage, std::span<std::uint8_t> rowDirty);
+
+/// A selection's row spans, read.
+///
+/// Named rather than spelled `std::span<const SelectionRowSpan>` because the
+/// Swift importer has no spelling for the extent template parameter.
+using DrawnSelectionSpans = std::span<const SelectionRowSpan>;
+
+/// The rows a selection drawn behind the text owes a retained target, for a
+/// caller that keeps the held selection in its own storage.
+///
+/// The rule ``markBakedSelectionRows`` applies, without recording anything:
+/// every row of `heldSpans` and of `spans` once anything differs between them
+/// or `damage` scrolls the held ones, the held rows marked where they stood
+/// and where the scroll carried them. Nothing when the two are the same
+/// selection.
+///
+/// - Parameters:
+///   - heldSpans: The selection the target holds, in its visible rows.
+///   - heldColor: The fill it was drawn in.
+///   - spans: The selection this frame draws behind the text.
+///   - color: The fill they are drawn in.
+///   - damage: This frame's scroll of the target.
+///   - rowDirty: The rows to mark; entries past its end are not marked.
+void markSelectionRepaintRows(DrawnSelectionSpans heldSpans, Vec4 heldColor, DrawnSelectionSpans spans, Vec4 color,
+    const FrameDamage& damage, RowBytesToWrite rowDirty);
 
 /// Collects the focused search match's per-row spans in visible-grid
 /// coordinates.
