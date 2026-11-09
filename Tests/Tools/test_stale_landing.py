@@ -29,7 +29,7 @@ class StaleLandingTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="ubq-stale-landing-test-")
         self.addCleanup(self.directory.cleanup)
-        self.root = Path(self.directory.name)
+        self.root = Path(self.directory.name).resolve()
         self.environment = dict(os.environ, **IDENTITY)
         self.git("init", "-q", "-b", "main")
         self.write("a.txt", "alpha\nbeta\n")
@@ -124,7 +124,7 @@ class MergePRTargetTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="ubq-merge-pr-test-")
         self.addCleanup(self.directory.cleanup)
-        self.root = Path(self.directory.name)
+        self.root = Path(self.directory.name).resolve()
         self.log = self.root / "gh.jsonl"
         self.bin = self.root / "bin"
         self.bin.mkdir()

@@ -22,7 +22,7 @@ class TestDriverTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="ubiquitty-driver-contract-")
         self.addCleanup(self.temporary.cleanup)
-        self.directory = Path(self.temporary.name)
+        self.directory = Path(self.temporary.name).resolve()
         self.repository = self.directory / "checkout with spaces"
         self.repository.mkdir()
         (self.repository / "CMakeLists.txt").write_text("# copied Core driver fixture\n")
