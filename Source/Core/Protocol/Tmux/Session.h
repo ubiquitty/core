@@ -185,8 +185,9 @@ public:
     // Pane's content lock). Order: m_mutex < PaneLock; never take a PaneLock
     // while holding m_mutex. Exposed so a frontend can bracket a multi-step
     // read (e.g. the layout reconcile) against concurrent deliver-path lookups.
-    // A PaneLock for its handoff to a waiting reader, it guards no model, so its
-    // bracket grants the thread-safety analysis no model-lock role.
+    // It guards no model, so it is a plain mutex and grants no model-lock
+    // role; the bracket is held across calls, which the analysis does not
+    // follow.
     void lockStructure() UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_mutex.lock(); }
     void unlockStructure() UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_mutex.unlock(); }
 
@@ -236,7 +237,7 @@ private:
     Unicode::Width::AmbiguousWidth m_paneAmbiguousWidth = Unicode::Width::AmbiguousWidth::Narrow; // under m_mutex; installed on each new pane's terminal
     std::optional<Pane::PaletteSeed> m_panePaletteSeed;
     CapabilityOrigin m_paneCapabilityOrigin = CapabilityOrigin::Local;
-    PaneLock m_mutex; // structural lock over m_windows / each Window's panes
+    std::mutex m_mutex; // structural lock over m_windows / each Window's panes
 };
 
 } // namespace Ubiquitty::Protocol::Tmux
