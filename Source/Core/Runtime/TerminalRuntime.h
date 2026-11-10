@@ -2003,6 +2003,11 @@ private:
     ///
     /// - Parameter term: The terminal.
     void publishCoherentColors(const Ubiquitty::Terminal& term);
+    /// Publishes the model's title and working directory when either differs
+    /// from what was last published. The caller holds the model lock.
+    ///
+    /// - Parameter term: The model whose texts are published.
+    void publishTitleFacts(const Ubiquitty::Terminal& term);
 
     /// Counts a DECSET 2026 close the parser stopped at, and publishes the
     /// colours of the frame it completes.
@@ -2401,6 +2406,8 @@ private:
     /// close compares before it reads and publishes them again. Under the
     /// model lock.
     std::uint64_t m_coherentColorsEpoch = 0;
+    TitleFacts m_publishedTitleFacts; // what `titleFacts` holds, to publish only a change
+    bool m_hasPublishedTitleFacts = false;
     // When the pane's frame may be announced: the rule the daemon publishes
     // by. Pacing is the drain host's (PacedDrainHost throttles to the
     // display's rate), so the rule paces no flood of its own here. Writer-thread
