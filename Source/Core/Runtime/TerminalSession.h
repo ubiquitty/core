@@ -5039,6 +5039,7 @@ public:
     [[nodiscard]] Rendering::RetainedFramePlan planRetainedFrame(Ubiquitty::Terminal& terminal,
         const Rendering::RetainedFrameRequest& request, Rendering::RowDirtySpan rowDirty) UBIQUITTY_REQUIRES(modelLockRole)
     {
+        foldCaptureRegistrations();
         if (m_frameLane.retireReady())
             m_retainedBaseline = {};
         return Rendering::planRetainedFrame(terminal, m_retainedBaseline, request, rowDirty);
@@ -5051,6 +5052,7 @@ public:
     [[nodiscard]] Rendering::RetainedFramePlan planSkippedGridFrame(Ubiquitty::Terminal& terminal,
         const Rendering::RetainedFrameRequest& request, Rendering::RowDirtySpan rowDirty) UBIQUITTY_REQUIRES(modelLockRole)
     {
+        foldCaptureRegistrations();
         return Rendering::planSkippedGridFrame(terminal, m_retainedBaseline, request, rowDirty);
     }
 
@@ -5059,6 +5061,7 @@ public:
     /// - Parameter terminal: The model whose baseline is dropped.
     void invalidateRetainedFrame(Ubiquitty::Terminal& terminal) UBIQUITTY_REQUIRES(modelLockRole)
     {
+        foldCaptureRegistrations();
         Rendering::invalidateRetainedFrame(terminal, m_retainedBaseline);
     }
 
@@ -6665,27 +6668,28 @@ public:
     /// instead of documenting restraint on it.
     ///
     /// Call again whenever the geometry changes — a resize, a scroll, a style
-    /// knob. The copy is taken under the model lock, so a capture in flight
-    /// sees either the old geometry or the new, never a tear of the two.
+    /// knob. The registration is published without the model lock, with a
+    /// generation of its own, and whoever next holds the lock to capture or
+    /// to plan a frame takes it in first (``foldCaptureRegistrations``), so a
+    /// capture sees either the old geometry or the new, never a tear of the
+    /// two. A capture made under an older generation is never taken after it.
     ///
     /// - Parameter geometry: The durable knobs the boundary capture is steered
     ///   by; the per-frame borrowed tiers are assembled at the boundary.
     void setSyncFrameCaptureGeometry(const SyncFrameCaptureGeometry& geometry) UBIQUITTY_EXCLUDES(modelLockRole)
     {
-        const ModelLockHold hold(*m_activeLock);
         const bool isArmed = m_frameLane.arm();
-        // Pending frames carry the previous placement and resolved style.
-        // A new registration invalidates both before any old frame can present.
+        const std::uint64_t generation = m_registeredViewGeneration.load(std::memory_order_relaxed) + 1;
+        m_registeredViewGeneration.store(generation, std::memory_order_relaxed);
+        m_geometryRegister.publish({ .geometry = geometry, .generation = generation });
+        // New geometry, new lineage: the next frame on either route plans
+        // Full, every row is owed, and a pending frame, which carries the old
+        // placement, never presents.
+        m_baselineResetRequests.fetch_add(1, std::memory_order_release);
         (void)m_frameLane.retireReady();
-        m_syncCaptureGeometry = geometry;
-        ++m_syncViewGeneration;
-        // New geometry, new lineage: the next boundary records Full, and every row is owed.
-        m_retainedBaseline = {};
         oweAllSyncRows();
-        m_isSyncCaptureArmed.store(isArmed, std::memory_order_relaxed);
-        m_host.setDrainPassPresentation(m_isSyncCaptureArmed.load(std::memory_order_relaxed) && m_isSyncFramePresented.load(std::memory_order_relaxed)
-                ? PanePresentation::Presented
-                : PanePresentation::Hidden);
+        m_isSyncCaptureArmed.store(isArmed, std::memory_order_release);
+        m_host.setDrainPassPresentation(isArmed && m_isSyncFramePresented.load(std::memory_order_relaxed) ? PanePresentation::Presented : PanePresentation::Hidden);
     }
 
     /// Enables local renderer captures while its surface can present them.
@@ -6693,25 +6697,20 @@ public:
     /// Remote snapshot transport has its own capture path. Pending local frames
     /// are discarded on visibility edges so reveal cannot consume stale rows.
     ///
-    /// The frontend restates the presentation on every screen update, and only
-    /// an edge needs the model lock: an unchanged restatement returns before
-    /// it, so it never waits out a parse bite.
+    /// The frontend restates the presentation on every screen update; an
+    /// edge is published without the model lock, and the baseline it drops is
+    /// dropped by whoever next holds the lock to plan a frame.
     ///
     /// - Parameter presentation: Whether the local renderer is presented.
     void setSyncFramePresentation(PanePresentation presentation) UBIQUITTY_EXCLUDES(modelLockRole)
     {
         const bool isPresented = presentation == PanePresentation::Presented;
-        if (m_isSyncFramePresented.load(std::memory_order_relaxed) == isPresented) {
+        if (m_isSyncFramePresented.load(std::memory_order_relaxed) == isPresented)
             return;
-        }
-        const ModelLockHold hold(*m_activeLock);
-        if (m_isSyncFramePresented.load(std::memory_order_relaxed) == isPresented) {
-            return;
-        }
         m_isSyncFramePresented.store(isPresented, std::memory_order_relaxed);
         m_host.setDrainPassPresentation(m_isSyncCaptureArmed.load(std::memory_order_relaxed) && isPresented ? PanePresentation::Presented : PanePresentation::Hidden);
+        m_baselineResetRequests.fetch_add(1, std::memory_order_release);
         (void)m_frameLane.retireReady();
-        m_retainedBaseline = {};
         oweAllSyncRows();
     }
 
@@ -6730,12 +6729,10 @@ public:
     /// inactive run when the pointer leaves — a boundary frame that kept an
     /// ended hover would emphasise a link nobody is pointing at.
     ///
+    /// Published without the model lock; the next capture takes it in.
+    ///
     /// - Parameter hover: The run under the pointer, or an inactive one.
-    void setSyncFrameHoverLink(const Rendering::FrameHoverLink& hover) UBIQUITTY_EXCLUDES(modelLockRole)
-    {
-        const ModelLockHold hold(*m_activeLock);
-        m_syncFrameHover = hover;
-    }
+    void setSyncFrameHoverLink(const Rendering::FrameHoverLink& hover) UBIQUITTY_EXCLUDES(modelLockRole) { m_hoverRegister.publish(hover); }
 
     /// Returns the newest boundary capture, retained, or null when none waits.
     ///
@@ -6748,7 +6745,7 @@ public:
     /// - Returns: The capture, with a reference the caller owns, or null.
     [[nodiscard]] Rendering::FrameCapture* takeSyncFrame() noexcept UBIQUITTY_NONBLOCKING UBIQUITTY_RETURNS_RETAINED
     {
-        Rendering::FrameCapture* capture = m_frameLane.takeReady();
+        Rendering::FrameCapture* capture = m_frameLane.takeReady(m_registeredViewGeneration.load(std::memory_order_relaxed));
         if (capture)
             settleOwedSyncRows(*capture);
         return capture;
@@ -9726,8 +9723,9 @@ private:
     /// drain.
     void captureSyncFrame() UBIQUITTY_REQUIRES(modelLockRole)
     {
-        if (!m_isSyncCaptureArmed.load(std::memory_order_relaxed) || !m_isSyncFramePresented.load(std::memory_order_relaxed))
+        if (!m_isSyncCaptureArmed.load(std::memory_order_acquire) || !m_isSyncFramePresented.load(std::memory_order_relaxed))
             return;
+        foldCaptureRegistrations();
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return;
@@ -9912,11 +9910,54 @@ private:
             Ubiquitty::Selection::BlockSelections(m_syncBlockSelections));
     }
 
-    /// Geometry the boundary capture reads, under the model lock: written by
-    /// setSyncFrameCaptureGeometry and read by captureSyncFrame.
+    /// A geometry registration and the generation it was made under.
+    struct GeometryRegistration {
+        /// The geometry registered.
+        SyncFrameCaptureGeometry geometry {};
+        /// The registration's generation, which the captures made under it carry.
+        std::uint64_t generation = 0;
+    };
+
+    /// Takes in what the view registered since the last fold: the geometry
+    /// and its generation, the hovered run, and a dropped baseline. Called by
+    /// whoever holds the model lock to capture or to plan a frame, first.
+    void foldCaptureRegistrations() UBIQUITTY_REQUIRES(modelLockRole)
+    {
+        const std::uint64_t geometryVersion = m_geometryRegister.version();
+        if (geometryVersion != m_geometryVersionFolded) {
+            m_geometryVersionFolded = geometryVersion;
+            const GeometryRegistration registration = m_geometryRegister.read();
+            m_syncCaptureGeometry = registration.geometry;
+            m_syncViewGeneration = registration.generation;
+        }
+        const std::uint64_t hoverVersion = m_hoverRegister.version();
+        if (hoverVersion != m_hoverVersionFolded) {
+            m_hoverVersionFolded = hoverVersion;
+            m_syncFrameHover = m_hoverRegister.read();
+        }
+        const std::uint64_t resets = m_baselineResetRequests.load(std::memory_order_acquire);
+        if (resets != m_baselineResetsFolded) {
+            m_baselineResetsFolded = resets;
+            m_retainedBaseline = {};
+        }
+    }
+
+    // The view's registrations, each written by the view's thread alone and
+    // folded under the model lock by ``foldCaptureRegistrations``.
+    SnapshotPublisher<GeometryRegistration> m_geometryRegister;
+    SnapshotPublisher<Rendering::FrameHoverLink> m_hoverRegister;
+    std::atomic<std::uint64_t> m_baselineResetRequests { 0 };
+    // The newest registration's generation, the view's own count: a capture
+    // made under an older one is not taken.
+    std::atomic<std::uint64_t> m_registeredViewGeneration { 0 };
+    std::uint64_t m_geometryVersionFolded UBIQUITTY_GUARDED_BY(modelLockRole) = 0;
+    std::uint64_t m_hoverVersionFolded UBIQUITTY_GUARDED_BY(modelLockRole) = 0;
+    std::uint64_t m_baselineResetsFolded UBIQUITTY_GUARDED_BY(modelLockRole) = 0;
+
+    /// Geometry the boundary capture reads, under the model lock: folded from
+    /// the view's registration and read by captureSyncFrame.
     SyncFrameCaptureGeometry m_syncCaptureGeometry UBIQUITTY_GUARDED_BY(modelLockRole);
-    // Written only by setSyncFramePresentation, under the model lock; atomic so
-    // that setter can see an unchanged value without taking the lock.
+    // Written by the view's thread alone; read by the capture.
     std::atomic<bool> m_isSyncFramePresented { true };
     /// The hovered run the boundary capture draws the emphasis over, under the
     /// model lock, with its own setter.

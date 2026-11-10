@@ -21,7 +21,7 @@ nextAnimationDelay nowait reads the writer's publication, its own or an adopted 
 presentationHoldTicksRemaining nowait reads the writer's publication, its own or an adopted pane's, and the monotonic clock
 sendKey waits encodes the key and notes the activity under the model lock where no ingest loop drains the pane's own model (adopted, remote, fed) or a DECUDK table is programmed
 setPresentedViewOffset nowait stores the offset; a remote link keeps the newest in a register and posts one session turn, which asks its host for history
-setSyncFrameCaptureGeometry waits registers the capture geometry under the model lock
+setSyncFrameCaptureGeometry nowait publishes the registration, which whoever next holds the model lock folds in
 shouldWithholdCapture nowait reads the model inside the live read's hold
 shouldWithholdFrame waits stamps and expires an open synchronized update in the session's own model under the model lock
 takeEventFlags nowait polls the pane link's publication through its virtual interface

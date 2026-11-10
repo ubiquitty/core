@@ -280,14 +280,19 @@ public:
     ///
     /// The view's side.
     ///
+    /// - Parameter minimumGeneration: The view's newest geometry
+    ///   registration; a capture made under an older one carries the old
+    ///   placement and is retired instead.
     /// - Returns: The capture, with a reference the caller owns, or null when
     ///   none was published since the last take.
-    [[nodiscard]] Rendering::FrameCapture* takeReady() noexcept UBIQUITTY_NONBLOCKING UBIQUITTY_RETURNS_RETAINED
+    [[nodiscard]] Rendering::FrameCapture* takeReady(std::uint64_t minimumGeneration = 0) noexcept UBIQUITTY_NONBLOCKING UBIQUITTY_RETURNS_RETAINED
     {
         const int drained = m_slot.drain();
         if (drained < 0)
             return nullptr;
         Rendering::FrameCapture* capture = m_captures[static_cast<std::size_t>(drained)];
+        if (capture->viewGeneration() < minimumGeneration)
+            return nullptr;
         capture->swiftReferences.fetch_add(1, std::memory_order_relaxed);
         return capture;
     }

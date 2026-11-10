@@ -113,6 +113,25 @@ TEST(aLaneWhoseCapturesAreAllHeldClaimsNone)
     CHECK(lane.claimTarget().has_value());
 }
 
+// A capture made under a geometry registration older than the view's newest
+// carries the old placement: the take retires it, and takes the next one made
+// under the newest.
+TEST(aCaptureOlderThanTheViewsRegistrationIsNotTaken)
+{
+    FrameLane lane;
+    REQUIRE(lane.arm());
+    FrameCapture* stale = publishOne(lane);
+    REQUIRE(stale->viewGeneration() == 0);
+    CHECK(lane.takeReady(1) == nullptr);
+    CHECK_EQ(referencesOf(*stale), 1);
+    CHECK(!lane.hasReadyCapture());
+
+    FrameCapture* current = publishOne(lane);
+    PresentedCapture held = PresentedCapture::adopt(lane.takeReady(0));
+    REQUIRE(static_cast<bool>(held));
+    CHECK(&held.capture() == current);
+}
+
 // The hold is move-only: a move leaves the source empty, and assigning a new
 // hold releases the one held.
 TEST(aPresentedCaptureReleasesWhatItHeldWhenItTakesTheNext)
