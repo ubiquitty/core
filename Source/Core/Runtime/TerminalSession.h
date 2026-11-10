@@ -9672,7 +9672,31 @@ private:
             return { .decline = *published,
                 .askAgainTicks = isPresentationHeld ? m_runtime->presentationHoldTicksRemaining(publishedBlock(), nowTicks, nowMicros) : 0 };
         }
+        if (isModelDrainedByIngestLoop())
+            return ownerJudgedFrameHold(nowTicks, nowMicros);
         return modelFrameHold(nowTicks, nowMicros);
+    }
+
+    /// The hold of an update open in a model this session's ingest loop
+    /// drains, from the mark the loop published, which waits on nothing.
+    ///
+    /// The view asks the owner for a frame: at the turn that brings, the owner
+    /// stamps the update on first sight and expires it once its budget is
+    /// spent (``serveFrameDemand``), and publishes the mark, so the view never
+    /// writes the model. Until the owner's mark says the update closed or
+    /// expired, the frame is held, and the budget the mark gives says when to
+    /// ask again.
+    ///
+    /// - Parameters:
+    ///   - nowTicks: Now, on the 60 Hz monotonic clock.
+    ///   - nowMicros: Now, in monotonic microseconds.
+    /// - Returns: The presentation hold and its budget.
+    [[nodiscard]] FrameHold ownerJudgedFrameHold(Ticks nowTicks, std::uint32_t nowMicros)
+    {
+        static_cast<void>(m_frameLane.raiseDemand());
+        m_loop.raiseWake();
+        const std::uint32_t budget = m_runtime->presentationHoldTicksRemaining(publishedBlock(), nowTicks, nowMicros);
+        return { .decline = FrameDecline::HeldByPresentation, .askAgainTicks = std::max<std::uint32_t>(1, budget) };
     }
 
     /// The hold the published facts decide alone, which waits on nothing: the
@@ -9929,11 +9953,18 @@ private:
     /// An open update is stamped or expired here, as the view's check would.
     void serveFrameDemand() UBIQUITTY_REQUIRES(modelLockRole)
     {
-        if (!m_frameLane.isDemandOutstanding() || m_runtime->isFrameHeld())
+        if (!m_frameLane.isDemandOutstanding())
             return;
+        const std::uint64_t demanded = m_frameLane.demandSequence();
         Ubiquitty::Terminal* terminal = modelTerm();
-        if (!terminal || shouldWithholdCapture(*terminal, PAL::monotonicTicks()))
+        if (!terminal || shouldWithholdCapture(*terminal, PAL::monotonicTicks()) || m_runtime->isFrameHeld())
             return;
+        // A view with no armed, presented captures asked only for the update
+        // to be judged, which it now is.
+        if (!m_isSyncCaptureArmed.load(std::memory_order_acquire) || !m_isSyncFramePresented.load(std::memory_order_relaxed)) {
+            m_frameLane.markSupplied(demanded);
+            return;
+        }
         captureSyncFrame();
         if (m_frameLane.isDemandOutstanding())
             return;

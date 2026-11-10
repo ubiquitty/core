@@ -1485,6 +1485,37 @@ TEST(testAKeyTypedIntoAFloodIsAppliedBeforeTheFloodEnds)
     session.stopIngest();
 }
 
+// An update left open over a flood holds the frame from the mark the loop
+// published: the decision returns while another thread holds the model, and
+// the loop, asked for a frame, stamps the update at its next turn.
+TEST(testAnOpenUpdateInAFloodIsJudgedFromWhatTheLoopPublished)
+{
+    SessionHandle handle;
+    TerminalSession& session = *handle.session;
+    session.start(24, 80);
+    const std::string flood = "\033[?2026h" + floodStream();
+    REQUIRE(adoptPrefilledStream(session, flood));
+    REQUIRE(session.startIngest());
+    bool isOpenInAFlood = false;
+    for (int waited = 0; waited < 5000 && !isOpenInAFlood; ++waited) {
+        isOpenInAFlood = session.readSnapshot().syncHoldActive && session.isDrainSaturated();
+        if (!isOpenInAFlood)
+            ::usleep(1000);
+    }
+    REQUIRE(isOpenInAFlood);
+    bool isHeld = false;
+    CHECK(returnsWhileTheModelIsHeld(session, [&] { isHeld = session.shouldWithholdFrame(Ubiquitty::PAL::monotonicTicks()); }));
+    CHECK(isHeld);
+    std::uint32_t stamp = 0;
+    for (int waited = 0; waited < 5000 && stamp == 0; ++waited) {
+        stamp = session.readSnapshot().syncHoldTouchTicks;
+        if (stamp == 0)
+            ::usleep(1000);
+    }
+    CHECK_MSG(stamp != 0, "the loop stamped the update at the turn the decision asked for");
+    session.stopIngest();
+}
+
 // A key on a screen the CRT saver blanked wakes it through the loop, with no
 // output behind it: the loop applies the posted input, publishes the screen
 // shown and tells the frontend to draw.
