@@ -1643,12 +1643,19 @@ TEST(cadenceAcrossAnOwnerStall)
 }
 
 // A program that opens a synchronized update over one frame, sets a colour
-// inside it and goes quiet without closing it, as one killed mid-frame does,
-// fed to a session with no ingest loop as an embedder feeds it. Nothing but
-// the frontend's own recheck ages the update, and a frontend whose display
-// link idles takes the pane's flags only when Core wakes it: the colour and
-// the frame the expired update held reach it only if the expiry wakes it,
-// within the rule's budget and the cadence of the feed that opened it.
+// inside it and goes quiet without closing it, as one killed mid-frame does.
+// The opening bytes for both quiet cases.
+std::string updateLeftOpen()
+{
+    return "\x1b[?2026h\x1b]11;rgb:00/77/77\x07" + sgrChurnFrame(paneRows, paneColumns, 1);
+}
+
+// The update left open and quiet, fed to a session with no ingest loop as an
+// embedder feeds it. Nothing but the frontend's own recheck ages the update,
+// and a frontend whose display link idles takes the pane's flags only when
+// Core wakes it: the colour and the frame the expired update held reach it
+// only if the expiry the recheck finds wakes it, within the rule's budget and
+// the cadence of the feed that opened it.
 TEST(cadenceOfAnUpdateLeftOpenThenQuiet)
 {
     runAndCheck({
@@ -1657,7 +1664,7 @@ TEST(cadenceOfAnUpdateLeftOpenThenQuiet)
         .selection = { .row = 6, .fromColumn = 2, .toColumn = 40 },
         .duration = 1800ms,
         .write =
-            [opening = "\x1b[?2026h\x1b]11;rgb:00/77/77\x07" + sgrChurnFrame(paneRows, paneColumns, 1)](Writer& writer) {
+            [opening = updateLeftOpen()](Writer& writer) {
                 if (!writer.write(opening))
                     return;
                 while (!writer.isStopping())
@@ -1669,10 +1676,36 @@ TEST(cadenceOfAnUpdateLeftOpenThenQuiet)
     });
 }
 
+// The same update through the ingest loop, as Kit's pane reads its program.
+// The drain holds the frame for the rule, so the frame decision answers the
+// coherence hold from published state and cannot expire the update itself:
+// only the drain's own watchdog releases the held frame once the budget runs
+// out, and the colour and the frame reach a frontend that ticks on wake only
+// if that release wakes it.
+TEST(cadenceOfAnUpdateLeftOpenThenQuietThroughTheIngestLoop)
+{
+    runAndCheck({
+        .name = "update left open, then quiet, through the ingest loop",
+        .prologue = sgrChurnFrame(paneRows, paneColumns, 0),
+        .selection = { .row = 6, .fromColumn = 2, .toColumn = 40 },
+        .duration = 1800ms,
+        .write =
+            [opening = updateLeftOpen()](Writer& writer) {
+                if (!writer.write(opening))
+                    return;
+                while (!writer.isStopping())
+                    writer.sleepFor(5ms);
+            },
+        .coherence = Coherence::ExpiresUnclosedThenQuiet,
+        .ticking = Ticking::OnWake,
+    });
+}
+
 // An update opened inside a flood, with a colour set inside it, and never
-// closed: the drain parses on inside it, and once the rule expires it the
-// colour reaches a frontend that takes the pane's flags only when Core wakes
-// it, and the drain's captures resume at the cadence.
+// closed. The drain parses on inside it and announces every bite, so the
+// frontend keeps ticking through it; the case checks the resumption: once
+// the update expires, the colour reaches the frontend and the frames that
+// follow are the drain's captures at the cadence.
 TEST(cadenceOfAnUpdateLeftOpenInAFlood)
 {
     runAndCheck({
@@ -1688,6 +1721,8 @@ TEST(cadenceOfAnUpdateLeftOpenInAFlood)
                 replay(writer, frames);
             },
         .coherence = Coherence::ExpiresUnclosedInFlood,
+        .minCapturedShare = floodCapturedShare,
+        .maxLiveReads = floodLiveReads,
         .ticking = Ticking::OnWake,
     });
 }
