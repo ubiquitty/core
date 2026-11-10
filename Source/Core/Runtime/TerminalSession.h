@@ -6710,9 +6710,9 @@ public:
         m_registeredViewGeneration.store(generation, std::memory_order_relaxed);
         m_geometryRegister.publish({ .geometry = geometry, .generation = generation });
         // New geometry, new lineage: the next frame on either route plans
-        // Full, every row is owed, and a pending frame, which carries the old
+        // Full (the fold that adopts the registration drops the baseline with
+        // it), every row is owed, and a pending frame, which carries the old
         // placement, never presents.
-        m_baselineResetRequests.fetch_add(1, std::memory_order_release);
         (void)m_frameLane.retireReady();
         oweAllSyncRows();
         m_isSyncCaptureArmed.store(isArmed, std::memory_order_release);
@@ -10257,6 +10257,9 @@ private:
             const GeometryRegistration registration = m_geometryRegister.read();
             m_syncCaptureGeometry = registration.geometry;
             m_syncViewGeneration = registration.generation;
+            // In the same fold, so no frame is planned under the new
+            // registration against a baseline drawn under the old one.
+            m_retainedBaseline = {};
         }
         const std::uint64_t hoverVersion = m_hoverRegister.version();
         if (hoverVersion != m_hoverVersionFolded) {
