@@ -784,6 +784,8 @@ public:
     std::atomic<int> swiftReferences { 1 };
 
 private:
+    friend class CapturedGrid;
+
     FrameCapture()
         : m_frame(new TerminalFrameInputs())
     {
