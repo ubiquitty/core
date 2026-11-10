@@ -3128,6 +3128,25 @@ TEST(aSaturatedTickInsideThePublishWindowAwaitsTheNextCapture)
     CHECK(late.supply.decline == Runtime::FrameDecline::AwaitingCapture);
 }
 
+// A demand no owner turn serves for a quarter of a second reads as a stalled
+// owner, not as a frame on its way; the owner's next turn serves it.
+TEST(aDemandNoTurnServesForAQuarterSecondReadsAsAStalledOwner)
+{
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    fixture.session->setSyncFrameCaptureGeometry(testGeometry());
+    fixture.drainSyncFrame("shown");
+    REQUIRE(TakenFrame(fixture.session->takeSyncFrame()));
+    CHECK(askForFrame(*fixture.session, {}).supply.decline == Runtime::FrameDecline::AwaitingCapture);
+    PAL::s_testMicroseconds += Runtime::FrameLane::ownerStallMicros - 50'000;
+    CHECK(askForFrame(*fixture.session, {}).supply.decline == Runtime::FrameDecline::AwaitingCapture);
+    PAL::s_testMicroseconds += 100'000;
+    CHECK(askForFrame(*fixture.session, {}).supply.decline == Runtime::FrameDecline::OwnerStalled);
+
+    static_cast<void>(fixture.session->serviceFrontend());
+    CHECK(askForFrame(*fixture.session, {}).supply.route == Runtime::FrameRoute::Captured);
+}
+
 // A view that asks for a frame over a screen nothing changes, as one whose
 // selection or hover moved does, is served at the owner's next turn: no frame
 // the rule admits will come to carry it, so the turn captures the model as the

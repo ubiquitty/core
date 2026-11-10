@@ -84,6 +84,11 @@ enum class FrameDecline : std::uint8_t {
     /// Under a live resize's lock: the redraw behind the newest whole-screen
     /// erase has not been parsed whole.
     RedrawArriving,
+    /// The view's demand for a frame has gone unserved for
+    /// ``FrameLane::ownerStallMicros`` and the owner has taken no turn since
+    /// it was raised: the owner is stuck in long work, not about to publish.
+    /// The view keeps its frame and asks again.
+    OwnerStalled,
 };
 
 /// What a view presents at one display tick.
