@@ -21,6 +21,11 @@
 
 set -euo pipefail
 
+# The list is sorted by byte order, so the answer is the same on every machine:
+# `sort` in a UTF-8 locale orders by collation, which differs between a person's
+# shell, a hook's environment and CI.
+export LC_ALL=C
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIST="$ROOT/Scripts/portable-core-sources.txt"
 

@@ -155,6 +155,7 @@ def stages(platform):
             Stage("setup", "Style tools and hooks", STYLE_SETUP),
             Stage("orchestration-tests", "CI orchestration tests", r'''unset UBQ_BATTERY UBQ_CI_ANNOTATE UBQ_EVENT_LOG UBQ_RESULT_DIR UBQ_STAGE_KEY UBQ_STAGE_LABEL UBQ_STAGE_LOG_PATH UBQ_STAGE_JUNIT_PATH
 python3 Scripts/test-gate-framework.py
+python3 Scripts/test-gen-portable-core-sources.py
 python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
             Stage("style", "Style and hygiene", "./Scripts/check-style.py"),
             Stage("capabilities", "Capability single source of truth", "./Scripts/check-capability-ssot.py"),
