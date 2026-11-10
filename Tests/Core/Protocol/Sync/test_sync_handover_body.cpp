@@ -1966,20 +1966,6 @@ void stampTicks(Ubiquitty::Terminal& terminal, std::uint32_t now, const TickAges
     terminal.shellCommandCount = 1;
 }
 
-// The last body version whose ticks travel absolute, on the sender's clock.
-constexpr std::uint16_t absoluteTickBodyVersion = 35;
-
-// The record a writer at `absoluteTickBodyVersion` lays out as this one does.
-std::vector<std::uint8_t> asAbsoluteTickRecord(std::span<const std::uint8_t> record, const Ubiquitty::Terminal& source)
-{
-    auto sections = splitTerminalRecord(record);
-    for (std::size_t index = 1; index < sections.size(); ++index) {
-        writeLittle(sections[index], 0, absoluteTickBodyVersion, 2);
-        refreshImageDigest(sections[index]);
-    }
-    return joinTerminalRecord(sections, source.richTextBlocks.nextSerial(), Ubiquitty::RichText::maxRetainedBytes, absoluteTickBodyVersion);
-}
-
 } // namespace
 
 // A terminal moved between processes on different clocks, as the app shares a
@@ -2037,10 +2023,10 @@ TEST(anAbsoluteTickTerminalFromAnotherClockTakesItsTicksAsUnknown)
     Ubiquitty::Terminal source;
     Ubiquitty::resize(source, 6, 40);
     stampTicks(source, 51'000'000, {});
-    const auto bytes = encodeHandoverTerminal(source, 19, terminalLimits, Ubiquitty::Ticks(51'000'000));
+    const auto bytes = encodeHandoverTerminal(source, 19, terminalLimits, Ubiquitty::Ticks(51'000'000), HandoverTickCarriage::Instants);
     REQUIRE(bytes);
     const Ubiquitty::Ticks now(1'000'000);
-    const auto restored = decodeHandoverTerminal(asAbsoluteTickRecord(bytes->view(), source), terminalLimits, { .now = now, .sender = HandoverSenderClock::Separate });
+    const auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits, { .now = now, .sender = HandoverSenderClock::Separate });
     REQUIRE(restored);
     const auto& terminal = *restored->terminal;
     CHECK_EQ(terminal.lastActivityTick, now.count);
@@ -2050,6 +2036,48 @@ TEST(anAbsoluteTickTerminalFromAnotherClockTakesItsTicksAsUnknown)
     CHECK(!terminal.hasCommandStartTick);
     REQUIRE(terminal.shellCommands);
     CHECK(!(*terminal.shellCommands)[0].hasStartTick);
+}
+
+// A terminal whose ticks travel as instants, read on the clock that took them,
+// keeps every tick as it was: what a successor of the published release reads.
+TEST(anAbsoluteTickTerminalOnTheSameClockKeepsItsTicks)
+{
+    Ubiquitty::Terminal source;
+    Ubiquitty::resize(source, 6, 40);
+    constexpr std::uint32_t now = 51'000'000;
+    stampTicks(source, now, {});
+    const auto bytes = encodeHandoverTerminal(source, 19, terminalLimits, Ubiquitty::Ticks(now), HandoverTickCarriage::Instants);
+    REQUIRE(bytes);
+    WireReader reader(bytes->view());
+    CHECK_EQ(reader.u16(), 35u);
+    const auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits, { .now = Ubiquitty::Ticks(now + 7), .sender = HandoverSenderClock::Shared });
+    REQUIRE(restored);
+    const auto& terminal = *restored->terminal;
+    CHECK_EQ(terminal.lastActivityTick, source.lastActivityTick);
+    CHECK_EQ(terminal.lastBellTick, source.lastBellTick);
+    CHECK_EQ(terminal.displayActivityTick, source.displayActivityTick);
+    CHECK_EQ(terminal.commandStartTick, source.commandStartTick);
+    REQUIRE(terminal.shellCommands);
+    CHECK_EQ((*terminal.shellCommands)[0].startTick, (*source.shellCommands)[0].startTick);
+}
+
+// No clock the terminal keeps stamps a tick ahead of its own now. One that
+// is ahead anyway arrives as the receiver's now, never in its future.
+TEST(aTickAheadOfTheSendersNowArrivesAsTheReceiversNow)
+{
+    Ubiquitty::Terminal source;
+    Ubiquitty::resize(source, 6, 40);
+    constexpr std::uint32_t senderNow = 1'000'000;
+    source.lastBellTick = senderNow + 5;
+    source.hasDisplayActivityTick = true;
+    source.displayActivityTick = senderNow + 5;
+    const auto bytes = encodeHandoverTerminal(source, 19, terminalLimits, Ubiquitty::Ticks(senderNow));
+    REQUIRE(bytes);
+    constexpr std::uint32_t receiverNow = 51'000'000;
+    const auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits, { .now = Ubiquitty::Ticks(receiverNow), .sender = HandoverSenderClock::Separate });
+    REQUIRE(restored);
+    CHECK_EQ(restored->terminal->lastBellTick, receiverNow);
+    CHECK_EQ(restored->terminal->displayActivityTick, receiverNow);
 }
 
 TEST(joinedTerminalHandoverPreservesOwnersAndFutureProgramBytes)
@@ -2945,12 +2973,13 @@ struct FrozenPane {
         session.describedStructuralGeneration = source->structuralGeneration();
     }
 
-    [[nodiscard]] std::expected<HandoverBytes, HandoverBodyError> encode() const
+    /// Encodes the pane at `now` on its clock; the frozen records were minted at 0.
+    [[nodiscard]] std::expected<HandoverBytes, HandoverBodyError> encode(Ubiquitty::Ticks now = {}) const
     {
         const auto unwritten = Ubiquitty::PAL::OutputQueue::Unwritten::copyOf({}, {});
         if (!unwritten)
             return std::unexpected(HandoverBodyError::AllocationRefused);
-        return encodePaneHandover(*source, session, *unwritten, paneLimits, {});
+        return encodePaneHandover(*source, session, *unwritten, paneLimits, now);
     }
 };
 
@@ -3339,6 +3368,28 @@ TEST(theEncoderWritesTheFrozenCurrentPaneRecord)
         "the pane record's grammar changed: raise handoverBodyVersion and mint the fixture for the new version in place of the frozen one");
 }
 
+// The terminal record this build writes for a local host of the published
+// release is, byte for byte, the record that release writes: the terminal
+// section of its frozen pane.
+TEST(theTerminalRecordForThePublishedReleaseIsTheOneItWrites)
+{
+    FrozenPane pane;
+    constexpr std::string_view trace = "1mrd\033[0m \033]8\033\\lk\033]8\033\\ e\xcc \xe4\xb8\xad\r\n$ ";
+    static_assert(trace.size() == 32);
+    std::ranges::copy(trace, pane.terminal.integration.traceBytes.begin());
+    pane.terminal.integration.traceLength = trace.size();
+    const auto frozen = readFrozenPaneRecord(frozenPublishedPaneRecordName);
+    REQUIRE(frozen);
+    WireReader reader(*frozen);
+    REQUIRE(reader.u16() == lastPublishedHandoverBodyVersion);
+    (void)reader.take(16);
+    const auto published = reader.take(reader.u32());
+    REQUIRE(reader.ok());
+    const auto written = encodeHandoverTerminal(pane.terminal, pane.source->generation(), paneLimits.terminal, {}, HandoverTickCarriage::Instants);
+    REQUIRE(written);
+    CHECK_MSG(std::ranges::equal(written->view(), published), "the record for the published release is not the one it writes");
+}
+
 TEST(paneHandoverKeepsSemanticRoles)
 {
     using Ubiquitty::SemanticRole;
@@ -3512,9 +3563,10 @@ TEST(nestedShellCommandsContinueAfterHandover)
     UbiquittyTest::feed(pane.terminal, "\033]133;N;aid=repl\a>\033]133;C\a\r\n");
     pane.source->noteReadWouldBlock(400);
     pane.source->publish(FrameClass::Settled, 500);
-    const auto encoded = pane.encode();
+    // The ticks were taken before the handover's now, as a clock takes them.
+    const auto encoded = pane.encode(Ubiquitty::Ticks(1'000));
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, Ubiquitty::Ticks(1'000));
     REQUIRE(restored);
     CHECK_EQ(restored->terminal->shellCommandCount, 2);
     CHECK_EQ((*restored->terminal->shellCommands)[0].startTick, 123u);
@@ -3593,9 +3645,10 @@ TEST(pasteAndCRTStateSurviveHandover)
     pane.terminal.displayActivityTick = 123;
     pane.source->noteReadWouldBlock(400);
     pane.source->publish(FrameClass::Settled, 500);
-    const auto encoded = pane.encode();
+    // The tick was taken before the handover's now, as a clock takes it.
+    const auto encoded = pane.encode(Ubiquitty::Ticks(1'000));
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, Ubiquitty::Ticks(1'000));
     REQUIRE(restored);
     CHECK(restored->terminal->modes.shouldReportPasteEvents);
     CHECK(restored->terminal->screenBlanked);

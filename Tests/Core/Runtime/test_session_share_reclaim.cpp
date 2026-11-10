@@ -181,6 +181,11 @@ struct HandoffRecord {
     std::uint64_t daemonInstanceID = 17;
     /// The reason a refusal names, or none for a daemon that never answered.
     std::optional<Ubiquitty::Session::AdoptRejection> rejection;
+    /// The newest terminal body version the daemon reads, or none for one
+    /// that reads every version; a later body is refused as unreadable.
+    std::optional<std::uint16_t> newestReadableVersion;
+    /// The version of each terminal body offered, in order.
+    std::vector<std::uint16_t> offeredVersions;
 };
 
 HandoffRecord& handoffRecord()
@@ -201,6 +206,14 @@ Ubiquitty::Session::ShareHandoffResult recordHandoff(const char* socketPath, std
     record.masterFileDescriptor = masterFileDescriptor;
     record.limits = limits;
     using namespace Ubiquitty::Session;
+    const std::uint16_t version = record.frame.size() >= 2 ? static_cast<std::uint16_t>(record.frame[0] | record.frame[1] << 8) : 0;
+    record.offeredVersions.push_back(version);
+    if (record.newestReadableVersion && version > *record.newestReadableVersion) {
+        auto attempt = std::make_unique<AdoptClientAttempt>(AdoptOperation { { 1, 2 }, 17 });
+        const auto rejected = attempt->observe({ attempt->operation(), AdoptDisposition::Rejected, {}, AdoptRejection::InvalidPayload });
+        CHECK(rejected.has_value());
+        return { .ownership = ShareOwnership::Local, .adopted = {}, .attempt = std::move(attempt) };
+    }
     if (!record.answer && record.rejection) {
         auto attempt = std::make_unique<AdoptClientAttempt>(AdoptOperation { { 1, 2 }, 17 });
         const auto rejected = attempt->observe({ attempt->operation(), AdoptDisposition::Rejected, {}, record.rejection });
@@ -688,6 +701,40 @@ TEST(aRefusedHandoffLeavesTheSessionLocalAndReading)
 
     session->close();
     releaseTerminalSession(session);
+    discardPostedWork();
+}
+
+// A local host of the last published release reads no later terminal body.
+// It refuses the current version as unreadable before taking anything, and is
+// offered the body that release writes, which it takes; a host that reads the
+// current version is offered it once.
+TEST(aLocalHostOfThePublishedReleaseIsOfferedTheBodyItReads)
+{
+    discardPostedWork();
+    TerminalSession* session = makeReadingSession();
+    if (session == nullptr)
+        return;
+    handoffRecord() = {};
+    handoffRecord().answer = 57;
+    handoffRecord().newestReadableVersion = Ubiquitty::Protocol::Sync::lastPublishedHandoverBodyVersion;
+    CHECK_EQ(session->handOverToLocalDaemon("/tmp/ubq-share-test.sock", handoffAddress()), 57u);
+    REQUIRE(handoffRecord().offeredVersions.size() == 2);
+    CHECK_EQ(handoffRecord().offeredVersions[0], Ubiquitty::Protocol::Sync::handoverBodyVersion);
+    CHECK_EQ(handoffRecord().offeredVersions[1], 35u);
+    CHECK_MSG(session->isSharedIntoLocalDaemon(), "the host of the published release did not take the session");
+    session->close();
+    releaseTerminalSession(session);
+
+    TerminalSession* current = makeReadingSession();
+    if (current == nullptr)
+        return;
+    handoffRecord() = {};
+    handoffRecord().answer = 58;
+    handoffRecord().newestReadableVersion = Ubiquitty::Protocol::Sync::handoverBodyVersion;
+    CHECK_EQ(current->handOverToLocalDaemon("/tmp/ubq-share-test.sock", handoffAddress()), 58u);
+    CHECK_EQ(handoffRecord().offeredVersions.size(), 1u);
+    current->close();
+    releaseTerminalSession(current);
     discardPostedWork();
 }
 

@@ -62,6 +62,16 @@ struct HandoverReceiverClock {
     HandoverSenderClock sender = HandoverSenderClock::Shared;
 };
 
+/// How a terminal record carries its ticks, which decides the version it is
+/// written at.
+enum class HandoverTickCarriage : std::uint8_t {
+    /// As ages at the sender's now, at the version this build writes.
+    Ages,
+    /// As the sender's own instants, at version 35, which a host of the last
+    /// published release reads and a later one reads too.
+    Instants,
+};
+
 /// Names the state issuer and bounded sections on the local successor channel.
 /// Inherited identities preserve resume issuers across successive handovers;
 /// they do not authenticate the sender or authorize any remote attachment.
@@ -375,6 +385,23 @@ struct HandoverTerminal {
 /// - Returns: One complete owned record, or refusal without source mutation.
 [[nodiscard]] std::expected<HandoverBytes, HandoverBodyError> encodeHandoverTerminal(const Ubiquitty::Terminal& terminal, std::uint64_t generation, const HandoverTerminalLimits& limits,
     Ticks now);
+
+/// Joins a terminal record as the overload above does, carrying its ticks as
+/// `carriage` says.
+///
+/// The record a host of the last published release reads is the one that
+/// release writes: the same sections at version 35, ticks as instants. The
+/// app offers it to a local host only when that host has refused the current
+/// version.
+/// - Parameters:
+///   - terminal: The authoritative, unchanged terminal at ground.
+///   - generation: Its frozen nonzero screen generation.
+///   - limits: The receiver's independently chosen admission bounds.
+///   - now: Now, on the clock the terminal's ticks are kept on.
+///   - carriage: How the record carries the terminal's ticks.
+/// - Returns: One complete owned record, or refusal without source mutation.
+[[nodiscard]] std::expected<HandoverBytes, HandoverBodyError> encodeHandoverTerminal(const Ubiquitty::Terminal& terminal, std::uint64_t generation, const HandoverTerminalLimits& limits,
+    Ticks now, HandoverTickCarriage carriage);
 
 /// Validates continuation sections before constructing a private candidate.
 ///

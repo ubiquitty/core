@@ -11548,7 +11548,22 @@ private:
             return { .sessionID = 0, .encoding = terminalBody.error() };
         }
         const auto handoff = reinterpret_cast<Session::AdoptHandoff>(handoffAddress);
-        const auto ownership = acceptLocalAdoptionResult(handoff(socketPath.c_str(), std::as_bytes(terminalBody->view()), *descriptor, m_localAdoption->limits), LocalAdoptionResume::LiveView);
+        auto result = handoff(socketPath.c_str(), std::as_bytes(terminalBody->view()), *descriptor, m_localAdoption->limits);
+        // A host of the last published release reads no later body version and
+        // refuses it as unreadable before taking anything. It is offered the body
+        // that release writes, once (Docs/sync.md §6.13, "Clocks").
+        if (result.ownership == Session::ShareOwnership::Local && result.attempt && result.attempt->mayResumeLocal()
+            && result.attempt->rejection() == Session::AdoptRejection::InvalidPayload) {
+            std::expected<Protocol::Sync::HandoverBytes, Session::ShareEncoding> earlierBody = std::unexpected(Session::ShareEncoding::NothingToShare);
+            {
+                const std::scoped_lock hold(*m_activeLock);
+                if (Ubiquitty::Terminal* term = modelTerm())
+                    earlierBody = Session::captureShareTerminal(*term, Protocol::Local::maxAdoptBodyBytes, PAL::monotonicTicks(), Protocol::Sync::HandoverTickCarriage::Instants);
+            }
+            if (earlierBody)
+                result = handoff(socketPath.c_str(), std::as_bytes(earlierBody->view()), *descriptor, m_localAdoption->limits);
+        }
+        const auto ownership = acceptLocalAdoptionResult(std::move(result), LocalAdoptionResume::LiveView);
         return { .sessionID = ownership == Session::ShareOwnership::Committed ? m_sharing->sessionID : 0,
             .encoding = Session::ShareEncoding::Encoded,
             .ownership = ownership,

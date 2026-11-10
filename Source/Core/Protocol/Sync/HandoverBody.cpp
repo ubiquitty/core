@@ -2477,9 +2477,12 @@ constexpr std::uint16_t lastAbsoluteTickBodyVersion = 35;
 // receiver on another clock re-bases it on its own (Docs/sync.md §6.13,
 // "Clocks"). A tick whose zero means none yet travels as its age plus one, so
 // none stays none.
+// A tick ahead of now, which no clock the terminal keeps can produce, is no
+// older than now.
 std::uint32_t ageAt(std::uint32_t tick, Ticks now)
 {
-    return now.since(Ticks(tick));
+    const std::uint32_t age = now.since(Ticks(tick));
+    return age > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) ? 0 : age;
 }
 
 std::uint32_t optionalAgeAt(std::uint32_t tick, Ticks now)
@@ -2734,7 +2737,20 @@ struct HostBuffer {
 
 } // namespace
 
+namespace {
+
+std::expected<HandoverBytes, HandoverBodyError> encodeHostState(const Terminal& terminal, std::size_t maxBytes, Ticks now, HandoverTickCarriage carriage);
+
+} // namespace
+
 std::expected<HandoverBytes, HandoverBodyError> encodeHandoverHostState(const Terminal& terminal, std::size_t maxBytes, Ticks now)
+{
+    return encodeHostState(terminal, maxBytes, now, HandoverTickCarriage::Ages);
+}
+
+namespace {
+
+std::expected<HandoverBytes, HandoverBodyError> encodeHostState(const Terminal& terminal, std::size_t maxBytes, Ticks now, HandoverTickCarriage carriage)
 {
     if (!terminalHandoverBlockers(terminal).isEmpty())
         return std::unexpected(HandoverBodyError::NotAtGround);
@@ -2814,9 +2830,12 @@ std::expected<HandoverBytes, HandoverBodyError> encodeHandoverHostState(const Te
     }
     if (!isHostStateValid(section))
         return std::unexpected(HandoverBodyError::Malformed);
-    ageHostTicks(section, now);
+    if (carriage == HandoverTickCarriage::Ages)
+        ageHostTicks(section, now);
     return encodeSection(maxBytes, [&](SectionWriter& writer) { writeHostState(writer, section, terminal.triggersEngine.get()); });
 }
+
+} // namespace
 
 std::expected<void, HandoverBodyError> restoreHandoverHostState(std::span<const std::uint8_t> bytes, Terminal& terminal, std::size_t maxBytes,
     HandoverReceiverClock clock)
@@ -3054,8 +3073,34 @@ bool isLiveParserAnchorBounded(const Terminal& terminal)
 
 } // namespace
 
+namespace {
+
+// Stamps an encoded section with `version` in place of the one it was written
+// at, and digests it again. Every section begins with its version and ends
+// with its digest.
+void restampSection(HandoverBytes& section, std::uint16_t version)
+{
+    if (section.size < 18)
+        return;
+    const std::span<std::uint8_t> bytes { section.data.get(), section.size };
+    bytes[0] = static_cast<std::uint8_t>(version);
+    bytes[1] = static_cast<std::uint8_t>(version >> 8);
+    const auto digest = digestOf(section.view().first(section.size - 16));
+    SectionWriter writer(16, bytes.last(16));
+    writer.scalar(digest.low);
+    writer.scalar(digest.high);
+}
+
+} // namespace
+
 std::expected<HandoverBytes, HandoverBodyError> encodeHandoverTerminal(const Terminal& terminal, std::uint64_t generation, const HandoverTerminalLimits& limits,
     Ticks now)
+{
+    return encodeHandoverTerminal(terminal, generation, limits, now, HandoverTickCarriage::Ages);
+}
+
+std::expected<HandoverBytes, HandoverBodyError> encodeHandoverTerminal(const Terminal& terminal, std::uint64_t generation, const HandoverTerminalLimits& limits,
+    Ticks now, HandoverTickCarriage carriage)
 {
     if (!terminalHandoverBlockers(terminal).isEmpty())
         return std::unexpected(HandoverBodyError::NotAtGround);
@@ -3107,7 +3152,7 @@ std::expected<HandoverBytes, HandoverBodyError> encodeHandoverTerminal(const Ter
         return std::unexpected(result.error());
     if (auto result = add(TerminalSection::Sounds, encodeHandoverSounds(terminal, limits.sounds)); !result)
         return std::unexpected(result.error());
-    if (auto result = add(TerminalSection::Host, encodeHandoverHostState(terminal, limits.maxHostStateBytes, now)); !result)
+    if (auto result = add(TerminalSection::Host, encodeHostState(terminal, limits.maxHostStateBytes, now, carriage)); !result)
         return std::unexpected(result.error());
     if (auto result = add(TerminalSection::GridWidths, encodeSection(maxGridWidthBytes, [&](SectionWriter& writer) {
             writer.scalar(handoverBodyVersion);
@@ -3120,8 +3165,15 @@ std::expected<HandoverBytes, HandoverBodyError> encodeHandoverTerminal(const Ter
         }));
         !result)
         return std::unexpected(result.error());
+    const std::uint16_t version = carriage == HandoverTickCarriage::Instants ? lastAbsoluteTickBodyVersion : handoverBodyVersion;
+    if (version != handoverBodyVersion) {
+        for (auto& owner : owners) {
+            if (owner.data)
+                restampSection(owner, version);
+        }
+    }
     return encodeSection(limits.maxRecordBytes, [&](SectionWriter& writer) {
-        writer.scalar(handoverBodyVersion);
+        writer.scalar(version);
         writer.scalar(terminal.richTextBlocks.nextSerial());
         writer.scalar(static_cast<std::uint32_t>(terminal.richTextBlocks.storageLimit()));
         for (const auto section : sections)
