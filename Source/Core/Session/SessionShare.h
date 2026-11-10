@@ -215,6 +215,18 @@ enum class ShareEncoding : std::uint8_t {
 /// - Returns: Complete owned bytes, or refusal without source mutation.
 [[nodiscard]] std::expected<Protocol::Sync::HandoverBytes, ShareEncoding> captureShareTerminal(const Ubiquitty::Terminal& term, std::size_t maxBodyBytes, Ticks now);
 
+/// Captures a terminal body as the overload above does, carrying its ticks as
+/// `carriage` says: instants for a local host of the last published release,
+/// which refuses the current version.
+/// - Parameters:
+///   - term: The unchanged authoritative terminal.
+///   - maxBodyBytes: The independent local encoded-body ceiling.
+///   - now: Now, on the clock the terminal's ticks are kept on.
+///   - carriage: How the body carries the terminal's ticks.
+/// - Returns: Complete owned bytes, or refusal without source mutation.
+[[nodiscard]] std::expected<Protocol::Sync::HandoverBytes, ShareEncoding> captureShareTerminal(const Ubiquitty::Terminal& term, std::size_t maxBodyBytes, Ticks now,
+    Protocol::Sync::HandoverTickCarriage carriage);
+
 /// The heading a frontend shows for a share that did not happen.
 ///
 /// - Parameter outcome: How the share ended.

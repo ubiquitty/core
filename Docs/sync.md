@@ -2071,7 +2071,16 @@ against (`HandoverReceiverClock` on decode). A body at version 35 carries the
 stamps absolute: a daemon successor, on the same clock, takes them as they
 are, and a share or a reclaim, which cannot read the sender's clock, takes
 them as unknown. It stamps an activity, display-idle or bell tick now, and
-leaves a command's start unknown, so its duration reads as unknown.
+leaves a command's start unknown, so its duration reads as unknown. A tick
+ahead of the encoder's now travels as age 0.
+
+A host of the last published release reads no body later than version 35 and
+refuses a later one as unreadable before taking anything, and a share does not
+negotiate a version. So when the local host refuses a share's body that way,
+the app offers once more the record that release writes: the same sections at
+version 35, the ticks as the app's own instants (`HandoverTickCarriage`). That
+host then reads them as it always has, and a host of this release takes them
+as unknown.
 
 ---
 
