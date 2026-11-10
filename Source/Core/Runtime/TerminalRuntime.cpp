@@ -1533,6 +1533,7 @@ void TerminalRuntime::noteBytesArrived(std::uint32_t nowMicros)
 
 void TerminalRuntime::armEraseHoldIfUnseen(const Ubiquitty::Terminal& terminal, std::uint32_t nowMicros)
 {
+    m_observedEraseGeneration.store(terminal.eraseDisplayGeneration, std::memory_order_relaxed);
     m_eraseHold.arm(terminal.eraseDisplayGeneration, nowMicros);
 }
 
@@ -1556,7 +1557,8 @@ bool TerminalRuntime::isEraseRedrawWhole() const
 
 std::optional<std::uint32_t> TerminalRuntime::eraseRedrawQuietDueInMicros(std::uint32_t nowMicros) const
 {
-    if (!m_isLiveResizeActive.load(std::memory_order_relaxed) || isEraseRedrawWhole())
+    if (!m_isLiveResizeActive.load(std::memory_order_relaxed)
+        || m_parsedEraseGeneration.load(std::memory_order_relaxed) == m_observedEraseGeneration.load(std::memory_order_relaxed))
         return std::nullopt;
     const std::uint32_t sinceBytes = microsSince(nowMicros, m_lastBytesMicros.load(std::memory_order_relaxed));
     return sinceBytes >= eraseRedrawQuietMicroseconds ? 0 : eraseRedrawQuietMicroseconds - sinceBytes;
@@ -1577,7 +1579,10 @@ std::uint32_t TerminalRuntime::eraseGeneration() const
 
 void TerminalRuntime::noteFeedParsed(std::uint32_t eraseGenerationBefore)
 {
-    if (!m_term || m_term->eraseDisplayGeneration == eraseGenerationBefore)
+    if (!m_term)
+        return;
+    m_observedEraseGeneration.store(m_term->eraseDisplayGeneration, std::memory_order_relaxed);
+    if (m_term->eraseDisplayGeneration == eraseGenerationBefore)
         return;
     if (m_parsedEraseGeneration.load(std::memory_order_relaxed) != eraseGenerationBefore)
         return;
