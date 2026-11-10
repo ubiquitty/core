@@ -197,7 +197,7 @@ int collectHiliteRegionRowSpans(const Terminal& terminal, int viewOffset, Overla
     return copyIntoSpan(scratch, out);
 }
 
-CapturedRows capturedRows(const FrameCapture& capture) noexcept
+CapturedRows capturedRows(const FrameCapture& capture) noexcept UBIQUITTY_NONBLOCKING
 {
     return { .rows = capture.rows(), .columns = capture.columns(), .viewOffset = capture.viewOffset(), .numbering = capture.rowNumbering() };
 }
@@ -242,17 +242,17 @@ int searchSpansOverCapture(const SearchOverlayFacts& facts, const CapturedRows& 
 
 } // namespace
 
-int focusedSearchSpansOverCapture(const SearchOverlayFacts& facts, const CapturedRows& captured, OverlayRowSpans out) noexcept
+int focusedSearchSpansOverCapture(const SearchOverlayFacts& facts, const CapturedRows& captured, OverlayRowSpans out) noexcept UBIQUITTY_NONBLOCKING
 {
     return searchSpansOverCapture(facts, captured, SearchTier::Focused, out);
 }
 
-int otherSearchSpansOverCapture(const SearchOverlayFacts& facts, const CapturedRows& captured, OverlayRowSpans out) noexcept
+int otherSearchSpansOverCapture(const SearchOverlayFacts& facts, const CapturedRows& captured, OverlayRowSpans out) noexcept UBIQUITTY_NONBLOCKING
 {
     return searchSpansOverCapture(facts, captured, SearchTier::Other, out);
 }
 
-int triggerSpansOverCapture(const MarkOverlayFacts& facts, const CapturedRows& captured, OverlayRowSpans out) noexcept
+int triggerSpansOverCapture(const MarkOverlayFacts& facts, const CapturedRows& captured, OverlayRowSpans out) noexcept UBIQUITTY_NONBLOCKING
 {
     if (captured.rows <= 0)
         return 0;
@@ -269,7 +269,7 @@ int triggerSpansOverCapture(const MarkOverlayFacts& facts, const CapturedRows& c
     return written;
 }
 
-int hiliteSpansOverCapture(const MarkOverlayFacts& facts, const CapturedRows& captured, OverlayRowSpans out) noexcept
+int hiliteSpansOverCapture(const MarkOverlayFacts& facts, const CapturedRows& captured, OverlayRowSpans out) noexcept UBIQUITTY_NONBLOCKING
 {
     if (!facts.isHiliteValid || captured.rows <= 0 || out.empty())
         return 0;
@@ -279,7 +279,7 @@ int hiliteSpansOverCapture(const MarkOverlayFacts& facts, const CapturedRows& ca
 
 OverlaySpanCounts overlaySpansOverCapture(const SearchOverlayFacts& search, const MarkOverlayFacts& marks,
     const FrameCapture& capture, OverlayRowSpans focusedSearch, OverlayRowSpans otherSearch, OverlayRowSpans triggers,
-    OverlayRowSpans hilite) noexcept
+    OverlayRowSpans hilite) noexcept UBIQUITTY_NONBLOCKING
 {
     const CapturedRows captured = capturedRows(capture);
     return {
