@@ -62,6 +62,12 @@ void scrollbackAppendGridRow(Ubiquitty::Terminal& terminal, int row);
 /// - Returns: The facts, all zero for a null terminal.
 [[nodiscard]] HistoryFacts historyFacts(const Ubiquitty::Terminal* t);
 
+/// How the terminal numbers its absolute rows now.
+///
+/// - Parameter t: The terminal, or null.
+/// - Returns: The numbering, all zero for a null terminal.
+[[nodiscard]] RowNumbering rowNumbering(const Ubiquitty::Terminal* t);
+
 /// Drops every retained line, leaving the live screen untouched.
 ///
 /// Marker arrays and any in-flight search state reset alongside the ring, so a

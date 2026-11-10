@@ -1962,6 +1962,16 @@ private:
     ///     nullptr publishes the snapshot alone.
     void publishReads(const RuntimeSnapshot& snap, Ubiquitty::Terminal* term) UBIQUITTY_REQUIRES(modelLockRole);
 
+    /// Publishes the search matches and the trigger and hilite marks `term`
+    /// holds, each only when it differs from the one last published.
+    ///
+    /// Part of every ``publishReads``, so every turn that publishes the
+    /// snapshot — a pass's end, a feed's return, a write's release — leaves
+    /// the frame's overlays current too. Caller holds the model lock.
+    ///
+    /// - Parameter term: The terminal whose overlays a frame draws.
+    void publishOverlayFacts(const Ubiquitty::Terminal& term) UBIQUITTY_REQUIRES(modelLockRole);
+
     /// Publishes a terminal's colours as the ones its frame shows.
     ///
     /// Caller holds the model lock, and no synchronized update is open: the
@@ -2364,6 +2374,12 @@ private:
     /// close compares before it reads and publishes them again. Under the
     /// model lock.
     std::uint64_t m_coherentColorsEpoch = 0;
+    /// The overlay facts last published on the link, and the gathering the
+    /// next publish compares against them. Under the model lock.
+    Rendering::SearchOverlayFacts m_publishedSearchOverlay;
+    Rendering::SearchOverlayFacts m_gatheredSearchOverlay;
+    Rendering::MarkOverlayFacts m_publishedMarkOverlay;
+    Rendering::MarkOverlayFacts m_gatheredMarkOverlay;
     // When the pane's frame may be announced: the rule the daemon publishes
     // by. Pacing is the drain host's (PacedDrainHost throttles to the
     // display's rate), so the rule paces no flood of its own here. Writer-thread

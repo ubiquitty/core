@@ -12,6 +12,7 @@
 #include "Core/RichText/Drawing.h"
 #include "Core/Screen/Addressing.h"
 #include "Core/Screen/ScrollSearch.h"
+#include "Core/Screen/Scrollback.h"
 #include <span>
 
 #include "Core/Cell.h"
@@ -272,6 +273,8 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
     source.rows = terminal.rows;
     source.columns = terminal.columns;
     source.scrollbackCount = history;
+    source.appendedRows = Screen::scrollbackTotalAppended(&terminal);
+    source.absoluteRowEpoch = terminal.absoluteRowEpoch;
     source.modelGeneration = terminal.modelEpoch;
     source.palette = &terminal.palette;
     source.paletteGeneration = terminal.paletteEpoch;
@@ -934,6 +937,12 @@ bool TerminalFrameInputs::captureSource(const FrameSource& source, const Termina
 
     m_viewOffset = viewOffset;
     m_firstAbsoluteRow = std::max(source.scrollbackCount, 0) - m_viewOffset;
+    m_rowNumbering = {
+        .historyRows = std::max(source.scrollbackCount, 0),
+        .appendedRows = source.appendedRows,
+        .absoluteRowEpoch = source.absoluteRowEpoch,
+        .isAlternateScreen = source.alternateActive,
+    };
 
     // Chrome over the captured grid, before anything reads it. After the row
     // walk so it wins over the cells it covers, and before the digests so a

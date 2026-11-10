@@ -18,8 +18,11 @@
 //
 
 #include "Core/Preferences/Preferences.h"
+#include "Core/Rendering/FrameCapture.h"
 #include "Core/Rendering/FrameDamage.h"
+#include "Core/Rendering/OverlaySpanGather.h"
 #include "Core/Rendering/PaletteColors.h"
+#include "Core/Rendering/UnifontRasterizer.h"
 #include "Core/Runtime/DrainHostPacing.h"
 #include "Core/Runtime/HostDirectoryClient.h"
 #include "Core/Runtime/HostOutline.h"
@@ -37,6 +40,7 @@
 #include "Core/TerminalOperations.h"
 #include "Core/Themes/Themes.h"
 #include "Core/Title/ProcessIcons.h"
+#include "Core/Triggers/Triggers.h"
 #include "PAL/PAL.h"
 #include "PAL/Stream.h"
 #include "PAL/TerminalClients.h"
@@ -8401,4 +8405,142 @@ TEST(sessionPublicationsRefreshCompletedSearchesInOwnedAndAdoptedModels)
         if (isAdopted)
             session->adoptExternalTerminal(nullptr, 0);
     }
+}
+
+namespace {
+
+using OverlayCapture = std::unique_ptr<Ubiquitty::Rendering::FrameCapture, decltype([](Ubiquitty::Rendering::FrameCapture* capture) { releaseFrameCapture(capture); })>;
+
+// The session's model captured as a frame captures it, under the reader's hold.
+OverlayCapture captureSessionFrame(TerminalSession& session)
+{
+    // A helper that returns cannot REQUIRE; a failed capture aborts here,
+    // before any comparison reads it.
+    OverlayCapture capture { Ubiquitty::Rendering::FrameCapture::make() };
+    Ubiquitty::Rendering::UnifontRasterizer rasterizer(1, 0);
+    session.lockForRead();
+    const bool didCapture = capture && capture->capture(*session.terminal(), {}, rasterizer.cellMetrics(), {});
+    session.unlockForRead();
+    if (!didCapture)
+        std::abort();
+    return capture;
+}
+
+struct PublishedOverlay {
+    std::vector<Ubiquitty::Rendering::SelectionRowSpan> focused;
+    std::vector<Ubiquitty::Rendering::SelectionRowSpan> other;
+    std::vector<Ubiquitty::Rendering::SelectionRowSpan> triggers;
+    std::vector<Ubiquitty::Rendering::SelectionRowSpan> hilite;
+    Ubiquitty::Rendering::OverlaySpanCounts counts;
+};
+
+// What a frame built from `capture` draws of the overlays, read the way the
+// frame reads them: lock-free, from the session's publications.
+PublishedOverlay readPublishedOverlay(const TerminalSession& session, const Ubiquitty::Rendering::FrameCapture& capture)
+{
+    PublishedOverlay published;
+    published.focused.resize(Ubiquitty::Rendering::maxSearchOverlaySpans);
+    published.other.resize(Ubiquitty::Rendering::maxSearchOverlaySpans);
+    published.triggers.resize(Ubiquitty::Rendering::maxTriggerOverlaySpans);
+    published.hilite.resize(static_cast<std::size_t>(capture.rows()));
+    published.counts = session.overlaySpansOverCapture(capture, published.focused, published.other, published.triggers, published.hilite);
+    published.focused.resize(static_cast<std::size_t>(published.counts.focusedSearch));
+    published.other.resize(static_cast<std::size_t>(published.counts.otherSearch));
+    published.triggers.resize(static_cast<std::size_t>(published.counts.triggers));
+    published.hilite.resize(static_cast<std::size_t>(published.counts.hilite));
+    return published;
+}
+
+// Waits for the search worker's publication; the worker publishes after the
+// call that queued it returns.
+template<typename Predicate>
+bool eventually(Predicate predicate)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!predicate()) {
+        if (std::chrono::steady_clock::now() > deadline)
+            return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
+} // namespace
+
+// Search runs on the frontend and the search worker, never in a drain: what it
+// finds, where its focus moves and its end reach a frame's lock-free overlay
+// reader with no output behind them.
+TEST(aSearchOutsideADrainReachesTheOverlayReader)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(6, 30);
+    const std::string_view text = "alpha one\r\nbeta\r\nalpha two\r\n";
+    session->feedBytes({ text.data(), text.size() });
+    const OverlayCapture capture = captureSessionFrame(*session);
+    CHECK_EQ(readPublishedOverlay(*session, *capture).counts.focusedSearch, 0);
+
+    const auto searched = session->searchScrollbackAndWait("alpha", TerminalSession::SearchPatternForm::Literal, Ubiquitty::CaseSensitivity::Sensitive);
+    CHECK(searched.isComplete);
+    REQUIRE(searched.foundCount == 2);
+    REQUIRE(eventually([&] { return readPublishedOverlay(*session, *capture).counts.focusedSearch == 1; }));
+    const PublishedOverlay found = readPublishedOverlay(*session, *capture);
+    CHECK_EQ(found.counts.otherSearch, 1);
+
+    (void)session->stepSearchMatch(TerminalSession::SearchStep::Forward);
+    const PublishedOverlay stepped = readPublishedOverlay(*session, *capture);
+    CHECK(stepped.counts.searchGeneration > found.counts.searchGeneration);
+    REQUIRE(stepped.focused.size() == 1u);
+    CHECK(stepped.focused[0].visibleRow != found.focused[0].visibleRow);
+
+    session->clearScrollbackSearch();
+    CHECK(eventually([&] {
+        const PublishedOverlay cleared = readPublishedOverlay(*session, *capture);
+        return cleared.counts.focusedSearch + cleared.counts.otherSearch == 0;
+    }));
+}
+
+// Trigger highlights and the hilite band reach the reader from a feed, and
+// from a frontend's own write through the write pair; a publish that changed
+// neither leaves their generation where it was.
+TEST(marksWrittenOutsideADrainReachTheOverlayReader)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(6, 30);
+    session->lockForWrite();
+    const bool didAddRule = Ubiquitty::Triggers::addRuleSpec(session->terminal(), "ERROR", "highlight:red", Ubiquitty::CaseSensitivity::Sensitive);
+    session->unlockAfterWrite();
+    REQUIRE(didAddRule);
+    const std::string_view text = "an ERROR here\r\n";
+    session->feedBytes({ text.data(), text.size() });
+    const OverlayCapture capture = captureSessionFrame(*session);
+    session->lockForRead();
+    const int modelHighlights = Ubiquitty::Triggers::highlightCount(session->terminal());
+    session->unlockForRead();
+    CHECK_EQ(modelHighlights, 1);
+    const PublishedOverlay fed = readPublishedOverlay(*session, *capture);
+    CHECK_EQ(fed.counts.triggers, 1);
+    CHECK_EQ(fed.counts.hilite, 0);
+
+    session->republishSnapshot();
+    CHECK_EQ(readPublishedOverlay(*session, *capture).counts.markGeneration, fed.counts.markGeneration);
+
+    session->lockForWrite();
+    Ubiquitty::Terminal* terminal = session->terminal();
+    terminal->modes.hiliteRegionValid = true;
+    terminal->modes.hiliteStartX = 3;
+    terminal->modes.hiliteStartY = 2;
+    terminal->modes.hiliteFirstRow = 2;
+    terminal->modes.hiliteLastRow = 4;
+    session->unlockAfterWrite();
+    const PublishedOverlay banded = readPublishedOverlay(*session, *capture);
+    CHECK(banded.counts.markGeneration > fed.counts.markGeneration);
+    CHECK_EQ(banded.counts.hilite, 3);
+
+    session->lockForWrite();
+    Ubiquitty::clearBuffer(session->terminal());
+    session->unlockAfterWrite();
+    const OverlayCapture cleared = captureSessionFrame(*session);
+    CHECK_EQ(readPublishedOverlay(*session, *cleared).counts.triggers, 0);
 }

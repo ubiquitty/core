@@ -87,6 +87,16 @@ HistoryFacts historyFacts(const Ubiquitty::Terminal* t)
     };
 }
 
+RowNumbering rowNumbering(const Ubiquitty::Terminal* t)
+{
+    return {
+        .historyRows = scrollbackCount(t),
+        .appendedRows = scrollbackTotalAppended(t),
+        .absoluteRowEpoch = t ? t->absoluteRowEpoch : 0,
+        .isAlternateScreen = t && t->screens.isUsingAlternateScreen,
+    };
+}
+
 void dropScrollback(Ubiquitty::Terminal* t)
 {
     if (!t)
