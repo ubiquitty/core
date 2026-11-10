@@ -242,6 +242,7 @@ The checks the commit hook, the pre-push gate, and CI run. `check-style.py` runs
 | [`check-name-collisions.py`](check-name-collisions.py) | One name, two namespaces, two values. |
 | [`check-optional-bool-reads.py`](check-optional-bool-reads.py) | An `std::optional<bool>` in a boolean context answers ENGAGEMENT, not its value. |
 | [`check-osc-payload-view.py`](check-osc-payload-view.py) | The OSC handlers take the payload the dispatcher measured. |
+| [`check-ownership-analysis-on.py`](check-ownership-analysis-on.py) | Every build tree a run built compiled with the ownership analyses on. |
 | [`check-pen-idempotency-fields.py`](check-pen-idempotency-fields.py) | Every Pen field a renderer reads is named in the write path's idempotency probe. |
 | [`check-personal-paths.py`](check-personal-paths.py) | Public-tree privacy lint. |
 | [`check-pgo-applies.py`](check-pgo-applies.py) | How much of the profile the compiler could still use. |

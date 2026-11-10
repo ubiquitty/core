@@ -166,11 +166,11 @@ jobs:
           - group: clang
             stages: --only setup --only quic --only fuzz --only pgo --only sanitizers
             families: ""
-          # The ownership analyses compile the test tree once more, with Clang's
-          # thread-safety and function-effect checks forced on; a group of its
-          # own keeps that build off the clang group's sanitizer build.
+          # The host, ubq and the test tree built with Clang, then every tree
+          # checked to have compiled with UBIQUITTY_OWNERSHIP_ANALYSIS on; a
+          # group of its own keeps that build off the sanitizer build's runner.
           - group: analysis
-            stages: --only setup
+            stages: --only setup --only quic
             families: core_gate_ownership
           - group: wasm
             stages: --only setup --only wasm-tools --only wasm-smoke
@@ -246,6 +246,7 @@ jobs:
           UBQ_PREPUSH_STRICT: "1"
           UBIQUITTY_PREPUSH_CACHE: "off"
           UBQ_BUILD_ROOT: ${{ runner.workspace }}/build-gates
+          UBIQUITTY_QUIC_PREFIX: ${{ runner.workspace }}/build-gcc/quic-deps
           CC: clang
           CXX: clang++
         run: |
@@ -339,14 +340,16 @@ jobs:
         id: battery
         run: python3 Scripts/ci_batteries.py run apple
       # What the push hook runs on a Mac and the battery does not: the host
-      # and ubq builds, the PGO bounds against the portable profile, the
-      # symbol-fork check over what was built, the benchmarks, and the style
-      # checks whose self-tests read the built test objects. The whole suite
-      # ran above, so the subset the hook selects by diff is not run again.
+      # and ubq builds, then the proof that every tree this job built (the
+      # battery's included) compiled with Apple Clang's ownership analyses on;
+      # the PGO bounds against the portable profile, the symbol-fork check over
+      # what was built, the benchmarks, and the style checks whose self-tests
+      # read the built test objects. The whole suite ran above, so the subset
+      # the hook selects by diff is not run again.
       - name: Push gates (macOS)
         env:
           UBIQUITTY_PREPUSH: families
-          UBQ_PREPUSH_FAMILIES: core_gate_host_builds core_gate_test_hygiene core_gate_forks core_gate_pgo_drift core_gate_style_checks core_gate_bench_compiles
+          UBQ_PREPUSH_FAMILIES: core_gate_ownership core_gate_test_hygiene core_gate_forks core_gate_pgo_drift core_gate_style_checks core_gate_bench_compiles
           UBQ_PREPUSH_SELECT: all
           UBQ_PREPUSH_STRICT: "1"
           UBIQUITTY_PREPUSH_CACHE: "off"
@@ -443,6 +446,11 @@ jobs:
         env:
           SNAPSHOT: skip
         run: '"$KIT_CHECKOUT/Scripts/run-tests.sh"'
+      # Every tree the Kit built here compiled against this Core with Apple
+      # Clang's ownership analyses on.
+      - name: Kit compiled with the ownership analysis
+        working-directory: kit
+        run: python3 "$CORE_CHECKOUT/Scripts/check-ownership-analysis-on.py" "$(python3 "$CORE_CHECKOUT/Scripts/build_root.py" "$KIT_CHECKOUT")"
       - name: Report the Kit's Apple stages
         if: always()
         working-directory: kit
@@ -500,12 +508,18 @@ jobs:
           key: ci-linux-image-${{ steps.image.outputs.digest }}
       # The Raster and Vulkan libraries, their shaders and the Kit's host tests,
       # in the image the Linux batteries use.
+      # With the image's Clang, so the libraries compile against this Core with
+      # the ownership analyses on, which the step after proves.
       - name: Kit's Linux libraries and tests
         env:
           UBQ_CI_IMAGE_ARCHIVE: ${{ runner.temp }}/ubq-ci-linux-image.tar
           UBQ_CI_LINUX_IMAGE: "true"
           UBQ_BUILD_ROOT: ${{ runner.workspace }}/build-kit
+          CC: clang
+          CXX: clang++
         run: '"$CORE_CHECKOUT/Scripts/ci-linux-image.sh" --source-root "$KIT_CHECKOUT" "$KIT_CHECKOUT/Scripts/build-linux.sh" --test'
+      - name: Kit compiled with the ownership analysis
+        run: python3 "$CORE_CHECKOUT/Scripts/check-ownership-analysis-on.py" "$RUNNER_WORKSPACE/build-kit"
       - name: Save the CI image
         if: always() && steps.restore-image.outputs.cache-hit != 'true'
         continue-on-error: true
@@ -592,6 +606,11 @@ jobs:
       - name: App's Apple stages
         working-directory: app
         run: python3 "$CORE_CHECKOUT/Scripts/ci_batteries.py" run apple --source-root "$APP_CHECKOUT" --only setup --only quic --only macos-build --only macos-smokes --only ui-scenarios --only core-frames --only portable-build --only snapshots --only ios-build --only ios-smokes --only ios-sync --only ios-ui
+      # Every tree the app built here compiled against this Core with Apple
+      # Clang's ownership analyses on.
+      - name: App compiled with the ownership analysis
+        working-directory: app
+        run: python3 "$CORE_CHECKOUT/Scripts/check-ownership-analysis-on.py" "$(python3 "$CORE_CHECKOUT/Scripts/build_root.py" "$APP_CHECKOUT")"
       - name: Report the app's Apple stages
         if: always()
         working-directory: app
