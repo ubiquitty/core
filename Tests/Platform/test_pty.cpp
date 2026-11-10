@@ -1475,10 +1475,13 @@ TEST(testForegroundQueriesTrackTheJob)
     CHECK(!s->process().ttyName().empty());
     CHECK(s->process().foregroundProcessGroup().has_value());
 
-    // A running job moves the foreground group off the shell.
+    // A running job moves the foreground group off the shell. Its group owns
+    // the terminal from before its program's exec, and a program in exec names
+    // nothing until its new image has its arguments, so the wait is for the
+    // name as well.
     s->writeAll({ "sleep 5\n", 8 });
     char sink[4096];
-    for (ticks = 0; ticks < 600 && s->process().foregroundIsShell(); ++ticks) {
+    for (ticks = 0; ticks < 600 && (s->process().foregroundIsShell() || s->process().foregroundName().empty()); ++ticks) {
         int finalStatus = 0;
         drainWithBudget(s.get(), sink, sizeof(sink), 5, &finalStatus);
     }
@@ -2185,6 +2188,11 @@ TEST(testRunningJobsStillAskToClose)
         CHECK_MSG(didStart, name.c_str());
         const bool didAsk = shell.drainUntil([&] { return shell.wouldCloseAsk(); }, 5000);
         CHECK_MSG(didAsk, name.c_str());
+        // A job reads as one from the moment its program's exec begins, and a
+        // program in exec names nothing until its new image has its arguments
+        // (processForegroundName); the reading after names it.
+        const bool wasNamed = shell.drainUntil([&] { return !shell.stream().process().foregroundName().empty(); }, 5000);
+        CHECK_MSG(wasNamed, name.c_str());
         int samplesNotAsking = 0;
         int samplesMisnamed = 0;
         std::string misnamed;
@@ -3225,6 +3233,19 @@ TEST(aStandaloneOwnedInterruptEscapesCapacityWithoutAdmittingOtherBytes)
     CHECK(stream->pendingOwnedWriteBytes(22) == std::optional<std::size_t> { 0 });
 }
 
+// A leader here stands for a shell a terminal started, and the terminal's
+// spawn starts one with every signal at its default. Dispositions set to
+// ignore survive fork and exec, so under a runner that ignores SIGHUP (nohup)
+// the leader would outlive the hangup these tests send. Called between fork
+// and exec: sigaction is async-signal-safe.
+static void restoreDefaultHangup()
+{
+    struct sigaction defaultAction {};
+    defaultAction.sa_handler = SIG_DFL;
+    sigemptyset(&defaultAction.sa_mask);
+    (void)::sigaction(SIGHUP, &defaultAction, nullptr);
+}
+
 // The inherited stream never receives direct-child reaping authority.
 struct InheritedPTYChild {
     PAL::UnixFileDescriptor master;
@@ -3293,6 +3314,7 @@ struct InheritedPTYChild {
         int descriptor = -1;
         process = ::forkpty(&descriptor, nullptr, nullptr, nullptr);
         if (!process) {
+            restoreDefaultHangup();
             ::execl("/bin/sh", "sh", "-c", "printf 'ready\\n'; while IFS= read -r line; do printf 'got:%s\\n' \"$line\"; done", nullptr);
             _exit(127);
         }
@@ -3733,6 +3755,7 @@ TEST(anInheritedPTYSurvivesItsPredecessorsExitWithoutChangingIdentity)
                     _exit(23);
             }
             replica.reset();
+            restoreDefaultHangup();
             ::execl("/bin/sh", "sh", "-c", "while IFS= read -r line; do printf 'got:%s\\n' \"$line\"; done", nullptr);
             _exit(24);
         }
