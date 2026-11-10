@@ -959,6 +959,42 @@ TEST(aGeometryChangeStartsANewLineage)
     CHECK(full->baseSequence() == 0);
 }
 
+// A registration that changes only the style starts a new lineage too: the
+// frame after it is Full, at the drain's boundary and at the view's ask alike,
+// so no row keeps pixels drawn in the old style.
+TEST(aStyleOnlyRegistrationStartsANewLineage)
+{
+    for (const bool isServedAtTheAsk : { false, true }) {
+        SessionFixture fx(24, 80);
+        REQUIRE(fx.isReady);
+        SyncFrameCaptureGeometry geometry = testGeometry();
+        fx.session->setSyncFrameCaptureGeometry(geometry);
+        fx.drainSyncFrame("a");
+        REQUIRE(TakenFrame(fx.session->takeSyncFrame()));
+        fx.drainSyncFrame("\x1b[2;1Hb");
+        {
+            const TakenFrame delta { fx.session->takeSyncFrame() };
+            REQUIRE(delta != nullptr);
+            REQUIRE(delta->recordKind() == FrameRecordKind::Delta);
+        }
+        geometry.style.uniformDefaultBackground = { 0.9f, 0.8f, 0.7f, 1.0f };
+        fx.session->setSyncFrameCaptureGeometry(geometry);
+        TakenFrame next;
+        Runtime::FrameSupply supply;
+        if (isServedAtTheAsk) {
+            next.reset(fx.session->takeFrame({}, supply));
+        } else {
+            fx.drainSyncFrame("\x1b[3;1Hc");
+            next.reset(fx.session->takeSyncFrame());
+        }
+        REQUIRE(next != nullptr);
+        CHECK_MSG(next->recordKind() == FrameRecordKind::Full, isServedAtTheAsk ? "served at the ask" : "at the drain's boundary");
+        CHECK(next->baseSequence() == 0);
+        CHECK(next->dirtyRowCount() == next->rows());
+        CHECK(next->uniforms().defaultBackground.x == 0.9f);
+    }
+}
+
 TEST(boundaryRecordsCarryMonotonicIdentityAndEpochs)
 {
     SessionFixture fx(24, 80);
