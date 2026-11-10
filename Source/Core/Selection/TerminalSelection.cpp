@@ -1963,6 +1963,20 @@ bool isViewOffsetHeldByHistory(const Session& session) noexcept
     return session.hasViewportObservation && !session.usesLogicalViewport;
 }
 
+int frameViewOffset(const Terminal& terminal, int viewOffset, const std::optional<Screen::HistoryFacts>& heldAgainst) noexcept
+{
+    const int standing = heldAgainst ? heldViewOffset(viewOffset, *heldAgainst, Screen::historyFacts(&terminal)) : viewOffset;
+    return Screen::resolvedViewOffset(&terminal, standing);
+}
+
+int frameViewOffset(const Session& view, const Terminal& terminal, int viewOffset) noexcept
+{
+    const std::optional<Screen::HistoryFacts> heldAgainst = isViewOffsetHeldByHistory(view)
+        ? std::optional(view.viewportObservedHistory)
+        : std::nullopt;
+    return frameViewOffset(terminal, viewOffset, heldAgainst);
+}
+
 OutputUpdate updateAfterOutput(Session& session, Terminal& terminal, int viewOffset, Input::OutputSnapPolicy snapPolicy) noexcept
 {
     const EndsNamedOnReturn naming(session, terminal);

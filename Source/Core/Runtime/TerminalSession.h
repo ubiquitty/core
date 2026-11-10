@@ -9618,11 +9618,11 @@ private:
         // A view scrolled back holds its rows while output arrives, and the
         // frame shows the rows the view does. The cells, the damage planned
         // for them and the selection resolved over them read one resolved
-        // offset: none on the alternate screen, which has no history.
-        const int viewOffset = m_syncCaptureGeometry.isViewOffsetHeld
-            ? Ubiquitty::Selection::heldViewOffset(m_syncCaptureGeometry.viewOffset, m_syncCaptureGeometry.viewHistory, Screen::historyFacts(term))
-            : m_syncCaptureGeometry.viewOffset;
-        options.viewOffset = Screen::resolvedViewOffset(term, viewOffset);
+        // offset, the one the view's own read under the model lock shows.
+        const std::optional<Screen::HistoryFacts> heldAgainst = m_syncCaptureGeometry.isViewOffsetHeld
+            ? std::optional(m_syncCaptureGeometry.viewHistory)
+            : std::nullopt;
+        options.viewOffset = Ubiquitty::Selection::frameViewOffset(*term, m_syncCaptureGeometry.viewOffset, heldAgainst);
         options.drawCursor = m_syncCaptureGeometry.drawCursor;
         options.isFocused = m_syncCaptureGeometry.isFocused;
         options.cursorMixAlpha = m_syncCaptureGeometry.cursorMixAlpha;
