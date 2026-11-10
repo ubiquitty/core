@@ -24,6 +24,8 @@
 #include "Core/RichText/Blocks.h"
 #include "Core/RowMeta.h"
 #include "Core/Screen/CellBlank.h"
+#include "Core/Screen/HistoryLines.h"
+#include "Core/Screen/LineIdentity.h"
 #include "Core/Screen/MarkValues.h"
 #include "Core/Screen/Operations.h"
 #include "Core/Screen/Resize.h"
@@ -34,10 +36,12 @@
 #include "Core/Unicode/Width.h"
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <expected>
+#include <limits>
 #include <memory>
 #include <new>
 #include <optional>
@@ -47,6 +51,7 @@
 #if UBIQUITTY_ENABLE_TEST_HOOKS
 namespace Ubiquitty::Screen {
 std::uint64_t reflowCellsCopiedForTest = 0;
+HistoryRewrapFault historyRewrapFaultForTest = HistoryRewrapFault::None;
 } // namespace Ubiquitty::Screen
 #endif
 
@@ -1759,6 +1764,15 @@ static void anchorPrimaryRowsBottom(Ubiquitty::Terminal& t, int oldRows, int new
         pullStart = lineStart;
     }
     const int pulledRows = history - pullStart;
+    // The lines below the pull set stay at their stored widths; the settle rewraps them, and this is where
+    // they end. The pull set starts a line, so that line's number names the first one already current.
+    if (t.lineStore) {
+        const auto firstPulled = pullStart > 0 && pullStart < history ? t.lineStore->positionAt(pullStart) : std::nullopt;
+        if (pullStart <= 0)
+            t.staleHistoryEndLine = t.lineStore->frontLine().number;
+        else
+            t.staleHistoryEndLine = firstPulled ? firstPulled->line : t.lineStore->headLineNumber();
+    }
 
     // Ring capacity: reflowPrimary's per-row ceiling, summed over only the
     // pulled + screen rows.
@@ -1803,9 +1817,10 @@ static void anchorPrimaryRowsBottom(Ubiquitty::Terminal& t, int oldRows, int new
     bool isMidLogical = false;
     long fedOrdinal = 0;
 
-    auto contentLengthOf = [&](const Cell* cells, int rowLength, bool isWrapped) -> int {
-        if (isWrapped)
-            return rowLength;
+    // Trailing erased blanks go on every row, a soft-wrapped one included: a wide glyph that cannot fit the
+    // last column wraps whole and leaves that column an erased blank, which fed as content would put a
+    // stray space at the join. The one pass trims the same way.
+    auto contentLengthOf = [&](const Cell* cells, int rowLength, bool /*isWrapped*/) -> int {
         int length = rowLength;
         while (length > 0 && reflowCellIsBlank(cells[length - 1]))
             length--;
@@ -2012,6 +2027,8 @@ Screen::ResizeOutcome Screen::resizeGrid(Ubiquitty::Terminal* t, int newRows, in
             t->grid->requestFullRedraw();
         return {};
     }
+    // The rows a sliced settle is rewrapping are about to move under this resize.
+    t->historyRewrap.reset();
 
     oldRows = t->rows;
     oldColumns = t->columns;
@@ -2150,6 +2167,8 @@ Screen::ResizeOutcome Screen::resizeGrid(Ubiquitty::Terminal* t, int newRows, in
     if (shouldReflow && !isHeightOnlyReflow)
         t->pendingHistoryRewrapColumns = (shouldDeferHistory && t->scrollbackCount > 0) ? newColumns : 0;
     t->pendingHistoryRewrapAnchor = t->pendingHistoryRewrapColumns != 0 ? reflowAnchor : Modes::AnchorMode::Top;
+    if (t->pendingHistoryRewrapColumns == 0)
+        t->staleHistoryEndLine = 0;
 
     t->rows = newRows;
     t->columns = newColumns;
@@ -2326,9 +2345,304 @@ Screen::ResizeOutcome Screen::resizeGrid(Ubiquitty::Terminal* t, int newRows, in
     return { .geometryChanged = true };
 }
 
+} // namespace Ubiquitty
+
+namespace Ubiquitty::Screen {
+
+/// The settle's rewrap of the stale history, one logical line at a time.
+struct HistoryRewrapJob {
+    int newColumns = 0;
+    /// The first line already at the target width: the lines below it are stale.
+    std::uint64_t endLine = 0;
+    /// The line the staged store's first row belongs to.
+    std::uint64_t firstLine = 0;
+    /// The next stale line to rewrap.
+    std::uint64_t nextLine = 0;
+    /// The history epoch the job began in; a clear or a reset opens another and cancels the job.
+    std::uint32_t epoch = 0;
+    /// Whether the last call returned for its budget, for the test that plants a fault there.
+    bool isAfterBoundary = false;
+    /// The rewrapped lines, oldest first, in a store of their own.
+    std::unique_ptr<LineStore> staged;
+    /// One logical line's rewrap machinery, kept between lines.
+    std::unique_ptr<ReflowState> state;
+    std::unique_ptr<ReflowRow[]> ring;
+    std::unique_ptr<Cell[]> ringCells;
+    int ringCapacity = 0;
+};
+
+void HistoryRewrapJobDeleter::operator()(HistoryRewrapJob* job) const noexcept
+{
+    delete job;
+}
+
+namespace {
+
+/// Whether this terminal's history cannot be rewrapped in slices.
+///
+/// An image placement or a rich-text block moves with the rows' logical lines through the rewrap, which
+/// sweeps the whole feed once; a proportional run interns text-size specs the store's census would not
+/// see in a staged store. Those keep the one pass.
+bool isHistoryRewrapDeclined(const Ubiquitty::Terminal& t)
+{
+    return t.images.livePlacementCount != 0 || !t.richTextBlocks.isEmpty() || hasProportionalRuns(t) || hasClampedRuns(t);
+}
+
+/// What one step of the job came to.
+enum class RewrapStep : std::uint8_t {
+    Done,
+    /// An allocation was refused.
+    Refused,
+    /// The store cannot be rewrapped this way: a row is unreadable.
+    Declined,
+};
+
+/// The rows of a stored line, including the leading rows of a line whose start was evicted.
+///
+/// Those rows belong to no addressable line; the one pass rewraps them as a line of their own, and so
+/// does the job, under the number the store holds for them.
+///
+/// - Parameters:
+///   - store: The history.
+///   - number: A line number, the front's own when its rows begin mid-line.
+/// - Returns: The rows, or nothing when the line is not complete in the store.
+std::optional<LineStore::LogicalLineRows> rowsOfLine(const LineStore& store, std::uint64_t number)
+{
+    if (store.frontLine().continuity == LineStore::LineContinuity::ContinuesLine && number == store.frontLine().number) {
+        int rows = 0;
+        while (rows < store.count() && store.isWrapped(rows))
+            ++rows;
+        if (rows >= store.count())
+            return std::nullopt;
+        return LineStore::LogicalLineRows { 0, rows + 1 };
+    }
+    return store.logicalLine(number);
+}
+
+/// Makes the ring hold at least `rows` rows of the job's width.
+///
+/// - Returns: False when the allocation was refused.
+bool ensureRewrapRing(HistoryRewrapJob& job, int rows)
+{
+    if (job.ringCapacity >= rows)
+        return true;
+    std::unique_ptr<ReflowRow[]> ring(new (std::nothrow) ReflowRow[static_cast<std::size_t>(rows)] {});
+    std::unique_ptr<Cell[]> cells(new (std::nothrow) Cell[static_cast<std::size_t>(rows) * static_cast<std::size_t>(job.newColumns)] {});
+    if (!ring || !cells)
+        return false;
+    for (int index = 0; index < rows; ++index)
+        ring[static_cast<std::size_t>(index)].cells = cells.get() + static_cast<std::size_t>(index) * static_cast<std::size_t>(job.newColumns);
+    job.ring = std::move(ring);
+    job.ringCells = std::move(cells);
+    job.ringCapacity = rows;
+    job.state->ring = job.ring.get();
+    job.state->capacity = rows;
+    return true;
+}
+
+/// Rewraps one stored logical line and appends its rows to the staged store.
+///
+/// The same per-row rules as the one-pass rewrap's history loop: trailing erased blanks are trimmed on
+/// every row, a line that fits is moved whole, the rest is fed cell by cell.
+///
+/// - Returns: Whether it was done, an allocation was refused, or the line cannot be staged.
+RewrapStep rewrapStoredLine(Ubiquitty::Terminal& t, HistoryRewrapJob& job, const LineStore::LogicalLineRows& rows)
+{
+    long cells = 0;
+    for (int offset = 0; offset < rows.rowCount; ++offset) {
+        const ScrollLine* line = scrollbackLine(&t, rows.firstIndex + offset);
+        if (!line)
+            return RewrapStep::Declined;
+        cells += std::min(line->length, static_cast<int>(maxColumns));
+    }
+    const int divisor = job.newColumns > 1 ? job.newColumns - 1 : 1;
+    const long needed = cells / divisor + rows.rowCount + 2;
+    if (needed > std::numeric_limits<int>::max() / 2)
+        return RewrapStep::Declined;
+    if (!ensureRewrapRing(job, static_cast<int>(needed)))
+        return RewrapStep::Refused;
+    ReflowState* st = job.state.get();
+    st->count = 0;
+    st->head = 0;
+    for (int offset = 0; offset < rows.rowCount; ++offset) {
+        const ScrollLine* line = scrollbackLine(&t, rows.firstIndex + offset);
+        const int rowLength = std::min(line->length, static_cast<int>(maxColumns));
+        int contentLength = rowLength;
+        while (contentLength > 0 && reflowCellIsBlank(line->cells[contentLength - 1]))
+            --contentLength;
+        const bool isLast = offset + 1 == rows.rowCount;
+        if (rows.rowCount == 1 && !line->wrapped
+            && reflowPushWholeLine(st, line->cells, contentLength, line->mark, line->lineAttribute, line->needsShaping, false))
+            continue;
+        reflowFeedRow(st, line->cells, contentLength, line->mark, offset == 0, line->lineAttribute);
+        if (isLast)
+            reflowFlushLogical(st);
+    }
+    const Cell blank = defaultBlankCell;
+    for (int sequence = 0; sequence < st->count; ++sequence) {
+        const ReflowRow& row = st->ring[(st->head + sequence) % st->capacity];
+        if (row.length > 0)
+            job.staged->append(row.cells, row.length, row.lineAttribute, row.mark, row.wrapped, row.needsShaping);
+        else
+            job.staged->append(&blank, 1, row.lineAttribute, row.mark, row.wrapped, false);
+    }
+    return RewrapStep::Done;
+}
+
+/// Starts the job for the stale lines the last interactive step left.
+///
+/// - Returns: The job; null with `step` set to `Refused` when an allocation was refused.
+std::unique_ptr<HistoryRewrapJob, HistoryRewrapJobDeleter> beginHistoryRewrap(Ubiquitty::Terminal& t, RewrapStep& step)
+{
+    LineStore& store = *t.lineStore;
+    step = RewrapStep::Refused;
+    std::unique_ptr<HistoryRewrapJob, HistoryRewrapJobDeleter> job(new (std::nothrow) HistoryRewrapJob);
+    if (!job)
+        return nullptr;
+    job->newColumns = t.pendingHistoryRewrapColumns;
+    job->endLine = std::min(t.staleHistoryEndLine, store.headLineNumber());
+    job->firstLine = job->nextLine = store.frontLine().number;
+    job->epoch = historyAddress(t).epoch;
+    job->staged.reset(new (std::nothrow) LineStore);
+    job->state.reset(new (std::nothrow) ReflowState {});
+    if (!job->staged || !job->state)
+        return nullptr;
+    job->staged->init(store.capacity());
+    job->staged->restartNumbering(job->firstLine, store.frontLine().continuity);
+    job->state->newColumns = job->newColumns;
+    job->state->terminal = &t;
+    job->state->prefixStillUnbroken = false;
+    job->state->cursorTargetOrd = -1;
+    step = RewrapStep::Done;
+    return job;
+}
+
+/// Replaces the stale rows with the rewrapped ones and settles what rode on the old rows.
+void finishHistoryRewrap(Ubiquitty::Terminal& t, HistoryRewrapJob& job)
+{
+    LineStore& store = *t.lineStore;
+    PositionReflow positions;
+    beginPositionReflow(t, positions);
+    const std::uint64_t liveFront = store.frontLine().number;
+    // The stale rows are the ones before the line `endLine` starts. Lines the live store has evicted are
+    // dropped from the staged store below, whatever was staged of them.
+    int staleRows = store.count();
+    if (job.endLine < store.headLineNumber()) {
+        if (const auto next = store.logicalLine(job.endLine))
+            staleRows = next->firstIndex;
+    } else if (const auto open = store.openLine()) {
+        // The first current line is the one straddling the seam, whose last row is still on the screen.
+        staleRows = open->firstIndex;
+    }
+    store.dropOldest(staleRows);
+    // The staged store evicts its own oldest rows when the rewrapped history outgrows it, as the one pass's
+    // ring does, so it may already begin after `liveFront`.
+    if (liveFront > job.staged->frontLine().number) {
+        const auto obsolete = job.staged->logicalLine(liveFront);
+        job.staged->dropOldest(obsolete ? obsolete->firstIndex : job.staged->count());
+    }
+    // Rewrapped rows past what the store can hold are the oldest, as in the one pass's ring.
+    const int excess = job.staged->count() + store.count() - store.capacity();
+    if (excess > 0)
+        job.staged->dropOldest(excess);
+    if (job.staged->count() > 0) {
+        const bool didSplice = store.spliceFront(*job.staged, job.staged->frontLine());
+        assert(didSplice);
+        (void)didSplice;
+    }
+    t.scrollbackCount = store.count();
+    finishPositionReflow(t, positions);
+    t.pendingHistoryRewrapColumns = 0;
+    t.pendingHistoryRewrapAnchor = Modes::AnchorMode::Top;
+    t.staleHistoryEndLine = 0;
+    t.historyRewrap.reset();
+    t.absoluteRowEpoch++;
+    notePositionsResized(t);
+    markAllDirty(t);
+}
+
+} // namespace
+
+} // namespace Ubiquitty::Screen
+
+namespace Ubiquitty {
+
+HistoryRewrapProgress advanceHistoryRewrap(Ubiquitty::Terminal* t, std::uint32_t budgetMicros)
+{
+    if (!t || t->pendingHistoryRewrapColumns == 0)
+        return HistoryRewrapProgress::Idle;
+    if (!t->lineStore || t->staleHistoryEndLine <= t->lineStore->frontLine().number) {
+        // Nothing stale: the drag pulled every retained line itself.
+        t->historyRewrap.reset();
+        t->pendingHistoryRewrapColumns = 0;
+        t->pendingHistoryRewrapAnchor = Modes::AnchorMode::Top;
+        t->staleHistoryEndLine = 0;
+        return HistoryRewrapProgress::Finished;
+    }
+    if (Screen::isHistoryRewrapDeclined(*t))
+        return HistoryRewrapProgress::Declined;
+    if (t->historyRewrap && (t->historyRewrap->epoch != Screen::historyAddress(*t).epoch || t->historyRewrap->newColumns != t->pendingHistoryRewrapColumns))
+        t->historyRewrap.reset();
+    if (!t->historyRewrap) {
+        Screen::RewrapStep begun = Screen::RewrapStep::Done;
+        t->historyRewrap = Screen::beginHistoryRewrap(*t, begun);
+        if (!t->historyRewrap)
+            return begun == Screen::RewrapStep::Refused ? HistoryRewrapProgress::Refused : HistoryRewrapProgress::Declined;
+    }
+    Screen::HistoryRewrapJob& job = *t->historyRewrap;
+    LineStore& store = *t->lineStore;
+    const auto started = std::chrono::steady_clock::now();
+    for (;;) {
+        // The stale lines are the lines below `endLine` the store still holds; a pull-back that took some
+        // of them onto the screen leaves nothing this job's numbering could name.
+        if (job.endLine > store.headLineNumber()) {
+            t->historyRewrap.reset();
+            return HistoryRewrapProgress::Declined;
+        }
+        const std::uint64_t liveFront = store.frontLine().number;
+        if (liveFront > job.nextLine) {
+            // Eviction passed the frontier: the lines before it are gone, and what was staged is older
+            // than anything left, so staging starts again from the new front.
+            if (liveFront >= job.endLine) {
+                job.nextLine = job.endLine;
+                break;
+            }
+            job.staged->clear();
+            job.staged->restartNumbering(liveFront, store.frontLine().continuity);
+            job.firstLine = job.nextLine = liveFront;
+        }
+        if (job.nextLine >= job.endLine)
+            break;
+        const auto rows = Screen::rowsOfLine(store, job.nextLine);
+        const Screen::RewrapStep step = rows ? Screen::rewrapStoredLine(*t, job, *rows) : Screen::RewrapStep::Declined;
+        if (step != Screen::RewrapStep::Done) {
+            t->historyRewrap.reset();
+            return step == Screen::RewrapStep::Refused ? HistoryRewrapProgress::Refused : HistoryRewrapProgress::Declined;
+        }
+#if UBIQUITTY_ENABLE_TEST_HOOKS
+        if (Screen::historyRewrapFaultForTest == Screen::HistoryRewrapFault::DropRowAfterSliceBoundary && job.isAfterBoundary && job.staged->count() > 0)
+            job.staged->dropNewest(1);
+#endif
+        job.isAfterBoundary = false;
+        ++job.nextLine;
+        // After the line, so every call makes progress however small its budget.
+        if (budgetMicros && job.nextLine < job.endLine
+            && std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count() >= budgetMicros) {
+            job.isAfterBoundary = true;
+            return HistoryRewrapProgress::Pending;
+        }
+    }
+    Screen::finishHistoryRewrap(*t, job);
+    return HistoryRewrapProgress::Finished;
+}
+
 void settleResize(Ubiquitty::Terminal* t)
 {
     if (!t || t->pendingHistoryRewrapColumns == 0)
+        return;
+    // A refusal leaves the rewrap pending for the next settle to retry; only a terminal that cannot be
+    // sliced pays for it in one pass.
+    if (advanceHistoryRewrap(t, 0) != HistoryRewrapProgress::Declined)
         return;
     // Re-enter resize at the CURRENT dimensions with Settled urgency: the pending
     // marker routes it through the full history rewrap, reusing the whole

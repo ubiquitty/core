@@ -119,6 +119,8 @@ inline constexpr auto terminalHandoverLedger = std::to_array<HandoverLedgerEntry
     { "isBandScrollLaneEnabled", HandoverCarriage::Carried, HandoverBlocker::None },
     { "pendingHistoryRewrapColumns", HandoverCarriage::AtGround, HandoverBlocker::DeferredScreenMutation },
     { "pendingHistoryRewrapAnchor", HandoverCarriage::AtGround, HandoverBlocker::DeferredScreenMutation },
+    { "staleHistoryEndLine", HandoverCarriage::AtGround, HandoverBlocker::DeferredScreenMutation },
+    { "historyRewrap", HandoverCarriage::AtGround, HandoverBlocker::DeferredScreenMutation },
     { "ambiguousWidthAnnounced", HandoverCarriage::Carried, HandoverBlocker::None },
     { "syncOutputCloseCount", HandoverCarriage::Carried, HandoverBlocker::None },
     { "cursorHideCount", HandoverCarriage::Carried, HandoverBlocker::None },

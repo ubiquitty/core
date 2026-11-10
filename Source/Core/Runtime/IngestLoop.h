@@ -499,6 +499,11 @@ private:
             if (m_runtime.foldColdScrollback(m_host, scrollbackFoldBlockBudget)
                 && (timeoutMilliseconds < 0 || timeoutMilliseconds > scrollbackFoldTickMilliseconds))
                 timeoutMilliseconds = scrollbackFoldTickMilliseconds;
+            // The same moment serves the history a width drag left stale: a slice of it, and a wake for the
+            // next while lines remain.
+            if (m_runtime.advanceHistoryRewrap(m_host, historyRewrapSliceMicroseconds)
+                && (timeoutMilliseconds < 0 || timeoutMilliseconds > scrollbackFoldTickMilliseconds))
+                timeoutMilliseconds = scrollbackFoldTickMilliseconds;
             const bool wasFrameHeld = m_runtime.isFrameHeld();
             if (const std::optional<std::uint64_t> untilHeldFrame = m_runtime.publishHeldFrameIfDue(m_host, TerminalRuntime::HeldFrameWriter::Stopped)) {
                 // At least a millisecond: a frame due now was asked for above,

@@ -60,6 +60,15 @@ ResizeOutcome resizeGrid(Ubiquitty::Terminal* t, int newRows, int newColumns,
 /// paths count; a copy added elsewhere is not seen here. Compiled into the one
 /// test that asks.
 extern std::uint64_t reflowCellsCopiedForTest;
+
+/// A fault the history rewrap's differential test plants, to show the test can fail.
+enum class HistoryRewrapFault : std::uint8_t {
+    None,
+    /// The first row staged after a call returned for its budget is dropped.
+    DropRowAfterSliceBoundary,
+};
+/// The fault planted, `None` outside that test.
+extern HistoryRewrapFault historyRewrapFaultForTest;
 #endif
 
 } // namespace Ubiquitty::Screen

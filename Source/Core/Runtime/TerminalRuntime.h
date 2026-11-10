@@ -67,6 +67,8 @@ namespace Ubiquitty::Runtime {
 // the ingest loop and the host reactor. A host spends the budget across all
 // sessions, so adding panes cannot multiply a turn's compression work.
 inline constexpr int scrollbackFoldBlockBudget = 1;
+/// How long one slice of the settle's history rewrap works, in microseconds.
+inline constexpr std::uint32_t historyRewrapSliceMicroseconds = 1000;
 inline constexpr int scrollbackFoldTickMilliseconds = 1;
 
 class LaunchCommand; // Runtime/LaunchCommand.h — the structured launch intent
@@ -1047,6 +1049,20 @@ public:
     ///   - blockBudget: How many blocks this call may fold.
     /// - Returns: Whether a cold raw block remains, so the loop can wake for it.
     [[nodiscard]] bool foldColdScrollback(DrainHost& host, int blockBudget);
+
+    /// Advances the history rewrap a width drag deferred by one slice.
+    ///
+    /// The ingest loop's quiet-path work, like ``foldColdScrollback``: a pass
+    /// that drained nothing is the moment to rewrap a few stale lines, and each
+    /// call holds the model lock for at most the budget (one line past it, when
+    /// a single line is longer). When the last line is done the history is at
+    /// the new width and the settled state is published.
+    ///
+    /// - Parameters:
+    ///   - host: The model lock shared with snapshot readers.
+    ///   - budgetMicros: How long this call may work.
+    /// - Returns: Whether lines remain, so the loop can wake for them.
+    [[nodiscard]] bool advanceHistoryRewrap(DrainHost& host, std::uint32_t budgetMicros);
 
     /// Readies the model for a stream about to be adopted: this runtime
     /// claims the program's replies before any ingest reads the model. The
