@@ -492,7 +492,7 @@ struct Terminal {
         uint8_t sace {}; // DECSACE — Select Attribute Change Extent. 1 = stream (default), 2 = rectangle.
         bool leftRightMarginMode {}; // DECLRMM (DECSET 69). False (default): margins ignored, motions use
                                      // [0, columns-1]. True: DECSLRM can set margins and motions clip to them.
-        uint32_t syncOutputTouchTicks {}; // PAL-owned timestamp; 0 when not inside a synchronized block
+        uint32_t syncOutputTouchTicks {}; // the first frame decision's tick on the asker's own clock; 0 when unstamped
 
         bool mouseX10 {}; // DECSET 9   — X10 compat: press-only
         bool mouseButtonTracking {}; // bool-ok: the DECSET mode family (mouseX10, mouseCellMotion, mouseAnyEvent) shares this noun shape // DECSET 1000 — normal: press + release
@@ -515,8 +515,8 @@ struct Terminal {
         int hiliteFirstRow {};
         int hiliteLastRow {};
         // Bounded-wait guard for the XTHIMOUSE handshake: rather than block, arm a
-        // wall-clock deadline (PAL::monotonicTicks 60Hz). tickHilite aborts the await past the deadline;
-        // an arriving reply clears it.
+        // deadline on the checker's own monotonic 60 Hz clock (0 is unstamped). tickHilite aborts
+        // the await past the deadline; an arriving reply clears it.
         bool hiliteAwaiting {};
         uint32_t hiliteDeadlineTick {};
 

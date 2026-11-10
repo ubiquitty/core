@@ -56,6 +56,10 @@ enum class Carriage : std::uint8_t {
     /// policies and frontend facts, and state an update plane other than the
     /// screen's carries.
     HostOnly,
+    /// The checkpoint carries it as the wire version defines it, and the
+    /// receiver keeps its own: an absolute tick on the sender's clock, which
+    /// the receiver does not share (Docs/sync.md, "Clocks").
+    SenderClocked,
 };
 
 /// One member of a ledgered structure.
@@ -236,7 +240,6 @@ inline constexpr std::array terminalModesLedger {
     MODE(columns132),
     MODE(sace),
     MODE(leftRightMarginMode),
-    MODE(syncOutputTouchTicks),
     MODE(mouseX10),
     MODE(mouseButtonTracking),
     MODE(mouseSGR),
@@ -253,7 +256,6 @@ inline constexpr std::array terminalModesLedger {
     MODE(hiliteFirstRow),
     MODE(hiliteLastRow),
     MODE(hiliteAwaiting),
-    MODE(hiliteDeadlineTick),
     MODE(alternateScrollMode),
     MODE(reverseWrap),
     MODE(smoothScroll),
@@ -282,6 +284,10 @@ inline constexpr std::array terminalModesLedger {
 #undef MODE
     // xterm's resource modes 1014, 1040 and 1041 change nothing a client
     // draws: the host answers DECRQM for them, so they stay on the host.
+    // A synchronized update's stamp and a hilite await's deadline, each on
+    // the clock of whoever asked first.
+    UBIQUITTY_SYNC_LEDGER(Ubiquitty::Terminal::Modes, syncOutputTouchTicks, SenderClocked),
+    UBIQUITTY_SYNC_LEDGER(Ubiquitty::Terminal::Modes, hiliteDeadlineTick, SenderClocked),
     UBIQUITTY_SYNC_LEDGER(Ubiquitty::Terminal::Modes, shouldScrollFast, HostOnly),
     UBIQUITTY_SYNC_LEDGER(Ubiquitty::Terminal::Modes, shouldKeepSelection, HostOnly),
     UBIQUITTY_SYNC_LEDGER(Ubiquitty::Terminal::Modes, shouldSelectToClipboard, HostOnly),

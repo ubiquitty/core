@@ -61,16 +61,17 @@ bool clearTracking(Ubiquitty::Terminal* t);
 void stampUnstampedTrackingOwner(Ubiquitty::Terminal&, int& ownerProcessGroup, int processGroup);
 
 // Arm the bounded wait after the frontend has sent the hilite press report.
-// Stamps hiliteDeadlineTick = nowTicks + hiliteAwaitDeadlineTicks and drops any
-// stale region so the previous gesture's highlight never lingers. No-op unless
-// mode 1001 is active.
+// Stamps hiliteDeadlineTick = nowTicks + hiliteAwaitDeadlineTicks (never 0,
+// which is unstamped) and drops any stale region so the previous gesture's
+// highlight never lingers. No-op unless mode 1001 is active.
 void beginHiliteAwait(Ubiquitty::Terminal* t, uint32_t nowTicks);
 
 // Per-drain / per-frame deadline check. If a hilite await is outstanding and
 // nowTicks has reached the deadline with no XTHIMOUSE reply, abort cleanly:
-// clear the await and leave no region highlighted. Returns true when it changed
-// state (so the frontend can repaint / re-evaluate animation). Cheap no-op when
-// nothing is awaiting.
+// clear the await and leave no region highlighted. An outstanding await with
+// no deadline, which a mirror's commit leaves, is stamped against nowTicks.
+// Returns true when it changed state (so the frontend can repaint /
+// re-evaluate animation). Cheap no-op when nothing is awaiting.
 bool tickHilite(Ubiquitty::Terminal* t, uint32_t nowTicks);
 
 } // namespace Ubiquitty::Mouse

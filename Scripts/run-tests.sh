@@ -3909,6 +3909,7 @@ elif wanted sanitized_sync && command -v cmake >/dev/null 2>&1; then
             "$ROOT/Tests/Core/Protocol/Sync/test_sync_history_runs.cpp"
             "$ROOT/Tests/Core/Protocol/Sync/test_sync_history_wants.cpp"
             "$ROOT/Tests/Core/Protocol/Sync/test_sync_history_wire.cpp"
+            "$ROOT/Tests/Core/Protocol/Sync/test_sync_hold_clock.cpp"
             "$ROOT/Tests/Core/Protocol/Sync/test_sync_images.cpp"
             "$ROOT/Tests/Core/Protocol/Sync/test_sync_input.cpp"
             "$ROOT/Tests/Core/Protocol/Sync/test_sync_input_continuation.cpp"
