@@ -2543,7 +2543,7 @@ public:
     /// Whether an application asked the window for anything not yet taken.
     [[nodiscard]] bool hasPendingWindowRequest() const // bool-ok: the queue's own state, not a call-site constant UBIQUITTY_EXCLUDES(modelLockRole)
     {
-        const ModelLockHold hold(*m_activeLock);
+        const std::scoped_lock hold(m_windowRequestLock);
         return !m_windowRequests.empty();
     }
 
@@ -2557,7 +2557,7 @@ public:
     /// - Returns: The request, or one whose kind is `None` when there is none.
     [[nodiscard]] WindowRequest takeWindowRequest() UBIQUITTY_EXCLUDES(modelLockRole)
     {
-        const ModelLockHold hold(*m_activeLock);
+        const std::scoped_lock hold(m_windowRequestLock);
         if (m_windowRequests.empty())
             return WindowRequest {};
         WindowRequest request = std::move(m_windowRequests.front());
@@ -10471,15 +10471,21 @@ private:
             if (!session)
                 return;
             session->assertModelLockHeld();
-            std::vector<WindowRequest>& queue = session->m_windowRequests;
-            // Folded under the lock the drain takes, so a request that
-            // was already taken is not folded into: the queue is then empty
-            // and this one is appended and announced on its own.
-            if (foldIntoQueuedPredecessor(request, queue))
-                return;
-            if (queue.size() >= windowRequestQueueLimit)
-                return;
-            queue.push_back(std::move(request));
+            {
+                // Folded under the lock the taker takes, so a request that
+                // was already taken is not folded into: the queue is then
+                // empty and this one is appended and announced on its own.
+                // The lock is the queue's own: held for a fold or an append
+                // and nothing else, so the frontend that takes a request
+                // never waits for the parser, only for that.
+                const std::scoped_lock hold(session->m_windowRequestLock);
+                std::vector<WindowRequest>& queue = session->m_windowRequests;
+                if (foldIntoQueuedPredecessor(request, queue))
+                    return;
+                if (queue.size() >= windowRequestQueueLimit)
+                    return;
+                queue.push_back(std::move(request));
+            }
             // The bit is raised here rather than in the drain's deliver hook,
             // because that hook fires only for the loop's own passes and bytes
             // also arrive through `feedBytes`. A request that reached the queue
@@ -10491,7 +10497,10 @@ private:
         }
     };
     BufferingWindowClient m_windowClient;
-    std::vector<WindowRequest> m_windowRequests UBIQUITTY_GUARDED_BY(modelLockRole);
+    /// Guards `m_windowRequests`. A leaf: nothing else is taken or waited for
+    /// while it is held.
+    mutable std::mutex m_windowRequestLock;
+    std::vector<WindowRequest> m_windowRequests;
 
     /// Buffers the desktop notifications so a frontend can post them off the
     /// drain.
