@@ -347,6 +347,11 @@ ubq_preflight() {
             return 0
         fi
     fi
+    # Every gate that spawns a shell needs ptys; a machine out of them fails those
+    # gates for a reason the failing test does not name.
+    if [ "$TIER" != lint ]; then
+        python3 "$preflight" ptys --want "${UBQ_PREPUSH_PTY_HEADROOM:-32}" || exit 1
+    fi
     [ "$mode" = off ] && return 0
     local scratch plan nonce
     scratch="$(mktemp -d)" || return 0

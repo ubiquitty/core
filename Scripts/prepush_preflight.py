@@ -319,10 +319,47 @@ def plan(arguments, file, nonce, timeout, out=sys.stderr):
     return 3
 
 
+def pty_headroom(wanted, out=sys.stderr, opener=None):
+    """Whether `wanted` pseudo-terminals can be opened at once, as every gate that spawns a shell needs.
+
+    A machine out of ptys fails the gates that open one with errors that name
+    the test (a surface that did not open, a shell that never answered), not
+    the machine. Opening them is the only count that cannot disagree with what
+    a gate will meet: the sysctl limit and the tty nodes both say less than who
+    is holding them.
+
+    - Parameters:
+      - wanted: How many must open together; zero turns the check off.
+      - out: Where the refusal is written.
+      - opener: Returns a (master, slave) descriptor pair; os.openpty by default.
+    - Returns: True when all opened; False, after writing the refusal, when not.
+    """
+    if wanted <= 0:
+        return True
+    opener = opener or os.openpty
+    held = []
+    try:
+        for _ in range(wanted):
+            held.append(opener())
+    except OSError as error:
+        out.write(f"pre-push gates: only {len(held)} of {wanted} pseudo-terminals can be opened ({error.strerror}). "
+                  "The gates that spawn a shell fail on a machine out of ptys with errors that name the test, not "
+                  "the machine. Orphaned `login`/`zsh` pairs hold them: `ps -axo ppid,tty,command | "
+                  "awk '$1==1 && /login -pf/'`. UBQ_PREPUSH_PTY_HEADROOM=0 turns this check off.\n")
+        return False
+    finally:
+        for pair in held:
+            for descriptor in pair:
+                os.close(descriptor)
+    return True
+
+
 def main(arguments):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("classify")
+    terminals = commands.add_parser("ptys")
+    terminals.add_argument("--want", type=int, default=32)
     planner = commands.add_parser("plan")
     planner.add_argument("--file", required=True)
     planner.add_argument("--nonce", required=True)
@@ -339,6 +376,8 @@ def main(arguments):
     if parsed.command == "classify":
         print(classify(sys.stdin.read().splitlines()))
         return 0
+    if parsed.command == "ptys":
+        return 0 if pty_headroom(parsed.want) else 1
     if parsed.command == "plan":
         command = parsed.rest[1:] if parsed.rest[:1] == ["--"] else parsed.rest
         return plan(command, parsed.file, parsed.nonce, parsed.timeout)
