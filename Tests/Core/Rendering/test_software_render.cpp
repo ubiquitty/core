@@ -851,6 +851,45 @@ TEST(testCapturedNotebookFigureDrawsEveryPlaceholderCell)
         "the row under the figure shows no tile");
 }
 
+// A Unicode placeholder cell draws no glyph. Its marks are coordinates: jotter
+// names the row, the column and the image id's high byte on the first cell of
+// every figure row, U+10EEEE U+0305 U+0305 U+0305 on row zero, and drawn as
+// text the three overlines stacked into a mark in column 0 of each row no tile
+// covered. The same marks on a space ink, so this renderer draws them on text.
+TEST(testPlaceholderCellDrawsNoGlyphForItsMarks)
+{
+    const auto render = [](std::string_view bytes, std::vector<std::uint8_t>& rgba) {
+        Ubiquitty::Terminal terminal;
+        Ubiquitty::resize(terminal, 2, 4);
+        Ubiquitty::processBytes(&terminal, bytes);
+        const std::vector<Ubiquitty::Cell> grid = displayRows(terminal);
+        BuildInputs in;
+        in.cells = grid.data();
+        in.clusterResolver = resolveTerminalCluster;
+        in.clusterResolverContext = &terminal;
+        in.rows = terminal.rows;
+        in.columns = terminal.columns;
+        in.palette = &terminal.palette;
+        SoftwareRenderer renderer(renderCellWidth, renderCellHeight);
+        int width = 0;
+        int height = 0;
+        return renderer.render(in, rgba, width, height);
+    };
+    std::vector<std::uint8_t> blank;
+    REQUIRE(render("", blank));
+    std::vector<std::uint8_t> markedSpace;
+    REQUIRE(render("\x1b[38;5;7m \xCC\x85\xCC\x85\xCC\x85", markedSpace));
+    CHECK_MSG(markedSpace != blank, "the overlines ink a space, so this renderer draws them on text");
+    // A placeholder naming row 0, column 0 and high byte 0, one inheriting from
+    // it, and one whose underline colour names a placement; no image is stored,
+    // so nothing covers them.
+    std::vector<std::uint8_t> placeholders;
+    REQUIRE(render("\x1b[38;5;7m\xF4\x8E\xBB\xAE\xCC\x85\xCC\x85\xCC\x85\xF4\x8E\xBB\xAE"
+                   "\x1b[58;5;2m\xF4\x8E\xBB\xAE\xCC\x85\xCC\x8E",
+        placeholders));
+    CHECK_MSG(placeholders == blank, "a placeholder cell draws nothing of its own");
+}
+
 // A frame captured through TerminalFrameInputs carries the terminal's published
 // cell to the renderer, which measures a virtual placement's box in it. The
 // terminal publishes a 4x4 cell and the frame renders at 8x16. A 4x8 image,

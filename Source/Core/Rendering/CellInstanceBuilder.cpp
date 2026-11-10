@@ -11,6 +11,7 @@
 #include "Core/Rendering/CellInstanceBuilder.h"
 #include "Core/CellPen.h"
 #include "Core/CellScan.h"
+#include "Core/Kitty/UnicodePlaceholders.h"
 #include "Core/Rendering/CellInstanceScratch.h"
 
 #include "Core/Rendering/BoxDrawing.h"
@@ -3051,7 +3052,11 @@ InstanceCounts buildCellInstances(const BuildInputs& in, const GlyphBackend& atl
                 // the cell, so a backend with a sheet and a font that lacks the
                 // codepoint still draws.
                 bool isDoubleOnOwnSheet = false;
-                const bool shouldFetchGlyph = !(ablate & AblateGlyphFetch) && !isSizedTextRunAnchor;
+                // A Unicode placeholder cell draws no glyph, whatever marks it
+                // carries: the marks are its row and column in the image, and
+                // its picture is the image tile resolved for it (ImageQuads.h).
+                const bool shouldFetchGlyph = !(ablate & AblateGlyphFetch) && !isSizedTextRunAnchor
+                    && cell.codePoint != Kitty::placeholderCodePoint;
                 // Set when the font declined the cell and its geometry is drawn
                 // instead: the cell then carries background only and the quads
                 // below are the whole of its ink.
