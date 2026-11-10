@@ -5111,7 +5111,7 @@ TEST(aCaptureBeforeTheErasingPassEndsArmsTheHold)
     CHECK_MSG(!rt.shouldWithholdPresentationAfterErase(now), "the pass has not ended, so nothing has stamped the erase");
     Ubiquitty::Terminal* terminal = rt.borrowTermForRender();
     REQUIRE(terminal != nullptr);
-    CHECK_MSG(rt.shouldWithholdPresentation(terminal, Ubiquitty::PAL::monotonicTicks(), now), "the capture's recheck holds the erased screen back");
+    CHECK_MSG(rt.shouldWithholdPresentation(*terminal, Ubiquitty::PAL::monotonicTicks(), now), "the capture's recheck holds the erased screen back");
     CHECK_MSG(rt.shouldWithholdPresentationAfterErase(now + 3000), "and the hold it armed stands for the redraw");
     CHECK_MSG(!rt.shouldWithholdPresentationAfterErase(now + 20000), "until the bytes have been quiet for the settle");
     rt.close();

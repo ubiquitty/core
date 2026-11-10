@@ -1454,7 +1454,7 @@ void TerminalRuntime::armEraseHoldIfUnseen(const Ubiquitty::Terminal& terminal, 
     m_eraseHold.arm(terminal.eraseDisplayGeneration, nowMicros);
 }
 
-bool TerminalRuntime::shouldWithholdPresentationAfterErase(std::uint32_t nowMicros)
+bool TerminalRuntime::shouldWithholdPresentationAfterErase(std::uint32_t nowMicros) noexcept UBIQUITTY_NONBLOCKING
 {
     return m_eraseHold.shouldWithhold(nowMicros, m_lastBytesMicros);
 }
@@ -1529,34 +1529,47 @@ bool TerminalRuntime::isEraseRedrawArriving(const Ubiquitty::Terminal& terminal,
     return microsSince(nowMicros, since) < eraseHoldMaxMicros;
 }
 
-bool TerminalRuntime::shouldWithholdPresentation(Ubiquitty::Terminal* terminal, Ticks nowTicks, std::uint32_t nowMicros)
+bool TerminalRuntime::shouldWithholdPresentation(Ubiquitty::Terminal& terminal, Ticks nowTicks, std::uint32_t nowMicros)
 {
     // An erase the parser has applied but whose drain has not finished is
     // armed here, under the caller's lock: the drain stamps the hold only
     // once its pass ends, and a capture taken between the two would show the
     // erased screen with nothing holding it back.
-    if (terminal)
-        armEraseHoldIfUnseen(*terminal, nowMicros);
-    const bool isBlockHeld = terminal && Modes::SyncOutput::shouldWithholdFrame(*terminal, nowTicks);
+    armEraseHoldIfUnseen(terminal, nowMicros);
+    const bool isBlockHeld = Modes::SyncOutput::shouldWithholdFrame(terminal, nowTicks);
     return isBlockHeld || shouldWithholdPresentationAfterErase(nowMicros);
 }
 
-std::uint32_t TerminalRuntime::presentationHoldTicksRemaining(const Ubiquitty::Terminal* terminal, Ticks nowTicks, std::uint32_t nowMicros) const
+bool TerminalRuntime::shouldWithholdPresentation(std::uint32_t nowMicros) noexcept UBIQUITTY_NONBLOCKING
 {
-    std::uint32_t ticks = terminal ? Modes::SyncOutput::ticksUntilHoldExpires(*terminal, nowTicks) : 0;
+    return shouldWithholdPresentationAfterErase(nowMicros);
+}
+
+std::uint32_t TerminalRuntime::presentationHoldTicksRemaining(const Ubiquitty::Terminal& terminal, Ticks nowTicks, std::uint32_t nowMicros) const
+{
+    const std::uint32_t blockTicks = Modes::SyncOutput::ticksUntilHoldExpires(terminal, nowTicks);
+    const std::uint32_t eraseTicks = presentationHoldTicksRemaining(nowMicros);
+    if (blockTicks == 0 || eraseTicks == 0)
+        return std::max(blockTicks, eraseTicks);
+    return std::min(blockTicks, eraseTicks);
+}
+
+std::uint32_t TerminalRuntime::presentationHoldTicksRemaining(std::uint32_t nowMicros) const noexcept UBIQUITTY_NONBLOCKING
+{
     const std::uint32_t eraseMicros = eraseHoldMicrosRemaining(nowMicros);
-    if (eraseMicros > 0) {
-        const std::uint32_t eraseTicks = std::max<std::uint32_t>(1, (eraseMicros * 60 + 999999) / 1000000);
-        ticks = ticks == 0 ? eraseTicks : std::min(ticks, eraseTicks);
-    }
-    return ticks;
+    if (eraseMicros == 0)
+        return 0;
+    return std::max<std::uint32_t>(1, (eraseMicros * 60 + 999999) / 1000000);
 }
 
 bool TerminalRuntime::takeOwedPaint(Ticks nowTicks, std::uint32_t nowMicros)
 {
     // A frame the coherence rule holds is painted when the rule admits it, by
     // the host; painting it here would show the screen the rule held back.
-    if (!m_isPaintOwed || isFrameHeld() || shouldWithholdPresentation(modelTerminal(), nowTicks, nowMicros))
+    if (!m_isPaintOwed || isFrameHeld())
+        return false;
+    Ubiquitty::Terminal* terminal = modelTerminal();
+    if (terminal ? shouldWithholdPresentation(*terminal, nowTicks, nowMicros) : shouldWithholdPresentation(nowMicros))
         return false;
     m_isPaintOwed = false;
     return true;
@@ -1567,11 +1580,12 @@ int TerminalRuntime::owedPaintWaitMilliseconds(Ticks nowTicks, std::uint32_t now
     // A held frame's wake is the rule's, from publishHeldFrameIfDue.
     if (!m_isPaintOwed || isFrameHeld())
         return -1;
-    const std::uint32_t ticks = presentationHoldTicksRemaining(modelTerminal(), nowTicks, nowMicros);
+    const Ubiquitty::Terminal* terminal = modelTerminal();
+    const std::uint32_t ticks = terminal ? presentationHoldTicksRemaining(*terminal, nowTicks, nowMicros) : presentationHoldTicksRemaining(nowMicros);
     return static_cast<int>((ticks * 1000 + 59) / 60);
 }
 
-std::uint32_t TerminalRuntime::eraseHoldMicrosRemaining(std::uint32_t nowMicros) const
+std::uint32_t TerminalRuntime::eraseHoldMicrosRemaining(std::uint32_t nowMicros) const noexcept UBIQUITTY_NONBLOCKING
 {
     return m_eraseHold.microsRemaining(nowMicros, m_lastBytesMicros);
 }
