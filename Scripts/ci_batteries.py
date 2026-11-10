@@ -326,7 +326,7 @@ def platform_environment(platform, environment, context=None):
         # lavapipe cannot export dma-buf, so the dma-buf smokes fail on it
         # whatever the tree does.
         if result.get("UBQ_CI_LINUX_VULKAN") != "native":
-            result["VK_ICD_FILENAMES"] = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
+            result["VK_ICD_FILENAMES"] = lavapipe_manifest()
             result["LIBGL_ALWAYS_SOFTWARE"] = "1"
         installed = Path("/data/emsdk/emsdk_env.sh")
         result["EMSDK_ENV"] = str(installed if installed.is_file() else Path(result["RUNNER_TOOL_CACHE"]) / "emsdk-6.0.9/emsdk_env.sh")
@@ -581,6 +581,15 @@ def source_stages(platform, context, only=()):
     else:
         manifest = tuple(stage for stage in manifest if set(stage.repositories).intersection(context.repositories))
     return tuple(route_stage(stage, context) for stage in manifest)
+
+
+def lavapipe_manifest(directory=Path("/usr/share/vulkan/icd.d")):
+    """Mesa's lavapipe ICD manifest: lvp_icd.json in the CI image's Mesa 26,
+    lvp_icd.<arch>.json where a distribution names it per architecture. A
+    manifest the loader cannot open leaves it no driver, and every Vulkan
+    smoke then reads as a machine without a GPU."""
+    found = sorted(directory.glob("lvp_icd*.json"))
+    return str(found[0] if found else directory / "lvp_icd.json")
 
 
 def result_root(environment):
