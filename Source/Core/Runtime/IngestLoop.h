@@ -273,6 +273,11 @@ public:
 
     /// Wakes a parked loop, from any thread. Coalescing: repeated raises
     /// before the loop runs cost one wake.
+    /// Wakes the loop from any thread; the decode workers' wake.
+    ///
+    /// - Parameter context: The loop.
+    static void wakeLoop(void* context) { static_cast<IngestLoop*>(context)->raiseWake(); }
+
     void raiseWake()
     {
         if (m_waker)
@@ -321,7 +326,12 @@ public:
     ///   by a pollable endpoint the caller keeps alive for the run.
     void run(PAL::FileDescriptor& transportHandle)
     {
+        // An image decode runs beside the parse, so the frames and commands
+        // this loop serves keep coming while it does; the parse waits behind
+        // it, and the worker's wake ends the wait.
+        m_runtime.runDecodesOnWorker(m_host, wakeLoop, this);
         runPasses(transportHandle);
+        m_runtime.runDecodesInline(m_host);
         // Nothing asks the rule again once the loop is gone, so a frame it
         // still holds would never reach the screen.
         const bool wasFrameHeld = m_runtime.isFrameHeld();
@@ -458,7 +468,7 @@ private:
             // drain this turn that reached here read nothing, which is that
             // poll's answer already. A stream held for a transfer agent stays
             // readable with bytes that are not this loop's, so it is not asked.
-            if (!didDrain && m_runtime.isFrameHeld() && !m_runtime.isIngestHeld() && isTransportReadableNow(transportHandle)) {
+            if (!didDrain && m_runtime.isFrameHeld() && !m_runtime.isIngestHeld() && !m_runtime.isDecodeFenced() && isTransportReadableNow(transportHandle)) {
                 shouldDrain = true;
                 continue;
             }
@@ -466,8 +476,9 @@ private:
             // transport has stayed empty for the quiet interval after its last
             // byte: a pass that ended at a would-block may have ended inside
             // the writer's refill. The wait is cut to land on that moment, and
-            // bytes that arrived since the last pass are drained first.
-            if (!m_runtime.isIngestHeld()) {
+            // bytes that arrived since the last pass are drained first. Bytes a
+            // decode fence holds back are no redraw's end either.
+            if (!m_runtime.isIngestHeld() && !m_runtime.isDecodeFenced()) {
                 if (const std::optional<std::uint32_t> untilQuiet = m_runtime.eraseRedrawQuietDueInMicros(PAL::monotonicMicros())) {
                     if (!*untilQuiet) {
                         if (isTransportReadableNow(transportHandle)) {
@@ -542,7 +553,11 @@ private:
             // pending write, and the tick bounds how long a release can go
             // unnoticed, since releasing is an atomic store with no waker.
             // An opening hold is the same shape: bytes that wait their turn.
-            const bool isTransferHeld = m_runtime.isIngestHeld();
+            // A decode in flight holds the stream the same way: its bytes wait
+            // behind the image. The worker's wake ends the wait, and the tick
+            // bounds it for the fence's limit and a loop with no waker.
+            const bool isDecodeFenced = m_runtime.isDecodeFenced();
+            const bool isTransferHeld = m_runtime.isIngestHeld() || isDecodeFenced;
             if (isTransferHeld && (timeoutMilliseconds < 0 || timeoutMilliseconds > ingestFallbackTickMilliseconds))
                 timeoutMilliseconds = ingestFallbackTickMilliseconds;
             // Zero wherever the kernel raises edges, which is every platform that
@@ -647,6 +662,9 @@ private:
             if (shouldWatchTransport
                 && PAL::contains(watches[0].result,
                     PAL::Ready::Readable | PAL::Ready::Writable | PAL::Ready::HangUp | PAL::Ready::Error | PAL::Ready::Invalid))
+                shouldDrain = true;
+            // The drain integrates what the worker finished and parses on.
+            if (isDecodeFenced)
                 shouldDrain = true;
             // Due, and on this thread: the sample touches the state
             // drainAvailable's own sample touches, with no lock between
@@ -803,7 +821,9 @@ private:
     ///   - readIndex: Where in the ring the bite starts.
     ///   - biteBytes: How much this bite parses.
     ///   - parsedBytes: How much of the bite actually entered the model.
-    void parseFloodBite(std::size_t readIndex, int biteBytes, int& parsedBytes)
+    /// - Returns: Whether a decode fenced the parse; `parsedBytes` then
+    ///   stops in front of the bytes it held back, which stay in the ring.
+    bool parseFloodBite(std::size_t readIndex, int biteBytes, int& parsedBytes)
     {
         // The tap rides every ingest path: a ZMODEM handshake that lands
         // inside a pipelined burst must reach the detector exactly as one
@@ -820,12 +840,36 @@ private:
                 if (isPresentationPaced)
                     m_runtime.noteDrainInput();
                 const FeedResult fed = m_runtime.feedChunkUpToSyncClear({ m_floodRing.get() + readIndex + offset, static_cast<std::size_t>(lockEnd - offset) });
-                offset += (fed.consumed > 0) ? fed.consumed : (lockEnd - offset); // guard: never spin
+                const bool isFenced = m_runtime.isDecodeFenced();
+                offset += (fed.consumed > 0 || isFenced) ? fed.consumed : (lockEnd - offset); // guard: never spin
                 if (fed.reachedSyncClear)
                     m_runtime.publishMidReadBoundaryIfCoherent(m_host);
+                if (isFenced) {
+                    m_host.unlockModel();
+                    m_runtime.noteDecodeFenceRaised();
+                    parsedBytes = offset;
+                    return true;
+                }
             }
             m_host.unlockModel();
         }
+        return false;
+    }
+
+    /// Hands the bytes the ring still holds to the runtime, behind a decode
+    /// fence, once the reader has stopped filling it.
+    void carryRingResidue()
+    {
+        const std::uint64_t consumer = m_floodRingControl->consumer.load(std::memory_order_relaxed) & floodRingPositionMask;
+        const std::uint64_t producer = m_floodRingControl->producer.load(std::memory_order_acquire) & floodRingPositionMask;
+        std::uint64_t position = consumer;
+        while (position < producer) {
+            const std::size_t readIndex = static_cast<std::size_t>(position) & (floodRingCapacity - 1);
+            const std::size_t contiguous = std::min(static_cast<std::size_t>(producer - position), floodRingCapacity - readIndex);
+            m_runtime.carryFencedBytes({ m_floodRing.get() + readIndex, contiguous });
+            position += contiguous;
+        }
+        m_floodRingControl->consumer.store(producer | (m_floodRingControl->consumer.load(std::memory_order_relaxed) & ~floodRingPositionMask), std::memory_order_release);
     }
 
     /// Drains the transport into the ring until quiet, end or stop.
@@ -857,7 +901,7 @@ private:
         int bytesBeforeAccumulateWait = 0;
         bool isAccumulateWaitRefuted = false;
         for (;;) {
-            if (m_stop.load(std::memory_order_relaxed) || m_runtime.isIngestHeld())
+            if (m_stop.load(std::memory_order_relaxed) || m_runtime.isIngestHeld() || m_runtime.isDecodeFenceRaised())
                 break; // hold: the frontend answers a detected transfer; the kernel queue keeps the frame for its agent
             const std::uint64_t producer = m_floodRingControl->producer.load(std::memory_order_relaxed);
             const std::uint64_t consumerRaw = m_floodRingControl->consumer.load(std::memory_order_acquire);
@@ -992,6 +1036,8 @@ private:
             return DrainPassEnd::None;
         };
         bool isStopping = false;
+        // A decode fenced the parse inside the burst: the ring's rest is carried.
+        bool isDecodeFenced = false;
         bool didNapOnEmptyRing = false;
         std::uint32_t heldFrameAskedAt = 0;
         std::uint32_t heldFrameWaitMicros = 0;
@@ -1077,10 +1123,18 @@ private:
             bite = std::min({ bite, floodBiteCapacityBytes, static_cast<std::size_t>(passCapacity - passBytes) });
             const int biteBytes = static_cast<int>(bite);
             int parsedBytes = 0;
-            parseFloodBite(readIndex, biteBytes, parsedBytes);
-            m_floodRingControl->consumer.store(consumer + static_cast<std::uint64_t>(biteBytes), std::memory_order_release);
+            const bool isFenced = parseFloodBite(readIndex, biteBytes, parsedBytes);
+            m_floodRingControl->consumer.store(consumer + static_cast<std::uint64_t>(isFenced ? parsedBytes : biteBytes), std::memory_order_release);
             // Wake a reader parked on ring-full (uncontended notify: no syscall).
             m_floodRingControl->consumer.notify_one();
+            if (isFenced) {
+                // A decode fences the parse: the burst ends here, and the ring's
+                // rest is carried once the reader, which stops on the same
+                // fence, has let go of it.
+                passBytes += parsedBytes;
+                isDecodeFenced = true;
+                break;
+            }
             if (m_runtime.isIngestHeld()) {
                 // A preamble fired inside this bite: what the tap kept of it
                 // entered the model above, and the bite's remainder — frame
@@ -1103,15 +1157,17 @@ private:
         // on ring-full; mark the consumer done (changing the word it waits
         // on) so it wakes, observes the bit, and exits — otherwise the join
         // deadlocks.
-        if (isStopping) {
+        if (isStopping || isDecodeFenced) {
             m_floodRingControl->consumer.fetch_or(floodRingDoneBit, std::memory_order_release);
             m_floodRingControl->consumer.notify_all();
         }
         reader.join();
+        if (isDecodeFenced)
+            carryRingResidue();
         // Drain the residue the reader published after the last look. On
         // stop the residue is abandoned, matching the sequential loop, which
         // also leaves unread transport bytes behind on stop.
-        if (!isStopping) {
+        if (!isStopping && !isDecodeFenced) {
             for (;;) {
                 // Held: the consumer loop already stopped parsing the burst;
                 // ring bytes the reader lifted before it saw the hold must
@@ -1130,7 +1186,13 @@ private:
                 const int biteBytes = static_cast<int>(std::min({ floodBiteCapacityBytes, static_cast<std::size_t>(available), floodRingCapacity - readIndex,
                     static_cast<std::size_t>(passCapacity - passBytes) }));
                 int parsedBytes = 0;
-                parseFloodBite(readIndex, biteBytes, parsedBytes);
+                if (parseFloodBite(readIndex, biteBytes, parsedBytes)) {
+                    m_floodRingControl->consumer.store(consumer + static_cast<std::uint64_t>(parsedBytes), std::memory_order_release);
+                    passBytes += parsedBytes;
+                    carryRingResidue();
+                    isDecodeFenced = true;
+                    break;
+                }
                 m_floodRingControl->consumer.store(consumer + static_cast<std::uint64_t>(biteBytes), std::memory_order_release);
                 passBytes += parsedBytes;
                 if (!m_runtime.isIngestHeld()) {
@@ -1141,9 +1203,10 @@ private:
         }
         if (passBytes > 0) {
             const DrainOutcome out = m_runtime.finishExternalDrainPass(m_host, static_cast<int>(passBytes),
-                isStopping || m_runtime.isIngestHeld() ? DrainPassEnd::OwnerFence
-                    : passBytes >= passCapacity        ? DrainPassEnd::ByteBudget
-                                                       : DrainPassEnd::WouldBlock);
+                isDecodeFenced                               ? DrainPassEnd::DecodeFence
+                    : isStopping || m_runtime.isIngestHeld() ? DrainPassEnd::OwnerFence
+                    : passBytes >= passCapacity              ? DrainPassEnd::ByteBudget
+                                                             : DrainPassEnd::WouldBlock);
             const std::uint32_t now = PAL::monotonicMicros();
             coalesce(out, pendingOutcome, havePendingOutcome, pendingIngestMicros, now - passStartMicros, now, lastDeliverMicros);
         }
