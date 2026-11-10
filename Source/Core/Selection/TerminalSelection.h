@@ -289,6 +289,35 @@ void configureCharacterCaretGesture(Session& session, const Terminal& terminal, 
 /// - Returns: Whether the selection changed.
 bool dragCharacterCaretGesture(Session& session, Terminal& terminal, const CaretResolution& head, int viewOffset) noexcept;
 
+/// ``configureCharacterCaretGesture`` over a captured frame, without the
+/// terminal or its lock.
+///
+/// After ``beginGesture`` over the same frame opened the gesture; the caret is
+/// one ``resolveSelectionCaret`` resolved over that frame. Nothing happens
+/// over a frame the gesture could not begin over.
+///
+/// - Parameters:
+///   - session: The view's selection session.
+///   - grid: The frame being drawn.
+///   - press: Where the press stands, between two characters.
+void configureCharacterCaretGesture(Session& session, const Rendering::CapturedGrid& grid, const CaretResolution& press) noexcept;
+
+/// ``dragCharacterCaretGesture`` over a captured frame, without the terminal
+/// or its lock.
+///
+/// The session is first brought to the frame (``rebaseOverCapture``); its
+/// ends are named later, by the terminal's next synchronization of it, as
+/// after ``beginGesture`` over a frame.
+///
+/// - Parameters:
+///   - session: The view's selection session.
+///   - grid: The frame being drawn.
+///   - head: Where the pointer stands, between two characters, resolved over
+///     the frame.
+/// - Returns: Whether the session changed; false, and the session untouched,
+///   for a frame the gesture could not begin over.
+bool dragCharacterCaretGesture(Session& session, const Rendering::CapturedGrid& grid, const CaretResolution& head) noexcept;
+
 /// Closes the open mouse gesture without dropping its selection.
 ///
 /// - Parameter session: The view's selection session.
@@ -944,6 +973,23 @@ struct CaretResolution {
 /// - Returns: The resolution.
 [[nodiscard]] CaretResolution resolveSelectionCaret(
     const Terminal& terminal, int viewOffset, int visibleRow, int caret, double xInCells, double yInRows) noexcept;
+
+/// ``resolveSelectionCaret`` over a captured frame, without the terminal or
+/// its lock.
+///
+/// The same boundary, threshold and doubled-row halving the terminal's
+/// resolution gives for the terminal the frame froze. Only for a frame
+/// ``Rendering::CapturedGrid::isReadable`` admits: it holds no proportional
+/// run or rich text block, which are the terminal's to resolve.
+///
+/// - Parameters:
+///   - grid: The frame being drawn.
+///   - visibleRow: The pointer's row of the frame.
+///   - caret: The boundary nearest the pointer, in screen cells.
+///   - xInCells: Where the pointer is along the row, in screen cells, or a
+///     non-finite value when the frontend measured none.
+/// - Returns: The caret's selection row, boundary and open threshold.
+[[nodiscard]] CaretResolution resolveSelectionCaret(const Rendering::CapturedGrid& grid, int visibleRow, int caret, double xInCells) noexcept;
 
 /// Whether an executed command sits at or above one row.
 ///
