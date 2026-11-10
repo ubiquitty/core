@@ -471,6 +471,10 @@ public:
         return m_selectionRows;
     }
 
+    /// Whether the captured terminal grows a double click by a configured
+    /// character-class table, which only the terminal holds.
+    [[nodiscard]] bool hasWordCharacterClasses() const { return m_hasWordCharacterClasses; }
+
     /// The fill a selection drawn over this frame takes, resolved from the
     /// capture's style and the host's selection colour whether or not the
     /// capture drew one.
@@ -743,6 +747,7 @@ private:
     std::vector<std::uint8_t> m_lineAttributes;
     std::vector<std::uint8_t> m_rowFlags;
     std::vector<CapturedSelectionRow> m_selectionRows;
+    bool m_hasWordCharacterClasses = false;
     std::vector<std::uint8_t> m_rowMarks;
     /// Moves the retained link flags the way the retained cells move.
     ///

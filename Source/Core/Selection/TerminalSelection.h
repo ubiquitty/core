@@ -128,6 +128,11 @@ struct Session {
     int gestureAnchorCaretAfter = 0;
     int gestureAnchorSubCaretAfter = 0;
     bool usesCharacterCarets = false;
+    /// Whether a gesture over a captured frame moved the ends since they were
+    /// last named. Those rows are in the numbering the session last observed;
+    /// the terminal's next synchronization carries them across the rows
+    /// evicted since, then names them.
+    bool areEndsInObservedNumbering = false;
     /// The retained history facts at the last Core selection operation. Their
     /// deltas distinguish appended rows from front eviction.
     std::int64_t observedScrollbackAppended = 0;
@@ -686,8 +691,9 @@ enum class CaptureRebase : std::uint8_t {
     /// other screen, or renumbered the alternate one.
     Lost,
     /// The frame renumbered the primary screen's rows (a resize, a clear), or
-    /// the session has met no terminal: only the owner can say where the ends
-    /// went, and the session is left as it was.
+    /// the session holds rows of a numbering it never observed: only the
+    /// owner can say where the ends went, and the session is left as it was.
+    /// A session holding nothing takes the frame's numbering instead.
     NeedsOwner,
 };
 
@@ -706,6 +712,40 @@ enum class CaptureRebase : std::uint8_t {
 ///   - grid: The frame being drawn.
 /// - Returns: What the move did.
 [[nodiscard]] CaptureRebase rebaseOverCapture(Session& session, const Rendering::CapturedGrid& grid) noexcept;
+
+/// ``beginGesture`` over a captured frame, without the terminal or its lock.
+///
+/// The press expands as it does on the terminal, word, line and block,
+/// reading the frame on the glass: for the terminal the frame froze, the
+/// session ends where the terminal's gesture leaves it, except that a word or
+/// line expands no further than the frame's edge rows. The session is first
+/// brought to the frame (``rebaseOverCapture``). The ends are not named
+/// here; the terminal's next synchronization of the session, the owner's
+/// resolution of its hand-off, names them.
+///
+/// - Parameters:
+///   - session: The view's selection session.
+///   - grid: The frame being drawn.
+///   - visibleRow: The pressed row of the frame.
+///   - column: The pressed screen column.
+///   - clickCount: 1, 2 or 3.
+///   - style: How the press is interpreted.
+/// - Returns: Whether the session changed. False, and the session untouched,
+///   for a frame ``Rendering::CapturedGrid::canExpandGestures`` refuses or one
+///   that renumbered the rows (``CaptureRebase::NeedsOwner``): the press goes
+///   to the terminal.
+bool beginGesture(Session& session, const Rendering::CapturedGrid& grid, int visibleRow, int column, int clickCount, const GestureStyle& style) noexcept;
+
+/// ``dragGesture`` over a captured frame, as ``beginGesture`` over one.
+///
+/// - Parameters:
+///   - session: The view's selection session.
+///   - grid: The frame being drawn.
+///   - visibleRow: The pointer's row of the frame.
+///   - column: The pointer's screen column.
+/// - Returns: Whether the session changed; false, and the session untouched,
+///   for a frame the press could not begin over.
+bool dragGesture(Session& session, const Rendering::CapturedGrid& grid, int visibleRow, int column) noexcept;
 
 /// How many spans a frontend must make room for so ``viewportSpans`` drops none.
 ///

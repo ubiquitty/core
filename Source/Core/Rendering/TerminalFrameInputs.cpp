@@ -22,6 +22,7 @@
 #include "Core/TermPalette.h"
 #include "Core/Terminal.h"
 #include "Core/TerminalOperations.h"
+#include "Core/Triggers/Triggers.h"
 
 #include <algorithm>
 #include <array>
@@ -265,6 +266,7 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
     // The rows as a selection reads them, by the same reads it makes of the
     // terminal: the primary's absolute rows, the alternate screen's own.
     m_selectionRows.resize(rowCount);
+    m_hasWordCharacterClasses = Triggers::characterClassCount(&terminal) > 0;
     const bool isAlternate = terminal.screens.isUsingAlternateScreen;
     for (int row = 0; row < terminal.rows; ++row) {
         CapturedSelectionRow& facts = m_selectionRows[static_cast<std::size_t>(row)];

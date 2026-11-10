@@ -240,6 +240,41 @@ struct BoundContext {
     return bound.captured ? bound.captured->columns() : bound.terminal->columns;
 }
 
+// The rows a selection can name, from whichever source the context reads.
+[[nodiscard]] int boundTotalRows(const BoundContext& bound) noexcept
+{
+    return bound.captured ? bound.captured->totalRows() : totalRows(*bound.terminal);
+}
+
+// The selection row a visible row of the context's view is.
+[[nodiscard]] int boundAbsoluteRow(const BoundContext& bound, int visibleRow) noexcept
+{
+    return bound.captured ? bound.captured->firstRow() + visibleRow : absoluteRow(*bound.terminal, visibleRow, bound.viewOffset);
+}
+
+// Whether a selection row soft-wraps, from whichever source the context reads.
+[[nodiscard]] bool isBoundRowWrapped(const BoundContext& bound, int row) noexcept
+{
+    return bound.captured ? bound.captured->isRowWrapped(row) : screenRowWrapped(*bound.terminal, row);
+}
+
+// ``logicalLineRun`` over whichever source the context reads. Over a capture
+// the run stops at the frame's edges, the only rows it holds.
+[[nodiscard]] LogicalLineRun boundLogicalLineRun(const BoundContext& bound, int rows, int row) noexcept
+{
+    if (!bound.captured)
+        return logicalLineRun(*bound.terminal, rows, row);
+    if (rows <= 0)
+        return { .firstRow = 0, .lastRow = 0 };
+    row = std::clamp(row, 0, rows - 1);
+    LogicalLineRun run { .firstRow = row, .lastRow = row };
+    while (run.firstRow > 0 && isBoundRowWrapped(bound, run.firstRow - 1))
+        --run.firstRow;
+    while (run.lastRow < rows - 1 && isBoundRowWrapped(bound, run.lastRow))
+        ++run.lastRow;
+    return run;
+}
+
 // Resolves `row` into the row memo: its cells, and for a row that may need
 // shaping, the permutation from visual to logical columns. Out of line, so the
 // per-cell read below stays small enough to inline into every callback.
@@ -972,8 +1007,7 @@ std::uint8_t rowLineAttributeAt(void* context, int row)
 void boundBeginCharacter(void* userData, int /*visibleRow*/, int column)
 {
     auto& bound = *static_cast<BoundContext*>(userData);
-    Terminal& terminal = *bound.terminal;
-    begin(&bound.session->state, totalRows(terminal), terminal.columns,
+    begin(&bound.session->state, boundTotalRows(bound), boundColumns(bound),
         bound.session->gestureAnchorAbsoluteRow, column,
         bound.style.isRectangular ? SelectionMode::Rectangle : SelectionMode::Character);
 }
@@ -991,6 +1025,8 @@ void boundBeginCharacter(void* userData, int /*visibleRow*/, int column)
 // a shaped run, which leaves the cell walk to it.
 [[nodiscard]] bool beginRunWord(BoundContext& bound, int row, int column)
 {
+    if (!bound.terminal)
+        return false;
     const Terminal& terminal = *bound.terminal;
     if (!std::isfinite(bound.pointerXInCells) || terminal.columns <= 0)
         return false;
@@ -1067,6 +1103,8 @@ void boundBeginCharacter(void* userData, int /*visibleRow*/, int column)
 // Answers false where the press is on no block.
 [[nodiscard]] bool beginBlockWord(BoundContext& bound, int visibleRow, int row, int column)
 {
+    if (!bound.terminal)
+        return false;
     const Terminal& terminal = *bound.terminal;
     if (terminal.richTextBlocks.isEmpty())
         return false;
@@ -1107,12 +1145,19 @@ void boundBeginCharacter(void* userData, int /*visibleRow*/, int column)
 void boundBeginWord(void* userData, int visibleRow, int column)
 {
     auto& bound = *static_cast<BoundContext*>(userData);
-    Terminal& terminal = *bound.terminal;
-    const int row = absoluteRow(terminal, visibleRow, bound.viewOffset);
+    const int row = boundAbsoluteRow(bound, visibleRow);
     if (beginBlockWord(bound, visibleRow, row, column))
         return;
     if (beginRunWord(bound, row, column))
         return;
+    // A capture holds no character-class table: a gesture over one is
+    // refused before it gets here when the terminal configures one.
+    if (!bound.terminal) {
+        doubleClickExpand(&bound.session->state, boundTotalRows(bound), boundColumns(bound), row, column,
+            cellAt, &bound, &bound.session->engine, bound.style.smartToken);
+        return;
+    }
+    Terminal& terminal = *bound.terminal;
 
     // A configured [characterClass] table is consulted first: it grows the
     // click to the widest contiguous token a class matches — a whole path
@@ -1142,9 +1187,8 @@ void boundBeginWord(void* userData, int visibleRow, int column)
 void boundBeginLine(void* userData, int visibleRow, int /*column*/)
 {
     auto& bound = *static_cast<BoundContext*>(userData);
-    Terminal& terminal = *bound.terminal;
-    const int rows = totalRows(terminal);
-    const int clicked = absoluteRow(terminal, visibleRow, bound.viewOffset);
+    const int rows = boundTotalRows(bound);
+    const int clicked = boundAbsoluteRow(bound, visibleRow);
 
     // A triple click takes the logical line, which is not the visual row when
     // the line soft-wrapped. Selecting the row alone hands back a fragment of
@@ -1157,34 +1201,34 @@ void boundBeginLine(void* userData, int visibleRow, int /*column*/)
     // a hard-wrapped line -- tmux emitting each visual row separately -- still
     // selects one row, which is the truthful answer for content the terminal was
     // never told is continuous.
-    const LogicalLineRun run = logicalLineRun(terminal, rows, clicked);
-    expandToLine(&bound.session->state, rows, terminal.columns, run.firstRow);
+    const LogicalLineRun run = boundLogicalLineRun(bound, rows, clicked);
+    expandToLine(&bound.session->state, rows, boundColumns(bound), run.firstRow);
     if (run.lastRow > run.firstRow) {
         // expandToLine anchors both ends on one row; carry the head to the end
         // of the group so the selection covers the whole logical line.
         bound.session->state.headRow = run.lastRow;
-        bound.session->state.headColumn = terminal.columns - 1;
+        bound.session->state.headColumn = boundColumns(bound) - 1;
     }
 }
 
 void boundUpdate(void* userData, int visibleRow, int column)
 {
     auto& bound = *static_cast<BoundContext*>(userData);
-    Terminal& terminal = *bound.terminal;
     SelectionState& state = bound.session->state;
-    const int rows = totalRows(terminal);
-    const int row = absoluteRow(terminal, visibleRow, bound.viewOffset);
+    const int rows = boundTotalRows(bound);
+    const int columns = boundColumns(bound);
+    const int row = boundAbsoluteRow(bound, visibleRow);
     if (state.mode != SelectionMode::Line) {
-        update(&state, rows, terminal.columns, row, column);
+        update(&state, rows, columns, row, column);
         return;
     }
 
     // The anchor always remains on one edge of the triple-clicked run. Walking
     // from that edge recovers the whole anchor even after the drag reverses.
-    const LogicalLineRun anchor = logicalLineRun(terminal, rows, state.anchorRow);
-    const LogicalLineRun head = logicalLineRun(terminal, rows, row);
+    const LogicalLineRun anchor = boundLogicalLineRun(bound, rows, state.anchorRow);
+    const LogicalLineRun head = boundLogicalLineRun(bound, rows, row);
     state.anchorColumn = 0;
-    state.headColumn = terminal.columns - 1;
+    state.headColumn = columns - 1;
     if (head.lastRow < anchor.firstRow) {
         state.anchorRow = anchor.lastRow;
         state.headRow = head.firstRow;
@@ -1563,6 +1607,30 @@ bool synchronizeBufferRows(Session& session, const Terminal& terminal) noexcept
     const std::int64_t appended = Screen::scrollbackTotalAppended(&terminal) - session.observedScrollbackAppended;
     const std::int64_t retained = static_cast<std::int64_t>(historyRows(terminal)) - session.observedScrollbackRows;
     const std::int64_t evicted = std::clamp<std::int64_t>(appended - retained, 0, terminal.rows);
+    // A gesture over a captured frame moved the ends in the numbering last
+    // observed; carry them across every row evicted since, so the naming
+    // below names the characters the gesture pointed at.
+    if (session.areEndsInObservedNumbering) {
+        session.areEndsInObservedNumbering = false;
+        const std::int64_t shift = appended - retained;
+        if (shift != 0 && !terminal.screens.isUsingAlternateScreen && session.observedBufferEpoch == terminal.absoluteRowEpoch
+            && !isSameEnds(currentEnds(session), session.namedEnds)) {
+            if (std::abs(shift) > std::numeric_limits<int>::max() / 2)
+                return forget(hadSelection);
+            const int delta = static_cast<int>(shift);
+            if ((hadSelection && std::min(session.state.anchorRow, session.state.headRow) - delta < 0)
+                || (session.gesture.isOpen && std::min(session.gestureAnchorAbsoluteRow, session.gestureTargetAbsoluteRow) - delta < 0))
+                return forget(hadSelection);
+            if (hadSelection) {
+                session.state.anchorRow -= delta;
+                session.state.headRow -= delta;
+            }
+            if (session.gesture.isOpen) {
+                session.gestureAnchorAbsoluteRow -= delta;
+                session.gestureTargetAbsoluteRow -= delta;
+            }
+        }
+    }
     // A gesture that ended, or a selection that was cleared, moved nothing:
     // what is left is still named.
     if (!session.gesture.isOpen && session.namedEnds.hasGesture) {
@@ -1741,6 +1809,72 @@ bool dragGesture(Session& session, Terminal& terminal, int visibleRow, int colum
         session.gestureTargetAbsoluteRow = absoluteRow(terminal, visibleRow, viewOffset);
     }
     return didRebase || didDrag;
+}
+
+namespace {
+
+// ``selectionVisibleRowOf`` over a captured frame: either half of a
+// double-height pair the frame shows whole addresses the pair's top.
+[[nodiscard]] int capturedSelectionVisibleRowOf(const Rendering::CapturedGrid& grid, int visibleRow) noexcept
+{
+    const int row = grid.firstRow() + visibleRow;
+    const bool isLowerHalf = row > 0 && grid.lineAttribute(row) == lineAttributeDoubleHeightBottom
+        && grid.lineAttribute(row - 1) == lineAttributeDoubleHeightTop;
+    return !isLowerHalf || visibleRow <= 0 ? visibleRow : visibleRow - 1;
+}
+
+// ``logicalColumnUnderScreenCell`` over a captured frame.
+[[nodiscard]] int capturedLogicalColumn(const Rendering::CapturedGrid& grid, int visibleRow, int screenColumn) noexcept
+{
+    const int scale = textScaleForLineAttribute(grid.lineAttribute(grid.firstRow() + visibleRow)).widthScale;
+    if (scale <= 1 || grid.columns() <= 0)
+        return screenColumn;
+    const int lastVisible = std::max(0, grid.columns() / scale - 1);
+    if (screenColumn < 0)
+        return screenColumn / scale;
+    return std::min(screenColumn / scale, lastVisible);
+}
+
+} // namespace
+
+bool beginGesture(Session& session, const Rendering::CapturedGrid& grid, int visibleRow, int column, int clickCount, const GestureStyle& style) noexcept
+{
+    if (style.isWindowActivating || !grid.canExpandGestures())
+        return false;
+    const CaptureRebase rebase = rebaseOverCapture(session, grid);
+    if (rebase == CaptureRebase::NeedsOwner)
+        return false;
+    session.gestureStyle = style;
+    visibleRow = capturedSelectionVisibleRowOf(grid, visibleRow);
+    session.gestureAnchorAbsoluteRow = grid.firstRow() + visibleRow;
+    session.gestureTargetAbsoluteRow = session.gestureAnchorAbsoluteRow;
+    session.usesCharacterCarets = false;
+    BoundContext bound { .session = &session, .terminal = nullptr, .viewOffset = grid.viewOffset(), .style = style, .captured = &grid };
+    const GestureOperations operations = boundOperations(bound);
+    const bool didBegin = gestureBegin(&session.gesture, &operations, visibleRow, capturedLogicalColumn(grid, visibleRow, column), clickCount, style.mode);
+    session.areEndsInObservedNumbering = true;
+    return rebase != CaptureRebase::Unchanged || didBegin;
+}
+
+bool dragGesture(Session& session, const Rendering::CapturedGrid& grid, int visibleRow, int column) noexcept
+{
+    if (!grid.canExpandGestures())
+        return false;
+    const CaptureRebase rebase = rebaseOverCapture(session, grid);
+    if (rebase == CaptureRebase::NeedsOwner)
+        return false;
+    // A caret drag belongs to a packed cell, which a frame read here holds
+    // none of; it continues on the terminal.
+    if (session.usesCharacterCarets)
+        return rebase != CaptureRebase::Unchanged;
+    visibleRow = capturedSelectionVisibleRowOf(grid, visibleRow);
+    BoundContext bound { .session = &session, .terminal = nullptr, .viewOffset = grid.viewOffset(), .style = session.gestureStyle, .captured = &grid };
+    const GestureOperations operations = boundOperations(bound);
+    const bool didDrag = gestureDrag(&session.gesture, &operations, visibleRow, capturedLogicalColumn(grid, visibleRow, column));
+    if (didDrag)
+        session.gestureTargetAbsoluteRow = grid.firstRow() + visibleRow;
+    session.areEndsInObservedNumbering = true;
+    return rebase != CaptureRebase::Unchanged || didDrag;
 }
 
 void configureCharacterCaretGesture(Session& session, const Terminal& terminal, const CaretResolution& press) noexcept
@@ -2618,8 +2752,6 @@ int viewportSpansAndEndsOverCapture(const Session& session, const Rendering::Cap
 CaptureRebase rebaseOverCapture(Session& session, const Rendering::CapturedGrid& grid) noexcept
 {
     const Screen::RowNumbering& numbering = grid.numbering();
-    if (!session.hasBufferObservation)
-        return CaptureRebase::NeedsOwner;
     const auto observe = [&] {
         session.observedScrollbackAppended = numbering.appendedRows;
         session.observedScrollbackRows = grid.historyRows();
@@ -2631,10 +2763,20 @@ CaptureRebase rebaseOverCapture(Session& session, const Rendering::CapturedGrid&
         session.observedScreenDigest = 0;
     };
     const bool hadSelection = Selection::hasSelection(&session.state);
+    // A session that never met a terminal names no row: it takes the frame's
+    // numbering, unless it holds rows from somewhere it cannot say.
+    if (!session.hasBufferObservation) {
+        if (hadSelection || session.gesture.isOpen)
+            return CaptureRebase::NeedsOwner;
+        observe();
+        session.hasBufferObservation = true;
+        return CaptureRebase::Unchanged;
+    }
     const auto forget = [&] {
         clear(&session.state);
         gestureReset(&session.gesture);
         session.namedEnds = {};
+        session.areEndsInObservedNumbering = false;
         observe();
         return hadSelection ? CaptureRebase::Lost : CaptureRebase::Unchanged;
     };
