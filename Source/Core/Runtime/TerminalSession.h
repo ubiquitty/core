@@ -5304,7 +5304,7 @@ public:
     /// frame, with the epoch it was read at; see ``CoherentColors``.
     ///
     /// - Returns: The latest published colours.
-    [[nodiscard]] CoherentColors readCoherentColors() { return m_runtime->link().coherentColors.read(); }
+    [[nodiscard]] CoherentColors readCoherentColors() noexcept UBIQUITTY_NONBLOCKING { return m_runtime->link().coherentColors.read(); }
 
     /// The grid a title names: the laid-out grid during remote bootstrap, then the model's grid.
     [[nodiscard]] TitleGrid titleGrid(TitleGrid laidOut)

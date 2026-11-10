@@ -29,6 +29,7 @@
 // frontend makes from the session's primitives when Core does not decide: the
 // run then shows which cases that decision fails.
 
+#include "Core/Modes/SyncOutput.h"
 #include "Core/Runtime/TerminalSession.h"
 #include "Core/Selection/TerminalSelection.h"
 #include "Core/Terminal.h"
@@ -350,12 +351,31 @@ public:
     {
     }
 
+    // A writer that feeds a session with no ingest loop, as an embedder does,
+    // and stamps when its feed parsed a synchronized update's open.
+    Writer(TerminalSession& session, const std::atomic<bool>& shouldStop, std::atomic<std::int64_t>& openFedAt)
+        : m_descriptor(-1)
+        , m_shouldStop(shouldStop)
+        , m_session(&session)
+        , m_openFedAt(&openFedAt)
+    {
+    }
+
     [[nodiscard]] bool isStopping() const { return m_shouldStop.load(std::memory_order_relaxed); }
 
     // Writes every byte, blocking while the pipe is full; false once the run
     // is stopping or the pipe broke.
     bool write(std::string_view bytes)
     {
+        if (m_session) {
+            if (isStopping())
+                return false;
+            m_session->feedBytes({ bytes.data(), bytes.size() });
+            std::int64_t unset = -1;
+            if (bytes.find("\x1b[?2026h") != std::string_view::npos)
+                m_openFedAt->compare_exchange_strong(unset, std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count());
+            return true;
+        }
         std::size_t written = 0;
         while (written < bytes.size()) {
             if (isStopping())
@@ -375,6 +395,8 @@ public:
 private:
     int m_descriptor;
     const std::atomic<bool>& m_shouldStop;
+    TerminalSession* m_session = nullptr;
+    std::atomic<std::int64_t>* m_openFedAt = nullptr;
 };
 
 // What a case checks of each frame's coherence.
@@ -387,7 +409,35 @@ enum class Coherence : std::uint8_t {
     // One update wraps the output, opened over a screen whose cursor stands at
     // the sentinel: until the writer closes it, every frame shows that screen.
     SentinelUntilTheBlockCloses,
+    // One update opens over one frame and never closes, and the writer goes
+    // quiet: the rule expires the update once it has outlived its budget, and
+    // the drain's capture of that frame follows.
+    ExpiresUnclosedThenQuiet,
+    // One update opens inside a flood and never closes: the drain's captures
+    // resume once the rule expires it, and follow at the cadence.
+    ExpiresUnclosedInFlood,
 };
+
+// How the case's bytes reach the model.
+enum class Feeding : std::uint8_t {
+    // Through a pipe the session's ingest loop drains.
+    Ingest,
+    // Through the session's own feed, with no ingest loop, as an embedder
+    // feeds it: nothing but the frontend's own asks ages a held update.
+    Fed,
+};
+
+// When the frontend asks for a frame.
+enum class Ticking : std::uint8_t {
+    // At every display tick, whether or not anything woke it.
+    EveryRefresh,
+    // Only when the pane reports a dirty screen, or when a hold's recheck it
+    // booked comes due, as a frontend whose display link idles does.
+    OnWake,
+};
+
+// The longest the coherence rule holds an open update: its sixty ticks.
+constexpr Clock::duration updateBudget = std::chrono::microseconds(static_cast<std::int64_t>(Modes::SyncOutput::maxHoldTicks) * 1'000'000 / 60);
 
 // A flood's frames are mostly the drain's captures: a live read stands in for
 // one only at a tick no pass has captured for, a few times a run, and the
@@ -436,6 +486,8 @@ struct CadenceCase {
     // How many times the view may register its capture geometry: once, at
     // the selection, while the view's offset stands.
     int maxRegistrations = 1;
+    Ticking ticking = Ticking::EveryRefresh;
+    Feeding feeding = Feeding::Ingest;
 };
 
 std::int64_t microsecondsOf(Clock::time_point at) { return std::chrono::duration_cast<std::chrono::microseconds>(at.time_since_epoch()).count(); }
@@ -550,6 +602,10 @@ public:
         m_spans.resize(static_cast<std::size_t>(Selection::viewportSpanCapacity(cadenceCase.rows, cadenceCase.columns)));
     }
 
+    // An on-wake frontend's wake: the drain signal Core raises for a screen
+    // change, from whichever thread raised it.
+    static void noteWake(void* context) { static_cast<Frontend*>(context)->m_wakes.fetch_add(1, std::memory_order_release); }
+
     // Selects the case's cells as a pointer gesture does and hands the
     // selection to the drain's captures, before the writer starts.
     bool select()
@@ -569,6 +625,8 @@ public:
         registerCaptureGeometry();
         if (m_decision == Decision::TakeFrame)
             m_session.publishSelectionForCaptures(&m_selection);
+        if (m_case.ticking == Ticking::OnWake)
+            m_reportedColors = m_session.readCoherentColors();
         return true;
     }
 
@@ -576,10 +634,24 @@ public:
     void tick(int index, Clock::time_point slot)
     {
         m_slot = slot;
+        if (m_case.ticking == Ticking::OnWake) {
+            // Core wakes this frontend, and it takes the flags only then: a
+            // booked recheck asks the withhold and draws nothing on its own.
+            recheckHoldIfDue();
+            const std::uint64_t wakes = m_wakes.load(std::memory_order_acquire);
+            if (wakes == m_servedWakes)
+                return;
+            m_servedWakes = wakes;
+        }
         const std::uint32_t flags = m_times.time(FrontendCall::TakeEventFlags, [&] { return m_session.takeEventFlags(); });
         const bool isScreenDirty = flags & (1u << static_cast<unsigned>(Runtime::EventKind::ScreenDirty));
         if (isScreenDirty)
             followOutput();
+        if (m_case.ticking == Ticking::OnWake) {
+            if (!isScreenDirty)
+                return;
+            reportColorsIfMoved();
+        }
         static_cast<void>(m_times.time(FrontendCall::FrameClockFacts, [&] { return m_session.frameClockFactsNow(); }));
         static_cast<void>(m_times.time(FrontendCall::ReadSnapshot, [&] { return m_session.readSnapshot(); }));
         if (isCaptureViewStale())
@@ -592,7 +664,8 @@ public:
             askForFrame();
         else
             askForFrameFromPrimitives();
-        recheckHoldIfDue();
+        if (m_case.ticking == Ticking::EveryRefresh)
+            recheckHoldIfDue();
     }
 
     [[nodiscard]] const std::vector<Present>& presents() const { return m_presents; }
@@ -796,6 +869,28 @@ private:
             bookHoldRecheck();
     }
 
+    // What a host that draws nothing still owes on a screen change: the
+    // colours the frame shows, once they have moved.
+    void reportColorsIfMoved()
+    {
+        const Runtime::CoherentColors published = m_session.readCoherentColors();
+        if (published.paletteEpoch == m_reportedColors.paletteEpoch)
+            return;
+        const ColorRGBA was = m_reportedColors.colors.background;
+        const ColorRGBA now = published.colors.background;
+        m_reportedColors = published;
+        if (was.red != now.red || was.green != now.green || was.blue != now.blue)
+            m_colorReports.push_back({ .at = m_slot, .background = now });
+    }
+
+public:
+    // A change of background a host reported, and the tick it reported it at.
+    struct ColorReport {
+        Clock::time_point at;
+        ColorRGBA background;
+    };
+    [[nodiscard]] const std::vector<ColorReport>& colorReports() const { return m_colorReports; }
+
 private:
     TerminalSession& m_session;
     const CadenceCase& m_case;
@@ -822,6 +917,10 @@ private:
     };
     LiveContent m_lastLiveContent;
     std::optional<Clock::time_point> m_recheckAt;
+    std::atomic<std::uint64_t> m_wakes { 0 };
+    std::uint64_t m_servedWakes = 0;
+    Runtime::CoherentColors m_reportedColors {};
+    std::vector<ColorReport> m_colorReports;
     Clock::time_point m_slot;
     std::vector<Present> m_presents;
     CallTimes m_times;
@@ -839,6 +938,7 @@ struct CadenceRun {
     std::optional<Clock::time_point> stallStartedAt;
     std::optional<Clock::time_point> stallEndedAt;
     std::vector<Present> presents;
+    std::vector<Frontend::ColorReport> colorReports;
     CallTimes times;
     int ticks = 0;
     int registrations = 0;
@@ -880,7 +980,8 @@ CadenceRun runCadence(const CadenceCase& cadenceCase, Decision decision)
         }
     } release { session };
     session->start(cadenceCase.rows, cadenceCase.columns);
-    if (!session->adoptStream(std::make_unique<PAL::CadencePipeStream>(std::move(readEnd))).has_value())
+    const bool isFed = cadenceCase.feeding == Feeding::Fed;
+    if (!isFed && !session->adoptStream(std::make_unique<PAL::CadencePipeStream>(std::move(readEnd))).has_value())
         return run;
     if (cadenceCase.scrollbackLimit > 0) {
         session->lockForRead();
@@ -894,7 +995,7 @@ CadenceRun runCadence(const CadenceCase& cadenceCase, Decision decision)
     session->setSyncPublishRefreshSeconds(refreshSeconds);
     session->setSyncFrameCaptureGeometry(captureGeometry(cadenceCase.rows, cadenceCase.columns));
     session->setSyncFramePresentation(Runtime::PanePresentation::Presented);
-    if (!session->startIngest())
+    if (!isFed && !session->startIngest())
         return run;
     struct IngestStop {
         TerminalSession* session;
@@ -905,17 +1006,26 @@ CadenceRun runCadence(const CadenceCase& cadenceCase, Decision decision)
     // The screen the case starts from, parsed whole before the selection is
     // made over it.
     std::atomic<bool> isPrologueWriterStopping { false };
-    Writer prologueWriter(writeEnd.get(), isPrologueWriterStopping);
-    if (!prologueWriter.write(cadenceCase.prologue) || !waitForDrained(*session, cadenceCase.prologue.size()))
-        return run;
+    if (isFed) {
+        session->feedBytes({ cadenceCase.prologue.data(), cadenceCase.prologue.size() });
+    } else {
+        Writer prologueWriter(writeEnd.get(), isPrologueWriterStopping);
+        if (!prologueWriter.write(cadenceCase.prologue) || !waitForDrained(*session, cadenceCase.prologue.size()))
+            return run;
+    }
 
     Frontend frontend(*session, cadenceCase, decision);
     run.didSelect = frontend.select();
     if (!run.didSelect)
         return run;
+    // A frontend that ticks on wake has its host register the wake before its
+    // first tick and clear it after its last, as a host registers a view's.
+    const bool isWokenByCore = cadenceCase.ticking == Ticking::OnWake;
+    if (isWokenByCore)
+        session->setDrainSignal(&frontend, &Frontend::noteWake);
 
     std::atomic<bool> isWriterStopping { false };
-    Writer writer(writeEnd.get(), isWriterStopping);
+    Writer writer = isFed ? Writer(*session, isWriterStopping, watch.blockOpenReachedAt) : Writer(writeEnd.get(), isWriterStopping);
     run.writerStartedAt = Clock::now();
     if (cadenceCase.stallAfter)
         watch.stallArmedAt.store(microsecondsOf(run.writerStartedAt + *cadenceCase.stallAfter), std::memory_order_relaxed);
@@ -946,6 +1056,8 @@ CadenceRun runCadence(const CadenceCase& cadenceCase, Decision decision)
         run.ticks = index;
     });
     frontendThread.join();
+    if (isWokenByCore)
+        session->setDrainSignal(nullptr, nullptr);
     run.writerStoppedAt = Clock::now();
     isWriterStopping.store(true, std::memory_order_relaxed);
     writerThread.join();
@@ -955,6 +1067,7 @@ CadenceRun runCadence(const CadenceCase& cadenceCase, Decision decision)
     run.doesSelectionStandAtEnd = frontend.doesSelectionStand();
     run.registrations = frontend.registrations();
     run.declines = frontend.declines();
+    run.colorReports = frontend.colorReports();
     run.blockOpenReachedAt = timeOf(watch.blockOpenReachedAt);
     run.blockCloseReachedAt = timeOf(watch.blockCloseReachedAt);
     run.stallStartedAt = timeOf(watch.stallStartedAt);
@@ -1007,6 +1120,36 @@ void checkCadence(const CadenceCase& cadenceCase, const CadenceRun& run, double 
                 millisecondsOf(*run.blockCloseReachedAt - *run.blockOpenReachedAt))
                 .c_str());
         windows.emplace_back(*run.blockCloseReachedAt, run.writerStoppedAt);
+    } else if (cadenceCase.coherence == Coherence::ExpiresUnclosedThenQuiet || cadenceCase.coherence == Coherence::ExpiresUnclosedInFlood) {
+        REQUIRE_MSG(run.blockOpenReachedAt.has_value(), (name + ": the drain reached the update's open").c_str());
+        const Clock::time_point open = *run.blockOpenReachedAt;
+        // The rule stamps the update at the end of the pass, or the ask, that
+        // first sees it open, up to one refresh interval after the open.
+        const Clock::duration expiryBound = updateBudget + refreshInterval + cadenceBound;
+        const Clock::time_point due = open + expiryBound;
+        // The colours the program set inside the update reach the host once
+        // the rule expires it, as a close would bring them.
+        const auto reported = std::ranges::find_if(run.colorReports, [&](const Frontend::ColorReport& report) {
+            return report.at > open && report.background.red == 0x00 && report.background.green == 0x77 && report.background.blue == 0x77;
+        });
+        REQUIRE_MSG(reported != run.colorReports.end(),
+            std::format("{}: the host was never woken to report the colours of the update the drain reached {:.0f} ms into the writer", name,
+                millisecondsOf(open - run.writerStartedAt))
+                .c_str());
+        CHECK_MSG(reported->at <= due,
+            std::format("{}: the host reported the expired update's colours {:.0f} ms after its open, against the budget, the stamp and the cadence, {:.0f} ms",
+                name, millisecondsOf(reported->at - open), millisecondsOf(expiryBound))
+                .c_str());
+        // A fresh frame follows the expiry; any before the budget ran out was
+        // taken before the drain reached the open.
+        const auto resumed = std::ranges::find_if(run.presents, [&](const Present& present) { return present.isFresh && present.at >= open + updateBudget - cadenceBound; });
+        REQUIRE_MSG(resumed != run.presents.end(), (name + ": no fresh frame followed the expired update").c_str());
+        CHECK_MSG(resumed->at <= due,
+            std::format("{}: the first fresh frame after the open came {:.0f} ms after it, against the budget, the stamp and the cadence, {:.0f} ms", name,
+                millisecondsOf(resumed->at - open), millisecondsOf(expiryBound))
+                .c_str());
+        if (cadenceCase.coherence == Coherence::ExpiresUnclosedInFlood)
+            windows.emplace_back(resumed->at, run.writerStoppedAt);
     } else if (run.stallStartedAt) {
         REQUIRE_MSG(run.stallEndedAt.has_value(), (name + ": the stall ended").c_str());
         windows.emplace_back(flowFrom, *run.stallStartedAt);
@@ -1469,6 +1612,56 @@ TEST(cadenceAcrossAnOwnerStall)
         .write = [frames = sgrChurnRecording(paneRows, paneColumns)](Writer& writer) { replay(writer, frames); },
         .shouldPostKeys = true,
         .stallAfter = 400ms,
+    });
+}
+
+// A program that opens a synchronized update over one frame, sets a colour
+// inside it and goes quiet without closing it, as one killed mid-frame does,
+// fed to a session with no ingest loop as an embedder feeds it. Nothing but
+// the frontend's own recheck ages the update, and a frontend whose display
+// link idles takes the pane's flags only when Core wakes it: the colour and
+// the frame the expired update held reach it only if the expiry wakes it,
+// within the rule's budget and the cadence of the feed that opened it.
+TEST(cadenceOfAnUpdateLeftOpenThenQuiet)
+{
+    runAndCheck({
+        .name = "update left open, then quiet",
+        .prologue = sgrChurnFrame(paneRows, paneColumns, 0),
+        .selection = { .row = 6, .fromColumn = 2, .toColumn = 40 },
+        .duration = 1800ms,
+        .write =
+            [opening = "\x1b[?2026h\x1b]11;rgb:00/77/77\x07" + sgrChurnFrame(paneRows, paneColumns, 1)](Writer& writer) {
+                if (!writer.write(opening))
+                    return;
+                while (!writer.isStopping())
+                    writer.sleepFor(5ms);
+            },
+        .coherence = Coherence::ExpiresUnclosedThenQuiet,
+        .ticking = Ticking::OnWake,
+        .feeding = Feeding::Fed,
+    });
+}
+
+// An update opened inside a flood, with a colour set inside it, and never
+// closed: the drain parses on inside it, and once the rule expires it the
+// colour reaches a frontend that takes the pane's flags only when Core wakes
+// it, and the drain's captures resume at the cadence.
+TEST(cadenceOfAnUpdateLeftOpenInAFlood)
+{
+    runAndCheck({
+        .name = "update left open in a flood",
+        .prologue = sgrChurnFrame(paneRows, paneColumns, 0),
+        .selection = { .row = 6, .fromColumn = 2, .toColumn = 40 },
+        .duration = 2000ms,
+        .write =
+            [frames = sgrChurnRecording(paneRows, paneColumns)](Writer& writer) {
+                replay(writer, frames, std::nullopt, updateBytes / 4);
+                if (!writer.write("\x1b[?2026h\x1b]11;rgb:00/77/77\x07"))
+                    return;
+                replay(writer, frames);
+            },
+        .coherence = Coherence::ExpiresUnclosedInFlood,
+        .ticking = Ticking::OnWake,
     });
 }
 
