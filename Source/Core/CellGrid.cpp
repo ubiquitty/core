@@ -127,9 +127,7 @@ CellGrid::CellGrid()
     , m_blinkHint(false)
     , m_blinkHintGeneration(0)
     , m_hasSizedCellHint(false)
-#ifndef NDEBUG
     , m_paintInvariantBroken(false)
-#endif
     , m_selectionDirty(nullptr)
     , m_selectionStride(0)
     , m_anySelectionDirty(false)
@@ -2890,7 +2888,6 @@ void CellGrid::setSelectionDirty(int r, int c)
     m_anySelectionDirty = true;
 }
 
-#if !defined(NDEBUG)
 bool CellGrid::assertInvariants() const
 {
     // The iterator's O(1) row skip trusts m_anyDirtyInRow: if false, active must equal shadow for every
@@ -2939,7 +2936,6 @@ bool CellGrid::assertInvariants() const
     }
     return true;
 }
-#endif
 
 PaintSession CellGrid::beginPaint() { return PaintSession(this); }
 
@@ -2953,10 +2949,8 @@ PaintSession::PaintSession(CellGrid* d)
     , m_moved(false)
     , m_consumedDamage(false)
     , m_hasWalkedToEnd(false)
-#ifndef NDEBUG
     , m_yieldedRuns(0)
     , m_ackedRuns(0)
-#endif
 {
     // Clear the request as the session starts; the first iteration captured it, later cycles aren't full.
     m_display->m_fullRedrawRequested = false;
@@ -2969,10 +2963,10 @@ PaintSession::PaintSession(PaintSession&& o) noexcept
     , m_fullRedraw(o.m_fullRedraw)
     , m_moved(o.m_moved)
     , m_consumedDamage(o.m_consumedDamage)
-#ifndef NDEBUG
+    , m_hasWalkedToEnd(o.m_hasWalkedToEnd)
     , m_yieldedRuns(o.m_yieldedRuns)
     , m_ackedRuns(o.m_ackedRuns)
-#endif
+    , m_walkKind(o.m_walkKind)
 {
     o.m_moved = true;
 }
@@ -2986,10 +2980,10 @@ PaintSession& PaintSession::operator=(PaintSession&& o) noexcept
         m_fullRedraw = o.m_fullRedraw;
         m_moved = o.m_moved;
         m_consumedDamage = o.m_consumedDamage;
-#ifndef NDEBUG
+        m_hasWalkedToEnd = o.m_hasWalkedToEnd;
         m_yieldedRuns = o.m_yieldedRuns;
         m_ackedRuns = o.m_ackedRuns;
-#endif
+        m_walkKind = o.m_walkKind;
         o.m_moved = true;
     }
     return *this;
