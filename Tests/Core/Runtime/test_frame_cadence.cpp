@@ -248,7 +248,7 @@ Decision decisionUnderTest()
 }
 
 // How many reasons a tick can present nothing for.
-constexpr std::size_t frameDeclineCount = 6;
+constexpr std::size_t frameDeclineCount = 7;
 
 constexpr std::string_view frameDeclineName(FrameDecline decline)
 {
@@ -265,6 +265,8 @@ constexpr std::string_view frameDeclineName(FrameDecline decline)
         return "blockOpenUnderLock";
     case FrameDecline::RedrawArriving:
         return "redrawArriving";
+    case FrameDecline::OwnerStalled:
+        return "ownerStalled";
     }
     return "?";
 }

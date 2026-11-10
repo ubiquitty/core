@@ -357,12 +357,31 @@ public:
     /// - Parameter target: The capture claimed, from ``claimTarget``.
     void cancel(const Target& target) noexcept { m_slot.cancelCapture(target.index); }
 
+    /// How long a demand may go unserved, with the owner taking no turn,
+    /// before the owner reads as stalled.
+    static constexpr std::uint32_t ownerStallMicros = 250'000;
+
     /// Asks the owner for a frame: one more demand than the last.
     ///
     /// The view's side.
     ///
+    /// - Parameter nowMicros: Now, in monotonic microseconds; the start of
+    ///   the wait when no demand was outstanding.
     /// - Returns: The demand's sequence.
-    std::uint64_t raiseDemand() noexcept UBIQUITTY_NONBLOCKING { return m_demanded.fetch_add(1, std::memory_order_release) + 1; }
+    std::uint64_t raiseDemand(std::uint32_t nowMicros) noexcept UBIQUITTY_NONBLOCKING
+    {
+        if (!isDemandOutstanding())
+            m_demandSinceMicros.store(nowMicros | 1u, std::memory_order_relaxed);
+        return m_demanded.fetch_add(1, std::memory_order_release) + 1;
+    }
+
+    /// Returns when the outstanding demand was first raised.
+    ///
+    /// - Returns: Monotonic microseconds, or zero with no demand outstanding.
+    [[nodiscard]] std::uint32_t demandOutstandingSinceMicros() const noexcept UBIQUITTY_NONBLOCKING
+    {
+        return isDemandOutstanding() ? m_demandSinceMicros.load(std::memory_order_relaxed) : 0;
+    }
 
     /// Whether a demand waits that no published capture has served.
     ///
@@ -405,6 +424,8 @@ private:
     // The view's demands, and the newest one a published capture served.
     std::atomic<std::uint64_t> m_demanded { 0 };
     std::atomic<std::uint64_t> m_supplied { 0 };
+    // When the outstanding demand was first raised; the view's to write.
+    std::atomic<std::uint32_t> m_demandSinceMicros { 0 };
 };
 
 } // namespace Ubiquitty::Runtime

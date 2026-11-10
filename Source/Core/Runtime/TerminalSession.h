@@ -6814,7 +6814,7 @@ public:
         // the next frame the rule admits, whichever comes first.
         const bool isLaneServed = m_isSyncCaptureArmed.load(std::memory_order_acquire) && m_isSyncFramePresented.load(std::memory_order_relaxed);
         if (isLaneServed) {
-            static_cast<void>(m_frameLane.raiseDemand());
+            static_cast<void>(m_frameLane.raiseDemand(PAL::monotonicMicros()));
             m_loop.raiseWake();
         }
         if (!demand.isResizing) {
@@ -6826,7 +6826,7 @@ public:
                 return nullptr;
         }
         if (!demand.keepsSearchLive && (shouldSkipLiveReadForSaturation() || (isLaneServed && !demand.isResizing))) {
-            supply.decline = FrameDecline::AwaitingCapture;
+            supply.decline = isOwnerStalled() ? FrameDecline::OwnerStalled : FrameDecline::AwaitingCapture;
             return nullptr;
         }
         supply.route = FrameRoute::LiveRead;
@@ -9693,7 +9693,7 @@ private:
     /// - Returns: The presentation hold and its budget.
     [[nodiscard]] FrameHold ownerJudgedFrameHold(Ticks nowTicks, std::uint32_t nowMicros)
     {
-        static_cast<void>(m_frameLane.raiseDemand());
+        static_cast<void>(m_frameLane.raiseDemand(PAL::monotonicMicros()));
         m_loop.raiseWake();
         const std::uint32_t budget = m_runtime->presentationHoldTicksRemaining(publishedBlock(), nowTicks, nowMicros);
         return { .decline = FrameDecline::HeldByPresentation, .askAgainTicks = std::max<std::uint32_t>(1, budget) };
@@ -9953,6 +9953,7 @@ private:
     /// An open update is stamped or expired here, as the view's check would.
     void serveFrameDemand() UBIQUITTY_REQUIRES(modelLockRole)
     {
+        m_ownerHeartbeatMicros.store(PAL::monotonicMicros() | 1u, std::memory_order_relaxed);
         if (!m_frameLane.isDemandOutstanding())
             return;
         const std::uint64_t demanded = m_frameLane.demandSequence();
@@ -9997,6 +9998,22 @@ private:
         return Ubiquitty::Selection::resolveForCapture(m_selectionAtCapture, term, viewOffset, out,
             Ubiquitty::Selection::BlockSelections(m_syncBlockSelections));
     }
+
+    /// Whether the view's outstanding demand has gone unserved for
+    /// ``FrameLane::ownerStallMicros`` with no owner turn since it was raised.
+    ///
+    /// - Returns: Whether the owner reads as stalled.
+    [[nodiscard]] bool isOwnerStalled() const
+    {
+        const std::uint32_t since = m_frameLane.demandOutstandingSinceMicros();
+        if (since == 0 || PAL::monotonicMicros() - since < FrameLane::ownerStallMicros)
+            return false;
+        const std::uint32_t beat = m_ownerHeartbeatMicros.load(std::memory_order_relaxed);
+        return beat == 0 || static_cast<std::int32_t>(beat - since) < 0;
+    }
+
+    // The owner's last turn that found frontend work, stamped there.
+    std::atomic<std::uint32_t> m_ownerHeartbeatMicros { 0 };
 
     /// A geometry registration and the generation it was made under.
     struct GeometryRegistration {
