@@ -1731,10 +1731,7 @@ TEST(aConfirmingPassRepublishesNothing)
     // The control, in both directions: a posted command's effects reach the
     // published snapshot through a byteless pass, so the skip above cannot be
     // a pass that publishes nothing ever.
-    Command focus;
-    focus.kind = CommandKind::SetFocus;
-    focus.flag = false;
-    CHECK(rt.link().commands.post(focus));
+    CHECK(rt.link().conveyor.post(OwnerCommand::make(OwnerCommandKind::SetFocus, FocusArguments { .isFocused = false })));
     CHECK(rt.serviceFrontend(host));
     const DrainOutcome afterCommand = rt.drainAvailable(host);
     CHECK(afterCommand.bytesDrained == 0);
@@ -7306,11 +7303,8 @@ TEST(aFocusedPaneHasHadItsLatchedAttentionSeen)
     REQUIRE(pipe);
     CountingDrainHost host;
     const auto unseen = [&runtime]() UBIQUITTY_REQUIRES(Ubiquitty::modelLockRole) { return Ubiquitty::unseenAttention(runtime.borrowTermForRender()); };
-    const auto focus = [&](bool isFocused) { // bool-ok: the command ring's own flag
-        Command command;
-        command.kind = CommandKind::SetFocus;
-        command.flag = isFocused;
-        CHECK(runtime.link().commands.post(command));
+    const auto focus = [&](bool isFocused) { // bool-ok: the command's own argument
+        CHECK(runtime.link().conveyor.post(OwnerCommand::make(OwnerCommandKind::SetFocus, FocusArguments { .isFocused = isFocused })));
         CHECK(runtime.serviceFrontend(host));
     };
 

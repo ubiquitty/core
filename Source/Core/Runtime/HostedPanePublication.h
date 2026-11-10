@@ -48,8 +48,30 @@ public:
     /// The caller holds this exact model's canonical lock.
     ///
     /// - Parameter terminal: The model this publication represents.
+    /// Publishes the modes a key for the pane encodes in. The host's writer,
+    /// under the pane's lock, before each release of it that may have changed
+    /// them; so a frontend that encodes from them reads no model older than a
+    /// locked encode could.
+    ///
+    /// - Parameter terminal: The pane's model.
+    void publishKeyModes(const Ubiquitty::Terminal& terminal)
+    {
+        const ModeSnapshot modes = sampleModes(terminal);
+        if (modes == m_publishedKeyModes)
+            return;
+        m_keyModes.publish(modes);
+        m_publishedKeyModes = modes;
+    }
+
+    /// Returns the modes a key for the pane encodes in, as the host's writer
+    /// last published them. Any thread, lock-free.
+    ///
+    /// - Returns: The modes.
+    [[nodiscard]] ModeSnapshot keyModes() const { return m_keyModes.read(); }
+
     void publishModelState(const Ubiquitty::Terminal& terminal)
     {
+        publishKeyModes(terminal);
         Protocol::Sync::PaneHostFacts host;
         host.isAdopted = true;
         const auto textArea = Ubiquitty::reportedTextAreaPixels(terminal);
@@ -117,6 +139,8 @@ public:
     }
 
 private:
+    SnapshotPublisher<ModeSnapshot> m_keyModes;
+    ModeSnapshot m_publishedKeyModes {};
     const Ubiquitty::Terminal* m_terminal;
     FrameCoherence m_coherence { CoherenceTuning { .isPaced = false } };
     std::uint64_t m_generation = 0;

@@ -1192,6 +1192,51 @@ TEST(anAdoptedPaneLinkDoesNotBorrowTheUnusedRuntimePublication)
     CHECK_EQ(observer.frames.size(), whileAdopted + 1);
 }
 
+// An adopted tmux pane's host publishes the modes a key for it encodes in at
+// each delivery, so the pane's view encodes a key in the modes its program
+// last set, from that publication rather than the pane's locked model.
+TEST(anAdoptedHostedPaneEncodesKeysInTheModesItsHostPublished)
+{
+    Ubiquitty::Terminal primary;
+    Ubiquitty::resize(primary, 24, 80);
+    Ubiquitty::ModelLock primaryLock;
+    Ubiquitty::TestDoubles::StreamDouble stream;
+    std::uint64_t now = 12'000'000'000;
+    Ubiquitty::Runtime::HostedWindowSeams seams;
+    seams.primary = &primary;
+    seams.primaryLock = &primaryLock;
+    seams.stream = &stream;
+    seams.sessionContext = &now;
+    seams.clockMicroseconds = [](void* context) { return *static_cast<std::uint64_t*>(context); };
+    Ubiquitty::Runtime::TmuxControlHost host(seams);
+    host.attach();
+    const auto feed = [&](std::string_view bytes) {
+        const std::scoped_lock hold(primaryLock);
+        Ubiquitty::processBytes(&primary, bytes);
+    };
+    feed("%begin 1 1 0\n%end 1 1 0\n%begin 2 2 1\n@1 %1 80 24 1 ef01,80x24,0,0,1 work editor\n%end 2 2 1\n");
+    const auto release = [](TerminalSession* value) { releaseTerminalSession(value); };
+    std::unique_ptr<TerminalSession, decltype(release)> session(makeStartedSession(), release);
+    REQUIRE(session);
+    REQUIRE(session->adoptHostedPane(reinterpret_cast<std::uintptr_t>(&host), 1));
+
+    Ubiquitty::Runtime::KeyPress press;
+    press.unshiftedCodePoint = 'c';
+    press.shiftedCodePoint = 'c';
+    press.wasModified = true;
+    press.modifiers = Ubiquitty::Keys::Keymap::keymapModifierCtrl;
+    press.eventType = Ubiquitty::Keys::KeyEventType::Release;
+    char buffer[64];
+    const Ubiquitty::Keys::Keymap::EncodedKeyBytes output { buffer, sizeof(buffer) };
+    CHECK_MSG(session->encodeKey(press, output).length == 0, "premise: a release reports nothing before the program asks");
+
+    feed("%output %1 \\033[>7u\n");
+    CHECK_MSG(session->encodeKey(press, output).length > 0, "the pane's pushed keyboard flags did not reach the key");
+
+    feed("%output %1 \\033[<u\n");
+    CHECK_MSG(session->encodeKey(press, output).length == 0, "the pane's popped keyboard flags did not reach the key");
+}
+
 TEST(anAdoptedHostedPaneLinkUsesItsRealOwnersPublicationAndClock)
 {
     Ubiquitty::Terminal primary;
