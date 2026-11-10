@@ -8527,6 +8527,38 @@ public:
         return {};
     }
 
+    /// The view's own selection over a frame it holds, without the model lock.
+    ///
+    /// For a frame whose ``Selection::CaptureSpans/isViewAhead`` is set: the
+    /// view moved its selection after the hand-off the frame resolved, so the
+    /// frame's spans show where it was. This resolves the selection as the
+    /// view holds it over the frame's grid (``Selection::viewSpansOverCapture``),
+    /// leaving the view's session as it is; a frame only the owner can resolve
+    /// it over answers the frame's own spans, as ``selectionOverCapture`` does.
+    /// Takes no lock and waits on nothing; it is not marked nonblocking because
+    /// the selection binding it runs keeps scratch storage the effect analysis
+    /// cannot see is never grown over a frame it reads.
+    ///
+    /// - Parameters:
+    ///   - selection: The caller-owned selection session.
+    ///   - capture: A frame from ``takeFrame``, still held.
+    ///   - out: Receives the spans, in the frame's visible rows; a buffer of
+    ///     ``Selection::viewportSpanCapacity`` spans for the frame's grid
+    ///     always has room.
+    ///   - ends: Receives where the selection begins and ends on the frame.
+    /// - Returns: How many spans were written and how many the buffer needs,
+    ///   and what bringing the selection to the frame did to it.
+    [[nodiscard]] Ubiquitty::Selection::CaptureSpans viewSelectionOverCapture(Ubiquitty::Selection::Session* selection,
+        const Rendering::FrameCapture& capture, Ubiquitty::Selection::ViewportSpans out, Ubiquitty::Selection::ViewportEnds& ends) noexcept
+    {
+        ends = {};
+        if (!selection)
+            return {};
+        if (const std::optional<Ubiquitty::Selection::CaptureSpans> own = Ubiquitty::Selection::viewSpansOverCapture(*selection, capture, out, ends))
+            return *own;
+        return selectionOverCapture(selection, capture, out, ends);
+    }
+
     /// Selects the whole buffer, under the model lock.
     ///
     /// - Parameter selection: The caller-owned selection session.

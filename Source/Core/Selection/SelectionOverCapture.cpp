@@ -3,6 +3,7 @@
 
 #include "Core/Selection/SelectionOverCapture.h"
 
+#include "Core/Rendering/CapturedGrid.h"
 #include "Core/Screen/Addressing.h"
 
 #include <algorithm>
@@ -116,7 +117,36 @@ CaptureSpans takeCapturedSelection(Session& selection, PublishedSelection& hande
         copyBytes(handedOff.session, resolved);
         handedOff.resolution = captured.resolution;
     }
-    return { .count = static_cast<int>(count), .needed = static_cast<int>(needed), .outcome = captured.outcome, .didAdopt = canAdopt };
+    // Ahead when the frame resolved an older hand-off than the view's newest,
+    // or the view moved since its newest; a view with nothing to show over a
+    // frame that shows nothing is not.
+    const bool isViewAhead = !canAdopt && (captured.generation != handedOff.generation || !isSameSelection(selection, handedOff.session))
+        && (needed > 0 || selection.state.active || selection.gesture.isOpen);
+    return { .count = static_cast<int>(count), .needed = static_cast<int>(needed), .outcome = captured.outcome, .didAdopt = canAdopt, .isViewAhead = isViewAhead };
+}
+
+std::optional<CaptureSpans> viewSpansOverCapture(const Session& view, const Rendering::FrameCapture& capture, ViewportSpans out,
+    ViewportEnds& ends) noexcept
+{
+    const Rendering::CapturedGrid grid(capture);
+    if (!grid.isReadable())
+        return std::nullopt;
+    Session brought;
+    copyBytes(brought, view);
+    const CaptureRebase rebase = rebaseOverCapture(brought, grid);
+    if (rebase == CaptureRebase::NeedsOwner)
+        return std::nullopt;
+    ViewportEnds resolvedEnds;
+    const int count = viewportSpansAndEndsOverCapture(brought, grid, out, resolvedEnds);
+    ends = resolvedEnds;
+    // A buffer the spans filled may have had no room for more; the frame's
+    // capacity always has room.
+    const bool isFilled = static_cast<std::size_t>(count) >= out.size();
+    const int needed = isFilled ? std::max(count, viewportSpanCapacity(grid.rows(), grid.columns())) : count;
+    const CaptureOutcome outcome = rebase == CaptureRebase::Lost ? CaptureOutcome::Lost
+        : rebase == CaptureRebase::Moved                         ? CaptureOutcome::Moved
+                                                                 : CaptureOutcome::Kept;
+    return CaptureSpans { .count = count, .needed = needed, .outcome = outcome, .didAdopt = false, .isViewAhead = true };
 }
 
 } // namespace Ubiquitty::Selection

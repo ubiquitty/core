@@ -7,6 +7,7 @@
 #include "Core/Selection/TerminalSelection.h"
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 // A view's selection resolved for each frame the drain captures, by the drain,
@@ -18,6 +19,10 @@
 // the stamped spans over the frame and takes the resolved session back, so
 // what output did to the selection reaches the view without the view reading
 // the terminal.
+
+namespace Ubiquitty::Rendering {
+class FrameCapture;
+}
 
 namespace Ubiquitty::Selection {
 
@@ -118,6 +123,11 @@ struct CaptureSpans {
     CaptureOutcome outcome = CaptureOutcome::Kept;
     /// Whether the view's session took the frame's resolved one back.
     bool didAdopt = false;
+    /// Whether the view's selection moved after the hand-off the frame
+    /// resolved: the spans are the frame's, and
+    /// ``TerminalSession::viewSelectionOverCapture`` resolves the view's own
+    /// over the frame.
+    bool isViewAhead = false;
 };
 
 /// The selection a captured frame shows, and the view's session brought up to
@@ -144,5 +154,29 @@ struct CaptureSpans {
 ///   outcome, and whether the view took the resolved session.
 [[nodiscard]] CaptureSpans takeCapturedSelection(Session& selection, PublishedSelection& handedOff, const CapturedSelection& captured,
     ViewportSpans out, ViewportEnds& ends) noexcept UBIQUITTY_NONBLOCKING;
+
+/// The view's selection as it stands, resolved over a captured frame without
+/// the terminal or its lock.
+///
+/// For a frame whose resolution the view has moved past
+/// (``CaptureSpans/isViewAhead``): a copy of the view's session is brought to
+/// the frame's numbering (``rebaseOverCapture``) and its spans are read off
+/// the frame's grid (``viewportSpansAndEndsOverCapture``). The view's session
+/// is left as it is.
+///
+/// - Parameters:
+///   - view: The view's session.
+///   - capture: The frame being drawn, still held.
+///   - out: Receives the spans, in the frame's visible rows; a buffer of
+///     ``viewportSpanCapacity`` spans for the frame's grid always has room.
+///   - ends: Receives where the selection begins and ends on the frame.
+/// - Returns: How many spans were written, how many the buffer needs (the
+///   frame's ``viewportSpanCapacity`` when it was filled), and what bringing
+///   the selection to the frame did to it. Nothing, and nothing written, for a
+///   frame only the owner can resolve a selection over: one
+///   ``Rendering::CapturedGrid::isReadable`` refuses, or one that renumbered
+///   the rows (``CaptureRebase::NeedsOwner``).
+[[nodiscard]] std::optional<CaptureSpans> viewSpansOverCapture(const Session& view, const Rendering::FrameCapture& capture, ViewportSpans out,
+    ViewportEnds& ends) noexcept;
 
 } // namespace Ubiquitty::Selection
