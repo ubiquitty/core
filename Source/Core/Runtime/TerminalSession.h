@@ -5742,11 +5742,7 @@ public:
     /// Launches the user's login shell on a fresh local PTY.
     ///
     /// - Returns: Whether the PTY opened.
-    bool launchLoginShell() UBIQUITTY_EXCLUDES(modelLockRole)
-    {
-        const ModelLockHold hold(m_modelLock);
-        return m_runtime->launch(LaunchCommand::loginShell(true), Preferences::terminalIdentity(m_configuration));
-    }
+    bool launchLoginShell() UBIQUITTY_EXCLUDES(modelLockRole) { return launchOnFreshPTY(LaunchCommand::loginShell(true)); }
 
     /// Launches the user's login shell in a chosen working directory.
     ///
@@ -5761,8 +5757,7 @@ public:
         LaunchCommand command = LaunchCommand::loginShell(true);
         if (!initialDirectory.empty())
             command.setInitialDirectory(initialDirectory);
-        const ModelLockHold hold(m_modelLock);
-        return m_runtime->launch(command, Preferences::terminalIdentity(m_configuration));
+        return launchOnFreshPTY(command);
     }
 
     /// Publishes the window's cell and pixel extent to the host.
@@ -5820,8 +5815,7 @@ public:
         std::vector<std::string> arguments { "/bin/sh", "-c", command };
         LaunchCommand launch = LaunchCommand::fromArguments(std::move(arguments));
         launch.setArgument0Style(PAL::Argument0Style::ProgramPath);
-        const ModelLockHold hold(m_modelLock);
-        return m_runtime->launch(launch, Preferences::terminalIdentity(m_configuration));
+        return launchOnFreshPTY(launch);
     }
 
     /// Hands the session a transport something else already opened.
@@ -5839,7 +5833,13 @@ public:
     /// - Returns: Success, or the exact refused owner without installation.
     [[nodiscard]] std::expected<void, std::unique_ptr<PAL::Stream>> adoptStream(std::unique_ptr<PAL::Stream> stream) UBIQUITTY_EXCLUDES(modelLockRole)
     {
-        const ModelLockHold hold(m_modelLock);
+        if (!stream)
+            return std::unexpected(std::move(stream));
+        {
+            const ModelLockHold hold(m_modelLock);
+            if (!m_runtime->prepareAdoption())
+                return std::unexpected(std::move(stream));
+        }
         return m_runtime->adoptStream(std::move(stream));
     }
 
@@ -5856,11 +5856,8 @@ public:
         if (command.tmuxControlHost() && !s_hostedWindowSourceFactory.load(std::memory_order_acquire)) {
             return false;
         }
-        {
-            const ModelLockHold hold(m_modelLock);
-            if (!m_runtime->launch(command, Preferences::terminalIdentity(m_configuration)))
-                return false;
-        }
+        if (!launchOnFreshPTY(command))
+            return false;
         m_relaunchCommand = command;
         // A relaunch opens no screen: nothing would write one, and a hold
         // nobody lifts parks the new child's output for the pane's life.
@@ -13652,6 +13649,29 @@ private:
     // keeps binding m_modelLock directly: an adopted session never starts
     // ingest, and its own runtime terminal is an unused publish anchor.
     ModelLock* m_activeLock = &m_modelLock;
+
+    /// Launches `command` on a fresh local PTY: the model is readied under its
+    /// lock, and the PTY opens without it, since the open forks the child.
+    ///
+    /// - Parameter command: The command to run.
+    /// - Returns: Whether a PTY runs the session's program.
+    bool launchOnFreshPTY(const LaunchCommand& command) UBIQUITTY_EXCLUDES(modelLockRole)
+    {
+        TerminalRuntime::LaunchReadiness readiness = TerminalRuntime::LaunchReadiness::Refused;
+        {
+            const ModelLockHold hold(m_modelLock);
+            readiness = m_runtime->prepareLaunch(command);
+        }
+        switch (readiness) {
+        case TerminalRuntime::LaunchReadiness::Refused:
+            return false;
+        case TerminalRuntime::LaunchReadiness::StreamOwned:
+            return true;
+        case TerminalRuntime::LaunchReadiness::Ready:
+            break;
+        }
+        return m_runtime->openLaunchStream(command, Preferences::terminalIdentity(m_configuration));
+    }
 
     /// Returns on a thread that holds the active model lock; in a build with
     /// assertions, stops any other.

@@ -613,13 +613,37 @@ public:
     // analysis, which does not check constructors, does not check it either.
     void init(const RuntimeInitParameters&) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS;
 
-    // Launch `command` on a fresh local PTY and OWN the resulting stream (RAII:
-    // closed in close()/dtor). `identity` is what the child's environment is
-    // stamped with; the runtime reads no Values of its own, so the owner's
-    // configuration is the only source. Returns false if the open failed.
-    // Pairs with close(). The caller holds the model lock: the launch claims
-    // the model and publishes it before any ingest reads it.
-    bool launch(const LaunchCommand&, const PAL::TerminalIdentity& identity) UBIQUITTY_REQUIRES(modelLockRole);
+    /// What readying a launch found.
+    enum class LaunchReadiness : std::uint8_t {
+        /// This runtime opens no local stream: a remote session, or a local
+        /// adoption not yet resolved. The launch fails.
+        Refused,
+        /// This runtime owns a stream already, launched or adopted, which the
+        /// launch keeps.
+        StreamOwned,
+        /// The model is readied, and the launch goes on to open its PTY.
+        Ready,
+    };
+
+    // Readies the model for a launch of `command`, before its PTY opens: the
+    // launch's lifetime and opening hold are recorded, its title seed is
+    // published with a snapshot, and this runtime claims the program's
+    // replies, all before any ingest reads the model. The caller holds the
+    // model lock. Returns whether the launch goes on to open a PTY, keeps
+    // the stream it has, or fails.
+    [[nodiscard]] LaunchReadiness prepareLaunch(const LaunchCommand& command) UBIQUITTY_REQUIRES(modelLockRole);
+
+    // Opens the PTY a prepared launch runs on and OWNS the resulting stream
+    // (RAII: closed in close()/dtor). `identity` is what the child's
+    // environment is stamped with; the runtime reads no Values of its own, so
+    // the owner's configuration is the only source. The open forks and execs
+    // the child, sizes its window and subscribes to its process edges, so it
+    // reads no model and runs without the model lock. Returns false if the
+    // open failed. Pairs with close().
+    [[nodiscard]] bool openLaunchStream(const LaunchCommand& command, const PAL::TerminalIdentity& identity);
+
+    // Whether this runtime owns a stream, launched or adopted.
+    [[nodiscard]] bool hasStream() const { return m_stream != nullptr; }
 
     /// Whether this session ends when the child it launched does.
     ///
@@ -1011,15 +1035,24 @@ public:
     /// - Returns: Whether a cold raw block remains, so the loop can wake for it.
     [[nodiscard]] bool foldColdScrollback(DrainHost& host, int blockBudget);
 
+    /// Readies the model for a stream about to be adopted: this runtime
+    /// claims the program's replies before any ingest reads the model. The
+    /// caller holds the model lock.
+    ///
+    /// - Returns: Whether this runtime adopts a local stream at all.
+    [[nodiscard]] bool prepareAdoption() UBIQUITTY_REQUIRES(modelLockRole);
+
     /// Installs an already-open stream, consuming ownership only on success.
     ///
     /// A null stream is refused without changing the active stream or running
     /// installation hooks. A nonnull stream explicitly replaces the active owner.
-    /// The caller holds the model lock: the stream claims the model's replies.
+    /// Installing sizes the stream's window and subscribes to its process
+    /// edges, so it reads no model and runs without the model lock;
+    /// ``prepareAdoption()`` claims the model first.
     ///
     /// - Parameter stream: The endpoint to own, returned intact on refusal.
     /// - Returns: Success, or the exact refused owner; null is never installation.
-    [[nodiscard]] std::expected<void, std::unique_ptr<PAL::Stream>> adoptStream(std::unique_ptr<PAL::Stream> stream) UBIQUITTY_REQUIRES(modelLockRole);
+    [[nodiscard]] std::expected<void, std::unique_ptr<PAL::Stream>> adoptStream(std::unique_ptr<PAL::Stream> stream);
 
     /// Subscribes to the stream's fork/exec/exit edge, so a tree that changed
     /// under a steady foreground still re-walks.

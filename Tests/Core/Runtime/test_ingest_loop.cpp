@@ -733,6 +733,7 @@ TEST(testReportedDirectorySuppressesQuietDirectorySample)
     auto stream = Ubiquitty::PAL::openPTY(arguments);
     REQUIRE(stream != nullptr);
     const bool hasTreeEdges = stream->process().deliversTreeEdges();
+    REQUIRE(runtime.prepareAdoption());
     REQUIRE(runtime.adoptStream(std::move(stream)).has_value());
     if (!hasTreeEdges) {
         CHECK_EQ(runtime.directorySampleMilliseconds(), 0);
@@ -1043,6 +1044,7 @@ TEST(testAPipelinedPauseOnAPassBoundaryDeliversBeforeTheBurstEnds)
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> loopEndpoint = stream->duplicateAsPollableStream();
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> floodEndpoint = stream->duplicateAsPollableStream();
     REQUIRE(loopEndpoint != nullptr && floodEndpoint != nullptr);
+    REQUIRE(runtime.prepareAdoption());
     auto adoption = runtime.adoptStream(std::move(stream));
     REQUIRE(adoption.has_value());
 
@@ -1126,6 +1128,7 @@ TEST(testATimedPipelinePauseReleasesAHeldFrameBeforeTheBurstEnds)
     auto loopEndpoint = stream->duplicateAsPollableStream();
     auto floodEndpoint = stream->duplicateAsPollableStream();
     REQUIRE(loopEndpoint != nullptr && floodEndpoint != nullptr);
+    REQUIRE(runtime.prepareAdoption());
     REQUIRE(runtime.adoptStream(std::move(stream)).has_value());
 
     TimedPausedDrainHost host;
@@ -1197,6 +1200,7 @@ TEST(testAHeldFrameIsAnnouncedOnTheRulesScheduleWhileADeliveryIsHeld)
     auto stream = std::make_unique<Ubiquitty::PAL::PipeStream>(std::move(readEnd));
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> loopEndpoint = stream->duplicateAsPollableStream();
     REQUIRE(loopEndpoint != nullptr);
+    REQUIRE(runtime.prepareAdoption());
     auto adoption = runtime.adoptStream(std::move(stream));
     REQUIRE(adoption.has_value());
 
@@ -1251,6 +1255,7 @@ TEST(testALoopThatStopsReleasesTheFrameTheRuleHolds)
     auto stream = std::make_unique<Ubiquitty::PAL::PipeStream>(std::move(readEnd));
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> loopEndpoint = stream->duplicateAsPollableStream();
     REQUIRE(loopEndpoint != nullptr);
+    REQUIRE(runtime.prepareAdoption());
     auto adoption = runtime.adoptStream(std::move(stream));
     REQUIRE(adoption.has_value());
 
@@ -1539,7 +1544,7 @@ ShapedFloodOutcome runShapedFlood(Ubiquitty::PAL::ReadShape shape, FramePacing p
     auto stream = std::make_unique<Ubiquitty::PAL::PrefilledStream>(std::move(file), shape);
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> loopEndpoint = stream->duplicateAsPollableStream();
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> floodEndpoint = stream->duplicateAsPollableStream();
-    if (!loopEndpoint || !floodEndpoint || !runtime.adoptStream(std::move(stream)).has_value())
+    if (!loopEndpoint || !floodEndpoint || !runtime.prepareAdoption() || !runtime.adoptStream(std::move(stream)).has_value())
         return outcome;
 
     SlowParseDrainHost host(pacing);
@@ -1664,6 +1669,7 @@ TEST(testPassesThatEachEndAtAWouldBlockHandAFastWriterToTheReader)
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> loopEndpoint = stream->duplicateAsPollableStream();
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> floodEndpoint = stream->duplicateAsPollableStream();
     REQUIRE(loopEndpoint != nullptr && floodEndpoint != nullptr);
+    REQUIRE(runtime.prepareAdoption());
     REQUIRE(runtime.adoptStream(std::move(stream)).has_value());
 
     LockOnlyDrainHost host;
@@ -1744,6 +1750,7 @@ TEST(testAStarvedWritersFloodKeepsTakingFramesAtTheInterval)
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> loopEndpoint = stream->duplicateAsPollableStream();
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> floodEndpoint = stream->duplicateAsPollableStream();
     REQUIRE(loopEndpoint != nullptr && floodEndpoint != nullptr);
+    REQUIRE(runtime.prepareAdoption());
     REQUIRE(runtime.adoptStream(std::move(stream)).has_value());
 
     StarvedWriterDrainHost host;

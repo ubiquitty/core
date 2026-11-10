@@ -107,12 +107,12 @@ void TerminalRuntime::init(const RuntimeInitParameters& parameters)
     publishReads(initial, modelTerminal());
 }
 
-bool TerminalRuntime::launch(const LaunchCommand& command, const PAL::TerminalIdentity& identity)
+TerminalRuntime::LaunchReadiness TerminalRuntime::prepareLaunch(const LaunchCommand& command)
 {
     if (!isLocalStreamEnabled())
-        return false;
+        return LaunchReadiness::Refused;
     if (m_stream)
-        return true;
+        return LaunchReadiness::StreamOwned;
     // Before the open, so a session whose PTY refused still answers for the
     // launch it was given rather than for the default.
     m_doesSessionEndWithChild = command.sessionLifetime() == SessionLifetime::EndsWithChild;
@@ -129,10 +129,23 @@ bool TerminalRuntime::launch(const LaunchCommand& command, const PAL::TerminalId
     // The runtime that reads a program's stream answers its queries, even
     // on a terminal that last held a host's picture.
     claimRepliesBeforeIngest();
+    return LaunchReadiness::Ready;
+}
+
+bool TerminalRuntime::openLaunchStream(const LaunchCommand& command, const PAL::TerminalIdentity& identity)
+{
     m_stream = PAL::openPTY(command.arguments(), { .initialDirectory = command.initialDirectory(), .characterLocalePolicy = command.characterLocalePolicy(), .identity = identity, .argument0Style = command.argument0Style(), .sessionRecord = command.sessionRecord(), .environmentOverrides = command.environmentOverrides() });
     handStreamItsWindowSize();
     attachProcessTreeNotifier();
     return m_stream != nullptr;
+}
+
+bool TerminalRuntime::prepareAdoption()
+{
+    if (!isLocalStreamEnabled())
+        return false;
+    claimRepliesBeforeIngest();
+    return true;
 }
 
 std::expected<void, std::unique_ptr<PAL::Stream>> TerminalRuntime::adoptStream(std::unique_ptr<PAL::Stream> stream)
@@ -140,7 +153,6 @@ std::expected<void, std::unique_ptr<PAL::Stream>> TerminalRuntime::adoptStream(s
     if (!stream || !isLocalStreamEnabled())
         return std::unexpected(std::move(stream));
     m_hasProcessWalk = false;
-    claimRepliesBeforeIngest();
     m_stream = std::move(stream);
     handStreamItsWindowSize();
     attachProcessTreeNotifier();

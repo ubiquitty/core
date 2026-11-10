@@ -4635,6 +4635,7 @@ TEST(aHostPaneTitlesItsProcessExactlyAsALocalPaneDoes)
     stream->foregroundGroup = 4101;
     // A runtime this thread drives alone, with no lock of its own.
     ownModelOnTestThread();
+    REQUIRE(runtime.prepareAdoption());
     auto adoption = runtime.adoptStream(std::move(stream));
     REQUIRE(adoption.has_value());
     ModelLockHost drainHost;
