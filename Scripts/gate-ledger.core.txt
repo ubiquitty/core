@@ -24,7 +24,6 @@ budget per-tick-waits 10
 budget plain-model-lock-holds 21
 budget thread-safety-escapes 21
 budget thread-safety-escapes-tests 97
-raised model-lock-holds 194 195 the ingest loop holds the model lock for the erase redraw's quiet check during a live resize
 raised thread-safety-escapes-tests 94 97 core#57's three erase-redraw tests claim the model they drive on their one thread
 tool check-daemon-replacement.py needs the opt-in acceptance binary and replaces private daemons, so it is run by hand as Tests/README.md describes
 tool check-sync-transport.py needs the opt-in acceptance binary and a disposable fixture account or container, so it is run by hand as Tests/README.md describes
