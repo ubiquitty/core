@@ -19,14 +19,17 @@ It counts, each against its own ledger budget, two-sided: a new one fails, and
 one removed must lower the budget in the same commit.
 
 - `model-lock-holds`: every acquisition of a model lock in a function body of
-  Source/Core/Runtime/TerminalSession.h and Source/Core/Runtime/WorkspaceSession.h,
-  private members and the members of nested types included, and every call of
-  a tmux pane's `withTermLocked` under Source/. An acquisition is a
-  `ModelLockHold`, however it is spelled or held (`= ModelLockHold(`,
-  `ModelLockHold const`, a `std::optional` of one), `lockForRead`,
-  `tryLockForRead`, a `ModelReadScope`, a drain host's `lockModel`, a
-  `lockForDrain`, a plain std lock, or a `lock()`/`try_lock()` on a model lock
-  however it is reached.
+  every file under Source/ that names the lock, private members and the
+  members of nested types included, and every call of a tmux pane's
+  `withTermLocked`. An acquisition is a `ModelLockHold`, however it is
+  spelled or held (`= ModelLockHold(`, `ModelLockHold const`, a
+  `std::optional` of one), `lockForRead`, `tryLockForRead`, a
+  `ModelReadScope`, a drain host's `lockModel`, a `lockForDrain`, a plain std
+  lock, or a `lock()`/`try_lock()` on a model lock however it is reached.
+- `frame-decision-holds`: those acquisitions in the frame decision's own
+  members (`takeFrame`, `frameHold`, `publishedFrameHold`, `modelFrameHold`,
+  `shouldSkipLiveReadForSaturation`) and in `framePresentationState`, pinned
+  apart, so a hold removed elsewhere cannot pay for one there.
 - `per-tick-waits`: the entries of Scripts/frame-path-blocking.txt marked
   `waits`, the per-tick calls that still wait on the lock and so carry no
   `UBIQUITTY_NONBLOCKING`.
@@ -34,11 +37,14 @@ one removed must lower the budget in the same commit.
   `std::lock_guard`) over a model lock in a first-party header or source. It
   takes the lock and grants the analysis nothing, which is the spelling a
   regression reaches for first.
-- `thread-safety-escapes`: every place the analysis is told rather than shown:
-  `UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS`, `UBIQUITTY_ASSERTS_CAPABILITY`, a
-  lambda that declares `UBIQUITTY_REQUIRES` (it is reached through a pointer
-  the analysis cannot follow), and a test's `ownModelOnTestThread()`, under
-  Source/ and Tests/, outside the files that implement the lock.
+- `thread-safety-escapes` under Source/ and `thread-safety-escapes-tests`
+  under Tests/, apart, so a test claim removed cannot pay for an escape in
+  the product: every place the analysis is told rather than shown,
+  `UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS`, a function declared
+  `UBIQUITTY_ASSERTS_CAPABILITY` and every call of one (a test's
+  `ownModelOnTestThread()` among them), and a lambda that declares
+  `UBIQUITTY_REQUIRES` (it is reached through a pointer the analysis cannot
+  follow), outside the files that implement the lock.
 
 It refuses outright:
 
@@ -47,15 +53,18 @@ It refuses outright:
   `UBIQUITTY_NONBLOCKING` nor listed in Scripts/frame-path-blocking.txt, and an
   entry there that names no per-tick call, names a marked one, or names no kind
   or no reason;
-- a branch in the frame decision (`takeFrame` and the declines it asks:
-  `frameHold`, `shouldSkipLiveReadForSaturation`) whose condition reads a
-  selection: the frame a view presents never depends on what it selects;
+- a branch in the frame decision whose condition reads a selection: the frame
+  a view presents never depends on what it selects;
 - a toolchain rule that lets `UBIQUITTY_OWNERSHIP_ANALYSIS` stand without the
   function-effect analysis: the `UBIQUITTY_NONBLOCKING` this gate takes as
   proof is proof only where Clang's -Wfunction-effects checked it.
 
-What it cannot see: a lock reached through an alias it does not name, and
-Swift. It reads text, not types.
+What it cannot see: it reads text, not types. An acquisition through a name
+for the lock it does not spell (a `ModelLock&` parameter named otherwise,
+locked by a spelling none of the above), one in a file that never names the
+lock, one reached through a function pointer, and Swift. The cadence test's
+decision counter is what catches a lock the frame decision takes by any of
+those routes: it counts the lock's own acquisitions around each decision.
 
     ./Scripts/check-model-lock-holds.py
     ./Scripts/check-model-lock-holds.py --self-test
@@ -80,18 +89,27 @@ SOURCE_ROOTS = ("Source",)
 ESCAPE_ROOTS = ("Source", "Tests")
 SOURCE_SUFFIXES = (".h", ".cpp", ".mm")
 
-#: The files that hold model-lock acquisitions a frontend reaches.
-HOLD_FILES = (SESSION, WORKSPACE)
+#: A file that names the model lock, whose function bodies are counted.
+NAMES_MODEL_LOCK = re.compile(r"\b(?:ModelLock|ModelLockHold|ModelReadScope|modelLockRole|lockModel|lockForDrain|lockForRead"
+                              r"|tryLockForRead|withTermLocked|modelLockPointer|m_activeLock|m_modelLock)\b")
 
 #: The files that implement the lock and its escape, which name it without
 #: holding it as a frontend does.
-LOCK_DEFINITIONS = {"Source/Core/ModelLock.h", "Source/Base/ThreadSafety.h"}
+LOCK_DEFINITIONS = {"Source/Core/ModelLock.h", "Source/Core/ModelLock.cpp", "Source/Base/ThreadSafety.h"}
 
 #: The ledger budgets this gate holds the tree to.
-BUDGETS = ("model-lock-holds", "per-tick-waits", "plain-model-lock-holds", "thread-safety-escapes")
+BUDGETS = ("model-lock-holds", "frame-decision-holds", "per-tick-waits", "plain-model-lock-holds", "thread-safety-escapes",
+           "thread-safety-escapes-tests")
 
 #: The frame decision: the per-tick answer and the declines it asks.
-FRAME_DECISION = ("takeFrame", "frameHold", "shouldSkipLiveReadForSaturation")
+FRAME_DECISION = ("takeFrame", "frameHold", "publishedFrameHold", "modelFrameHold", "shouldSkipLiveReadForSaturation")
+
+#: The members whose acquisitions the pinned frame-decision budget counts: the
+#: decision, and the frame clock's presentation read every tick asks.
+FRAME_DECISION_HOLDS = FRAME_DECISION + ("framePresentationState",)
+
+#: Where each escape budget counts.
+ESCAPE_BUDGETS = (("thread-safety-escapes", "Source"), ("thread-safety-escapes-tests", "Tests"))
 
 #: The kinds an allowlist entry names.
 WAITS = "waits"
@@ -124,8 +142,13 @@ ESCAPES = (
     ("analysis escape(s)", re.compile(r"\bUBIQUITTY_NO_THREAD_SAFETY_ANALYSIS\b")),
     ("asserted capabilit(ies)", re.compile(r"\bUBIQUITTY_ASSERTS_CAPABILITY\b")),
     ("lambda(s) declaring a requirement", re.compile(r"\]\s*\([^()]*\)\s*(?:mutable\s+)?(?:noexcept\s+)?UBIQUITTY_REQUIRES\b")),
-    ("test model-ownership claim(s)", re.compile(r"\bownModelOnTestThread\s*\(\s*\)\s*;")),
 )
+
+#: A function declared to assert the capability: its name is group 1.
+ASSERTING_DECLARATION = re.compile(r"\b(\w+)\s*\([^()]*\)\s*(?:const\s*)?(?:noexcept\s*)?UBIQUITTY_ASSERTS_CAPABILITY\b")
+
+#: The label a call of an asserting function is counted under.
+ASSERTING_CALLS = "call(s) of an asserting function"
 
 NONBLOCKING = "UBIQUITTY_NONBLOCKING"
 
@@ -339,22 +362,29 @@ def judge(root, budgets):
     ticks = per_tick_calls(blanked(cadence_path.read_text(encoding="utf-8", errors="replace"))) if cadence_path.is_file() else set()
     counts = {}
 
-    # Every acquisition a frontend's calls reach, wherever in the files it sits.
+    # Every acquisition of the model lock, in every file under Source/ that
+    # names it, wherever in the file it sits.
     holds = []
-    for relative in HOLD_FILES:
-        path = root / relative
-        if path.is_file():
-            code = session_code if relative == SESSION else blanked(path.read_text(encoding="utf-8", errors="replace"))
-            holds += [(f"{relative.name}: {name}", count) for name, count in holds_in(code)]
     for path, relative in source_files(root, SOURCE_ROOTS):
-        code = blanked(path.read_text(encoding="utf-8", errors="replace"))
+        if relative in LOCK_DEFINITIONS:
+            continue
+        code = session_code if relative == SESSION.as_posix() else blanked(path.read_text(encoding="utf-8", errors="replace"))
+        if NAMES_MODEL_LOCK.search(code):
+            holds += [(f"{relative}: {name}", count) for name, count in holds_in(code)]
         runs = len(TERM_LOCKED_RUN.findall(code))
         if runs:
             holds.append((f"{relative}: withTermLocked", runs))
     counts["holds-by-function"] = holds
     counts["model-lock-holds"] = sum(count for _, count in holds)
-    findings += against(str(SESSION), counts["model-lock-holds"], budgets.get("model-lock-holds"),
-        "model-lock acquisition(s) a frontend's calls reach")
+    findings += against("Source", counts["model-lock-holds"], budgets.get("model-lock-holds"),
+        "model-lock acquisition(s) under Source/")
+
+    # The frame decision's own acquisitions, pinned apart.
+    decision_holds = sum(len(HOLD.findall(session_code[member.body_start:member.body_end]))
+                         for member in members(session_code, "TerminalSession") if member.name in FRAME_DECISION_HOLDS)
+    counts["frame-decision-holds"] = decision_holds
+    findings += against(str(SESSION), decision_holds, budgets.get("frame-decision-holds"),
+        "model-lock acquisition(s) in the frame decision and the frame clock's presentation read")
 
     # Per-tick calls: marked, or listed with a kind and a reason.
     waiting = sorted(name for name, (kind, _) in allowlist.items() if kind == WAITS)
@@ -394,18 +424,25 @@ def judge(root, budgets):
     findings += against("Source", plain, budgets.get("plain-model-lock-holds"),
         "std lock(s) over a model lock, which grant the thread-safety analysis nothing")
 
-    # Every place the analysis is told rather than shown.
-    escapes = {label: 0 for label, _ in ESCAPES}
-    for path, relative in source_files(root, ESCAPE_ROOTS):
-        if relative in LOCK_DEFINITIONS:
-            continue
-        code = blanked(path.read_text(encoding="utf-8", errors="replace"))
-        for label, pattern in ESCAPES:
-            escapes[label] += len(pattern.findall(code))
-    counts["escapes-by-kind"] = escapes
-    counts["thread-safety-escapes"] = sum(escapes.values())
-    findings += against("Source", counts["thread-safety-escapes"], budgets.get("thread-safety-escapes"),
-        "thread-safety escape(s) (" + ", ".join(f"{count} {label}" for label, count in escapes.items()) + ")")
+    # Every place the analysis is told rather than shown, under each root apart.
+    texts = {relative: blanked(path.read_text(encoding="utf-8", errors="replace")) for path, relative in source_files(root, ESCAPE_ROOTS)}
+    asserting = {match.group(1) for code in texts.values() for match in ASSERTING_DECLARATION.finditer(code)}
+    asserting_call = re.compile(r"\b(?:" + "|".join(sorted(map(re.escape, asserting))) + r")\s*\(") if asserting else None
+    for budget, directory in ESCAPE_BUDGETS:
+        escapes = {label: 0 for label, _ in ESCAPES}
+        escapes[ASSERTING_CALLS] = 0
+        for relative, code in texts.items():
+            if relative in LOCK_DEFINITIONS or not relative.startswith(directory + "/"):
+                continue
+            for label, pattern in ESCAPES:
+                escapes[label] += len(pattern.findall(code))
+            if asserting_call:
+                declared = {match.start(1) for match in ASSERTING_DECLARATION.finditer(code)}
+                escapes[ASSERTING_CALLS] += sum(1 for match in asserting_call.finditer(code) if match.start() not in declared)
+        counts[budget] = sum(escapes.values())
+        counts[budget + " by kind"] = escapes
+        findings += against(directory, counts[budget], budgets.get(budget),
+            f"thread-safety escape(s) under {directory}/ (" + ", ".join(f"{count} {label}" for label, count in escapes.items()) + ")")
 
     # The nonblocking mark is proof only where the analysis that checks it runs.
     toolchain = root / TOOLCHAIN
@@ -441,9 +478,10 @@ class ModelLockHolds(Gate):
             for location, message in findings:
                 self.finding(location, message)
             return self.failed("model-lock finding(s)", [message for _, message in findings])
-        return self.ok(f"{counts['model-lock-holds']} model-lock acquisition(s), {counts['per-tick-waits']} per-tick call(s)"
-                       f" that wait and {counts['per-tick-nowait']} that do not, {counts['plain-model-lock-holds']} plain std"
-                       f" lock(s), {counts['thread-safety-escapes']} analysis escape(s)")
+        return self.ok(f"{counts['model-lock-holds']} model-lock acquisition(s), {counts['frame-decision-holds']} in the frame"
+                       f" decision, {counts['per-tick-waits']} per-tick call(s) that wait and {counts['per-tick-nowait']} that do"
+                       f" not, {counts['plain-model-lock-holds']} plain std lock(s), {counts['thread-safety-escapes']} analysis"
+                       f" escape(s) under Source/ and {counts['thread-safety-escapes-tests']} under Tests/")
 
     def selfTest(self):
         """Each shape, planted into a tree the gate passes, fails it."""
@@ -502,6 +540,8 @@ private:
         return FrameHold::None;
     }
 
+    void assertModelLockHeld() const UBIQUITTY_ASSERTS_CAPABILITY(modelLockRole) { }
+
     struct LocalPaneLink final : Session::PaneLink {
         void pollEvents(std::uint64_t now) override
         {
@@ -541,6 +581,18 @@ void tick()
 }
 """
 
+FIXTURE_SOLE_MODEL_THREAD = """
+inline void ownModelOnTestThread() UBIQUITTY_ASSERTS_CAPABILITY(Ubiquitty::modelLockRole) { }
+"""
+
+FIXTURE_RUNTIME_TEST = """
+TEST(aRuntimeOnItsOwnThread)
+{
+    ownModelOnTestThread();
+    runtime.prepareAdoption();
+}
+"""
+
 FIXTURE_ALLOWLIST = """# member kind reason
 takeEventFlags waits polls the pane link under the model lock
 updateSelectionAfterOutput nowait try-locks the model to judge the selection after output
@@ -552,13 +604,19 @@ if(UBIQUITTY_OWNERSHIP_ANALYSIS AND NOT UBIQUITTY_HAS_FUNCTION_EFFECTS)
 endif()
 """
 
-FIXTURE_BUDGETS = {"model-lock-holds": 3, "per-tick-waits": 1, "plain-model-lock-holds": 0, "thread-safety-escapes": 0}
+FIXTURE_BUDGETS = {"model-lock-holds": 3, "frame-decision-holds": 0, "per-tick-waits": 1, "plain-model-lock-holds": 0,
+                   "thread-safety-escapes": 1, "thread-safety-escapes-tests": 2}
+
+#: Where the fixture's test files sit.
+FIXTURE_SOLE_MODEL_THREAD_PATH = pathlib.Path("Tests/SoleModelThread.h")
+FIXTURE_RUNTIME_TEST_PATH = pathlib.Path("Tests/Core/Runtime/test_runtime.cpp")
 
 
 def write_fixture(root):
     for relative, text in ((SESSION, FIXTURE_SESSION), (WORKSPACE, FIXTURE_WORKSPACE),
                            (pathlib.Path("Source/Core/Runtime/TmuxControlHost.cpp"), FIXTURE_TMUX_HOST),
-                           (CADENCE, FIXTURE_CADENCE), (ALLOWLIST, FIXTURE_ALLOWLIST), (TOOLCHAIN, FIXTURE_TOOLCHAIN)):
+                           (CADENCE, FIXTURE_CADENCE), (ALLOWLIST, FIXTURE_ALLOWLIST), (TOOLCHAIN, FIXTURE_TOOLCHAIN),
+                           (FIXTURE_SOLE_MODEL_THREAD_PATH, FIXTURE_SOLE_MODEL_THREAD), (FIXTURE_RUNTIME_TEST_PATH, FIXTURE_RUNTIME_TEST)):
         (root / relative).parent.mkdir(parents=True, exist_ok=True)
         (root / relative).write_text(text, encoding="utf-8")
 
@@ -609,6 +667,26 @@ def plant_analysis_escape(root):
     """A hold hidden from the analysis instead of taken through ModelLockHold."""
     replace_in(root / SESSION, "    std::uint32_t takeEventFlags()\n",
                "    std::uint32_t takeEventFlags() UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS\n")
+
+
+def plant_decision_swap(root):
+    """A hold added to the frame decision, paid for by one removed elsewhere."""
+    replace_in(root / SESSION, "        const ModelLockHold hold(*m_activeLock);\n        return 0;\n", "        return 0;\n")
+    replace_in(root / SESSION, "        return FrameHold::None;\n", "        const ModelLockHold hold(*m_activeLock);\n        return FrameHold::None;\n")
+
+
+def plant_helper_elsewhere(root):
+    """The lock handed to a helper in another file, which takes it there."""
+    path = root / "Source/Core/Selection/TerminalSelection.cpp"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("OutputUpdate updateAfterOutput(Session& selection, ModelLock& lock)\n"
+                    "{\n    const ModelLockHold hold(lock);\n    return {};\n}\n", encoding="utf-8")
+
+
+def plant_escape_paid_by_a_test(root):
+    """An escape in the product, paid for by a test claim removed."""
+    replace_in(root / FIXTURE_RUNTIME_TEST_PATH, "    ownModelOnTestThread();\n", "")
+    replace_in(root / SESSION, "    std::uint32_t takeEventFlags()\n", "    std::uint32_t takeEventFlags() UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS\n")
 
 
 def plant_toolchain_without_effects(root):
@@ -665,6 +743,13 @@ PLANTS = (
                       "        auto hook = [](void* context) UBIQUITTY_REQUIRES(modelLockRole) { };\n        return FrameHold::None;\n"),
      "lambda(s) declaring a requirement"),
     ("an ownership analysis that stands without function effects", plant_toolchain_without_effects, "-Wfunction-effects"),
+    ("a hold in the frame decision paid for by one removed elsewhere", plant_decision_swap, "in the frame decision"),
+    ("a lock handed to a helper in another file", plant_helper_elsewhere, "model-lock acquisition(s) under Source/"),
+    ("a call of an asserting function",
+     plant_in_session("        const ModelLockHold hold(*m_activeLock);\n        return 0;\n",
+                      "        const ModelLockHold hold(*m_activeLock);\n        assertModelLockHeld();\n        return 0;\n"),
+     ASSERTING_CALLS),
+    ("an escape in the product paid for by a test claim removed", plant_escape_paid_by_a_test, "under Source/"),
 )
 
 

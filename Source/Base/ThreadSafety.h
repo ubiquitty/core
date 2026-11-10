@@ -61,7 +61,8 @@
 /// Marks a function that returns only when the calling thread holds the
 /// capability, so the analysis takes it as held after the call. The analysis
 /// takes the function's word for it; Scripts/check-model-lock-holds.py counts
-/// every one outside the files that implement the model lock.
+/// every such function and every call of one outside the files that implement
+/// the model lock.
 #define UBIQUITTY_ASSERTS_CAPABILITY(x) UBIQUITTY_THREAD_ANNOTATION(assert_capability(x))
 
 /// Marks a function the thread-safety analysis does not check: the body of a
@@ -74,8 +75,10 @@
 
 /// Marks a function Clang's function-effect analysis proves cannot block: it
 /// takes no lock, waits on nothing, allocates nothing and calls only functions
-/// that are themselves nonblocking. A frontend's per-tick calls carry it, so a
-/// change that makes one wait on the parser does not compile.
+/// that are themselves nonblocking. A per-tick call a frontend makes carries
+/// it, or is listed in Scripts/frame-path-blocking.txt with the wait it still
+/// has; on a function that carries it, a change that makes it wait on the
+/// parser does not compile.
 #if defined(__has_cpp_attribute)
 #if __has_cpp_attribute(clang::nonblocking)
 #define UBIQUITTY_NONBLOCKING [[clang::nonblocking]]
