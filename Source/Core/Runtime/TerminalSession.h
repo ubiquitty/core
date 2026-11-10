@@ -5008,7 +5008,7 @@ public:
     /// between them on its own. Takes the model lock for the block's stamp.
     /// A block this check expires is published under that lock, and the host
     /// is woken to its screen change once the lock is let go.
-    [[nodiscard]] bool shouldWithholdFrame(Ticks nowTicks) UBIQUITTY_EXCLUDES(modelLockRole) { return frameHold(nowTicks) != FrameDecline::None; }
+    [[nodiscard]] bool shouldWithholdFrame(Ticks nowTicks) UBIQUITTY_EXCLUDES(modelLockRole) { return frameHold(nowTicks).decline != FrameDecline::None; }
 
     /// The capture's recheck of ``shouldWithholdFrame``, under the model lock
     /// the caller holds for the capture.
@@ -6862,7 +6862,10 @@ public:
     ///    ``FrameRoute::Captured``.
     /// 3. With none waiting, a view that is not being resized is declined
     ///    while the coherence rule, an open synchronized update or an erase's
-    ///    arriving redraw holds the frame (``shouldWithholdFrame``).
+    ///    arriving redraw holds the frame (``shouldWithholdFrame``). An update
+    ///    or an erase holds it for a budget, which the supply carries
+    ///    (``presentationHoldTicksRemaining``); the rule's release wakes the
+    ///    view.
     /// 4. A view that does not keep search live is declined while a saturated
     ///    drain's next capture is due inside the publish window
     ///    (``shouldSkipLiveReadForSaturation``).
@@ -6874,8 +6877,8 @@ public:
     ///
     /// - Parameters:
     ///   - demand: The view's facts at this tick.
-    ///   - supply: Receives the route, the reason for a decline, and a
-    ///     captured frame's selection.
+    ///   - supply: Receives the route, the reason for a decline and when to
+    ///     ask again, and a captured frame's selection.
     /// - Returns: The captured frame, with a reference the caller owns, on
     ///   ``FrameRoute::Captured``; null otherwise.
     [[nodiscard]] Rendering::FrameCapture* takeFrame(const FrameDemand& demand, FrameSupply& supply) UBIQUITTY_RETURNS_RETAINED UBIQUITTY_EXCLUDES(modelLockRole)
@@ -6890,7 +6893,10 @@ public:
             }
         }
         if (!demand.isResizing) {
-            supply.decline = frameHold(demand.nowTicks);
+            const FrameHold hold = frameHold(demand.nowTicks);
+            supply.decline = hold.decline;
+            if (supply.decline == FrameDecline::HeldByPresentation)
+                supply.askAgainTicks = std::max<std::uint32_t>(1, hold.askAgainTicks);
             if (supply.decline != FrameDecline::None)
                 return nullptr;
         }
@@ -6909,21 +6915,25 @@ public:
     /// open a synchronized update or erase the screen between the two. A view
     /// being resized is held only by an open update and by the redraw behind
     /// a whole-screen erase; any other view by everything
-    /// ``shouldWithholdCapture`` holds.
+    /// ``shouldWithholdCapture`` holds. Each of those holds for a budget, read
+    /// here from the model it judged, so the view knows when to ask again.
     ///
     /// - Parameters:
     ///   - terminal: The model, borrowed under the caller's lock.
     ///   - demand: The demand ``takeFrame`` answered.
-    /// - Returns: Why the read presents nothing, or ``FrameDecline::None``.
-    [[nodiscard]] FrameDecline liveReadDecline(Ubiquitty::Terminal& terminal, const FrameDemand& demand) UBIQUITTY_REQUIRES(modelLockRole)
+    /// - Returns: Why the read presents nothing, or ``FrameDecline::None``,
+    ///   and when to ask again.
+    [[nodiscard]] LiveReadAnswer liveReadDecline(Ubiquitty::Terminal& terminal, const FrameDemand& demand) UBIQUITTY_REQUIRES(modelLockRole)
     {
         const bool isHeld = demand.isResizing ? Modes::SyncOutput::shouldWithholdFrame(terminal, demand.nowTicks)
                                               : shouldWithholdCapture(terminal, demand.nowTicks);
-        if (isHeld)
-            return FrameDecline::BlockOpenUnderLock;
+        if (isHeld) {
+            const std::uint32_t budget = m_runtime->presentationHoldTicksRemaining(terminal, demand.nowTicks, PAL::monotonicMicros());
+            return { .decline = FrameDecline::BlockOpenUnderLock, .askAgainTicks = std::max<std::uint32_t>(1, budget) };
+        }
         if (demand.isResizing && isEraseRedrawArriving(terminal))
-            return FrameDecline::RedrawArriving;
-        return FrameDecline::None;
+            return { .decline = FrameDecline::RedrawArriving, .askAgainTicks = std::max<std::uint32_t>(1, m_runtime->eraseRedrawTicksRemaining(PAL::monotonicMicros())) };
+        return {};
     }
 
     /// Boundary frames replaced by a newer capture before a drain — the judder
@@ -9698,6 +9708,15 @@ private:
     FlagSink m_events;
     std::atomic<bool> m_frameReady { false };
 
+    /// A frame's hold and its budget, from one decision.
+    struct FrameHold {
+        /// What holds the frame, or ``FrameDecline::None``.
+        FrameDecline decline = FrameDecline::None;
+        /// Ticks until a presentation hold releases on its own; zero for any
+        /// other hold, whose release wakes the view.
+        std::uint32_t askAgainTicks = 0;
+    };
+
     /// What holds a view's frame off the glass, by the check
     /// ``shouldWithholdFrame`` and ``takeFrame`` share.
     ///
@@ -9706,12 +9725,17 @@ private:
     /// (``modelFrameHold(_:_:)``).
     ///
     /// - Parameter nowTicks: Now, on the 60 Hz monotonic clock.
-    /// - Returns: The hold, or ``FrameDecline::None``.
-    [[nodiscard]] FrameDecline frameHold(Ticks nowTicks) UBIQUITTY_EXCLUDES(modelLockRole)
+    /// - Returns: The hold, or ``FrameDecline::None``, and the hold's budget.
+    [[nodiscard]] FrameHold frameHold(Ticks nowTicks) UBIQUITTY_EXCLUDES(modelLockRole)
     {
         const std::uint32_t nowMicros = PAL::monotonicMicros();
-        if (const std::optional<FrameDecline> published = publishedFrameHold(nowMicros))
-            return *published;
+        if (const std::optional<FrameDecline> published = publishedFrameHold(nowMicros)) {
+            // Published, the presentation hold is the erase's alone, whose
+            // budget is the runtime's own; the coherence rule's release wakes
+            // the view.
+            const bool isPresentationHeld = *published == FrameDecline::HeldByPresentation;
+            return { .decline = *published, .askAgainTicks = isPresentationHeld ? m_runtime->presentationHoldTicksRemaining(nowMicros) : 0 };
+        }
         return modelFrameHold(nowTicks, nowMicros);
     }
 
@@ -9745,20 +9769,27 @@ private:
     /// - Parameters:
     ///   - nowTicks: Now, on the 60 Hz monotonic clock.
     ///   - nowMicros: Now, in monotonic microseconds.
-    /// - Returns: The hold, or ``FrameDecline::None``.
-    [[nodiscard]] FrameDecline modelFrameHold(Ticks nowTicks, std::uint32_t nowMicros) UBIQUITTY_EXCLUDES(modelLockRole)
+    /// - Returns: The hold, or ``FrameDecline::None``, and its budget, read
+    ///   under the same hold of the lock.
+    [[nodiscard]] FrameHold modelFrameHold(Ticks nowTicks, std::uint32_t nowMicros) UBIQUITTY_EXCLUDES(modelLockRole)
     {
         CaptureWithhold withhold;
+        std::uint32_t budget = 0;
         {
             const ModelLockHold hold(*m_activeLock);
-            if (auto* terminal = modelTerm())
+            if (auto* terminal = modelTerm()) {
                 withhold = withholdCapture(*terminal, nowTicks);
-            else
+                if (withhold.isHeld)
+                    budget = m_runtime->presentationHoldTicksRemaining(*terminal, nowTicks, nowMicros);
+            } else {
                 withhold.isHeld = m_runtime->shouldWithholdPresentation(nowMicros);
+                if (withhold.isHeld)
+                    budget = m_runtime->presentationHoldTicksRemaining(nowMicros);
+            }
         }
         if (withhold.didExpireBlock)
             signalDrain();
-        return withhold.isHeld ? FrameDecline::HeldByPresentation : FrameDecline::None;
+        return { .decline = withhold.isHeld ? FrameDecline::HeldByPresentation : FrameDecline::None, .askAgainTicks = budget };
     }
 
     /// Captures the completed boundary frame into the slot's free buffer.

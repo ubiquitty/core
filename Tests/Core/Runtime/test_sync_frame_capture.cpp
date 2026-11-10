@@ -2975,13 +2975,14 @@ TEST(aFrameTheRuleHoldsIsDeclinedUnlessTheViewIsResizing)
     const FrameAsk held = askForFrame(*fixture.session, {});
     CHECK(held.supply.route == Runtime::FrameRoute::Declined);
     CHECK(held.supply.decline == Runtime::FrameDecline::HeldByCoherence);
+    CHECK_MSG(held.supply.askAgainTicks == 0, "the rule's release wakes the view, so it waits out no budget");
     CHECK(held.frame == nullptr);
     CHECK(fixture.session->shouldWithholdFrame(Ticks(0)));
 
     const FrameAsk resizing = askForFrame(*fixture.session, { .isResizing = true });
     CHECK(resizing.supply.route == Runtime::FrameRoute::LiveRead);
     fixture.session->lockForRead();
-    CHECK(fixture.session->liveReadDecline(*fixture.session->terminal(), { .isResizing = true }) == Runtime::FrameDecline::None);
+    CHECK(fixture.session->liveReadDecline(*fixture.session->terminal(), { .isResizing = true }).decline == Runtime::FrameDecline::None);
     fixture.session->unlockForRead();
 }
 
@@ -3005,9 +3006,49 @@ TEST(anOpenSynchronizedUpdateHoldsTheTickAndTheLiveRead)
     const FrameAsk resizing = askForFrame(*pane.fixture.session, { .isResizing = true });
     REQUIRE(resizing.supply.route != Runtime::FrameRoute::Captured);
     pane.fixture.session->lockForRead();
-    CHECK(pane.fixture.session->liveReadDecline(*pane.terminal, { .isResizing = true }) == Runtime::FrameDecline::BlockOpenUnderLock);
-    CHECK(pane.fixture.session->liveReadDecline(*pane.terminal, {}) == Runtime::FrameDecline::BlockOpenUnderLock);
+    CHECK(pane.fixture.session->liveReadDecline(*pane.terminal, { .isResizing = true }).decline == Runtime::FrameDecline::BlockOpenUnderLock);
+    CHECK(pane.fixture.session->liveReadDecline(*pane.terminal, {}).decline == Runtime::FrameDecline::BlockOpenUnderLock);
     pane.fixture.session->unlockForRead();
+}
+
+// A tick an open synchronized update holds says when the update's budget runs
+// out, from the stamp its first check put on it, and so does the live read
+// under its lock, resizing or not: the view asks again then, on no timer of
+// its own.
+TEST(aHeldTickSaysWhenTheUpdatesBudgetRunsOut)
+{
+    FloodedPane pane(6, 20);
+    // A clock past its first tick, where a stamp is told from none.
+    Ubiquitty::PAL::s_testMicroseconds += 10'000'000;
+    pane.fixture.stream->readMicroseconds = 10'000;
+    pane.fixture.stream->toRead += "\x1b[?2026h\x1b[Hinside the block";
+    static_cast<void>(pane.fixture.session->drain());
+    REQUIRE(pane.terminal->modes.syncOutput);
+    REQUIRE(pane.fixture.session->isDrainSaturated());
+    static_cast<void>(pane.fixture.session->takeSyncFrame());
+
+    const FrameAsk first = askForFrame(*pane.fixture.session, { .nowTicks = PAL::monotonicTicks() });
+    REQUIRE(first.supply.decline == Runtime::FrameDecline::HeldByPresentation);
+    CHECK(first.supply.askAgainTicks >= 1);
+    // The test's thread is the drain's, and no drain runs between its passes.
+    const std::uint32_t stamp = pane.terminal->modes.syncOutputTouchTicks;
+    REQUIRE(stamp != 0);
+    constexpr std::uint32_t elapsed = 10;
+    constexpr std::uint32_t budget = Modes::SyncOutput::maxHoldTicks - elapsed + 1;
+    const Ticks later(stamp + elapsed);
+
+    const FrameAsk held = askForFrame(*pane.fixture.session, { .nowTicks = later });
+    CHECK(held.supply.decline == Runtime::FrameDecline::HeldByPresentation);
+    CHECK_EQ(held.supply.askAgainTicks, budget);
+
+    pane.fixture.session->lockForRead();
+    const Runtime::LiveReadAnswer underLock = pane.fixture.session->liveReadDecline(*pane.terminal, { .nowTicks = later });
+    const Runtime::LiveReadAnswer resizing = pane.fixture.session->liveReadDecline(*pane.terminal, { .nowTicks = later, .isResizing = true });
+    pane.fixture.session->unlockForRead();
+    CHECK(underLock.decline == Runtime::FrameDecline::BlockOpenUnderLock);
+    CHECK_EQ(underLock.askAgainTicks, budget);
+    CHECK(resizing.decline == Runtime::FrameDecline::BlockOpenUnderLock);
+    CHECK_EQ(resizing.askAgainTicks, budget);
 }
 
 // A saturated drain's tick that finds the slot empty inside the publish window
@@ -3023,6 +3064,7 @@ TEST(aSaturatedTickInsideThePublishWindowAwaitsTheNextCapture)
     const FrameAsk awaiting = askForFrame(*pane.fixture.session, {});
     CHECK(awaiting.supply.route == Runtime::FrameRoute::Declined);
     CHECK(awaiting.supply.decline == Runtime::FrameDecline::AwaitingCapture);
+    CHECK_MSG(awaiting.supply.askAgainTicks == 0, "the capture's publication wakes the view, so it waits out no budget");
     CHECK(askForFrame(*pane.fixture.session, { .keepsSearchLive = true }).supply.route == Runtime::FrameRoute::LiveRead);
 
     PAL::s_testMicroseconds += publishWindowMicroseconds;

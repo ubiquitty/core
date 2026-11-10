@@ -53,6 +53,14 @@ constexpr std::uint32_t foregroundProbeIntervalTicks = 3;
 // grid it was told, and a redraw for a width the grid no longer has wraps at
 // the old width, every row after the first shifted right by one.
 constexpr std::uint32_t windowSizeCoalesceMicros = 40000;
+// The 60 Hz ticks that cover `micros`: at least 1 for any wait, 0 for none.
+[[nodiscard]] constexpr std::uint32_t ticksCovering(std::uint32_t micros)
+{
+    if (micros == 0)
+        return 0;
+    return std::max<std::uint32_t>(1, (micros * 60 + 999999) / 1000000);
+}
+
 void captureDrainState(const Ubiquitty::Terminal&, std::uint32_t version, RuntimeSnapshot&);
 
 // The coherence rule's clock: monotonic microseconds that do not wrap, unlike
@@ -1568,10 +1576,7 @@ std::uint32_t TerminalRuntime::presentationHoldTicksRemaining(const Ubiquitty::T
 
 std::uint32_t TerminalRuntime::presentationHoldTicksRemaining(std::uint32_t nowMicros) const noexcept UBIQUITTY_NONBLOCKING
 {
-    const std::uint32_t eraseMicros = eraseHoldMicrosRemaining(nowMicros);
-    if (eraseMicros == 0)
-        return 0;
-    return std::max<std::uint32_t>(1, (eraseMicros * 60 + 999999) / 1000000);
+    return ticksCovering(eraseHoldMicrosRemaining(nowMicros));
 }
 
 bool TerminalRuntime::takeOwedPaint(Ticks nowTicks, std::uint32_t nowMicros)
@@ -1600,6 +1605,21 @@ int TerminalRuntime::owedPaintWaitMilliseconds(Ticks nowTicks, std::uint32_t now
 std::uint32_t TerminalRuntime::eraseHoldMicrosRemaining(std::uint32_t nowMicros) const noexcept UBIQUITTY_NONBLOCKING
 {
     return m_eraseHold.microsRemaining(nowMicros, m_lastBytesMicros);
+}
+
+std::uint32_t TerminalRuntime::eraseRedrawTicksRemaining(std::uint32_t nowMicros) const noexcept UBIQUITTY_NONBLOCKING
+{
+    // The settle after the program's last bytes or the watchdog from the first
+    // ask that found the redraw arriving, whichever ends first; nothing once
+    // either has, or the redraw was reported whole.
+    const std::uint32_t since = m_redrawArrivingSinceMicros.load(std::memory_order_relaxed);
+    if (since == 0)
+        return 0;
+    const std::uint32_t sinceStart = microsSince(nowMicros, since);
+    const std::uint32_t sinceBytes = microsSince(nowMicros, m_lastBytesMicros.load(std::memory_order_relaxed));
+    if (sinceStart >= eraseHoldMaxMicros || sinceBytes >= eraseHoldSettleMicros)
+        return 0;
+    return ticksCovering(std::min(eraseHoldMaxMicros - sinceStart, eraseHoldSettleMicros - sinceBytes));
 }
 
 void TerminalRuntime::updatePaneHostFacts(Protocol::Sync::PaneHostFacts& facts) const
