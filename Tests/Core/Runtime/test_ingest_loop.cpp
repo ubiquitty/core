@@ -1562,6 +1562,53 @@ TEST(testAnOpenUpdateInAFloodIsJudgedFromWhatTheLoopPublished)
     session.stopIngest();
 }
 
+namespace {
+
+// Geometry a capture can be written under: cell metrics, a glyph slot and a
+// viewport.
+SyncFrameCaptureGeometry captureGeometry()
+{
+    SyncFrameCaptureGeometry geometry;
+    geometry.metrics.cellWidth = 8.0f;
+    geometry.metrics.cellHeight = 16.0f;
+    geometry.metrics.baselineFromTop = 13.0f;
+    geometry.metrics.underlineThickness = 1.0f;
+    geometry.metrics.underlineDrop = 1.0f;
+    geometry.metrics.strikeThickness = 1.0f;
+    geometry.metrics.xHeight = 10.0f;
+    geometry.glyphSlot = { /*columns=*/32, /*slotWidthInPixels=*/8, /*slotHeightInPixels=*/16,
+        /*glyphWidthInPixels=*/6, /*glyphMarginInPixels=*/ { 1, 1 } };
+    geometry.viewportSizeInPixels = { 640.0f, 384.0f };
+    return geometry;
+}
+
+} // namespace
+
+// A view revealed over a loop's pane whose lane has never captured, with no
+// output at all, asks once; the loop, woken by the ask, captures the first
+// frame at its next turn, with nothing more asked of it.
+TEST(testARevealedLaneIsServedItsFirstFrameByTheLoopsNextTurn)
+{
+    LoopSession loop;
+    REQUIRE(loop.isRunning);
+    TerminalSession& session = loop.session();
+    session.setSyncFramePresentation(PanePresentation::Hidden);
+    session.setSyncFrameCaptureGeometry(captureGeometry());
+    session.setSyncFramePresentation(PanePresentation::Presented);
+    FrameSupply supply;
+    releaseFrameCapture(session.takeFrame({ .nowTicks = Ubiquitty::PAL::monotonicTicks() }, supply));
+    REQUIRE(supply.decline == FrameDecline::AwaitingCapture);
+    bool isServed = false;
+    for (int waited = 0; waited < 2000 && !isServed; ++waited) {
+        Ubiquitty::Rendering::FrameCapture* frame = session.takeSyncFrame();
+        isServed = frame != nullptr;
+        releaseFrameCapture(frame);
+        if (!isServed)
+            ::usleep(1000);
+    }
+    CHECK_MSG(isServed, "the loop's turn captured the first frame within two seconds of the one ask");
+}
+
 // A view being resized over an update left open in a flood is held from the
 // mark the loop published while another thread holds the model, and the loop,
 // asked for a frame by the resize's rule, stamps the update at its next turn.
