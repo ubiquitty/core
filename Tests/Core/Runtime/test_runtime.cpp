@@ -520,6 +520,10 @@ Ubiquitty::PAL::StreamTestPipe* attachPipe(TerminalRuntime& rt)
     ownModelOnTestThread();
     auto pipe = std::make_unique<Ubiquitty::PAL::StreamTestPipe>();
     Ubiquitty::PAL::StreamTestPipe* borrow = pipe.get();
+    if (!rt.prepareAdoption()) {
+        CHECK_MSG(false, "runtime adopts no local stream");
+        return nullptr;
+    }
     auto adoption = rt.adoptStream(std::move(pipe));
     if (!adoption) {
         CHECK_MSG(false, "runtime refused the test helper's pipe");
@@ -1513,7 +1517,8 @@ TEST(runtimeCases)
     {
         TerminalRuntime rt;
         rt.init(parameters80x24());
-        const bool launched = rt.launch(LaunchCommand::fromArguments({ "/bin/sh", "-c", "echo $$; exec sleep 60" }), Ubiquitty::Preferences::terminalIdentity(Ubiquitty::Preferences::values()));
+        const LaunchCommand command = LaunchCommand::fromArguments({ "/bin/sh", "-c", "echo $$; exec sleep 60" });
+        const bool launched = rt.prepareLaunch(command) == TerminalRuntime::LaunchReadiness::Ready && rt.openLaunchStream(command, Ubiquitty::Preferences::terminalIdentity(Ubiquitty::Preferences::values()));
         CHECK(launched);
         if (launched) {
             const int fileDescriptor = rt.streamFileDescriptor();
@@ -4876,6 +4881,7 @@ TEST(aNonnullStreamAdoptionReplacesTheOwnerAndRunsItsInstallationHooks)
 
     auto replacement = std::make_unique<Ubiquitty::PAL::StreamTestPipe>();
     const auto* expectedOwner = replacement.get();
+    REQUIRE(runtime.prepareAdoption());
     auto adoption = runtime.adoptStream(std::move(replacement));
     REQUIRE(adoption.has_value());
     auto* installed = static_cast<Ubiquitty::PAL::StreamTestPipe*>(runtime.stream());
@@ -7559,7 +7565,7 @@ TEST(goneGroupDebtRespectsObservationAndPhysicalStreamOwnership)
     bool isAdopted = false;
     {
         const Ubiquitty::ModelLockHold hold(*fixture.session->modelLockPointer());
-        isAdopted = runtime.adoptStream(std::move(replacement)).has_value();
+        isAdopted = runtime.prepareAdoption() && runtime.adoptStream(std::move(replacement)).has_value();
     }
     REQUIRE(isAdopted);
     CHECK(!hasDebt());

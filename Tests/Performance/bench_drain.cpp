@@ -379,6 +379,10 @@ int main(int argc, char** argv)
     parameters.columns = 202;
     parameters.allowReflowOnInit = false;
     runtime.init(parameters);
+    if (!runtime.prepareAdoption()) {
+        std::fprintf(stderr, "runtime adopts no local stream\n");
+        return 1;
+    }
     auto adoption = runtime.adoptStream(std::move(stream));
     if (!adoption) {
         stream = std::move(adoption.error());
