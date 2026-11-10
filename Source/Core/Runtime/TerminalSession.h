@@ -5079,7 +5079,7 @@ private:
     {
         const bool wasBlockOpen = terminal.modes.syncOutput;
         const bool wasBlockPublished = wasBlockOpen || readSnapshot().syncHoldActive;
-        CaptureWithhold withhold { .isHeld = m_runtime->shouldWithholdPresentation(&terminal, nowTicks, PAL::monotonicMicros()) };
+        CaptureWithhold withhold { .isHeld = m_runtime->shouldWithholdPresentation(terminal, nowTicks, PAL::monotonicMicros()) };
         if (terminal.modes.syncOutput)
             return withhold;
         if (wasBlockPublished)
@@ -5125,9 +5125,11 @@ public:
     [[nodiscard]] std::uint32_t presentationHoldTicksRemaining(Ticks nowTicks) UBIQUITTY_EXCLUDES(modelLockRole)
     {
         if (!m_externalTerminal && !readSnapshot().syncHoldActive)
-            return m_runtime->presentationHoldTicksRemaining(nullptr, nowTicks, PAL::monotonicMicros());
+            return m_runtime->presentationHoldTicksRemaining(PAL::monotonicMicros());
         const ModelLockHold hold(*m_activeLock);
-        return m_runtime->presentationHoldTicksRemaining(modelTerm(), nowTicks, PAL::monotonicMicros());
+        if (const Ubiquitty::Terminal* terminal = modelTerm())
+            return m_runtime->presentationHoldTicksRemaining(*terminal, nowTicks, PAL::monotonicMicros());
+        return m_runtime->presentationHoldTicksRemaining(PAL::monotonicMicros());
     }
 
     /// Plans a live frame against the damage baseline the boundary captures
@@ -9339,7 +9341,7 @@ private:
             if (m_owner.m_externalTerminal) {
                 m_owner.assertOnHostedPaneThread();
                 if (m_owner.m_hostedPaneSource)
-                    (void)m_owner.m_hostedPaneSource->setPaneFocus(m_owner.m_hostedPaneID, *m_owner.m_externalTerminal, focus);
+                    (void)m_owner.m_hostedPaneSource->setPaneFocus(m_owner.m_hostedPaneID, *m_owner.modelTermIdentity(), focus);
                 const ModelLockHold hold(*m_owner.m_activeLock);
                 // A raw adopted model has no program-focus route. Its local
                 // presentation still follows focus; a hosted source above
@@ -9713,14 +9715,14 @@ private:
         // parsed by its owner, whose drain does not publish this session's
         // snapshot, so only the model can say.
         if (!m_externalTerminal && !readSnapshot().syncHoldActive)
-            return m_runtime->shouldWithholdPresentation(nullptr, nowTicks, PAL::monotonicMicros()) ? FrameDecline::HeldByPresentation : FrameDecline::None;
+            return m_runtime->shouldWithholdPresentation(PAL::monotonicMicros()) ? FrameDecline::HeldByPresentation : FrameDecline::None;
         CaptureWithhold withhold;
         {
             const ModelLockHold hold(*m_activeLock);
             if (auto* terminal = modelTerm())
                 withhold = withholdCapture(*terminal, nowTicks);
             else
-                withhold.isHeld = m_runtime->shouldWithholdPresentation(nullptr, nowTicks, PAL::monotonicMicros());
+                withhold.isHeld = m_runtime->shouldWithholdPresentation(PAL::monotonicMicros());
         }
         if (withhold.didExpireBlock)
             signalDrain();
@@ -13642,8 +13644,9 @@ private:
     SearchBinding m_search;
     // Non-owning borrow of an externally owned Terminal (null for an owning
     // session). When set, every model accessor above reads and mutates it,
-    // and teardown never disposes it — the owner does.
-    Ubiquitty::Terminal* m_externalTerminal = nullptr;
+    // and teardown never disposes it — the owner does. The pointer is the
+    // frontend thread's; the terminal it names is read under the model lock.
+    Ubiquitty::Terminal* m_externalTerminal UBIQUITTY_POINTEE_GUARDED_BY(modelLockRole) = nullptr;
 
     /// The terminal every model accessor operates on: the adopted one, else
     /// the runtime's own.

@@ -1218,9 +1218,9 @@ public:
     /// The settle stays shorter than a display frame during a resize too,
     /// so successive redraws can reach the display. Further erases during a
     /// hold keep its original watchdog deadline.
-    [[nodiscard]] bool shouldWithholdPresentationAfterErase(std::uint32_t nowMicros);
+    [[nodiscard]] bool shouldWithholdPresentationAfterErase(std::uint32_t nowMicros) noexcept UBIQUITTY_NONBLOCKING;
     /// Microseconds until the erase hold can release on its own; 0 when none.
-    [[nodiscard]] std::uint32_t eraseHoldMicrosRemaining(std::uint32_t nowMicros) const;
+    [[nodiscard]] std::uint32_t eraseHoldMicrosRemaining(std::uint32_t nowMicros) const noexcept UBIQUITTY_NONBLOCKING;
 
     /// Returns whether the redraw behind the newest whole-screen erase is
     /// still arriving: the parser has applied the erase, and the drain has not
@@ -1240,7 +1240,7 @@ public:
     ///   - terminal: The model the capture reads.
     ///   - nowMicros: Now, in monotonic microseconds.
     /// - Returns: True while the capture would show the erased screen.
-    [[nodiscard]] bool isEraseRedrawArriving(const Ubiquitty::Terminal& terminal, std::uint32_t nowMicros);
+    [[nodiscard]] bool isEraseRedrawArriving(const Ubiquitty::Terminal& terminal, std::uint32_t nowMicros) UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Records the redraw behind the newest whole-screen erase as parsed
     /// whole: the transport stayed empty for the quiet interval after its
@@ -1344,29 +1344,51 @@ public:
     /// The one statement of the hold every frontend presents under: a
     /// synchronized-output block is open within its budget, or a whole-screen
     /// erase's redraw is still arriving. Asking stamps a block on first sight
-    /// and expires it, so the caller holds whatever lock guards `terminal`. A
-    /// frontend that withholds must ask again after
+    /// and expires it, and arms an erase the drain has parsed but not yet
+    /// stamped, so it writes `terminal` under the model lock the caller holds.
+    /// A frontend that withholds must ask again after
     /// ``presentationHoldTicksRemaining``, since an application can open a
     /// block and go quiet.
     ///
     /// - Parameters:
-    ///   - terminal: The terminal presented, or null when no block can be open.
+    ///   - terminal: The terminal presented.
     ///   - nowTicks: Now, on the 60 Hz monotonic clock.
     ///   - nowMicros: Now, in monotonic microseconds.
     /// - Returns: True while the present should wait.
-    [[nodiscard]] bool shouldWithholdPresentation(Ubiquitty::Terminal* terminal, Ticks nowTicks, std::uint32_t nowMicros);
+    [[nodiscard]] bool shouldWithholdPresentation(Ubiquitty::Terminal& terminal, Ticks nowTicks, std::uint32_t nowMicros) UBIQUITTY_REQUIRES(modelLockRole);
+
+    /// Returns whether a present now would show an erased screen whose redraw
+    /// is still arriving, from published state alone.
+    ///
+    /// The hold for a caller that knows no synchronized-output block is open,
+    /// or that has no model: the erase hold the drain stamped. Any thread; it
+    /// waits on nothing.
+    ///
+    /// - Parameter nowMicros: Now, in monotonic microseconds.
+    /// - Returns: True while the present should wait.
+    [[nodiscard]] bool shouldWithholdPresentation(std::uint32_t nowMicros) noexcept UBIQUITTY_NONBLOCKING;
 
     /// Returns the ticks until a withheld present may release on its own.
     ///
     /// The block's budget or the erase hold's settle or watchdog, whichever
-    /// ends first.
+    /// ends first. The block's budget is read from `terminal`, under the
+    /// model lock the caller holds.
     ///
     /// - Parameters:
-    ///   - terminal: The terminal presented, or null when no block can be open.
+    ///   - terminal: The terminal presented.
     ///   - nowTicks: Now, on the 60 Hz monotonic clock.
     ///   - nowMicros: Now, in monotonic microseconds.
     /// - Returns: At least 1 while anything is held, 0 otherwise.
-    [[nodiscard]] std::uint32_t presentationHoldTicksRemaining(const Ubiquitty::Terminal* terminal, Ticks nowTicks, std::uint32_t nowMicros) const;
+    [[nodiscard]] std::uint32_t presentationHoldTicksRemaining(const Ubiquitty::Terminal& terminal, Ticks nowTicks, std::uint32_t nowMicros) const
+        UBIQUITTY_REQUIRES(modelLockRole);
+
+    /// Returns the ticks until the erase hold may release on its own, from
+    /// published state alone, for a caller with no model. Any thread; it
+    /// waits on nothing.
+    ///
+    /// - Parameter nowMicros: Now, in monotonic microseconds.
+    /// - Returns: At least 1 while the erase hold stands, 0 otherwise.
+    [[nodiscard]] std::uint32_t presentationHoldTicksRemaining(std::uint32_t nowMicros) const noexcept UBIQUITTY_NONBLOCKING;
 
     /// What a drain's settle did with its frame, as a frontend that drains and
     /// paints on one thread reports it.
