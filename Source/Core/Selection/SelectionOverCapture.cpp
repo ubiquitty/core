@@ -89,7 +89,7 @@ int resolveForCapture(PublishedSelection& selection, Terminal& terminal, int vie
     return blockCount;
 }
 
-bool prepareHandOff(const Session& selection, PublishedSelection& handedOff) noexcept
+bool prepareHandOff(const Session& selection, PublishedSelection& handedOff) noexcept UBIQUITTY_NONBLOCKING
 {
     if (handedOff.generation != 0 && isSameSelection(selection, handedOff.session))
         return false;
@@ -100,7 +100,7 @@ bool prepareHandOff(const Session& selection, PublishedSelection& handedOff) noe
 }
 
 CaptureSpans takeCapturedSelection(Session& selection, PublishedSelection& handedOff, const CapturedSelection& captured,
-    ViewportSpans out, ViewportEnds& ends) noexcept
+    ViewportSpans out, ViewportEnds& ends) noexcept UBIQUITTY_NONBLOCKING
 {
     const std::size_t count = std::min({ static_cast<std::size_t>(std::max(captured.spanCount, 0)), captured.spans.size(), out.size() });
     std::copy_n(captured.spans.begin(), count, out.begin());

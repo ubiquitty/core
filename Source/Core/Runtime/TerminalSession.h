@@ -5291,7 +5291,7 @@ public:
     ///
     /// - Returns: The latest published snapshot; default-valued (rows 0)
     ///   before the first drain publishes one.
-    [[nodiscard]] RuntimeSnapshot readSnapshot() { return m_runtime->link().reads.read(); }
+    [[nodiscard]] RuntimeSnapshot readSnapshot() noexcept UBIQUITTY_NONBLOCKING { return m_runtime->link().reads.read(); }
 
     /// The colours the pane's frame shows, read lock-free from any thread.
     ///
@@ -6262,7 +6262,7 @@ public:
 
     /// Whether the drain's last pass ended with its writer still ahead; see
     /// ``TerminalRuntime::isDrainSaturated``.
-    [[nodiscard]] bool isDrainSaturated() const { return m_runtime->isDrainSaturated(); }
+    [[nodiscard]] bool isDrainSaturated() const noexcept UBIQUITTY_NONBLOCKING { return m_runtime->isDrainSaturated(); }
 
     /// Whether a render tick that found no capture waiting in the sync slot
     /// may present nothing rather than read the live model.
@@ -6823,7 +6823,7 @@ public:
     /// with an external holder instead of recycling it.
     ///
     /// - Returns: The capture, with a reference the caller owns, or null.
-    [[nodiscard]] Rendering::FrameCapture* takeSyncFrame() UBIQUITTY_RETURNS_RETAINED
+    [[nodiscard]] Rendering::FrameCapture* takeSyncFrame() noexcept UBIQUITTY_NONBLOCKING UBIQUITTY_RETURNS_RETAINED
     {
         const int drained = m_syncSlot.drain();
         if (drained < 0)
@@ -8520,7 +8520,7 @@ public:
     /// before it takes a frame.
     ///
     /// - Parameter selection: The caller-owned selection session.
-    void publishSelectionForCaptures(const Ubiquitty::Selection::Session* selection)
+    void publishSelectionForCaptures(const Ubiquitty::Selection::Session* selection) noexcept UBIQUITTY_NONBLOCKING
     {
         if (selection && Ubiquitty::Selection::prepareHandOff(*selection, m_selectionHandedOff))
             m_selectionForCaptures.publish(m_selectionHandedOff);
@@ -8545,7 +8545,7 @@ public:
     /// - Returns: How many spans were written, the outcome, and whether the
     ///   view took the resolved session.
     [[nodiscard]] Ubiquitty::Selection::CaptureSpans selectionOverCapture(Ubiquitty::Selection::Session* selection,
-        const Rendering::FrameCapture& capture, Ubiquitty::Selection::ViewportSpans out, Ubiquitty::Selection::ViewportEnds& ends)
+        const Rendering::FrameCapture& capture, Ubiquitty::Selection::ViewportSpans out, Ubiquitty::Selection::ViewportEnds& ends) noexcept UBIQUITTY_NONBLOCKING
     {
         ends = {};
         if (!selection)
