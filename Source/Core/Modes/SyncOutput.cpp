@@ -5,6 +5,8 @@
 #include "Core/CellGrid.h"
 #include "Core/Terminal.h"
 
+#include <limits>
+
 namespace Ubiquitty::Modes::SyncOutput {
 
 bool isActive(const Ubiquitty::Terminal* t) { return t ? t->modes.syncOutput : false; }
@@ -23,9 +25,11 @@ uint32_t elapsedTicks(const Ubiquitty::Terminal* t, Ticks currentTicks)
 {
     if (!t || !t->modes.syncOutput || t->modes.syncOutputTouchTicks == 0)
         return 0;
-    if (currentTicks.count < t->modes.syncOutputTouchTicks)
-        return 0; // wraparound — treat as fresh.
-    return currentTicks.since(Ticks(t->modes.syncOutputTouchTicks));
+    // Cyclic, so a stamp taken before the 32-bit counter wraps still ages. A
+    // stamp ahead of now, from an asker reading a clock a little behind the
+    // stamper's, is fresh.
+    const uint32_t elapsed = currentTicks.since(Ticks(t->modes.syncOutputTouchTicks));
+    return elapsed > static_cast<uint32_t>(std::numeric_limits<int32_t>::max()) ? 0 : elapsed;
 }
 
 void expire(Ubiquitty::Terminal* t)

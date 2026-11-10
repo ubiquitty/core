@@ -324,6 +324,37 @@ TEST(everyCarriedModeArrives)
     }
 }
 
+// A client of an earlier release reads every member the modes block writes at
+// wire version 2, the sender-clocked ticks among them, at its place. So the
+// block still writes each of them: changing one alone changes the checkpoint.
+TEST(everySenderClockedModeIsStillWritten)
+{
+    const auto checkpointBody = [](const Ubiquitty::Terminal& host) {
+        ScreenPublisher publisher;
+        AttachmentBaseline baseline;
+        std::vector<std::uint8_t> body;
+        CHECK(publisher.capture(host) && publisher.checkpoint(host, 1, body, baseline));
+        return body;
+    };
+    std::size_t senderClocked = 0;
+    for (const auto& entry : Ubiquitty::Protocol::Sync::terminalModesLedger) {
+        if (entry.carriage != Carriage::SenderClocked)
+            continue;
+        ++senderClocked;
+        auto host = std::make_unique<Ubiquitty::Terminal>();
+        Ubiquitty::resize(*host, 10, 40);
+        const auto before = checkpointBody(*host);
+        auto* bytes = reinterpret_cast<unsigned char*>(&host->modes); // the modes viewed as bytes, to change one member in place
+        std::uint32_t value = 0;
+        REQUIRE(entry.size == sizeof(value));
+        std::memcpy(&value, bytes + entry.offset, sizeof(value));
+        value += 3;
+        std::memcpy(bytes + entry.offset, &value, sizeof(value));
+        CHECK_MSG(checkpointBody(*host) != before, ("Terminal::Modes::" + std::string(entry.name) + " is no longer written").c_str());
+    }
+    CHECK_MSG(senderClocked == 2, "the synchronized update's stamp and the hilite deadline are the sender-clocked modes");
+}
+
 // Every member the ledger says a record carries is one the oracle compares,
 // and the oracle compares no member the ledger says nothing travels for: a
 // member moved to `Recorded` with no comparison, or compared with no carrier,
