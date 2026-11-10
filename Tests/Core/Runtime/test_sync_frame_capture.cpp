@@ -3070,6 +3070,29 @@ TEST(aDemandRaisedAfterTheResizeIsHeldForTheRule)
     CHECK_MSG(!TakenFrame(fixture.session->takeSyncFrame()), "the newest demand's rule holds the frame");
 }
 
+// A view revealed over a lane that has never captured, with no output to
+// carry a frame, is answered AwaitingCapture, and the owner's next turn
+// captures its first frame.
+TEST(aRevealedLaneThatNeverCapturedIsServedAtTheOwnersNextTurn)
+{
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    fixture.session->setSyncFramePresentation(Ubiquitty::Runtime::PanePresentation::Hidden);
+    fixture.session->setSyncFrameCaptureGeometry(testGeometry());
+    fixture.session->setSyncFramePresentation(Ubiquitty::Runtime::PanePresentation::Presented);
+    REQUIRE(!fixture.session->isFrameHeld());
+
+    const FrameAsk asked = askForFrame(*fixture.session, {});
+    CHECK(asked.supply.route == Runtime::FrameRoute::Declined);
+    CHECK(asked.supply.decline == Runtime::FrameDecline::AwaitingCapture);
+    CHECK_MSG(asked.supply.askAgainTicks == 0, "the capture's publication wakes the view");
+
+    static_cast<void>(fixture.session->serviceFrontend());
+    const FrameAsk served = askForFrame(*fixture.session, {});
+    CHECK(served.supply.route == Runtime::FrameRoute::Captured);
+    CHECK(served.frame != nullptr);
+}
+
 // A resizing view's demand is held while the redraw behind a whole-screen
 // erase is still arriving: the owner's turn finds it so, the view is told when
 // to ask again, and the turn after the program's bytes went quiet captures
