@@ -9,12 +9,14 @@
 # A verdict lands in exactly one of PASSED, SKIPPED and FAILED. CACHED names the
 # passes served from the cache, WARNED the passes whose gate printed a warning,
 # and FAILED_LOG holds each failure's log path at the failure's index.
+# GATE_SECONDS holds `<seconds> <name>` for every verdict, in the order given.
 FAILED=()
 FAILED_LOG=()
 SKIPPED=()
 PASSED=()
 CACHED=()
 WARNED=()
+GATE_SECONDS=()
 
 # A gate whose inputs are declared, keyed on those inputs alone.
 #
@@ -42,38 +44,54 @@ ubq_gate_now() {
     python3 -c 'import time; print(time.time())' 2>/dev/null || echo 0
 }
 
-# How long a gate took, at one decimal, or empty when the clock was unavailable.
-# Printed beside every verdict: a summary that says which gate was slow is what
-# makes the next optimisation an argument about evidence.
-ubq_gate_elapsed() { # <started>
-    [ "${1:-0}" != 0 ] || { printf ''; return 0; }
-    python3 -c "import sys; print(f' {float(sys.argv[2]) - float(sys.argv[1]):.1f}s')" \
-        "$1" "$(ubq_gate_now)" 2>/dev/null || printf ''
+# Seconds from <started> to now at one decimal, or empty when the clock was
+# unavailable at either end.
+ubq_gate_seconds() { # <started>
+    [ "${1:-0}" != 0 ] || return 0
+    python3 -c "import sys; print(f'{float(sys.argv[2]) - float(sys.argv[1]):.1f}')" \
+        "$1" "$(ubq_gate_now)" 2>/dev/null || true
 }
 
-# The gate's name while it works, and what it leaves behind once it is done.
-# A push runs dozens of gates over several minutes, so a reader watching one
-# needs to see which is working; a reader whose push succeeds needs none of it
-# afterwards. On a terminal the progress line is erased by a pass. Where stdout
-# is not a terminal there is nothing to erase, so the name is held back and
-# written only by an outcome worth reading. Anything other than a pass names its
-# gate: a verdict word with no gate beside it cannot be acted on.
+# A duration as a reader takes it in: 8.4s, 3m07s.
+ubq_gate_duration() { # <seconds>
+    python3 -c "import sys; s = float(sys.argv[1]); print(f'{s:.1f}s' if s < 60 else f'{int(s // 60)}m{int(s % 60):02d}s')" \
+        "$1" 2>/dev/null || printf '%ss\n' "$1"
+}
+
+# The gate's name while it works, on a terminal, so a reader watching a push
+# sees which gate is working. Elsewhere nothing is written until the outcome.
 ubq_gate_progress() { # <name>
-    { [ -t 1 ] || [ -n "${UBQ_GATE_VERBOSE:-}" ]; } || return 0
-    printf '  %-34s ' "$1"
+    [ -t 1 ] || return 0
+    printf '  %-34s …' "$1"
 }
 
-ubq_gate_outcome() { # <name> <word> <started> <passed:0|1>
-    if [ -n "${UBQ_GATE_VERBOSE:-}" ]; then
-        printf '%s%s\n' "$2" "$(ubq_gate_elapsed "$3")"
-        return 0
+# What every gate leaves behind: its name, its verdict and its wall time, a pass
+# included. The times are the evidence: a run that says which gate was slow is
+# what makes the next change to the hook an argument about numbers, and a pass
+# erased from the screen is a cost nobody can see. On a terminal the line
+# replaces the progress line.
+ubq_gate_outcome() { # <name> <word> <started>
+    local seconds shown="-"
+    seconds="$(ubq_gate_seconds "$3")"
+    if [ -n "$seconds" ]; then
+        shown="$(ubq_gate_duration "$seconds")"
+        GATE_SECONDS+=("$seconds $1")
     fi
-    if [ "$4" = 1 ]; then
-        [ -t 1 ] && printf '\r\033[K'
-        return 0
-    fi
-    [ -t 1 ] || printf '  %-34s ' "$1"
-    printf '%s\n' "$2"
+    [ -t 1 ] && printf '\r\033[K'
+    printf '  %-34s %s  %s\n' "$1" "$2" "$shown"
+}
+
+# The run's wall time and its slowest gates, on stderr, where the summary is.
+ubq_gate_report_times() { # <started>
+    local seconds
+    seconds="$(ubq_gate_seconds "${1:-0}")"
+    [ -n "$seconds" ] || return 0
+    echo "pre-push gates: wall time $(ubq_gate_duration "$seconds") (tier: ${TIER:-?})" >&2
+    [ "${#GATE_SECONDS[@]}" -gt 0 ] || return 0
+    echo "  slowest gates:" >&2
+    printf '%s\n' "${GATE_SECONDS[@]}" | LC_ALL=C sort -k1,1 -n -r | head -5 | while read -r seconds name; do
+        printf '    %8s  %s\n' "$(ubq_gate_duration "$seconds")" "$name" >&2
+    done
 }
 
 # Prints why a gate stood down and returns 1 when it did not. A stand-down is a
@@ -256,7 +274,7 @@ run() {
     started="$(ubq_gate_now)"
     ubq_gate_progress "$name"
     if ubq_gate_cache_has "$cache_key"; then
-        ubq_gate_outcome "$name" cached "$started" 1
+        ubq_gate_outcome "$name" cached "$started"
         PASSED+=("$name")
         CACHED+=("$name")
         rm -f "$log"
@@ -267,14 +285,14 @@ run() {
         # Caching it as a pass would keep it from running once the tool exists.
         local stood_down warned
         if stood_down="$(ubq_gate_stood_down "$log")"; then
-            ubq_gate_outcome "$name" "SKIPPED ($stood_down)" "$started" 0
+            ubq_gate_outcome "$name" "SKIPPED ($stood_down)" "$started"
             SKIPPED+=("$name ($stood_down)")
         elif warned="$(ubq_gate_warned "$log")"; then
-            ubq_gate_outcome "$name" "ok, WARNING ($warned)" "$started" 0
+            ubq_gate_outcome "$name" "ok, WARNING ($warned)" "$started"
             PASSED+=("$name")
             WARNED+=("$name ($warned)")
         else
-            ubq_gate_outcome "$name" ok "$started" 1
+            ubq_gate_outcome "$name" ok "$started"
             PASSED+=("$name")
             ubq_gate_cache_store "$cache_key"
         fi
@@ -303,10 +321,10 @@ run() {
         # one, and fails.
         if [ "$status" -eq 127 ] && [ -n "$missing" ] && [ "${missing#-}" = "$missing" ] \
                 && printf '%s' "$missing" | grep -q '[a-z]'; then
-            ubq_gate_outcome "$name" "SKIPPED (no $missing)" "$started" 0
+            ubq_gate_outcome "$name" "SKIPPED (no $missing)" "$started"
             SKIPPED+=("$name")
         elif [ "$status" -eq 127 ] && [ -n "$missing" ] && [ "${missing#-}" = "$missing" ]; then
-            ubq_gate_outcome "$name" "FAILED (ran '$missing' as a command — a broken gate, not a missing tool)" "$started" 0
+            ubq_gate_outcome "$name" "FAILED (ran '$missing' as a command — a broken gate, not a missing tool)" "$started"
             FAILED+=("$name")
             FAILED_LOG+=("$log")
             echo "--- $name ---" >&2
@@ -314,10 +332,10 @@ run() {
             echo "--- end $name (full log: $log) ---" >&2
             return 0
         elif [ "$status" -eq 127 ] && [ -z "$missing" ]; then
-            ubq_gate_outcome "$name" "SKIPPED (tool not found)" "$started" 0
+            ubq_gate_outcome "$name" "SKIPPED (tool not found)" "$started"
             SKIPPED+=("$name")
         else
-            ubq_gate_outcome "$name" FAILED "$started" 0
+            ubq_gate_outcome "$name" FAILED "$started"
             FAILED+=("$name")
             # The log is not removed: the line below names it, and the summary
             # names it again after everything else has scrolled past. Deleting
