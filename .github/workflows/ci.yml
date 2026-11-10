@@ -376,6 +376,10 @@ jobs:
     name: Kit against this Core (macOS)
     needs: preflight
     if: needs.preflight.outputs.builds == 'true'
+    # The pairing line is read from the pull request through the API.
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: xcode-27
     timeout-minutes: 150
     env:
@@ -449,6 +453,10 @@ jobs:
     name: Kit against this Core (Linux)
     needs: preflight
     if: needs.preflight.outputs.builds == 'true'
+    # The pairing line is read from the pull request through the API.
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -512,6 +520,10 @@ jobs:
     name: App against this Core (macOS)
     needs: preflight
     if: needs.preflight.outputs.builds == 'true'
+    # The pairing line is read from the pull request through the API.
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: xcode-27
     timeout-minutes: 180
     env:
@@ -599,6 +611,10 @@ jobs:
     name: App against this Core (Linux)
     needs: preflight
     if: needs.preflight.outputs.builds == 'true'
+    # The pairing line is read from the pull request through the API.
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
