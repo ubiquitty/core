@@ -5128,6 +5128,7 @@ TEST(aCaptureBeforeTheErasingPassEndsArmsTheHold)
 // redraw rather than joining a hold whose watchdog ran out long before.
 TEST(anEraseAfterAQuietSpellNoFrontendSawIsHeld)
 {
+    ownModelOnTestThread();
     TerminalRuntime rt;
     rt.init(parameters80x24());
     REQUIRE(attachPipe(rt) != nullptr);
@@ -5309,6 +5310,7 @@ TEST(aRefillGapOfAnyLengthLeavesTheRedrawArrivingAfterAPass)
 // frame costs the loop no extra wake.
 TEST(onlyALiveResizeArmsTheQuietInterval)
 {
+    ownModelOnTestThread();
     TerminalRuntime rt;
     rt.init(parameters80x24());
     REQUIRE(attachPipe(rt) != nullptr);
@@ -5411,6 +5413,7 @@ TEST(aResizeCaptureHoldIsBoundedByTheSettleAndItsOwnWatchdog)
 // own erase is held on a watchdog of its own.
 TEST(aDragsFirstStepIsHeldHoweverLongAfterTheLastEraseItComes)
 {
+    ownModelOnTestThread();
     for (const bool wasAskedWhileArriving : { false, true }) {
         TerminalRuntime rt;
         rt.init(parameters80x24());
