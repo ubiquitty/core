@@ -378,6 +378,42 @@ void selectBetweenPoints(Session& session, Terminal& terminal, double fromX, dou
 /// - Returns: Whether the view's offset can be held from its observed history.
 [[nodiscard]] bool isViewOffsetHeldByHistory(const Session& session) noexcept;
 
+/// The offset a frame read now shows a view at.
+///
+/// A view that holds its rows by the history its offset was measured against
+/// stands where ``heldViewOffset`` moves it over the rows appended since; any
+/// other view stands at its own offset. Either is resolved against the
+/// terminal (``Screen::resolvedViewOffset``). The frames the drain captures
+/// for a view and the frames the view reads under the model lock both stand
+/// here, so a view presenting either shows the same rows.
+///
+/// - Parameters:
+///   - terminal: The model, read under the caller's lock.
+///   - viewOffset: Rows the view stood scrolled back; zero follows the tail.
+///   - heldAgainst: The history `viewOffset` was measured against, for a view
+///     that holds its rows by it; none for a view standing at its own offset.
+/// - Returns: The offset the frame's cells, damage, selection and overlays
+///   all read.
+[[nodiscard]] int frameViewOffset(const Terminal& terminal, int viewOffset, const std::optional<Screen::HistoryFacts>& heldAgainst) noexcept;
+
+/// The offset a frame read now shows `view` at: ``frameViewOffset`` held
+/// against the history the view's offset was last measured against
+/// (``Session/viewportObservedHistory``) when ``isViewOffsetHeldByHistory``.
+///
+/// A view takes output in transitions that follow the deliveries announcing
+/// it, so the drain can append history the view has not taken yet; a frame
+/// read then at the view's own offset shows its rows moved by what was
+/// appended.
+///
+/// - Parameters:
+///   - view: The view's session.
+///   - terminal: The model, read under the caller's lock.
+///   - viewOffset: Rows the view stands scrolled back, as its last transition
+///     or its own move left it.
+/// - Returns: The offset the frame's cells, damage, selection and overlays
+///   all read.
+[[nodiscard]] int frameViewOffset(const Session& view, const Terminal& terminal, int viewOffset) noexcept;
+
 /// Applies one output transition to a view's selection and viewport.
 ///
 /// A tail view follows output. While a gesture remains open, its press stays

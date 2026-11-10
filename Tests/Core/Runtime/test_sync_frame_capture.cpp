@@ -2464,6 +2464,91 @@ TEST(aViewScrolledBackHoldsItsRowsInTheFramesTheDrainCaptures)
     }
 }
 
+// A view reads the model under the lock after the drain appended history and
+// before its own transition took it: the read stands where the frames the
+// drain captures stand, held over the appended rows rather than at the view's
+// own offset, and draws the selection on the rows they draw it on.
+TEST(aLiveReadBeforeTheViewTakesOutputShowsTheRowsTheDrainCaptures)
+{
+    FloodedPane pane(12, 40);
+    pane.terminal->scrollbackLimit = 200;
+    std::string history;
+    for (int line = 0; line < 30; ++line)
+        history += std::format("history line {:03}\r\n", line);
+    pane.floodPass(history);
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+    constexpr int viewOffset = 10;
+    static_cast<void>(Selection::viewportAfterOutput(pane.selection, viewOffset, Input::OutputSnapPolicy::Indeterminate, Screen::historyFacts(pane.terminal)));
+    REQUIRE(Selection::isViewOffsetHeldByHistory(pane.selection));
+    SyncFrameCaptureGeometry geometry = testGeometry();
+    geometry.viewOffset = viewOffset;
+    geometry.viewHistory = pane.selection.viewportObservedHistory;
+    geometry.isViewOffsetHeld = true;
+    pane.fixture.session->setSyncFrameCaptureGeometry(geometry);
+    pane.select(3, 0, 5, 10, viewOffset);
+    Selection::Session reference = pane.selection;
+
+    for (int frame = 0; frame < 12; ++frame) {
+        pane.floodPass(std::format("arriving below {:03}\r\n", frame));
+        const int liveOffset = Selection::frameViewOffset(pane.selection, *pane.terminal, viewOffset);
+        CHECK(liveOffset == viewOffset + frame + 1);
+        const FrontendTick tick = pane.drawsWhatTheLiveReadDraws(reference, liveOffset, "a live read before the view takes output");
+        CHECK(tick.frameViewOffset == liveOffset);
+        CHECK_MSG(!tick.drawn.spans.empty(), "the selection stands on the held rows");
+    }
+}
+
+// A frame stands where its view stands: held over the rows appended since a
+// view held by history measured its offset, at its own offset for a view
+// measured against nothing, against another epoch, or keeping a logical
+// anchor, and in every case never past the history nor on the alternate
+// screen, which has none.
+TEST(aFrameViewOffsetHoldsOnlyAViewHeldByHistory)
+{
+    Terminal terminal;
+    hardReset(terminal);
+    resize(terminal, 6, 20);
+    terminal.scrollbackLimit = 40;
+    int line = 0;
+    const auto feedLines = [&](int count) {
+        for (int fed = 0; fed < count; ++fed)
+            UbiquittyTest::feed(terminal, std::format("line {:03}\r\n", line++));
+    };
+    const auto retainedRows = [&] { return Screen::historyFacts(&terminal).retainedRows; };
+    const auto measure = [&](Selection::Session& view, int viewOffset) {
+        static_cast<void>(Selection::viewportAfterOutput(view, viewOffset, Input::OutputSnapPolicy::Indeterminate, Screen::historyFacts(&terminal)));
+    };
+    feedLines(20);
+    Selection::Session view;
+    Selection::init(view);
+    feedLines(3);
+    CHECK_MSG(Selection::frameViewOffset(view, terminal, 4) == 4, "a view measured against nothing stands at its own offset");
+
+    measure(view, 4);
+    CHECK(Selection::frameViewOffset(view, terminal, 4) == 4);
+    feedLines(3);
+    CHECK_MSG(Selection::frameViewOffset(view, terminal, 4) == 7, "the rows appended since the view measured move it");
+    CHECK_MSG(Selection::frameViewOffset(view, terminal, 0) == 0, "a view at the tail follows it");
+    CHECK_MSG(Selection::frameViewOffset(view, terminal, 1000) == retainedRows(), "no frame stands past the history");
+
+    resize(terminal, 7, 20);
+    feedLines(2);
+    CHECK_MSG(Selection::frameViewOffset(view, terminal, 4) == 4, "rows counted in another epoch move nothing");
+
+    measure(view, 4);
+    feedLines(100);
+    REQUIRE(retainedRows() < 4 + 100);
+    CHECK_MSG(Selection::frameViewOffset(view, terminal, 4) == retainedRows(), "a view whose rows were evicted stands at the oldest");
+
+    UbiquittyTest::feed(terminal, "\x1b[?1049h");
+    CHECK_MSG(Selection::frameViewOffset(view, terminal, 4) == 0, "the alternate screen has no history");
+    UbiquittyTest::feed(terminal, "\x1b[?1049l");
+
+    Selection::observeViewport(view, terminal, 4);
+    feedLines(3);
+    CHECK_MSG(Selection::frameViewOffset(view, terminal, 4) == 4, "a view keeping a logical anchor stands at its own offset");
+}
+
 // The offset a reader that missed every transition computes for a view that
 // held its rows is the offset the view reached, transition by transition:
 // growing history, history at its limit evicting the rows above, and the
