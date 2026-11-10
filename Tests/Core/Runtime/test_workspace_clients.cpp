@@ -21,9 +21,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <fcntl.h>
 #include <memory>
 #include <mutex>
 #include <span>
+#include <sys/resource.h>
 #include <thread>
 #include <unistd.h>
 
@@ -139,26 +141,87 @@ TEST(testEverySessionTheModelMakesGoesThroughTheInstaller)
     model.setTerminalClientInstaller(installClients, &log);
 
     const auto surface = model.addWindowSurface();
-    CHECK(surface != Ubiquitty::Session::Layout::invalidSurface);
+    REQUIRE(surface != Ubiquitty::Session::Layout::invalidSurface);
     CHECK(log.installedCount == 1);
     CHECK(!log.sawNullTerminal);
 
     // A split makes its pane's session through the same fold.
     const auto split = model.splitFocusedPane(surface, Ubiquitty::Panes::Orientation::Vertical);
-    CHECK(split.createdPane != Ubiquitty::Session::Layout::invalidPane);
+    REQUIRE(split.createdPane != Ubiquitty::Session::Layout::invalidPane);
     CHECK(log.installedCount == 2);
 
     // The installed client is reachable from the terminal the model handed
     // out — the seam delivered a live attachment, not a callback for show —
     // and it is the session-owned one the installer minted last.
     TerminalSession* session = model.session(split.createdPane);
-    CHECK(session != nullptr);
-    if (session) {
+    REQUIRE(session != nullptr);
+    {
         const Ubiquitty::ModelLockHold hold(*session->modelLockPointer());
         CHECK(session->terminal() != nullptr);
     }
     CHECK(log.lastAttached != nullptr);
     CHECK(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.clipboardClient.get(); }) == log.lastAttached);
+}
+
+namespace {
+// Lowers the descriptor maximum to `headroom` descriptors above the highest open now, so the next
+// pipe or pseudo-terminal open fails the way it does on a machine out of ptys, and restores it on exit.
+class ScopedMaxDescriptorCount {
+public:
+    explicit ScopedMaxDescriptorCount(int headroom)
+    {
+        int highest = 0;
+        for (int descriptor = 0; descriptor < 1024; ++descriptor) {
+            if (::fcntl(descriptor, F_GETFD) != -1)
+                highest = descriptor;
+        }
+        m_hasSaved = ::getrlimit(RLIMIT_NOFILE, &m_saved) == 0;
+        struct rlimit lowered = m_saved;
+        lowered.rlim_cur = static_cast<rlim_t>(highest + headroom);
+        m_hasLowered = m_hasSaved && ::setrlimit(RLIMIT_NOFILE, &lowered) == 0;
+    }
+    ~ScopedMaxDescriptorCount()
+    {
+        if (m_hasLowered)
+            (void)::setrlimit(RLIMIT_NOFILE, &m_saved);
+    }
+    ScopedMaxDescriptorCount(const ScopedMaxDescriptorCount&) = delete;
+    ScopedMaxDescriptorCount& operator=(const ScopedMaxDescriptorCount&) = delete;
+    bool isLowered() const { return m_hasLowered; }
+
+private:
+    struct rlimit m_saved {};
+    bool m_hasSaved = false;
+    bool m_hasLowered = false;
+};
+} // namespace
+
+TEST(testAWindowWhoseTerminalCannotOpenFailsWithoutTakingTheProcess)
+{
+    InstallLog log;
+    ModelHandle handle(WorkspaceSession::IngestPolicy::ThreadDrained);
+    WorkspaceSession& model = *handle.model;
+    model.setTerminalClientInstaller(installClients, &log);
+    const auto before = model.surfaceCount();
+    // Headroom 1 refuses the launch's first pipe; 3 lets the pipes open and refuses the terminal itself.
+    for (const int headroom : { 1, 2, 3, 4 }) {
+        int openBefore = 0;
+        for (int descriptor = 0; descriptor < 1024; ++descriptor)
+            openBefore += ::fcntl(descriptor, F_GETFD) != -1 ? 1 : 0;
+        {
+            ScopedMaxDescriptorCount maxCount(headroom);
+            REQUIRE(maxCount.isLowered());
+            CHECK(model.addWindowSurface() == Ubiquitty::Session::Layout::invalidSurface);
+        }
+        int openAfter = 0;
+        for (int descriptor = 0; descriptor < 1024; ++descriptor)
+            openAfter += ::fcntl(descriptor, F_GETFD) != -1 ? 1 : 0;
+        // A refused window leaves nothing behind, not a descriptor either.
+        CHECK(openAfter == openBefore);
+        CHECK(model.surfaceCount() == before);
+    }
+    CHECK(log.installedCount == 0);
+    CHECK(model.addWindowSurface() != Ubiquitty::Session::Layout::invalidSurface);
 }
 
 TEST(testTheInstallerRunsBeforeIngestStarts)
