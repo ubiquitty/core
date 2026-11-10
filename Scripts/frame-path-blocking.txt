@@ -25,7 +25,7 @@ setSyncFrameCaptureGeometry nowait publishes the registration, which whoever nex
 shouldWithholdCapture nowait reads the model inside the live read's hold
 shouldWithholdFrame waits judges an open synchronized update under the model lock where no ingest loop drains the pane's own model (a remote replica, a fed pane); a loop's owner stamps and expires it at its turn
 takeEventFlags nowait polls the pane link's publication through its virtual interface
-takeFrame waits judges an open synchronized update under the model lock where no ingest loop drains the pane's own model (a remote replica, a fed pane); a loop's owner stamps and expires it at its turn
+takeFrame waits judges an open synchronized update under the model lock where no ingest loop drains the pane's own model (a remote replica, a fed pane); a loop's owner stamps and expires it at its turn; a pane no loop drains has its demand served under a try-lock of the model, which never waits
 terminal nowait hands the live read the model its hold covers
 unlockForRead nowait releases the live read's hold
 updateSelectionAfterOutput nowait try-locks the model to judge the selection after output, and never waits for it
