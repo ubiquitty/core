@@ -595,9 +595,13 @@ public:
 
     /// Encodes one key press in this terminal's current modes.
     ///
-    /// Reads modes and local-echo policy from the locked model. A published
-    /// snapshot can precede a parsed protocol reset and must not determine
-    /// which bytes the next key sends.
+    /// The snapshot `readSnapshot` returns can precede a parsed protocol reset
+    /// by several bites, so it never picks the bytes a key sends. A pane whose
+    /// ingest loop drains its own model encodes from the modes the drain
+    /// published at its last release of the model lock, which no model a
+    /// locked encode could read is newer than. A programmed DECUDK table has
+    /// no such publication, and an adopted, remote or fed model no such
+    /// drain, so those encode from the locked model.
     ///
     /// - Parameters:
     ///   - press: What the frontend knows; see ``KeyPress``.
@@ -605,6 +609,11 @@ public:
     /// - Returns: How many bytes, whether to echo, and the resolved transition.
     [[nodiscard]] KeyEncoding encodeKey(const KeyPress& press, Keys::Keymap::EncodedKeyBytes output) UBIQUITTY_EXCLUDES(modelLockRole)
     {
+        if (isModelDrainedByIngestLoop()) {
+            const ModeSnapshot modes = m_runtime->link().keyModes.read();
+            if (modes.userDefinedKeyCount == 0)
+                return Runtime::encodeKey(modes, press, output, nullptr);
+        }
         const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
@@ -7802,8 +7811,17 @@ public:
     /// The tick is this session's own, so a harness pinning `UBIQUITTY_FAKE_TICKS`
     /// moves the activity and the blink curve together and the freeze becomes
     /// something a test can step through rather than wait out.
+    ///
+    /// A pane whose ingest loop drains its own model posts the tick to the
+    /// loop, which applies it on its next pass, so a key never waits for the
+    /// parser; any other model is written under the lock here.
     void noteUserActivity() UBIQUITTY_EXCLUDES(modelLockRole)
     {
+        if (isModelDrainedByIngestLoop()) {
+            m_runtime->link().userInput.post(Ticks(frameTicksNow()));
+            m_loop.raiseWake();
+            return;
+        }
         const ModelLockHold hold(*m_activeLock);
         const auto now = frameTicksNow();
         Ubiquitty::Cursor::noteUserActivity(modelTerm(), now);
@@ -9509,9 +9527,7 @@ private:
         , m_host(m_modelLock)
         , m_runtime(std::make_unique<TerminalRuntime>())
     {
-        // A flood bite leaves its scroll-lane run open for the next bite to
-        // extend; whoever reads the model between two bites commits it first.
-        m_modelLock.setReaderEntry([](void* runtime) UBIQUITTY_REQUIRES(modelLockRole) { static_cast<TerminalRuntime*>(runtime)->flushScrollLaneForModelRead(); }, m_runtime.get());
+        m_modelLock.setOwner(&m_lockOwner);
         if (const auto* theme = Themes::get(launchThemeIndex(configuration))) {
             m_chosenThemeName = theme->name;
         }
@@ -13765,6 +13781,16 @@ private:
     /// - Returns: The presented terminal.
     [[nodiscard]] Ubiquitty::Terminal* modelTerm() UBIQUITTY_REQUIRES(modelLockRole) { return modelTermIdentity(); }
 
+    /// Whether this session's ingest loop is running and drains the model it
+    /// presents: the runtime's own, neither adopted nor a remote replica. Such
+    /// a model's writer publishes at every release of the lock and applies
+    /// posted input, so the frontend's input path needs no lock. Frontend
+    /// thread, which alone starts and stops the loop.
+    [[nodiscard]] bool isModelDrainedByIngestLoop() const
+    {
+        return m_ingestThread.joinable() && !m_externalTerminal && !(m_remote && m_remote->core && !m_tmuxPrimaryStream);
+    }
+
     /// The same terminal as ``modelTerm()``, as an identity only: to test for
     /// a model, or to hand it to an owner that locks it or owns its thread.
     /// Nothing reads the model through it.
@@ -13966,6 +13992,30 @@ private:
     // Equal palettes may have different materials; preserve the explicitly chosen name.
     std::string m_chosenThemeName;
     std::unique_ptr<TerminalRuntime> m_runtime;
+
+    /// The runtime's part in its model lock. A flood bite leaves its
+    /// scroll-lane run open for the next bite to extend, so a reader commits
+    /// it first. A key encoded without the lock reads the modes the drain
+    /// published at its last release, so each release publishes the ones it
+    /// changed.
+    class RuntimeLockOwner final : public ModelLockOwner {
+    public:
+        explicit RuntimeLockOwner(TerminalRuntime& runtime)
+            : m_runtime(runtime)
+        {
+        }
+
+        /// Commits the scroll-lane run a flood bite left open.
+        void enterAsReader() override UBIQUITTY_REQUIRES(modelLockRole) { m_runtime.flushScrollLaneForModelRead(); }
+
+        /// Publishes the key modes the drain changed since its last release.
+        void exitAsDrain() override UBIQUITTY_REQUIRES(modelLockRole) { m_runtime.publishKeyModes(); }
+
+    private:
+        TerminalRuntime& m_runtime;
+    };
+    RuntimeLockOwner m_lockOwner { *m_runtime };
+
     // Declared after the runtime so the loop — which references it — is
     // destroyed first; the endpoint and the thread after both, so a
     // still-running loop joins before anything it reads dies.

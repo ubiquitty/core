@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "Base/ThreadSafety.h"
+#include "Base/Types.h"
 #include "Core/CellGrid.h"
 #include "Core/Color.h"
 #include "Core/Cursor/RenderState.h"
@@ -21,6 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -460,6 +463,40 @@ private:
     std::atomic<std::size_t> m_tail { 0 }; // consumer index (monotonic)
 };
 
+/// The newest user input's tick, which the frontend posts and the writer
+/// applies to the model on its next pass: the cursor's activity freeze and the
+/// CRT saver's idle clock.
+///
+/// One slot, because only the newest tick matters, so a post never fills and
+/// never waits. (W) main -> model.
+class UserInputSlot {
+public:
+    /// Posts an input's tick, replacing any not yet taken. Frontend thread.
+    ///
+    /// Tick 0 is the empty slot, so a post at tick 0 stores 1.
+    ///
+    /// - Parameter now: The input's tick on the session's frame clock.
+    void post(Ticks now) noexcept UBIQUITTY_NONBLOCKING { m_tick.store(now.count ? now.count : 1, std::memory_order_release); }
+
+    /// Takes the posted tick, leaving the slot empty. The writer's thread,
+    /// under the model lock.
+    ///
+    /// - Returns: The newest posted tick, or nothing when none was posted.
+    [[nodiscard]] std::optional<Ticks> take() noexcept
+    {
+        const std::uint32_t tick = m_tick.exchange(0, std::memory_order_acq_rel);
+        return tick ? std::optional<Ticks>(Ticks(tick)) : std::nullopt;
+    }
+
+    /// Returns whether a tick waits to be taken. Any thread.
+    ///
+    /// - Returns: Whether the slot holds a tick.
+    [[nodiscard]] bool isPosted() const noexcept { return m_tick.load(std::memory_order_acquire) != 0; }
+
+private:
+    std::atomic<std::uint32_t> m_tick { 0 };
+};
+
 // (W) A main->writer command. POD, ring-copyable. `kind` selects which scalar
 // arguments apply.
 enum class CommandKind : std::uint8_t {
@@ -495,7 +532,15 @@ struct RuntimeLink {
     // each update's close, which the next update can follow inside one drain.
     // An update the terminal expires is published by the check that expired it.
     SnapshotPublisher<CoherentColors> coherentColors; // (R) model -> main
+    // (R) The modes a key encodes in, as the writer left them at its last
+    // release of the model lock: the drain publishes them before each release
+    // that changed them, and every snapshot publish carries them. So a key
+    // encoded from them is never older than the model a locked encode could
+    // have read, which `reads`, published at most at the sync-publish floor
+    // during a burst, can be.
+    SnapshotPublisher<ModeSnapshot> keyModes; // (R) model -> main
     CommandRing<Command, 64> commands; // (W) main -> model
+    UserInputSlot userInput; // (W) main -> model
 };
 
 } // namespace Ubiquitty::Runtime

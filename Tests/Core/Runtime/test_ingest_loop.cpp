@@ -29,9 +29,11 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
+#include <format>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <semaphore>
 #include <set>
 #include <span>
 #include <string>
@@ -1330,6 +1332,189 @@ TEST(testAFrameTheRuleReleasesWakesTheFrontend)
 
     session.stopIngest();
     session.setDrainSignal(nullptr, nullptr);
+}
+
+namespace {
+
+// A session reading its program through a pipe, its ingest loop running: the
+// write end is the program's.
+struct LoopSession {
+    SessionHandle handle;
+    Ubiquitty::PAL::UnixFileDescriptor writeEnd;
+    bool isRunning = false;
+
+    LoopSession()
+    {
+        int pipeDescriptors[2] = { -1, -1 };
+        if (::pipe(pipeDescriptors) != 0)
+            return;
+        Ubiquitty::PAL::UnixFileDescriptor readEnd(pipeDescriptors[0]);
+        writeEnd = Ubiquitty::PAL::UnixFileDescriptor(pipeDescriptors[1]);
+        if (::fcntl(readEnd.get(), F_SETFL, ::fcntl(readEnd.get(), F_GETFL) | O_NONBLOCK) != 0)
+            return;
+        handle.session->start(24, 80);
+        if (!handle.session->adoptStream(std::make_unique<Ubiquitty::PAL::PipeStream>(std::move(readEnd))).has_value())
+            return;
+        isRunning = handle.session->startIngest();
+    }
+
+    ~LoopSession() { handle.session->stopIngest(); }
+
+    [[nodiscard]] TerminalSession& session() const { return *handle.session; }
+
+    // Writes `bytes` as the program, and waits up to two seconds for the loop
+    // to drain them.
+    bool write(std::string_view bytes) const
+    {
+        if (::write(writeEnd.get(), bytes.data(), bytes.size()) != static_cast<ssize_t>(bytes.size()))
+            return false;
+        std::uint64_t drained = 0;
+        for (int waited = 0; waited < 2000 && drained < bytes.size(); ++waited) {
+            drained += handle.session->takeDrainedBytes();
+            if (drained < bytes.size())
+                ::usleep(1000);
+        }
+        return drained >= bytes.size();
+    }
+};
+
+// Runs `call` while another thread holds the session's model lock, and says
+// whether it returned before that thread let go.
+template<typename Call>
+bool returnsWhileTheModelIsHeld(TerminalSession& session, Call call)
+{
+    std::binary_semaphore isHeld(0);
+    std::binary_semaphore didReturn(0);
+    bool didReturnWhileHeld = false;
+    std::thread holder([&] {
+        session.lockForRead();
+        isHeld.release();
+        didReturnWhileHeld = didReturn.try_acquire_for(std::chrono::seconds(2));
+        session.unlockForRead();
+    });
+    isHeld.acquire();
+    call();
+    didReturn.release();
+    holder.join();
+    return didReturnWhileHeld;
+}
+
+KeyPress characterPress(char character)
+{
+    KeyPress press;
+    press.unshiftedCodePoint = static_cast<unsigned char>(character);
+    press.shiftedCodePoint = static_cast<unsigned char>(character);
+    press.text[0] = static_cast<unsigned char>(character);
+    press.textLength = 1;
+    return press;
+}
+
+} // namespace
+
+// A key on a pane the loop drains encodes in the modes the program left,
+// with the model held by another thread: the loop published them at the
+// release that ended the bite, before any snapshot.
+TEST(testAKeyEncodesWithoutTheModelInTheModesTheLoopReleased)
+{
+    LoopSession loop;
+    REQUIRE(loop.isRunning);
+    REQUIRE(loop.write("\033[?1h"));
+    KeyPress up;
+    up.virtualKey = Ubiquitty::Keys::VirtualKey::UpArrow;
+    std::array<char, 64> encoded {};
+    KeyEncoding encoding;
+    CHECK(returnsWhileTheModelIsHeld(loop.session(), [&] { encoding = loop.session().sendKey(up, encoded); }));
+    REQUIRE(encoding.length == 3);
+    CHECK_STR_EQ(std::string(encoded.data(), 3), "\033OA");
+}
+
+// A key's activity is posted to the loop rather than written under the lock:
+// the key returns while another thread holds the model, and the loop stamps
+// the cursor's activity tick once it may.
+TEST(testAKeyPostsItsActivityToTheLoop)
+{
+    LoopSession loop;
+    REQUIRE(loop.isRunning);
+    setenv("UBIQUITTY_FAKE_TICKS", "4321", 1);
+    std::array<char, 64> encoded {};
+    CHECK(returnsWhileTheModelIsHeld(loop.session(), [&] { static_cast<void>(loop.session().sendKey(characterPress('x'), encoded)); }));
+    unsetenv("UBIQUITTY_FAKE_TICKS");
+    std::uint32_t activityTick = 0;
+    for (int waited = 0; waited < 2000 && activityTick != 4321; ++waited) {
+        loop.session().lockForRead();
+        if (const Ubiquitty::Terminal* terminal = loop.session().terminal())
+            activityTick = terminal->lastActivityTick;
+        loop.session().unlockForRead();
+        if (activityTick != 4321)
+            ::usleep(1000);
+    }
+    CHECK_EQ(activityTick, 4321u);
+}
+
+// A key typed while the loop carries a flood is applied at the end of a pass,
+// with most of the flood still unread: the pipeline runs no idle service, so
+// the pass is the only place a busy pane's typing reaches its cursor.
+TEST(testAKeyTypedIntoAFloodIsAppliedBeforeTheFloodEnds)
+{
+    SessionHandle handle;
+    TerminalSession& session = *handle.session;
+    session.start(24, 80);
+    const std::string flood = floodStream();
+    REQUIRE(adoptPrefilledStream(session, flood));
+    REQUIRE(session.startIngest());
+    setenv("UBIQUITTY_FAKE_TICKS", "4321", 1);
+    std::array<char, 64> encoded {};
+    static_cast<void>(session.sendKey(characterPress('x'), encoded));
+    unsetenv("UBIQUITTY_FAKE_TICKS");
+    std::uint64_t drained = 0;
+    bool isApplied = false;
+    for (int waited = 0; waited < 30000 && !isApplied; ++waited) {
+        drained += session.takeDrainedBytes();
+        session.lockForRead();
+        if (const Ubiquitty::Terminal* terminal = session.terminal())
+            isApplied = terminal->lastActivityTick == 4321;
+        session.unlockForRead();
+        if (!isApplied)
+            ::usleep(1000);
+    }
+    CHECK(isApplied);
+    CHECK_MSG(drained < flood.size() / 2, std::format("the key was applied after {} of {} bytes", drained, flood.size()).c_str());
+    session.stopIngest();
+}
+
+// A key on a screen the CRT saver blanked wakes it through the loop, with no
+// output behind it: the loop applies the posted input, publishes the screen
+// shown and tells the frontend to draw.
+TEST(testAKeyWakesACRTSaverBlankThroughTheLoop)
+{
+    LoopSession loop;
+    REQUIRE(loop.isRunning);
+    TerminalSession& session = loop.session();
+    session.lockForWrite();
+    if (Ubiquitty::Terminal* terminal = session.terminal()) {
+        // Saving stays on, so the loop's own idle service keeps the blank.
+        terminal->modes.shouldSaveCRT = true;
+        terminal->isCRTBlanked = true;
+        terminal->screenBlanked = true;
+    }
+    session.unlockAfterWrite();
+    REQUIRE(session.readSnapshot().modes.isScreenBlanked);
+    // The control: with no input, the loop's idle service keeps the blank.
+    for (int waited = 0; waited < 300; ++waited)
+        ::usleep(1000);
+    REQUIRE_MSG(session.readSnapshot().modes.isScreenBlanked, "the screen stays blanked with no input");
+    static_cast<void>(session.takeEventFlags());
+    std::array<char, 64> encoded {};
+    static_cast<void>(session.sendKey(characterPress('x'), encoded));
+    constexpr std::uint32_t screenDirtyBit = 1u << static_cast<unsigned>(EventKind::ScreenDirty);
+    std::uint32_t flags = 0;
+    for (int waited = 0; waited < 2000 && session.readSnapshot().modes.isScreenBlanked; ++waited) {
+        flags |= session.takeEventFlags();
+        ::usleep(1000);
+    }
+    flags |= session.takeEventFlags();
+    CHECK_MSG(!session.readSnapshot().modes.isScreenBlanked, "the key woke the screen");
+    CHECK_MSG(flags & screenDirtyBit, "the frontend was told to draw the screen the key woke");
 }
 
 TEST(testIngestInputCommandsAndRestart)

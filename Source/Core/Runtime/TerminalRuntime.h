@@ -1498,11 +1498,27 @@ public:
     // Apply one command main posted to the Terminal. TERM-WRITER (caller holds the
     // lock); the no-ingest-loop fallback path calls it inline.
     void applyCommand(const Command&) UBIQUITTY_REQUIRES(modelLockRole);
-    // Drain + apply every command queued in link().commands under the host's
-    // lock. The ingest loop calls this each iteration; no-op + no lock when empty.
-    // Returns true when at least one queued command was consumed, giving the
-    // platform a cheap gate for reply/snapshot flush work.
+    // Drain + apply every command queued in link().commands, and the input
+    // posted to link().userInput, under the host's lock. The ingest loop calls
+    // this each iteration; no-op + no lock when both are empty. Returns true
+    // when a queued command was consumed or the input woke the display, giving
+    // the platform a cheap gate for reply/snapshot flush work.
     bool applyPendingCommands(DrainHost&);
+
+    /// Applies the user input a frontend posted to `link().userInput`, if any:
+    /// the cursor's activity freeze and the CRT saver's idle clock, published
+    /// before the caller lets the lock go. A screen the input wakes from CRT
+    /// saving is published as a display change.
+    ///
+    /// - Parameter host: The drain host holding the lock.
+    /// - Returns: Whether the input woke the display.
+    bool applyPostedUserInput(DrainHost& host) UBIQUITTY_REQUIRES(modelLockRole);
+
+    /// Publishes the modes a key encodes in on `link().keyModes`, when they
+    /// moved since the last publish. The drain's lock runs it before each of
+    /// its releases, so a frontend that encodes a key without the lock reads
+    /// modes no older than the model a locked encode could have read.
+    void publishKeyModes() UBIQUITTY_REQUIRES(modelLockRole);
 
     // --- reads -------------------------------------------------------------
     [[nodiscard]] DimensionSnapshot dimensions() const; // field copy; cheap
@@ -1959,6 +1975,11 @@ private:
     ///   publishes nothing.
     void publishUserDefinedKeys(const Ubiquitty::Terminal& term);
 
+    /// Publishes `modes` on `link().keyModes` unless they are what it holds.
+    ///
+    /// - Parameter modes: The modes sampled from the model under the lock.
+    void publishKeyModes(const ModeSnapshot& modes) UBIQUITTY_REQUIRES(modelLockRole);
+
     /// Publishes `snap` on the link, preceded by the DECUDK table when `term`
     /// has one, and by its colours when no synchronized update is open.
     ///
@@ -2358,6 +2379,9 @@ private:
     // what any snapshot reader consumes, while a settled pass must publish
     // regardless so the final state is never held back. Writer-thread only.
     std::uint32_t m_lastSnapshotPublishMicros = 0;
+    // What `link().keyModes` holds, so a release that changed no mode
+    // publishes nothing. Written under the model lock alone.
+    ModeSnapshot m_publishedKeyModes {};
     std::atomic<bool> m_hasUnpublishedSnapshot { false };
     // Whether this drain pass closed a DECSET-2026 block. A completed sync frame
     // can reach the settle publish rather than a mid-chunk boundary fire — when

@@ -50,6 +50,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -99,19 +100,42 @@ private:
     UnixFileDescriptor m_descriptor;
 };
 
+// What a session wrote to its program, in the order it wrote it: the input
+// a pty would carry. Written by whichever thread writes, read once the run
+// has stopped.
+class CadenceInputLog {
+public:
+    void append(std::span<const char> bytes)
+    {
+        const std::scoped_lock hold(m_mutex);
+        m_bytes.append(bytes.data(), bytes.size());
+    }
+
+    [[nodiscard]] std::string bytes() const
+    {
+        const std::scoped_lock hold(m_mutex);
+        return m_bytes;
+    }
+
+private:
+    mutable std::mutex m_mutex;
+    std::string m_bytes;
+};
+
 // A session transport over that endpoint. What the session writes back, keys
-// included, is accepted and dropped.
+// included, is accepted into the input log.
 class CadencePipeStream final : public Stream, private ProcessFacts {
 public:
-    explicit CadencePipeStream(UnixFileDescriptor descriptor)
+    CadencePipeStream(UnixFileDescriptor descriptor, CadenceInputLog& inputLog)
         : m_rawDescriptor(descriptor.get())
         , m_endpoint(std::move(descriptor))
+        , m_inputLog(inputLog)
     {
     }
 
     int read(std::span<char> buffer) override { return m_endpoint.read(buffer); }
-    int write(std::span<const char> bytes) override { return m_endpoint.write(bytes); }
-    int writeAll(std::span<const char> bytes) override { return m_endpoint.writeAll(bytes); }
+    int write(std::span<const char> bytes) override { return accept(bytes); }
+    int writeAll(std::span<const char> bytes) override { return accept(bytes); }
     bool drainPendingWrite() override { return false; }
     [[nodiscard]] bool hasPendingWrite() const override { return false; }
     [[nodiscard]] int lastError() const override { return 0; }
@@ -129,8 +153,15 @@ public:
     int gatherProcesses(std::span<PAL::Process::Record>) override { return 0; }
 
 private:
+    int accept(std::span<const char> bytes)
+    {
+        m_inputLog.append(bytes);
+        return static_cast<int>(bytes.size());
+    }
+
     int m_rawDescriptor;
     CadencePipeEndpoint m_endpoint;
+    CadenceInputLog& m_inputLog;
 };
 
 } // namespace Ubiquitty::PAL
@@ -658,10 +689,8 @@ public:
         static_cast<void>(m_times.time(FrontendCall::ReadSnapshot, [&] { return m_session.readSnapshot(); }));
         if (isCaptureViewStale())
             registerCaptureGeometry();
-        if (m_case.shouldPostKeys && index % 6 == 0) {
-            std::array<char, 64> encoded {};
-            static_cast<void>(m_times.time(FrontendCall::SendKey, [&] { return m_session.sendKey(characterPress('x'), encoded); }));
-        }
+        if (m_case.shouldPostKeys && index % 6 == 0)
+            typeKey();
         if (m_decision == Decision::TakeFrame)
             askForFrame();
         else
@@ -675,6 +704,8 @@ public:
     [[nodiscard]] bool doesSelectionStand() const { return Selection::hasSelection(m_selection); }
     [[nodiscard]] int registrations() const { return m_registrations; }
     [[nodiscard]] int lockingDecisions() const { return m_lockingDecisions; }
+    [[nodiscard]] int lockingKeys() const { return m_lockingKeys; }
+    [[nodiscard]] const std::string& typedBytes() const { return m_typedBytes; }
     [[nodiscard]] const std::array<int, frameDeclineCount>& declines() const { return m_declines; }
 
 private:
@@ -733,6 +764,21 @@ private:
         if (m_modelLock.acquisitionCountForTest() != acquisitionsBefore)
             ++m_lockingDecisions;
         return result;
+    }
+
+    // Types the next letter of the alphabet, timed, and counts it when a
+    // thread other than the drain took the model lock while it ran: as for a
+    // frame decision, only the frontend's own thread does.
+    void typeKey()
+    {
+        const char letter = static_cast<char>('a' + m_typedBytes.size() % 26);
+        std::array<char, 64> encoded {};
+        const std::uint32_t acquisitionsBefore = m_modelLock.acquisitionCountForTest();
+        const Runtime::KeyEncoding encoding = m_times.time(FrontendCall::SendKey, [&] { return m_session.sendKey(characterPress(letter), encoded); });
+        if (m_modelLock.acquisitionCountForTest() != acquisitionsBefore)
+            ++m_lockingKeys;
+        if (encoding.length > 0 && encoding.wasAccepted)
+            m_typedBytes.append(encoded.data(), static_cast<std::size_t>(encoding.length));
     }
 
     void askForFrame()
@@ -920,6 +966,8 @@ private:
     bool m_isRegisteredViewOffsetHeld = false;
     int m_registrations = 0;
     int m_lockingDecisions = 0;
+    int m_lockingKeys = 0;
+    std::string m_typedBytes;
     std::array<int, frameDeclineCount> m_declines {};
     bool m_didLastFrameDrawSearch = false;
     bool m_didLastFrameDrawSelection = false;
@@ -963,6 +1011,11 @@ struct CadenceRun {
     // Frame decisions during which a thread other than the drain took the
     // model lock.
     int lockingDecisions = 0;
+    // Keys the frontend typed, as it encoded them, and the input the session
+    // wrote to its program; keys during which another thread took the lock.
+    std::string typedBytes;
+    std::string inputBytes;
+    int lockingKeys = 0;
     std::array<int, frameDeclineCount> declines {};
 };
 
@@ -989,6 +1042,8 @@ CadenceRun runCadence(const CadenceCase& cadenceCase, Decision decision)
     if (::fcntl(readEnd.get(), F_SETFL, ::fcntl(readEnd.get(), F_GETFL) | O_NONBLOCK) != 0)
         return run;
 
+    // Outlives the session, whose stream records into it.
+    PAL::CadenceInputLog inputLog;
     TerminalSession* session = TerminalSession::make();
     if (!session)
         return run;
@@ -1002,7 +1057,7 @@ CadenceRun runCadence(const CadenceCase& cadenceCase, Decision decision)
     } release { session };
     session->start(cadenceCase.rows, cadenceCase.columns);
     const bool isFed = cadenceCase.feeding == Feeding::Fed;
-    if (!isFed && !session->adoptStream(std::make_unique<PAL::CadencePipeStream>(std::move(readEnd))).has_value())
+    if (!isFed && !session->adoptStream(std::make_unique<PAL::CadencePipeStream>(std::move(readEnd), inputLog)).has_value())
         return run;
     if (cadenceCase.scrollbackLimit > 0) {
         session->lockForRead();
@@ -1088,6 +1143,9 @@ CadenceRun runCadence(const CadenceCase& cadenceCase, Decision decision)
     run.doesSelectionStandAtEnd = frontend.doesSelectionStand();
     run.registrations = frontend.registrations();
     run.lockingDecisions = frontend.lockingDecisions();
+    run.lockingKeys = frontend.lockingKeys();
+    run.typedBytes = frontend.typedBytes();
+    run.inputBytes = inputLog.bytes();
     run.declines = frontend.declines();
     run.colorReports = frontend.colorReports();
     run.blockOpenReachedAt = timeOf(watch.blockOpenReachedAt);
@@ -1252,6 +1310,16 @@ void checkCadence(const CadenceCase& cadenceCase, const CadenceRun& run, double 
                 millisecondsOf(run.times.longestBlockedAt[index] - run.writerStartedAt), millisecondsOf(frontendWaitBound))
                 .c_str());
     }
+    if (cadenceCase.shouldPostKeys) {
+        CHECK_MSG(!run.typedBytes.empty(), (name + ": the frontend typed keys").c_str());
+        // The ingest loop drains the model, so a key reads the modes the drain
+        // published and posts its activity: neither waits for the parser.
+        if (cadenceCase.feeding == Feeding::Ingest)
+            CHECK_MSG(run.lockingKeys == 0, std::format("{}: {} keys took the model lock", name, run.lockingKeys).c_str());
+        CHECK_MSG(run.inputBytes == run.typedBytes,
+            std::format("{}: the program read \"{}\" for the keys \"{}\"", name, run.inputBytes, run.typedBytes).c_str());
+    }
+
     const Clock::duration takeFrame = run.times.longest[static_cast<std::size_t>(FrontendCall::TakeFrame)];
     CHECK_MSG(takeFrame <= frameDecisionBound,
         std::format("{}: a frame decision took {:.2f} ms, against {:.2f} ms", name, millisecondsOf(takeFrame), millisecondsOf(frameDecisionBound)).c_str());
@@ -1610,8 +1678,9 @@ TEST(cadenceOfAViewScrolledBack)
     });
 }
 
-// Keys typed through an sgr_churn flood, ten a second: each key's encoding
-// and activity note take the model lock.
+// Keys typed through an sgr_churn flood, ten a second: each key encodes from
+// the modes the drain published and posts its activity to the ingest loop, so
+// none takes the model lock, and the program reads them in the order typed.
 TEST(cadenceOfKeysTypedThroughAFlood)
 {
     runAndCheck({

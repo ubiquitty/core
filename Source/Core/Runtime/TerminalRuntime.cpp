@@ -1084,9 +1084,12 @@ TerminalRuntime::DisplayIdleResult TerminalRuntime::serviceDisplayIdle(DrainHost
 {
     DisplayIdleResult result;
     host.lockModel();
+    // Input posted since the last pass restarts the idle clock before the
+    // deadline is judged, so a key pressed just before it keeps the screen.
+    const bool didInputWake = applyPostedUserInput(host);
     if (m_term && !m_term->mirrorClient) {
         const Ticks now = PAL::monotonicTicks();
-        result.didChange = Modes::DisplayIdle::advance(*m_term, now);
+        result.didChange = Modes::DisplayIdle::advance(*m_term, now) || didInputWake;
         result.remainingTicks = Modes::DisplayIdle::ticksUntilDeadline(*m_term, now);
         if (result.didChange)
             publishDisplayChange(host);
@@ -1237,6 +1240,35 @@ void captureSnapshotOnlyState(const Ubiquitty::Terminal& term, RuntimeSnapshot& 
 
 } // namespace
 
+bool TerminalRuntime::applyPostedUserInput(DrainHost& host)
+{
+    const std::optional<Ticks> tick = m_link.userInput.take();
+    Ubiquitty::Terminal* term = modelTerminal();
+    if (!tick || !term)
+        return false;
+    Cursor::noteUserActivity(term, tick->count);
+    if (!term->mirrorClient && Modes::DisplayIdle::noteInput(*term, *tick)) {
+        publishDisplayChange(host);
+        return true;
+    }
+    republishPresentationForTerm(term);
+    return false;
+}
+
+void TerminalRuntime::publishKeyModes()
+{
+    if (const Ubiquitty::Terminal* term = modelTerminal())
+        publishKeyModes(sampleModes(*term));
+}
+
+void TerminalRuntime::publishKeyModes(const ModeSnapshot& modes)
+{
+    if (modes == m_publishedKeyModes)
+        return;
+    m_link.keyModes.publish(modes);
+    m_publishedKeyModes = modes;
+}
+
 void TerminalRuntime::publishUserDefinedKeys(const Ubiquitty::Terminal& term)
 {
     // Only a terminal that has taken a DECUDK carries a table, so the common
@@ -1260,6 +1292,7 @@ void TerminalRuntime::publishReads(const RuntimeSnapshot& snap, Ubiquitty::Termi
     // colours stay the ones that frame was drawn in.
     if (term && !term->modes.syncOutput)
         publishCoherentColors(*term);
+    publishKeyModes(snap.modes);
     m_link.reads.publish(snap);
     m_hasUnpublishedSnapshot.store(false, std::memory_order_release);
 }
@@ -2172,11 +2205,13 @@ void TerminalRuntime::applyCommand(const Command& command)
 
 bool TerminalRuntime::applyPendingCommands(DrainHost& host)
 {
-    if (m_link.commands.empty())
+    if (m_link.commands.empty() && !m_link.userInput.isPosted())
         return false; // no lock taken when nothing is queued (the idle-tick common case)
     host.lockModel();
+    // A display the input woke is delivered by the pass this asks for; an
+    // activity tick alone republished the presentation and needs no pass.
+    bool didApply = applyPostedUserInput(host);
     Command command;
-    bool didApply = false;
     while (m_link.commands.pop(command)) {
         applyCommand(command);
         didApply = true;
