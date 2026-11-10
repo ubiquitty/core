@@ -23,9 +23,9 @@ sendKey waits encodes the key and notes the activity under the model lock where 
 setPresentedViewOffset nowait stores the offset; a remote link keeps the newest in a register and posts one session turn, which asks its host for history
 setSyncFrameCaptureGeometry nowait publishes the registration, which whoever next holds the model lock folds in
 shouldWithholdCapture nowait reads the model inside the live read's hold
-shouldWithholdFrame waits stamps and expires an open synchronized update in the session's own model under the model lock
+shouldWithholdFrame waits judges an open synchronized update under the model lock where no ingest loop drains the pane's own model (a remote replica, a fed pane); a loop's owner stamps and expires it at its turn
 takeEventFlags nowait polls the pane link's publication through its virtual interface
-takeFrame waits stamps and expires an open synchronized update in the session's own model under the model lock
+takeFrame waits judges an open synchronized update under the model lock where no ingest loop drains the pane's own model (a remote replica, a fed pane); a loop's owner stamps and expires it at its turn
 terminal nowait hands the live read the model its hold covers
 unlockForRead nowait releases the live read's hold
 updateSelectionAfterOutput nowait try-locks the model to judge the selection after output, and never waits for it
