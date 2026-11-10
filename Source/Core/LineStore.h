@@ -340,6 +340,22 @@ public:
     ///   exhausted numbering, or refused allocation, leaving content unchanged.
     [[nodiscard]] bool prepend(std::span<const StoredLine> rows, FrontLine front, int newestToDrop = 0);
 
+    /// Puts another store's rows in front of this one's, moving its blocks
+    /// rather than copying a cell.
+    ///
+    /// The cost is a descriptor per row and a block per slab, not a cell: a
+    /// history rebuilt in a store of its own, by slices, joins the live one in a
+    /// step that does not grow with its width. `older` ends empty.
+    ///
+    /// - Parameters:
+    ///   - older: A store whose rows come before this store's, with no block
+    ///     folded; rows evicted from its front stay gone.
+    ///   - front: The logical identity and continuity of the new oldest row.
+    /// - Returns: False when a block of `older` is folded, `older` holds no
+    ///   row, its rows do not fit this store's capacity, numbering would
+    ///   overflow, or an allocation was refused, leaving both stores unchanged.
+    [[nodiscard]] bool spliceFront(LineStore& older, FrontLine front);
+
     /// The numbering and append counters a rebuilt history must retain.
     struct Continuation {
         FrontLine front;
@@ -731,6 +747,16 @@ private:
     static_assert(maxFoldSpan >= static_cast<std::uint64_t>(blockCells), "a block of one-cell rows with no blank between them folds");
 
     void evictOldest();
+    /// Installs rows and the blocks backing them in front of the retained ones.
+    ///
+    /// - Parameters:
+    ///   - prepared: The rows, oldest first, whose cells point into `blocks`.
+    ///   - blocks: The blocks backing them, oldest first, moved from.
+    ///   - newestToDrop: Newest retained rows to remove first.
+    ///   - front: The logical identity and continuity of the new oldest row.
+    /// - Returns: False, leaving the store unchanged, when the block directory
+    ///   cannot grow.
+    [[nodiscard]] bool installFront(std::span<const StoredLine> prepared, std::span<Block> blocks, int newestToDrop, FrontLine front);
     /// Publishes already-owned rows/counters by swapping detached state.
     void swap(LineStore& other) noexcept;
     /// Takes the parked slab, or allocates one.

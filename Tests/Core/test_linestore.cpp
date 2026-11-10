@@ -1217,6 +1217,203 @@ TEST(prependCopiesSeveralBlocksAndPreservesRetainedRows)
     CHECK(store.at(50)->cells[0].codePoint == 'T');
 }
 
+// What one row of a differential history is: its cells and the facts the store keeps beside them.
+struct SpliceRow {
+    std::vector<Ubiquitty::Cell> cells;
+    bool wrapped = false;
+    std::uint8_t mark = 0;
+    std::uint8_t lineAttribute = 0;
+};
+
+static std::vector<SpliceRow> makeSpliceRows(std::uint32_t seed, int count)
+{
+    std::vector<SpliceRow> rows(static_cast<std::size_t>(count));
+    std::uint32_t state = seed;
+    const auto next = [&state] {
+        state = state * 1664525u + 1013904223u;
+        return state >> 8;
+    };
+    for (SpliceRow& row : rows) {
+        const int length = next() % 5 == 0 ? 0 : static_cast<int>(next() % 150) + 1;
+        row.cells.resize(static_cast<std::size_t>(length));
+        fillRow(row.cells.data(), length, static_cast<int>(next() % 50));
+        row.wrapped = next() % 3 != 0;
+        row.mark = static_cast<std::uint8_t>(next() % 4);
+        row.lineAttribute = static_cast<std::uint8_t>(next() % 3);
+    }
+    return rows;
+}
+
+static void appendSpliceRows(LineStore& store, const std::vector<SpliceRow>& rows, std::size_t from, std::size_t to)
+{
+    for (std::size_t index = from; index < to; ++index) {
+        const SpliceRow& row = rows[index];
+        static const Ubiquitty::Cell blank {};
+        store.append(row.cells.empty() ? &blank : row.cells.data(), static_cast<int>(row.cells.size()), row.lineAttribute, row.mark, row.wrapped, false);
+    }
+}
+
+static void checkStoresAgree(const LineStore& expected, const LineStore& actual)
+{
+    REQUIRE(actual.count() == expected.count());
+    CHECK(actual.nextOrdinal() == expected.nextOrdinal());
+    CHECK(actual.frontOrdinal() == expected.frontOrdinal());
+    CHECK(actual.headLineNumber() == expected.headLineNumber());
+    CHECK(actual.frontLine().number == expected.frontLine().number);
+    for (int index = 0; index < expected.count(); ++index) {
+        const StoredLine* want = expected.at(index);
+        const StoredLine* got = actual.at(index);
+        REQUIRE(want);
+        REQUIRE(got);
+        REQUIRE(got->length == want->length);
+        CHECK(got->wrapped == want->wrapped);
+        CHECK(got->mark == want->mark);
+        CHECK(got->lineAttribute == want->lineAttribute);
+        if (want->length)
+            CHECK(std::memcmp(got->cells, want->cells, static_cast<std::size_t>(want->length) * sizeof(Ubiquitty::Cell)) == 0);
+        CHECK(actual.startsLine(index) == expected.startsLine(index));
+        const auto wantPosition = expected.positionAt(index);
+        const auto gotPosition = actual.positionAt(index);
+        CHECK(static_cast<bool>(gotPosition) == static_cast<bool>(wantPosition));
+        if (wantPosition && gotPosition) {
+            CHECK(gotPosition->line == wantPosition->line);
+            CHECK(gotPosition->cell == wantPosition->cell);
+        }
+    }
+}
+
+// A history rebuilt in a store of its own and spliced in front reads, indexes and
+// numbers exactly as the same rows appended in order, and goes on behaving as one
+// store afterwards: later appends, eviction, a fold, a drop of the oldest.
+TEST(spliceFrontMovesAnOlderStoreInFrontOfTheLiveOne)
+{
+    for (const std::uint32_t seed : { 1u, 2u, 3u, 4u, 5u, 6u }) {
+        const int olderCount = 40 + static_cast<int>(seed) * 37;
+        const int liveCount = 30 + static_cast<int>(seed) * 11;
+        const std::vector<SpliceRow> rows = makeSpliceRows(seed, olderCount + liveCount + 120);
+
+        LineStore expected;
+        expected.init(900);
+        appendSpliceRows(expected, rows, 0, static_cast<std::size_t>(olderCount + liveCount));
+
+        LineStore older;
+        older.init(900);
+        appendSpliceRows(older, rows, 0, static_cast<std::size_t>(olderCount));
+        LineStore live;
+        live.init(900);
+        appendSpliceRows(live, rows, static_cast<std::size_t>(olderCount), static_cast<std::size_t>(olderCount + liveCount));
+
+        REQUIRE(live.spliceFront(older, expected.frontLine()));
+        CHECK(older.count() == 0);
+        checkStoresAgree(expected, live);
+
+        // Appends after the splice land after what was spliced.
+        appendSpliceRows(expected, rows, static_cast<std::size_t>(olderCount + liveCount), rows.size());
+        appendSpliceRows(live, rows, static_cast<std::size_t>(olderCount + liveCount), rows.size());
+        checkStoresAgree(expected, live);
+
+        foldEverythingCold(expected);
+        foldEverythingCold(live);
+        checkStoresAgree(expected, live);
+
+        expected.dropOldest(25);
+        live.dropOldest(25);
+        checkStoresAgree(expected, live);
+    }
+}
+
+TEST(spliceFrontEvictsFromTheSplicedRowsWhenTheStoreFills)
+{
+    const std::vector<SpliceRow> rows = makeSpliceRows(9, 400);
+    LineStore expected;
+    expected.init(300);
+    appendSpliceRows(expected, rows, 0, 200);
+    LineStore older;
+    older.init(300);
+    appendSpliceRows(older, rows, 0, 120);
+    LineStore live;
+    live.init(300);
+    appendSpliceRows(live, rows, 120, 200);
+    REQUIRE(live.spliceFront(older, expected.frontLine()));
+    appendSpliceRows(expected, rows, 200, 400);
+    appendSpliceRows(live, rows, 200, 400);
+    checkStoresAgree(expected, live);
+}
+
+// An older store whose own front was evicted joins with the rows it still holds, at the numbering
+// it kept, and no cell of the evicted rows survives in the live store.
+TEST(spliceFrontTakesAnOlderStoreWhoseFrontWasEvicted)
+{
+    const std::vector<SpliceRow> rows = makeSpliceRows(13, 300);
+    LineStore older;
+    older.init(60);
+    appendSpliceRows(older, rows, 0, 130);
+    REQUIRE(older.count() == 60);
+    LineStore live;
+    live.init(200);
+    appendSpliceRows(live, rows, 130, 200);
+
+    LineStore expected;
+    expected.init(200);
+    expected.restartNumbering(older.frontLine().number, older.frontLine().continuity);
+    appendSpliceRows(expected, rows, 70, 200);
+
+    REQUIRE(live.spliceFront(older, older.frontLine()));
+    CHECK(live.count() == 130);
+    CHECK(live.frontLine().number == expected.frontLine().number);
+    CHECK(live.headLineNumber() == expected.headLineNumber());
+    for (int index = 0; index < expected.count(); ++index) {
+        const StoredLine* want = expected.at(index);
+        const StoredLine* got = live.at(index);
+        REQUIRE(want);
+        REQUIRE(got);
+        REQUIRE(got->length == want->length);
+        CHECK(got->wrapped == want->wrapped);
+        if (want->length)
+            CHECK(std::memcmp(got->cells, want->cells, static_cast<std::size_t>(want->length) * sizeof(Ubiquitty::Cell)) == 0);
+    }
+    appendSpliceRows(live, rows, 200, 300);
+    appendSpliceRows(expected, rows, 200, 300);
+    CHECK(live.count() == expected.count());
+    for (int index = 0; index < expected.count(); ++index) {
+        REQUIRE(live.at(index)->length == expected.at(index)->length);
+        if (expected.at(index)->length)
+            CHECK(std::memcmp(live.at(index)->cells, expected.at(index)->cells, static_cast<std::size_t>(expected.at(index)->length) * sizeof(Ubiquitty::Cell)) == 0);
+    }
+}
+
+TEST(spliceFrontRefusesWhatItCannotMoveWholeAndChangesNothing)
+{
+    const std::vector<SpliceRow> rows = makeSpliceRows(11, 200);
+    LineStore live;
+    live.init(150);
+    appendSpliceRows(live, rows, 0, 100);
+    const int before = live.count();
+
+    LineStore empty;
+    empty.init(150);
+    CHECK(!live.spliceFront(empty, live.frontLine()));
+
+    LineStore tooMany;
+    tooMany.init(150);
+    for (std::size_t index = 0; tooMany.count() <= 150 - live.count() && index < rows.size(); ++index)
+        appendSpliceRows(tooMany, rows, index, index + 1);
+    const int tooManyRows = tooMany.count();
+    REQUIRE(tooManyRows > 150 - live.count());
+    CHECK(!live.spliceFront(tooMany, live.frontLine()));
+    CHECK(tooMany.count() == tooManyRows);
+
+    LineStore folded;
+    folded.init(150);
+    appendSpliceRows(folded, rows, 0, 40);
+    foldEverythingCold(folded);
+    if (folded.foldedBlockCount() > 0)
+        CHECK(!live.spliceFront(folded, live.frontLine()));
+
+    CHECK(!live.spliceFront(live, live.frontLine()));
+    CHECK(live.count() == before);
+}
+
 TEST(prependRefusesInvalidRowsWithoutChangingHistory)
 {
     LineStore store;

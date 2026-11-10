@@ -843,6 +843,12 @@ bool LineStore::prepend(std::span<const StoredLine> rows, FrontLine front, int n
         block.used += row.length;
         ++block.linesAppended;
     }
+    return installFront({ prepared.get(), rows.size() }, { blocks.get(), blockCount }, newestToDrop, front);
+}
+
+bool LineStore::installFront(std::span<const StoredLine> prepared, std::span<Block> blocks, int newestToDrop, FrontLine front)
+{
+    std::size_t blockCount = blocks.size();
     if (!m_blocks.reserve(m_blocks.size() + blockCount))
         return false;
 
@@ -869,8 +875,8 @@ bool LineStore::prepend(std::span<const StoredLine> rows, FrontLine front, int n
         m_frontEvicted = 0;
     }
     for (std::size_t index = 0; index < m_blocks.size(); ++index)
-        m_blocks[index].firstOrdinal = m_blocks[index].firstOrdinal - oldFront + rows.size();
-    const int added = static_cast<int>(rows.size());
+        m_blocks[index].firstOrdinal = m_blocks[index].firstOrdinal - oldFront + prepared.size();
+    const int added = static_cast<int>(prepared.size());
     m_start -= added;
     if (m_start < 0)
         m_start += m_capacity;
@@ -886,6 +892,63 @@ bool LineStore::prepend(std::span<const StoredLine> rows, FrontLine front, int n
     renumberBlockSequences();
     restartNumbering(front.number, front.continuity);
     return true;
+}
+
+bool LineStore::spliceFront(LineStore& older, FrontLine front)
+{
+    if (&older == this || !m_ring || !older.m_ring || older.m_count <= 0)
+        return false;
+    // Folded blocks hold their rows as forms a move would have to untangle, and
+    // a store being rebuilt is never folded.
+    for (std::size_t index = 0; index < older.m_blocks.size(); ++index) {
+        if (older.m_blocks[index].isFolded)
+            return false;
+    }
+    if (older.m_blocks.empty())
+        return false;
+    const int added = older.m_count;
+    if (added > m_capacity - m_count)
+        return false;
+    std::uint64_t closedLines = m_headLine - m_frontLine;
+    for (int index = 0; index < added; ++index)
+        closedLines += !older.descriptor(index).wrapped;
+    if (front.number > std::numeric_limits<std::uint64_t>::max() - closedLines)
+        return false;
+    const std::size_t blockCount = older.m_blocks.size();
+    if (blockCount > std::numeric_limits<std::uint32_t>::max() - m_nextBlockSequence)
+        return false;
+    std::unique_ptr<StoredLine[]> prepared(new (std::nothrow) StoredLine[static_cast<std::size_t>(added)]);
+    std::unique_ptr<Block[]> blocks(new (std::nothrow) Block[blockCount]);
+    if (!prepared || !blocks || !m_blocks.reserve(m_blocks.size() + blockCount))
+        return false;
+    // Nothing below refuses: the rows' cell pointers keep pointing into slabs
+    // that only change owner.
+    older.quiesceReaders();
+    // Rows evicted from `older`'s front leave its first block spanning them: the
+    // span starts at the front row, as it does after `installFront`'s own trim,
+    // and every block's ordinal counts from the front row, the first one's zero.
+    const std::uint64_t olderFront = older.frontOrdinal();
+    {
+        auto& first = older.m_blocks.front();
+        if (first.firstOrdinal < olderFront)
+            first.firstOrdinal = olderFront;
+        first.linesAppended -= older.m_frontEvicted;
+        older.m_frontEvicted = 0;
+    }
+    for (int index = 0; index < added; ++index)
+        prepared[static_cast<std::size_t>(index)] = older.descriptor(index);
+    for (std::size_t index = 0; index < blockCount; ++index) {
+        blocks[index] = std::move(older.m_blocks[index]);
+        blocks[index].firstOrdinal -= olderFront;
+    }
+    older.m_blocks.clear();
+    older.m_count = 0;
+    older.m_start = 0;
+    older.m_nextOrdinal = 0;
+    older.m_frontEvicted = 0;
+    const bool didInstall = installFront({ prepared.get(), static_cast<std::size_t>(added) }, { blocks.get(), blockCount }, 0, front);
+    assert(didInstall);
+    return didInstall;
 }
 
 void LineStore::restartNumbering(std::uint64_t frontLineNumber, LineContinuity front)
