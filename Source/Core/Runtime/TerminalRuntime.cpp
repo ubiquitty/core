@@ -53,23 +53,6 @@ constexpr std::uint32_t foregroundProbeIntervalTicks = 3;
 // grid it was told, and a redraw for a width the grid no longer has wraps at
 // the old width, every row after the first shifted right by one.
 constexpr std::uint32_t windowSizeCoalesceMicros = 40000;
-// After a whole-screen erase a present waits for the program's bytes to go
-// quiet this long — a redraw arrives in bursts closer than this — and never
-// longer than the watchdog, so a program that clears and stops still shows
-// its blank screen.
-constexpr std::uint32_t eraseHoldSettleMicros = 6000;
-constexpr std::uint32_t eraseHoldMaxMicros = 50000;
-
-// The microseconds from `then` to `now`, on the wrapping 32-bit clock, and
-// zero for a `then` stamped after `now`: the ingest thread stamps bytes and
-// erases while a presenter holds a `now` it read a moment earlier, and the
-// unsigned difference of the two is a span of seventy minutes, which reads
-// as a hold long settled and spent.
-[[nodiscard]] constexpr std::uint32_t microsSince(std::uint32_t now, std::uint32_t then)
-{
-    return static_cast<std::int32_t>(now - then) > 0 ? now - then : 0;
-}
-
 void captureDrainState(const Ubiquitty::Terminal&, std::uint32_t version, RuntimeSnapshot&);
 
 // The coherence rule's clock: monotonic microseconds that do not wrap, unlike
@@ -337,7 +320,7 @@ FeedResult TerminalRuntime::feedChunkUpToSyncClear(std::span<const char> bytes)
     }
     // The flood pipeline reads off this thread and parses here, so this is
     // where its bytes reach the settle clock the erase hold measures against.
-    m_lastBytesMicros.store(PAL::monotonicMicros() | 1u, std::memory_order_relaxed);
+    noteBytesArrived(PAL::monotonicMicros());
     tickTerminalClock();
     bool stoppedAtSyncClear = false;
     const int consumed = Ubiquitty::processBytesUpToSyncClear(m_term.get(), std::string_view(bytes.data(), static_cast<std::size_t>(length)), &stoppedAtSyncClear);
@@ -456,7 +439,7 @@ DrainOutcome TerminalRuntime::drainAvailable(DrainHost& host)
         }
         int judgeRead(std::span<const char> bytes) override
         {
-            runtime.m_lastBytesMicros.store(PAL::monotonicMicros() | 1u, std::memory_order_relaxed);
+            runtime.noteBytesArrived(PAL::monotonicMicros());
             runtime.tickTerminalClock();
 #if UBIQUITTY_UI_TESTS
             // Counted here as well as in feedChunkUpToSyncClear: only a stream fast enough to fill a whole pass
@@ -1447,30 +1430,19 @@ std::optional<std::uint32_t> TerminalRuntime::windowSizeReassertDueInMillis(std:
     return (*wait + 999) / 1000;
 }
 
+void TerminalRuntime::noteBytesArrived(std::uint32_t nowMicros)
+{
+    m_eraseHold.stampBytes(m_lastBytesMicros, nowMicros);
+}
+
 void TerminalRuntime::armEraseHoldIfUnseen(const Ubiquitty::Terminal& terminal, std::uint32_t nowMicros)
 {
-    const std::uint32_t generation = terminal.eraseDisplayGeneration;
-    if (generation == m_seenEraseGeneration.load(std::memory_order_relaxed))
-        return;
-    m_seenEraseGeneration.store(generation, std::memory_order_relaxed);
-    // A continuous resize can erase on every display refresh. Keep the first
-    // erase's deadline so those redraws cannot postpone presentation forever.
-    std::uint32_t expected = 0;
-    m_eraseHoldStartMicros.compare_exchange_strong(expected, nowMicros | 1u, std::memory_order_relaxed);
+    m_eraseHold.arm(terminal.eraseDisplayGeneration, nowMicros);
 }
 
 bool TerminalRuntime::shouldWithholdPresentationAfterErase(std::uint32_t nowMicros)
 {
-    const std::uint32_t start = m_eraseHoldStartMicros.load(std::memory_order_relaxed);
-    if (start == 0)
-        return false;
-    const bool isWatchdogSpent = microsSince(nowMicros, start) >= eraseHoldMaxMicros;
-    const bool hasSettled = microsSince(nowMicros, m_lastBytesMicros.load(std::memory_order_relaxed)) >= eraseHoldSettleMicros;
-    if (isWatchdogSpent || hasSettled) {
-        m_eraseHoldStartMicros.store(0, std::memory_order_relaxed);
-        return false;
-    }
-    return true;
+    return m_eraseHold.shouldWithhold(nowMicros, m_lastBytesMicros);
 }
 
 void TerminalRuntime::noteEraseRedrawParsed()
@@ -1565,14 +1537,7 @@ int TerminalRuntime::owedPaintWaitMilliseconds(Ticks nowTicks, std::uint32_t now
 
 std::uint32_t TerminalRuntime::eraseHoldMicrosRemaining(std::uint32_t nowMicros) const
 {
-    const std::uint32_t start = m_eraseHoldStartMicros.load(std::memory_order_relaxed);
-    if (start == 0)
-        return 0;
-    const std::uint32_t sinceStart = microsSince(nowMicros, start);
-    const std::uint32_t sinceBytes = microsSince(nowMicros, m_lastBytesMicros.load(std::memory_order_relaxed));
-    if (sinceStart >= eraseHoldMaxMicros || sinceBytes >= eraseHoldSettleMicros)
-        return 0;
-    return std::min(eraseHoldMaxMicros - sinceStart, eraseHoldSettleMicros - sinceBytes);
+    return m_eraseHold.microsRemaining(nowMicros, m_lastBytesMicros);
 }
 
 void TerminalRuntime::updatePaneHostFacts(Protocol::Sync::PaneHostFacts& facts) const
