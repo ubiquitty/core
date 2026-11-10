@@ -490,7 +490,7 @@ struct RuntimeLink {
     // the snapshot is copied per key press, and its size is what that costs.
     // Published by every snapshot publish that finds no update open, and at
     // each update's close, which the next update can follow inside one drain.
-    // An expiry publishes nothing; its colours ride the next snapshot publish.
+    // An update the terminal expires is published by the check that expired it.
     SnapshotPublisher<CoherentColors> coherentColors; // (R) model -> main
     CommandRing<Command, 64> commands; // (W) main -> model
 };

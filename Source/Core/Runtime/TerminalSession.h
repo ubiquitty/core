@@ -5051,6 +5051,29 @@ public:
     }
 
 private:
+    /// ``lockForWrite`` for the length of a scope, and ``unlockAfterWrite`` at
+    /// its end: the form every write this session makes outside a drain pass
+    /// takes, so none of them can leave the publication behind the model.
+    class ModelWrite {
+    public:
+        /// Takes the model lock for a write outside a drain pass.
+        ///
+        /// - Parameter session: The session whose model the scope writes.
+        explicit ModelWrite(TerminalSession& session)
+            : m_session(session)
+        {
+            m_session.lockForWrite();
+        }
+
+        /// Publishes the scope's write and releases the model lock.
+        ~ModelWrite() { m_session.unlockAfterWrite(); }
+        ModelWrite(const ModelWrite&) = delete;
+        ModelWrite& operator=(const ModelWrite&) = delete;
+
+    private:
+        TerminalSession& m_session;
+    };
+
     /// What a withhold check under the model lock decided.
     struct CaptureWithhold {
         bool isHeld = false;
@@ -5243,7 +5266,7 @@ public:
     {
         if (m_remote)
             return;
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelWrite write(*this);
         if (Ubiquitty::Terminal* term = modelTerm())
             Ubiquitty::settleResize(term);
     }
@@ -5472,7 +5495,7 @@ public:
         TermPalette palette;
         TermPalette baseline;
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelWrite write(*this);
             auto* term = modelTerm();
             if (!term) {
                 return false;
@@ -5512,7 +5535,7 @@ public:
         TermPalette palette;
         TermPalette baseline;
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelWrite write(*this);
             auto* term = modelTerm();
             if (!term) {
                 return false;
@@ -6995,7 +7018,7 @@ public:
         if (m_remote)
             return m_remote->core && m_remote->core->sendPalette(palette, palette);
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelWrite write(*this);
             Ubiquitty::Terminal* term = modelTerm();
             if (!term)
                 return false;
@@ -7156,10 +7179,14 @@ public:
     /// arrived here for the same reason the heuristic did, and a second walker
     /// for it would take the same lock over the same surfaces one call later.
     ///
+    /// The cursor's blink, linger and rate are inputs of the frame clock,
+    /// which reads them from the publication, so the apply is a
+    /// ``ModelWrite``.
+    ///
     /// - Parameter config: The config fold as it stands.
     void applyTerminalPreferences(const Preferences::Values& config)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelWrite write(*this);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return;
@@ -7177,12 +7204,14 @@ public:
     /// Separate from ``applyTerminalPreferences`` because the two events want
     /// opposite answers about `cursorStyle`: a reload leaves a running
     /// program's DECSCUSR standing, a pick hands the shape back to the reader.
+    /// A ``ModelWrite``, since the frame clock reads the cursor's style and
+    /// blink from the publication.
     ///
     /// - Parameter config: The config fold as it stands, the pick already in it.
     /// - Returns: Whether a model existed to apply it to.
     bool applyPickedCursorPreferences(const Preferences::Values& config)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelWrite write(*this);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return false;
@@ -8739,6 +8768,26 @@ public:
 
     /// Releases the model lock taken by ``lockForRead``.
     void unlockForRead() { m_activeLock->unlock(); }
+
+    /// Acquires the model lock for a write outside a drain pass: an embedder
+    /// or a frontend editing the model directly.
+    ///
+    /// Pairs with ``unlockAfterWrite``, which publishes what was written.
+    void lockForWrite() { m_activeLock->lock(); }
+
+    /// Publishes the model written since ``lockForWrite``, then releases the
+    /// lock.
+    ///
+    /// Every lock-free reader of this session reads the writer's last
+    /// publication: the frame clock its cursor inputs, the input path its
+    /// modes, the chrome its colours. A write outside a drain pass has no pass
+    /// end to publish it, so its release does, under the lock, and no reader
+    /// is left on the model from before the write.
+    void unlockAfterWrite()
+    {
+        republishModel();
+        m_activeLock->unlock();
+    }
 
     /// A reader's hold on the model, for a frontend thread that reads the
     /// Terminal directly while the ingest thread parses into it.
