@@ -18,10 +18,12 @@ budget gate-self-tests-uncovered 44
 budget census-undated 13
 budget vocabulary-span 11
 budget vocabulary-array 161
-budget model-lock-holds 138
+budget model-lock-holds 186
+budget frame-decision-holds 2
 budget per-tick-waits 10
 budget plain-model-lock-holds 21
-budget thread-safety-escapes 101
+budget thread-safety-escapes 21
+budget thread-safety-escapes-tests 93
 tool check-daemon-replacement.py needs the opt-in acceptance binary and replaces private daemons, so it is run by hand as Tests/README.md describes
 tool check-sync-transport.py needs the opt-in acceptance binary and a disposable fixture account or container, so it is run by hand as Tests/README.md describes
 tool check-merge-ready.sh run by hand before a merge; there is no push at which it belongs

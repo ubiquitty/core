@@ -460,12 +460,19 @@ explicit sharing of writable data"]. Allowed:
   function holding one cannot read the model. A per-tick call a frontend
   makes is `UBIQUITTY_NONBLOCKING`, which `-Wfunction-effects` proves takes no
   lock and waits on nothing, or is listed in `Scripts/frame-path-blocking.txt`
-  with what it still does. `Scripts/check-model-lock-holds.py` holds every
-  acquisition in `TerminalSession.h` and `WorkspaceSession.h` and every tmux
-  locked run, the per-tick calls that wait, the plain std locks and every
-  analysis escape (unchecked functions, asserted capabilities, lambdas that
-  declare a requirement, a test's claim to own the model) to ledger budgets
-  that only fall, and refuses a frame decision that branches on a selection.
+  with what it still does. `Scripts/check-model-lock-holds.py` holds to
+  ledger budgets every acquisition in every file under `Source/` that names
+  the model lock, and every tmux locked run; the frame decision's own
+  acquisitions, pinned apart; the per-tick calls that wait; the plain std
+  locks; and every analysis escape (unchecked functions, asserting functions
+  and every call of one, a test's claim to own the model among them, and
+  lambdas that declare a requirement), under `Source/` and `Tests/` apart. It
+  refuses a frame decision that branches on a selection.
+  `Scripts/check-ledger-ratchet.py` holds every budget to the merge base's
+  number or lower, unless the branch adds a `raised` line that says why. The
+  cadence test counts the model lock's acquisitions around each frame
+  decision, and requires none while no synchronized update is open: that
+  catches a lock taken by a route no text scan sees.
 - **Encapsulation must not add a lock or atomic-RMW to a per-cell / per-frame /
   per-byte hot path** without a measured justification. Prefer thread-local or
   per-instance ownership over a shared-and-locked singleton. When a lock is
