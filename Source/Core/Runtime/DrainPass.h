@@ -44,12 +44,20 @@ inline constexpr int drainReadBufferBytes = 64 * 1024;
 /// The re-reads a pass that rides the burst takes at a would-block after
 /// bytes, each after a syscall-free dwell, before it ends at the would-block.
 ///
+/// A pass that ends at a would-block reports the writer paused, and the
+/// erase hold reads that report as the redraw behind an erase parsed whole.
+/// So the band spans the writer's refill: the read that empties the tty
+/// wakes the writer, and its next slice lands a wake-up later, about ten
+/// microseconds on an idle core. A band shorter than that ends a full-screen
+/// repaint's pass at its first refill, and a resize then shows the screen
+/// erased or half repainted.
+///
 /// The band never yields the core: on a loaded machine a yield hands it to
 /// the machine's busy work, and the pass then waits a scheduling delay at
 /// every refill gap while the writer waits behind it. A gap longer than the
 /// band ends the pass, and the ingest loop's readiness wait, which a waker
 /// can end, takes the rest of it.
-inline constexpr int drainQuietSpinBudget = 4;
+inline constexpr int drainQuietSpinBudget = 32;
 
 /// What the owner of a pass adds to the shared read loop.
 class DrainPassOwner {
