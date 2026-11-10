@@ -70,6 +70,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#include <spawn.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -924,6 +925,11 @@ static constexpr const char* reportArgument0Marker = "--ubiquitty-report-argumen
 // in for one whose behaviour no system program has.
 static constexpr const char* sleepsMarker = "--ubiquitty-sleeps";
 static constexpr const char* mainThreadExitsMarker = "--ubiquitty-main-thread-exits";
+// Opens a login pane, waits, and kills itself: the host dying with a pane open.
+static constexpr const char* hostDiesWithAPaneMarker = "--ubiquitty-host-dies-with-a-pane";
+// Opens a login pane, hands its master to an adopter in this process, and kills itself: the
+// receiver of a handover dying while the pane is still in its start window.
+static constexpr const char* adopterDiesWithAPaneMarker = "--ubiquitty-adopter-dies-with-a-pane";
 #if defined(__linux__)
 static constexpr const char* renamesItselfMarker = "--ubiquitty-renames-itself";
 #endif
@@ -3784,6 +3790,45 @@ int main(int argc, char** argv)
         std::printf("[%s]", argv[0]);
         return failures == 0 ? 0 : 1;
     }
+#if defined(__APPLE__)
+    if (argc == 5 && std::strcmp(argv[1], hostDiesWithAPaneMarker) == 0) {
+        char user[256];
+        const int length = PAL::systemLoginUserName(user, sizeof(user));
+        if (length <= 0)
+            return 2;
+        // Each pane carries its own marker: the base followed by its index.
+        const unsigned long paneCount = std::strtoul(argv[3], nullptr, 10);
+        std::vector<std::unique_ptr<PAL::Stream>> panes;
+        for (unsigned long index = 0; index < paneCount; ++index) {
+            auto stream = openArguments({ "/usr/bin/login", "-pfl", std::string(user, static_cast<std::size_t>(length)),
+                "/bin/sh", "-c", "sleep 1000; : " + std::string(argv[4]) + "-" + std::to_string(index) });
+            if (!stream)
+                return 3;
+            panes.push_back(std::move(stream));
+        }
+        ::usleep(static_cast<useconds_t>(std::strtoul(argv[2], nullptr, 10)));
+        ::kill(::getpid(), SIGKILL);
+        return 4;
+    }
+#endif
+    if (argc == 4 && std::strcmp(argv[1], adopterDiesWithAPaneMarker) == 0) {
+        char user[256];
+        const int length = PAL::systemLoginUserName(user, sizeof(user));
+        if (length <= 0)
+            return 2;
+        auto original = openArguments({ "/usr/bin/login", "-pfl", std::string(user, static_cast<std::size_t>(length)),
+            "/bin/sh", "-c", "sleep 1000; : " + std::string(argv[3]) });
+        if (!original)
+            return 3;
+        original->setProcessClosePolicy(PAL::ProcessClosePolicy::KeepRunning);
+        auto adopted = PAL::adoptPTY(::dup(original->fileDescriptor()), ::getpid());
+        if (!adopted)
+            return 5;
+        original.reset();
+        ::usleep(static_cast<useconds_t>(std::strtoul(argv[2], nullptr, 10)));
+        ::kill(::getpid(), SIGKILL);
+        return 4;
+    }
     if (argc == 3 && std::strcmp(argv[1], sleepsMarker) == 0) {
         std::this_thread::sleep_for(std::chrono::seconds(std::strtoul(argv[2], nullptr, 10)));
         return 0;
@@ -3833,3 +3878,161 @@ TEST(theLineDisciplineReadsCustomAndDisabledEraseCharacters)
         CHECK(discipline->eraseCharacter == wanted.expected);
     }
 }
+
+#if defined(__APPLE__)
+// A pane closed while `login` is starting, or a host killed with a pane open, must
+// leave no process behind: `login` ignores the one hangup the master's close
+// raises, and a shell forked inside that instant blocks forever opening a terminal
+// whose master is gone, holding a pty for the life of the machine.
+
+extern char** environ;
+
+// How many processes carry `marker` in their command line, `login` and its shell both.
+static int processesCarrying(const std::string& marker)
+{
+    FILE* pipe = ::popen(("pgrep -f '" + marker + "' | wc -l").c_str(), "r");
+    if (!pipe)
+        return -1;
+    int count = -1;
+    if (std::fscanf(pipe, "%d", &count) != 1)
+        count = -1;
+    ::pclose(pipe);
+    return count;
+}
+
+static bool noProcessCarriesWithin(const std::string& marker, int seconds)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+    for (;;) {
+        if (processesCarrying(marker) == 0)
+            return true;
+        if (std::chrono::steady_clock::now() >= deadline)
+            return false;
+        ::usleep(50'000);
+    }
+}
+
+static std::string uniqueMarker(const char* kind, int index)
+{
+    return std::string("ubq-pty-leak-") + kind + "-" + std::to_string(::getpid()) + "-" + std::to_string(index);
+}
+
+static std::string loginUser()
+{
+    char user[256];
+    const int length = PAL::systemLoginUserName(user, sizeof(user));
+    return length > 0 ? std::string(user, static_cast<std::size_t>(length)) : std::string();
+}
+
+TEST(aLoginPaneClosedWhileItStartsLeavesNoProcess)
+{
+    const std::string user = loginUser();
+    REQUIRE(!user.empty());
+    int index = 0;
+    for (const useconds_t delay : { 0u, 1000u, 5000u, 20000u, 100000u }) {
+        for (int trial = 0; trial < 20; ++trial, ++index) {
+            const std::string marker = uniqueMarker("close", index);
+            auto stream = openArguments({ "/usr/bin/login", "-pfl", user, "/bin/sh", "-c", "sleep 1000; : " + marker });
+            REQUIRE(stream);
+            ::usleep(delay);
+            stream.reset();
+            CHECK(noProcessCarriesWithin(marker, 10));
+        }
+    }
+}
+
+TEST(aLoginPaneClosedAfterItsShellRanLeavesNoProcess)
+{
+    const std::string user = loginUser();
+    REQUIRE(!user.empty());
+    for (int trial = 0; trial < 5; ++trial) {
+        const std::string marker = uniqueMarker("steady", trial);
+        auto stream = openArguments({ "/usr/bin/login", "-pfl", user, "/bin/sh", "-c", "echo up; sleep 1000; : " + marker });
+        REQUIRE(stream);
+        char buffer[1024];
+        int status = 0;
+        // Reads until the shell has spoken, which is what ends the startup window; a read that
+        // came first from `login`'s own banner does not.
+        std::string heard;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (heard.find("up") == std::string::npos && std::chrono::steady_clock::now() < deadline) {
+            const int count = drainWithBudget(stream.get(), buffer, sizeof(buffer), 200, &status);
+            if (count > 0)
+                heard.append(buffer, static_cast<std::size_t>(count));
+        }
+        CHECK(heard.find("up") != std::string::npos);
+        stream.reset();
+        CHECK(noProcessCarriesWithin(marker, 10));
+    }
+}
+
+TEST(aHostKilledWithLoginPanesOpenLeavesNoProcess)
+{
+    REQUIRE(!loginUser().empty());
+    int index = 0;
+    // The last delay is after the shells are long past their start. Two panes at once: a watcher
+    // that held the other pane's lifeline would keep both guards from ever seeing the host go.
+    for (const unsigned long delay : { 0ul, 1000ul, 5000ul, 20000ul, 100000ul, 1500000ul }) {
+        for (int trial = 0; trial < (delay >= 1500000ul ? 3 : 10); ++trial, ++index) {
+            const std::string marker = uniqueMarker("host", index);
+            const std::string delayText = std::to_string(delay);
+            char* const arguments[] = { const_cast<char*>(executablePath.c_str()), const_cast<char*>(hostDiesWithAPaneMarker),
+                const_cast<char*>(delayText.c_str()), const_cast<char*>("2"), const_cast<char*>(marker.c_str()), nullptr };
+            pid_t host = 0;
+            REQUIRE(::posix_spawn(&host, executablePath.c_str(), nullptr, nullptr, arguments, environ) == 0);
+            int status = 0;
+            REQUIRE(::waitpid(host, &status, 0) == host);
+            CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+            CHECK(noProcessCarriesWithin(marker, 10));
+        }
+    }
+}
+
+TEST(anAdopterKilledWithAPaneStillInItsStartWindowLeavesNoProcess)
+{
+    REQUIRE(!loginUser().empty());
+    int index = 0;
+    for (const unsigned long delay : { 0ul, 1000ul, 5000ul, 20000ul, 100000ul }) {
+        for (int trial = 0; trial < 10; ++trial, ++index) {
+            const std::string marker = uniqueMarker("adopter", index);
+            const std::string delayText = std::to_string(delay);
+            char* const arguments[] = { const_cast<char*>(executablePath.c_str()), const_cast<char*>(adopterDiesWithAPaneMarker),
+                const_cast<char*>(delayText.c_str()), const_cast<char*>(marker.c_str()), nullptr };
+            pid_t adopter = 0;
+            REQUIRE(::posix_spawn(&adopter, executablePath.c_str(), nullptr, nullptr, arguments, environ) == 0);
+            int status = 0;
+            REQUIRE(::waitpid(adopter, &status, 0) == adopter);
+            CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+            CHECK(noProcessCarriesWithin(marker, 10));
+        }
+    }
+}
+
+TEST(aLoginPaneHandedOverInItsStartWindowSurvivesItsHost)
+{
+    const std::string user = loginUser();
+    REQUIRE(!user.empty());
+    int index = 0;
+    for (const useconds_t delay : { 0u, 1000u, 5000u, 20000u }) {
+        for (int trial = 0; trial < 5; ++trial, ++index) {
+            const std::string marker = uniqueMarker("handover", index);
+            auto stream = openArguments({ "/usr/bin/login", "-pfl", user, "/bin/sh", "-c", "sleep 1000; : " + marker });
+            REQUIRE(stream);
+            stream->setProcessClosePolicy(PAL::ProcessClosePolicy::KeepRunning);
+            // The receiver of the handover holds the master, so no hangup arrives when the host lets go.
+            auto receiver = PAL::adoptPTY(::dup(stream->fileDescriptor()), ::getpid());
+            REQUIRE(receiver);
+            ::usleep(delay);
+            stream.reset();
+            // The watcher was told to leave rather than left to see the host's end close, so the
+            // shell the daemon now owns is still running a while later.
+            ::usleep(1'500'000);
+            CHECK(processesCarrying(marker) >= 2);
+            receiver.reset();
+            // Only this test's own marker is signalled, to leave nothing behind.
+            (void)std::system(("pkill -KILL -f '" + marker + "'").c_str());
+            CHECK(noProcessCarriesWithin(marker, 10));
+        }
+    }
+}
+#endif
