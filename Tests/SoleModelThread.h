@@ -14,6 +14,38 @@
 /// Declares that the calling test thread is its model's only thread.
 inline void ownModelOnTestThread() UBIQUITTY_ASSERTS_CAPABILITY(Ubiquitty::modelLockRole) { }
 
+// A test that starts an ingest thread owns the model only before the thread
+// starts and after it joins. It claims the model through the two helpers
+// below, whose claim ends with the call, so no claim spans a window in which
+// a drain runs, and the analysis checks every access the test makes there.
+
+/// Readies `runtime` to adopt its stream, on the thread that owns its model
+/// until the test starts its ingest thread.
+///
+/// - Parameter runtime: The runtime about to adopt a stream.
+/// - Returns: What `prepareAdoption()` returns.
+template<typename Runtime>
+[[nodiscard]] bool prepareAdoptionBeforeIngest(Runtime& runtime)
+{
+    ownModelOnTestThread();
+    return runtime.prepareAdoption();
+}
+
+/// Runs `read` on `runtime`'s model, on the thread that owns it again once
+/// the test has joined its ingest thread.
+///
+/// - Parameters:
+///   - runtime: The runtime whose model is read.
+///   - read: Called with the model, or null without one; its result is
+///     returned.
+/// - Returns: What `read` returns.
+template<typename Runtime, typename Read>
+decltype(auto) withModelAfterIngest(Runtime& runtime, Read&& read)
+{
+    ownModelOnTestThread();
+    return read(runtime.borrowTermForRender());
+}
+
 /// Runs `access` on a session's model under the session's own model lock, for
 /// a test that drives the session from its frontend's thread.
 ///
