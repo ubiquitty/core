@@ -30,10 +30,13 @@ that runs more than one at a time sets `UBQ_CI_ROOT` (the pre-push gate does).
 `run --only <stage>` runs just the named stages, in manifest order, with the
 same environment, commands and logs the whole battery gives them. A machine that
 stands in for the CI runner for part of a push (Scripts/linux-host.sh) runs the
-stages it covers this way, so the commands it runs are CI's own.
+stages it covers this way, so the commands it runs are CI's own. A CI job that
+runs one group of a battery's stages reports with the same `--only` list, so
+its report and its routing check cover exactly the stages it was given.
 
 Usage: python3 Scripts/ci_batteries.py run|report|list preflight|linux|apple
        python3 Scripts/ci_batteries.py run linux --only linux-build --only linux-smokes
+       python3 Scripts/ci_batteries.py report linux --only linux-build --only linux-smokes
 """
 
 import argparse
@@ -158,6 +161,7 @@ python3 Scripts/test-gate-framework.py
 python3 Scripts/test-prepush-preflight.py
 python3 Scripts/test-prepush-gates.py
 python3 Scripts/test-gen-portable-core-sources.py
+python3 Scripts/test-ci-pairing.py
 python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
             Stage("style", "Style and hygiene", "./Scripts/check-style.py"),
             Stage("capabilities", "Capability single source of truth", "./Scripts/check-capability-ssot.py"),
@@ -708,7 +712,8 @@ def main():
     parser.add_argument("operation", choices=("run", "report", "list"))
     parser.add_argument("platform", choices=("preflight", "linux", "apple"))
     parser.add_argument("--only", action="append", default=[], metavar="STAGE",
-                        help="with run: execute only this stage (repeatable)")
+                        help="with run: execute only this stage; with report or list: "
+                             "only this stage (repeatable)")
     parser.add_argument("--source-root", help="the App, Kit, Core, or combined source tree being checked")
     parser.add_argument("--core-source-root", help="an explicit Core dependency source tree")
     parser.add_argument("--kit-source-root", help="an explicit Kit dependency source tree")
@@ -717,9 +722,6 @@ def main():
         context = source_roots(arguments.source_root, arguments.core_source_root, arguments.kit_source_root)
     except ValueError as error:
         parser.error(str(error))
-    if arguments.only:
-        if arguments.operation != "run":
-            parser.error("--only applies to run")
     try:
         manifest = source_stages(arguments.platform, context, arguments.only)
     except ValueError as error:
