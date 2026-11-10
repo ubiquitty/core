@@ -340,7 +340,9 @@ struct PointerRoute {
 ///   - terminal: The terminal the view shows.
 ///   - selection: The view's selection session, or null for a frontend with
 ///     no selection model.
-///   - fact: The event's facts.
+///   - fact: The event's facts. With a selection session, its rows are read
+///     at the offset the view's frame shows them at
+///     (``Selection::frameViewOffset``), not at `fact.viewOffset` itself.
 ///   - policy: The preferences the ladder reads.
 ///   - nowTicks: The monotonic 60 Hz tick, for the hilite await's deadline.
 /// - Returns: What the frontend has left to do.

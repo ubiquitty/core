@@ -335,8 +335,14 @@ void anchorReadlineExtension(Selection::Session& selection, Terminal& terminal, 
 
 } // namespace
 
-PointerRoute routePointer(PointerLadder& ladder, Terminal& terminal, Selection::Session* selection, const PointerFact& fact, const PointerPolicy& policy, std::uint32_t nowTicks)
+PointerRoute routePointer(PointerLadder& ladder, Terminal& terminal, Selection::Session* selection, const PointerFact& viewFact, const PointerPolicy& policy, std::uint32_t nowTicks)
 {
+    // The rows under the pointer are the rows the view's frame shows, which a
+    // view held back over its history keeps over output its transition has
+    // not taken yet.
+    PointerFact fact = viewFact;
+    if (selection)
+        fact.viewOffset = Selection::frameViewOffset(*selection, terminal, static_cast<int>(viewFact.viewOffset));
     PointerRoute route;
     const bool isLeft = fact.button == PointerButton::Left;
     const bool canReadlineDelete = terminal.modes.shouldDeleteReadlineSelection
