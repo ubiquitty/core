@@ -5230,6 +5230,26 @@ public:
             otherSearch, triggers, hilite);
     }
 
+    /// The model's title and working directory as its writer last published them.
+    ///
+    /// Answers only where an ingest loop drains the pane's own model; a remote,
+    /// adopted or fed pane's model is written by another thread's schedule, and
+    /// its caller reads under the model lock as before.
+    ///
+    /// - Parameters:
+    ///   - title: Receives the title.
+    ///   - directory: Receives the directory the program reported.
+    /// - Returns: Whether the publication answered.
+    [[nodiscard]] bool readPublishedTitleTexts(std::string& title, std::string& directory) UBIQUITTY_EXCLUDES(modelLockRole)
+    {
+        if (!isModelDrainedByIngestLoop())
+            return false;
+        const TitleFacts facts = m_runtime->link().titleFacts.read();
+        title.assign(facts.titleView());
+        directory.assign(facts.directoryView());
+        return true;
+    }
+
     /// The grid a title names: the laid-out grid during remote bootstrap, then the model's grid.
     [[nodiscard]] TitleGrid titleGrid(TitleGrid laidOut)
     {

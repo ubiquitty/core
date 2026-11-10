@@ -1477,6 +1477,47 @@ TEST(testAProgrammedKeyEncodesWithoutTheModel)
     CHECK_STR_EQ(std::string(encoded.data(), 3), "xyz");
 }
 
+// A title and a directory a program reported are read from what the loop
+// published, with the model held by another thread.
+TEST(testATitleAndDirectoryAreReadWithoutTheModel)
+{
+    LoopSession loop;
+    REQUIRE(loop.isRunning);
+    REQUIRE(loop.write("\033]2;a published title\033\\\033]7;file://host/tmp/published-directory\033\\"));
+    std::string title;
+    std::string directory;
+    bool didAnswer = false;
+    for (int waited = 0; waited < 2000; ++waited) {
+        CHECK(returnsWhileTheModelIsHeld(loop.session(), [&] { didAnswer = loop.session().readPublishedTitleTexts(title, directory); }));
+        if (didAnswer && title == "a published title" && directory.find("/tmp/published-directory") != std::string::npos)
+            break;
+        ::usleep(1000);
+    }
+    CHECK(didAnswer);
+    CHECK_STR_EQ(title, "a published title");
+    CHECK(directory.find("/tmp/published-directory") != std::string::npos);
+}
+
+// A text longer than the record keeps is cut on a character boundary, and the
+// record says the directory was cut.
+TEST(testTheTitleRecordCutsOnACharacterBoundary)
+{
+    Ubiquitty::Runtime::TitleFacts facts;
+    const std::string twoByte = [] {
+        std::string text;
+        for (int index = 0; index < 3000; ++index)
+            text += "\xC3\xA9";
+        return text;
+    }();
+    facts.assign("short", twoByte);
+    CHECK_STR_EQ(std::string(facts.titleView()), "short");
+    CHECK(facts.isDirectoryCut);
+    CHECK(facts.directoryView().size() <= Ubiquitty::Runtime::TitleFacts::maxBytes);
+    CHECK(facts.directoryView().size() % 2 == 0);
+    CHECK(facts.holds("short", twoByte));
+    CHECK(!facts.holds("other", twoByte));
+}
+
 // A key's activity is posted to the loop rather than written under the lock:
 // the key returns while another thread holds the model, and the loop stamps
 // the cursor's activity tick once it may.
