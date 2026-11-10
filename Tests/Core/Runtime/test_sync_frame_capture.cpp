@@ -577,6 +577,80 @@ TEST(aBlockTheHeldFrameTimerExpiresIsPublishedClosed)
     CHECK(!fixture.session->shouldWithholdFrame(Ticks(161)));
 }
 
+namespace {
+
+/// Restores the faked tick clock when a case that ages a block ends.
+struct RestoreTestTicks {
+    std::uint32_t previous = Ubiquitty::PAL::s_testTicks;
+    ~RestoreTestTicks() { Ubiquitty::PAL::s_testTicks = previous; }
+};
+
+/// Whether the published colours carry the background a case's OSC 11 set.
+bool isPublishedBackgroundSet(TerminalSession& session)
+{
+    const Ubiquitty::ColorRGBA background = session.readCoherentColors().colors.background;
+    return background.red == 0x00 && background.green == 0x77 && background.blue == 0x77;
+}
+
+} // namespace
+
+// A flood inside a block the program never closes runs the block's budget out
+// on a drain pass. That pass publishes the block closed, colours and all, so
+// the delivery it makes carries them whether or not the flood goes on.
+TEST(aPassThatExpiresABlockPublishesItsColors)
+{
+    const RestoreTestTicks restoreTicks;
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    fixture.session->terminal()->modes.shouldSaveCRT = false;
+    const std::uint64_t epochBefore = fixture.session->readCoherentColors().paletteEpoch;
+
+    Ubiquitty::PAL::s_testTicks = 100;
+    fixture.stream->toRead += "\x1b[?2026h\x1b]11;rgb:00/77/77\x07\x1b[Hflood";
+    REQUIRE(fixture.session->drain().bytesDrained > 0);
+    REQUIRE(fixture.session->terminal()->modes.syncOutput);
+    CHECK(fixture.session->readSnapshot().syncHoldActive);
+    CHECK_EQ(fixture.session->readCoherentColors().paletteEpoch, epochBefore);
+
+    Ubiquitty::PAL::s_testTicks = 161;
+    Ubiquitty::PAL::s_testMicroseconds += 1'100'000;
+    fixture.stream->toRead += "\x1b[Hmore flood";
+    CHECK(fixture.session->drain().bytesDrained > 0);
+    REQUIRE(!fixture.session->terminal()->modes.syncOutput);
+    CHECK(!fixture.session->readSnapshot().syncHoldActive);
+    CHECK_NE(fixture.session->readCoherentColors().paletteEpoch, epochBefore);
+    CHECK(isPublishedBackgroundSet(*fixture.session));
+}
+
+// The held-frame timer expires a block a quiet program left open and releases
+// the frame it held, which the ingest loop announces. The colours the block
+// set are published with that frame.
+TEST(aBlockTheHeldFrameTimerExpiresReleasesItsFrameWithItsColors)
+{
+    const RestoreTestTicks restoreTicks;
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    fixture.session->terminal()->modes.shouldSaveCRT = false;
+    fixture.session->setSyncFrameCaptureGeometry(testGeometry());
+    fixture.drainSyncFrame("before");
+    static_cast<void>(fixture.session->takeSyncFrame());
+    const std::uint64_t epochBefore = fixture.session->readCoherentColors().paletteEpoch;
+
+    Ubiquitty::PAL::s_testTicks = 100;
+    fixture.stream->toRead += "\x1b[?2026h\x1b]11;rgb:00/77/77\x07\x1b[Hafter";
+    REQUIRE(fixture.session->drain().caughtUp);
+    REQUIRE(fixture.session->isFrameHeld());
+    CHECK_EQ(fixture.session->readCoherentColors().paletteEpoch, epochBefore);
+
+    Ubiquitty::PAL::s_testTicks = 161;
+    Ubiquitty::PAL::s_testMicroseconds += 1'100'000;
+    static_cast<void>(fixture.session->publishHeldFrameIfDue());
+    CHECK(!fixture.session->isFrameHeld());
+    CHECK(!fixture.session->readSnapshot().syncHoldActive);
+    CHECK_NE(fixture.session->readCoherentColors().paletteEpoch, epochBefore);
+    CHECK(isPublishedBackgroundSet(*fixture.session));
+}
+
 TEST(aContinuingUnsaturatedRedrawRetainsItsAdmittedFrame)
 {
     SessionFixture fixture(24, 80);
