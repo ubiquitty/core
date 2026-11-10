@@ -44,9 +44,15 @@ struct Fixture {
         Screen::publish(daemon, *session, Runtime::FrameClass::Structural);
     }
 
+    // The daemon steps at the later of the instant it is given and its own
+    // clock, so the timeline starts this far ahead of that clock: a loaded
+    // machine that stalls past the natural window (100 ms) between two steps
+    // would otherwise move the pane on by the real clock and not the test's.
+    static constexpr std::uint64_t clockLeadMicroseconds = 60'000'000;
+
     void start()
     {
-        started = Screen::now();
+        started = Screen::now() + clockLeadMicroseconds;
         CHECK(Access::begin(daemon, started));
     }
 
