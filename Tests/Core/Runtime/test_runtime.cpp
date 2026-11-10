@@ -17,6 +17,7 @@
 // can assert the runtime forwards correctly.
 //
 
+#include "Core/Modes/SyncOutput.h"
 #include "Core/Preferences/Preferences.h"
 #include "Core/Rendering/FrameDamage.h"
 #include "Core/Rendering/PaletteColors.h"
@@ -6366,6 +6367,46 @@ TEST(aBlockTheWithholdExpiresIsPublishedClosed)
     std::uint32_t ticks = 1;
     CHECK(completesWhileTheModelIsHeld(*session, [&] { ticks = session->presentationHoldTicksRemaining(Ubiquitty::Ticks(161)); }));
     CHECK_EQ(ticks, 0u);
+}
+
+// An open block's budget is read with the model held elsewhere: whole before
+// any frame asked, and counting down from the tick the first ask stamped,
+// which that ask publishes with the block.
+TEST(anOpenBlocksBudgetIsReadWithoutTheModel)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(4, 20);
+    constexpr std::string_view open = "\033[?2026h";
+    session->feedBytes({ open.data(), open.size() });
+    REQUIRE(session->readSnapshot().syncHoldActive);
+    REQUIRE(session->readSnapshot().syncHoldTouchTicks == 0u);
+    std::uint32_t ticks = 0;
+    CHECK(completesWhileTheModelIsHeld(*session, [&] { ticks = session->presentationHoldTicksRemaining(Ubiquitty::Ticks(100)); }));
+    CHECK_EQ(ticks, Ubiquitty::Modes::SyncOutput::maxHoldTicks + 1);
+    CHECK(session->shouldWithholdFrame(Ubiquitty::Ticks(100)));
+    CHECK_EQ(session->readSnapshot().syncHoldTouchTicks, 100u);
+    CHECK(completesWhileTheModelIsHeld(*session, [&] { ticks = session->presentationHoldTicksRemaining(Ubiquitty::Ticks(130)); }));
+    CHECK_EQ(ticks, Ubiquitty::Modes::SyncOutput::maxHoldTicks - 30 + 1);
+}
+
+// A block opened and stamped by a write outside the drain, through the write
+// pair, is published at the write's release: the budget read without the
+// model runs from that stamp.
+TEST(aBlockStampWrittenThroughTheWritePairReachesTheLockFreeBudget)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(4, 20);
+    session->lockForWrite();
+    Ubiquitty::processBytes(session->terminal(), "\033[?2026h");
+    Ubiquitty::Modes::SyncOutput::touch(session->terminal(), Ubiquitty::Ticks(100));
+    session->unlockAfterWrite();
+    CHECK(session->readSnapshot().syncHoldActive);
+    CHECK_EQ(session->readSnapshot().syncHoldTouchTicks, 100u);
+    std::uint32_t ticks = 0;
+    CHECK(completesWhileTheModelIsHeld(*session, [&] { ticks = session->presentationHoldTicksRemaining(Ubiquitty::Ticks(130)); }));
+    CHECK_EQ(ticks, Ubiquitty::Modes::SyncOutput::maxHoldTicks - 30 + 1);
 }
 
 namespace {

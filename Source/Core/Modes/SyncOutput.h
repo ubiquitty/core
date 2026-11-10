@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#include "Base/ThreadSafety.h"
 #include "Base/Types.h"
 #include "Forward.h"
 
@@ -25,6 +26,22 @@ void touch(Ubiquitty::Terminal* t, Ticks currentTicks);
 
 /// Drop the block and its touch stamp — the frontend presents on the next frame.
 void expire(Ubiquitty::Terminal* t);
+
+/// What a reader without the model knows of the block: whether it is open,
+/// and the tick its budget runs from. A check that changes it under the
+/// model lock republishes before it lets go.
+struct BlockMark {
+    bool isOpen = false;
+    uint32_t touchTicks = 0;
+
+    friend bool operator==(const BlockMark&, const BlockMark&) = default;
+};
+
+/// Returns the block as the published snapshot carries it.
+///
+/// - Parameter t: The model, borrowed under the caller's lock.
+/// - Returns: Whether the block is open, and its touch stamp.
+[[nodiscard]] BlockMark blockMark(const Ubiquitty::Terminal& t);
 
 /// The longest a block may withhold presentation before it is expired.
 ///
@@ -79,5 +96,16 @@ constexpr uint32_t maxHoldTicks = 60;
 ///   least 1, so a caller can always sleep on the answer. Zero when nothing
 ///   is held.
 [[nodiscard]] uint32_t ticksUntilHoldExpires(const Ubiquitty::Terminal& t, Ticks currentTicks);
+
+/// How many ticks until an open block outlives its budget, from its stamp as
+/// published, for a reader that holds no lock.
+///
+/// - Parameters:
+///   - touchTicks: The tick the block's hold was first asked about, or 0
+///     before it was.
+///   - currentTicks: Now, on the frontend's monotonic 60 Hz clock.
+/// - Returns: As ``ticksUntilHoldExpires(_:_:)`` answers for an open block:
+///   at least 1.
+[[nodiscard]] uint32_t ticksUntilHoldExpires(uint32_t touchTicks, Ticks currentTicks) noexcept UBIQUITTY_NONBLOCKING;
 
 } // namespace Ubiquitty::Modes::SyncOutput

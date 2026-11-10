@@ -5077,14 +5077,19 @@ private:
     ///   expired a block.
     CaptureWithhold withholdCapture(Ubiquitty::Terminal& terminal, Ticks nowTicks) UBIQUITTY_REQUIRES(modelLockRole)
     {
-        const bool wasBlockOpen = terminal.modes.syncOutput;
-        const bool wasBlockPublished = wasBlockOpen || readSnapshot().syncHoldActive;
+        const Modes::SyncOutput::BlockMark block = Modes::SyncOutput::blockMark(terminal);
+        const bool wasBlockPublished = block.isOpen || readSnapshot().syncHoldActive;
         CaptureWithhold withhold { .isHeld = m_runtime->shouldWithholdPresentation(terminal, nowTicks, PAL::monotonicMicros()) };
-        if (terminal.modes.syncOutput)
+        if (terminal.modes.syncOutput) {
+            // The stamp this check put on the block is the budget a frontend
+            // reads lock-free, so it is published with the block.
+            if (Modes::SyncOutput::blockMark(terminal) != block)
+                republishModel();
             return withhold;
+        }
         if (wasBlockPublished)
             republishModel();
-        withhold.didExpireBlock = wasBlockOpen;
+        withhold.didExpireBlock = block.isOpen;
         if (withhold.didExpireBlock)
             m_events.pending.fetch_or(1u << static_cast<unsigned>(EventKind::ScreenDirty), std::memory_order_release);
         return withhold;
@@ -5119,13 +5124,14 @@ public:
     /// anything is held, 0 otherwise.
     ///
     /// Only a block's budget lives in the model; the erase hold is the
-    /// runtime's own. So the lock is taken only while the published snapshot
-    /// says a block is open, or for an adopted terminal, which its owner
-    /// parses without publishing this session's snapshot.
+    /// runtime's own. The pane's writer publishes the block with the stamp
+    /// its budget runs from, so it is read without the lock; an adopted
+    /// terminal, which its owner parses without publishing this session's
+    /// snapshot, takes it.
     [[nodiscard]] std::uint32_t presentationHoldTicksRemaining(Ticks nowTicks) UBIQUITTY_EXCLUDES(modelLockRole)
     {
-        if (!m_externalTerminal && !readSnapshot().syncHoldActive)
-            return m_runtime->presentationHoldTicksRemaining(PAL::monotonicMicros());
+        if (!m_externalTerminal)
+            return m_runtime->presentationHoldTicksRemaining(readSnapshot(), nowTicks, PAL::monotonicMicros());
         const ModelLockHold hold(*m_activeLock);
         if (const Ubiquitty::Terminal* terminal = modelTerm())
             return m_runtime->presentationHoldTicksRemaining(*terminal, nowTicks, PAL::monotonicMicros());
@@ -6925,8 +6931,13 @@ public:
     ///   and when to ask again.
     [[nodiscard]] LiveReadAnswer liveReadDecline(Ubiquitty::Terminal& terminal, const FrameDemand& demand) UBIQUITTY_REQUIRES(modelLockRole)
     {
+        const Modes::SyncOutput::BlockMark block = Modes::SyncOutput::blockMark(terminal);
         const bool isHeld = demand.isResizing ? Modes::SyncOutput::shouldWithholdFrame(terminal, demand.nowTicks)
                                               : shouldWithholdCapture(terminal, demand.nowTicks);
+        // The resize check stamps and expires the block as the capture check
+        // does, and publishes what it wrote the same way.
+        if (demand.isResizing && Modes::SyncOutput::blockMark(terminal) != block)
+            republishModel();
         if (isHeld) {
             const std::uint32_t budget = m_runtime->presentationHoldTicksRemaining(terminal, demand.nowTicks, PAL::monotonicMicros());
             return { .decline = FrameDecline::BlockOpenUnderLock, .askAgainTicks = std::max<std::uint32_t>(1, budget) };

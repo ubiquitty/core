@@ -77,6 +77,9 @@ struct RuntimeSnapshot {
     bool mouseHiliteActive = false; // 1001 hilite tracking
     bool hiliteAwaiting = false; // 1001 press sent, XTHIMOUSE reply outstanding
     bool syncHoldActive = false; // DECSET 2026 held -- the frontend books its ask-back timer from this
+    // The tick the open block's hold was first asked about, 0 before it was:
+    // with syncHoldActive, the budget left, which a frontend reads lock-free.
+    std::uint32_t syncHoldTouchTicks = 0;
     // DECCOLM's 132-column mode: while it stands the application owns the
     // column count, so a window resize moves rows alone and the cells stretch
     // to the new width. Recomputing columns from the width there snaps a

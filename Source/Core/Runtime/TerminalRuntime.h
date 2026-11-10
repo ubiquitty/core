@@ -1425,6 +1425,19 @@ public:
     [[nodiscard]] std::uint32_t presentationHoldTicksRemaining(const Ubiquitty::Terminal& terminal, Ticks nowTicks, std::uint32_t nowMicros) const
         UBIQUITTY_REQUIRES(modelLockRole);
 
+    /// Returns the ticks until a withheld present may release on its own,
+    /// from what this runtime's writer published: the open block's budget
+    /// from its published stamp, and the erase hold. Any thread; it waits on
+    /// nothing.
+    ///
+    /// - Parameters:
+    ///   - published: The snapshot this runtime's writer published.
+    ///   - nowTicks: Now, on the 60 Hz monotonic clock.
+    ///   - nowMicros: Now, in monotonic microseconds.
+    /// - Returns: At least 1 while anything is held, 0 otherwise.
+    [[nodiscard]] std::uint32_t presentationHoldTicksRemaining(const RuntimeSnapshot& published, Ticks nowTicks, std::uint32_t nowMicros) const noexcept
+        UBIQUITTY_NONBLOCKING;
+
     /// Returns the ticks until the erase hold may release on its own, from
     /// published state alone, for a caller with no model. Any thread; it
     /// waits on nothing.
