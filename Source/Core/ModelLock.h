@@ -58,6 +58,23 @@ class UBIQUITTY_CAPABILITY("model lock") ModelLockRole final { };
 /// and model-reading function names.
 inline constexpr ModelLockRole modelLockRole {};
 
+/// What a model's owner does at the two moments only its lock sees: a holder
+/// other than the drain taking the lock, and the drain letting it go. Each
+/// runs under the lock, on the thread holding it.
+class ModelLockOwner {
+public:
+    virtual ~ModelLockOwner() = default;
+
+    /// Runs once a holder other than the drain has the lock, before it reads
+    /// the model: the drain may leave work its bites defer, and a reader must
+    /// find it done.
+    virtual void enterAsReader() UBIQUITTY_REQUIRES(modelLockRole) = 0;
+
+    /// Runs as the drain is about to let the lock go: what it publishes is
+    /// then never older than the model the next holder is handed.
+    virtual void exitAsDrain() UBIQUITTY_REQUIRES(modelLockRole) = 0;
+};
+
 /// The lock over one terminal model.
 ///
 /// One thread drains bytes into the model, taking and releasing this lock for
@@ -80,12 +97,13 @@ inline constexpr ModelLockRole modelLockRole {};
 /// drain that band and no more; it stays counted, so the next release hands off
 /// again.
 ///
-/// Every acquisition but the drain's runs the owner's reader entry once it
-/// holds the lock: the drain may leave work its bites defer, and a reader
-/// must find it done.
+/// Every acquisition but the drain's runs its owner's
+/// ``ModelLockOwner/enterAsReader()`` once it holds the lock, and every release
+/// by the drain runs ``ModelLockOwner/exitAsDrain()`` before it lets go.
 ///
 /// The uncontended cost is one try-acquire, one store and the reader entry for
-/// a waiter, and one load before and one after the release for the drain.
+/// a waiter, and the drain exit, one load before and one after the release for
+/// the drain.
 ///
 /// Every acquisition grants ``modelLockRole`` to the thread-safety analysis and
 /// every release revokes it. The bodies are unchecked: they hold the lock
@@ -130,20 +148,13 @@ public:
         return true;
     }
 
-    /// Installs the step every acquisition but the drain's runs once it holds
-    /// the lock, before its holder reads the model.
+    /// Installs the model's owner, which acts as a reader takes the lock and
+    /// as the drain lets it go.
     ///
-    /// Set by the model's owner before the lock is shared, and kept for the
-    /// lock's life.
+    /// Set before the lock is shared, and kept for the lock's life.
     ///
-    /// - Parameters:
-    ///   - entry: The step, called under the lock with `context`.
-    ///   - context: The step's state, outliving every acquisition.
-    void setReaderEntry(void (*entry)(void*), void* context)
-    {
-        m_readerEntry = entry;
-        m_readerEntryContext = context;
-    }
+    /// - Parameter owner: The owner, outliving every acquisition.
+    void setOwner(ModelLockOwner* owner) { m_owner = owner; }
 
     /// Releases a hold taken by ``lock()`` or ``try_lock()``.
     void unlock() UBIQUITTY_RELEASES(modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS
@@ -168,6 +179,8 @@ public:
     /// - Returns: What the release did, and the microseconds it spent.
     ModelLockRelease unlockForDrain() UBIQUITTY_RELEASES(modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS
     {
+        if (m_owner)
+            m_owner->exitAsDrain();
         const std::uint32_t acquisitions = m_acquisitionCount.load(std::memory_order_relaxed);
         noteReleased();
         m_mutex.unlock();
@@ -228,16 +241,15 @@ private:
     /// without the mutex while it waits for the handoff.
     void noteAcquired() { m_acquisitionCount.store(m_acquisitionCount.load(std::memory_order_relaxed) + 1, std::memory_order_release); }
 
-    /// Runs the owner's reader entry, if one is installed.
-    void enterAsReader()
+    /// Runs the owner's reader entry, if an owner is installed.
+    void enterAsReader() UBIQUITTY_REQUIRES(modelLockRole)
     {
-        if (m_readerEntry)
-            m_readerEntry(m_readerEntryContext);
+        if (m_owner)
+            m_owner->enterAsReader();
     }
 
     std::mutex m_mutex;
-    void (*m_readerEntry)(void*) = nullptr;
-    void* m_readerEntryContext = nullptr;
+    ModelLockOwner* m_owner = nullptr;
     std::atomic<std::uint32_t> m_waiterCount { 0 };
     std::atomic<std::uint32_t> m_acquisitionCount { 0 };
     /// The thread holding the lock, recorded in every build.

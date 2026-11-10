@@ -22,7 +22,7 @@ budget model-lock-holds 196
 budget frame-decision-holds 2
 budget per-tick-waits 10
 budget plain-model-lock-holds 21
-budget thread-safety-escapes 21
+budget thread-safety-escapes 20
 budget thread-safety-escapes-tests 97
 raised model-lock-holds 195 196 a local adoption offers a host of the last published release the earlier share body, captured under its own hold of the model
 raised thread-safety-escapes-tests 94 97 core#57's three erase-redraw tests claim the model they drive on their one thread
