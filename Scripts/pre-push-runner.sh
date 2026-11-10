@@ -335,7 +335,16 @@ run() {
             ubq_gate_outcome "$name" "SKIPPED (tool not found)" "$started"
             SKIPPED+=("$name")
         else
-            ubq_gate_outcome "$name" FAILED "$started"
+            # A status past 128 is a gate a signal ended: it gave no verdict,
+            # and its log may hold nothing, so the line says which signal
+            # rather than leaving a bare FAILED to be read as the gate's own.
+            local word=FAILED
+            if [ "$status" -gt 128 ] && [ "$status" -le 192 ]; then
+                word="FAILED (killed by signal $((status - 128)) $(kill -l $((status - 128)) 2>/dev/null) before it gave a verdict)"
+            elif [ ! -s "$log" ]; then
+                word="FAILED (exit $status, and the gate printed nothing)"
+            fi
+            ubq_gate_outcome "$name" "$word" "$started"
             FAILED+=("$name")
             # The log is not removed: the line below names it, and the summary
             # names it again after everything else has scrolled past. Deleting
