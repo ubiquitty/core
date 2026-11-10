@@ -18,6 +18,7 @@
 
 #include "Core/Preferences/Preferences.h"
 #include "Core/Rendering/FrameDamage.h"
+#include "Core/Rendering/PaletteColors.h"
 #include "Core/Runtime/DrainHostPacing.h"
 #include "Core/Runtime/HostDirectoryClient.h"
 #include "Core/Runtime/HostOutline.h"
@@ -48,6 +49,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <format>
 #include <memory>
 #include <optional>
 #include <semaphore>
@@ -6386,6 +6388,200 @@ TEST(publishedClockTracksFedCursorStyleTransitions)
 
     unsetenv("UBIQUITTY_FAKE_TICKS");
     Ubiquitty::Cursor::Blink::setAnimation(previousAnimation);
+}
+
+// A cursor setting the reader applies reaches the frame clock with no output
+// behind it: the clock reads its inputs from the publication, so an apply
+// that left the model unpublished would keep a caret blinking that the
+// reader turned steady, or steady that the reader handed back a blink.
+TEST(publishedClockFollowsAppliedCursorPreferences)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(2, 20);
+    Ubiquitty::Preferences::Values blinking;
+    blinking.cursorBlink = true;
+    blinking.cursorLinger = 9;
+    blinking.cursorBlinkRate = 1000;
+    Ubiquitty::Preferences::Values steady = blinking;
+    steady.cursorBlink = false;
+    session->lockForRead();
+    session->terminal()->windowFocused = true;
+    session->terminal()->lastActivityTick = 100;
+    session->unlockForRead();
+    session->applyTerminalPreferences(blinking);
+    const auto previousAnimation = Ubiquitty::Cursor::Blink::animation();
+    Ubiquitty::Cursor::Blink::setAnimation(Ubiquitty::Cursor::Blink::Animation::Fade);
+    setenv("UBIQUITTY_FAKE_TICKS", "109", 1);
+    const auto feed = [&](std::string_view bytes) { session->feedBytes({ bytes.data(), bytes.size() }); };
+
+    feed("\033[1 q");
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 0.75f);
+    CHECK(session->nextAnimationDelay().hasAnimatingContent);
+
+    session->applyTerminalPreferences(steady);
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 1.0f);
+    CHECK(!session->nextAnimationDelay().hasAnimatingContent);
+    session->applyTerminalPreferences(blinking);
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 0.75f);
+    CHECK(session->nextAnimationDelay().hasAnimatingContent);
+
+    // A program's steady style outranks the preference until the reader picks
+    // a shape, which hands the style back to the preference that blinks.
+    feed("\033[2 q");
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 1.0f);
+    CHECK(session->applyPickedCursorPreferences(blinking));
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 0.75f);
+    CHECK(session->nextAnimationDelay().hasAnimatingContent);
+
+    unsetenv("UBIQUITTY_FAKE_TICKS");
+    Ubiquitty::Cursor::Blink::setAnimation(previousAnimation);
+}
+
+// DECSCUSR the drain parses from the program's stream reaches the frame clock
+// with the pass that parsed it, as a fed one does: steady stops the fade,
+// blinking and the default resume it.
+TEST(publishedClockTracksDrainedCursorStyleTransitions)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(2, 20);
+    auto pipe = std::make_unique<Ubiquitty::PAL::StreamTestPipe>();
+    auto* stream = pipe.get();
+    REQUIRE(session->adoptStream(std::move(pipe)).has_value());
+    session->lockForRead();
+    auto* terminal = session->terminal();
+    terminal->windowFocused = true;
+    terminal->cursorBlinkPref = true;
+    terminal->cursorHoldFrames = 9;
+    terminal->cursorBlinkPeriodMilliseconds = 1000;
+    terminal->lastActivityTick = 100;
+    session->unlockForRead();
+    const auto previousAnimation = Ubiquitty::Cursor::Blink::animation();
+    Ubiquitty::Cursor::Blink::setAnimation(Ubiquitty::Cursor::Blink::Animation::Fade);
+    setenv("UBIQUITTY_FAKE_TICKS", "109", 1);
+    const auto drain = [&](std::string_view bytes) {
+        stream->toRead += bytes;
+        static_cast<void>(session->drain());
+    };
+
+    drain("\033[1 q");
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 0.75f);
+    CHECK(session->nextAnimationDelay().hasAnimatingContent);
+    drain("\033[2 q");
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 1.0f);
+    CHECK(!session->nextAnimationDelay().hasAnimatingContent);
+    drain("\033[0 q");
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 0.75f);
+    CHECK(session->nextAnimationDelay().hasAnimatingContent);
+    drain("\033[2 q");
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 1.0f);
+    drain("\033[1 q");
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 0.75f);
+
+    unsetenv("UBIQUITTY_FAKE_TICKS");
+    Ubiquitty::Cursor::Blink::setAnimation(previousAnimation);
+}
+
+// A frontend's own write to the model, made through the write pair, is
+// published at its release: the frame clock and the snapshot read it at once,
+// with no drain and no feed behind it.
+TEST(aWriteThroughTheWritePairIsPublishedAtItsRelease)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(2, 20);
+    session->lockForWrite();
+    auto* terminal = session->terminal();
+    terminal->windowFocused = true;
+    terminal->cursorBlinkPref = true;
+    terminal->cursorHoldFrames = 9;
+    terminal->cursorBlinkPeriodMilliseconds = 1000;
+    terminal->lastActivityTick = 100;
+    session->unlockAfterWrite();
+    const auto previousAnimation = Ubiquitty::Cursor::Blink::animation();
+    Ubiquitty::Cursor::Blink::setAnimation(Ubiquitty::Cursor::Blink::Animation::Fade);
+    setenv("UBIQUITTY_FAKE_TICKS", "109", 1);
+    const auto write = [&](std::string_view bytes) {
+        session->lockForWrite();
+        Ubiquitty::processBytes(session->terminal(), bytes);
+        session->unlockAfterWrite();
+    };
+
+    write("\033[1 q");
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 0.75f);
+    CHECK(session->nextAnimationDelay().hasAnimatingContent);
+    write("\033[2 q");
+    CHECK_EQ(session->frameClockFactsNow().cursorMixAlpha, 1.0f);
+    CHECK(!session->nextAnimationDelay().hasAnimatingContent);
+    CHECK(session->readSnapshot().isCursorVisible);
+    write("\033[?25l");
+    CHECK(!session->readSnapshot().isCursorVisible);
+
+    unsetenv("UBIQUITTY_FAKE_TICKS");
+    Ubiquitty::Cursor::Blink::setAnimation(previousAnimation);
+}
+
+namespace {
+
+// Whether the background a reader takes lock-free is the model's.
+bool isPublishedBackgroundTheModels(TerminalSession& session)
+{
+    session.lockForRead();
+    const Ubiquitty::ColorRGBA model = Ubiquitty::Rendering::narrowPaletteColor(session.terminal()->palette.defaultBackground);
+    session.unlockForRead();
+    const Ubiquitty::ColorRGBA published = session.readCoherentColors().colors.background;
+    return model.red == published.red && model.green == published.green && model.blue == published.blue;
+}
+
+} // namespace
+
+// The history rewrap a drag deferred is paid when the drag settles, and the
+// history facts read lock-free follow it with no drain behind it.
+TEST(aSettledResizeIsPublished)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(4, 20);
+    std::string lines;
+    for (int line = 0; line < 40; ++line)
+        lines += std::format("{:02} soft-wrapped history line\r\n", line);
+    session->feedBytes({ lines.data(), lines.size() });
+    session->resize(4, 10, TerminalSession::ResizeGesture::Interactive, Ubiquitty::Modes::AnchorMode::Top);
+    REQUIRE(session->hasDeferredHistoryRewrap());
+    session->settleResize();
+    REQUIRE(!session->hasDeferredHistoryRewrap());
+    session->lockForRead();
+    const int modelHistory = Ubiquitty::Screen::scrollbackCount(session->terminal());
+    session->unlockForRead();
+    CHECK_EQ(session->readSnapshot().scrollbackCount, modelHistory);
+}
+
+// A palette the reader sets, from the inspector or a theme, reaches the
+// colours read lock-free with no output behind it.
+TEST(aPaletteAppliedOutsideADrainIsPublished)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(2, 20);
+    REQUIRE(session->setInspectorBackground(0x12, 0x34, 0x56));
+    CHECK(isPublishedBackgroundTheModels(*session));
+    CHECK_EQ(static_cast<unsigned>(session->readCoherentColors().colors.background.green), 0x34u);
+    REQUIRE(session->resetBackground());
+    CHECK(isPublishedBackgroundTheModels(*session));
+
+    REQUIRE(Ubiquitty::Themes::count() >= 2);
+    REQUIRE(session->applyTheme(0));
+    CHECK(isPublishedBackgroundTheModels(*session));
+    const Ubiquitty::ColorRGBA first = session->readCoherentColors().colors.background;
+    bool didBackgroundMove = false;
+    for (int index = 1; index < Ubiquitty::Themes::count() && !didBackgroundMove; ++index) {
+        REQUIRE(session->applyTheme(index));
+        CHECK(isPublishedBackgroundTheModels(*session));
+        const Ubiquitty::ColorRGBA now = session->readCoherentColors().colors.background;
+        didBackgroundMove = now.red != first.red || now.green != first.green || now.blue != first.blue;
+    }
+    CHECK(didBackgroundMove);
 }
 
 TEST(aTimedDrainPublishesContinuingInputWithoutClaimingQuiet)
