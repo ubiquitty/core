@@ -342,23 +342,15 @@ core_gate_sanitizers() {
     run_for "core" "sanitized suite" ./Scripts/run-sanitized-tests.sh
 }
 
-# Clang's thread-safety and function-effect analyses as errors, in a tree of
-# their own: the option defaults on for a compiler that has both, so a build
-# that quietly lost them would still be green, and naming it here makes that
-# loss a configure failure instead. A tree without the option has nothing for
-# it to check and says so.
+# Clang's thread-safety and function-effect analyses, proved to have run: the
+# host, ubq and the test tree built with the configured compiler, then every
+# tree this build root holds checked to have compiled with
+# UBIQUITTY_OWNERSHIP_ANALYSIS on. The option defaults on only for a Clang that
+# has both analyses, and off without a word in the build for any other, so a
+# green build is evidence of the analysis only once its cache says it ran.
 core_gate_ownership() {
-    if ! grep -q 'UBIQUITTY_OWNERSHIP_ANALYSIS' "$UBQ_CORE_ROOT/Scripts/cmake/UbiquittyToolchain.cmake" 2>/dev/null; then
-        printf '  %-34s %s\n' "ownership analysis" "none — this tree has no UBIQUITTY_OWNERSHIP_ANALYSIS option"
-        return 0
-    fi
-    local build="$UBQ_BUILD_ROOT/BuildHostTests/ownership"
-    run_for "core" "ownership analysis configure" env CC="${CC:-clang}" CXX="${CXX:-clang++}" \
-        cmake -S . -B "$build" -G Ninja -DUBIQUITTY_FRONTEND=Core -DUBIQUITTY_BUILD_TESTS=ON \
-        -DCMAKE_BUILD_TYPE=Debug -DUBIQUITTY_OWNERSHIP_ANALYSIS=ON
-    [ -f "$build/CMakeCache.txt" ] || return 0
-    # As many compilers as the machine's memory and cores allow (Scripts/build_jobs.py).
-    run_for "core" "ownership analysis build" cmake --build "$build" --parallel "$(python3 "$UBQ_CORE_ROOT/Scripts/build_jobs.py")"
+    core_gate_host_builds
+    run_for "core" "ownership analysis on" python3 ./Scripts/check-ownership-analysis-on.py "$UBQ_BUILD_ROOT"
 }
 
 # The tiers of a checkout that holds ubiquitty-core and nothing above it. The
