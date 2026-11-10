@@ -13,6 +13,7 @@
 #include "Core/Rendering/OverlayFacts.h"
 #include "Core/Rendering/PaletteColors.h"
 #include "Core/Runtime/ModeSnapshot.h"
+#include "Core/Runtime/TitleFacts.h"
 #include "Core/Screen/HistoryFacts.h"
 #include "Core/Search/Search.h"
 #include "Core/Themes/StatusColors.h"
@@ -539,6 +540,11 @@ struct RuntimeLink {
     // its generation says whether a frame's spans of it are still current.
     SnapshotPublisher<Rendering::SearchOverlayFacts> searchOverlay; // (R) model -> frame
     SnapshotPublisher<Rendering::MarkOverlayFacts> markOverlay; // (R) model -> frame
+    // (R) The title and working directory the model holds, beside `reads` for
+    // the reason the colours are: two bounded texts would dwarf the snapshot.
+    // Published when either changes, so a host told of the change reads the
+    // text without waiting for the parser.
+    SnapshotPublisher<TitleFacts> titleFacts; // (R) model -> main
     // (R) The modes a key encodes in, as the writer left them at its last
     // release of the model lock: the drain publishes them before each release
     // that changed them, and every snapshot publish carries them. So a key
