@@ -1498,6 +1498,28 @@ TEST(testATitleAndDirectoryAreReadWithoutTheModel)
     CHECK(directory.find("/tmp/published-directory") != std::string::npos);
 }
 
+// A banner a program posts is taken from the queue without the model, with the
+// model held by another thread, and a repeat of the banner standing at the
+// tail still folds into it.
+TEST(testANotificationIsTakenWithoutTheModel)
+{
+    LoopSession loop;
+    REQUIRE(loop.isRunning);
+    REQUIRE(loop.session().installNotificationQueue());
+    REQUIRE(loop.write("\033]9;same banner\033\\\033]9;same banner\033\\"));
+    TerminalSession::Notification first;
+    for (int waited = 0; waited < 2000 && !first.isPresent; ++waited) {
+        CHECK(returnsWhileTheModelIsHeld(loop.session(), [&] { first = loop.session().takeNotification(); }));
+        if (!first.isPresent)
+            ::usleep(1000);
+    }
+    REQUIRE(first.isPresent);
+    CHECK_STR_EQ(first.title, "same banner");
+    bool hasMore = true;
+    CHECK(returnsWhileTheModelIsHeld(loop.session(), [&] { hasMore = loop.session().hasPendingNotification(); }));
+    CHECK(!hasMore);
+}
+
 // A text longer than the record keeps is cut on a character boundary, and the
 // record says the directory was cut.
 TEST(testTheTitleRecordCutsOnACharacterBoundary)
