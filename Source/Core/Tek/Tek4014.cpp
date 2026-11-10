@@ -3,6 +3,8 @@
 
 #include "Core/Tek/Tek4014.h"
 #include "Core/Diagnostics/DiagLog.h"
+#include "Core/Tek/Colors.h"
+#include "Core/Tek/TubeFrame.h"
 #include "Core/TerminalOperations.h"
 #include "Core/VT/Internal.h"
 #include "Core/VT/Parser.h"
@@ -653,3 +655,24 @@ int tekScreenWidth(const Ubiquitty::Terminal&) { return Ubiquitty::Tek::tekGridW
 int tekScreenHeight(const Ubiquitty::Terminal&) { return Ubiquitty::Tek::tekGridHeight; }
 
 } // namespace Ubiquitty
+
+namespace Ubiquitty::Tek {
+
+void TubeFrame::capture(const Terminal& terminal)
+{
+    m_isTekFrame = terminal.isTekModeActive;
+    if (!m_isTekFrame) {
+        m_primitives.clear();
+        return;
+    }
+    const PrimitiveSpan visible = tekVisiblePrimitives(terminal);
+    m_primitives.assign(visible.begin(), visible.end());
+    m_hostColorRequests = Tek::hostColorRequests(terminal);
+    m_themeBackground = terminal.palette.defaultBackground;
+    m_themeForeground = terminal.palette.defaultForeground;
+    m_isGraphicInputActive = terminal.tek.GINActive;
+    m_graphicInputX = terminal.tek.GINX;
+    m_graphicInputY = terminal.tek.GINY;
+}
+
+} // namespace Ubiquitty::Tek

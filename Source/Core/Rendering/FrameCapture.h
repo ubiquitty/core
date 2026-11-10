@@ -12,6 +12,7 @@
 #include "Core/Rendering/CellInstanceBuilder.h"
 #include "Core/Rendering/OverlayGeometry.h"
 #include "Core/Rendering/TerminalFrameInputs.h"
+#include "Core/Tek/TubeFrame.h"
 
 #include <algorithm>
 #include <array>
@@ -185,6 +186,68 @@ public:
         commitRecord(header, damage);
         return true;
     }
+
+    /// Copies the storage tube `terminal` shows into the capture, or empties
+    /// the capture's tube outside Tek mode, so a view draws a Tek frame
+    /// without the model lock. Caller holds the model lock.
+    ///
+    /// - Parameter terminal: The terminal whose tube is copied.
+    void captureTube(const Terminal& terminal) { m_tube.capture(terminal); }
+
+    /// Whether the terminal was in Tek mode, so the capture shows the storage
+    /// tube rather than the grid.
+    ///
+    /// - Returns: Whether it was.
+    [[nodiscard]] bool isTekFrame() const { return m_tube.isTekFrame(); }
+
+    /// Returns the primitives the tube displays.
+    ///
+    /// - Returns: The primitives, owned by the capture; empty outside Tek mode.
+    [[nodiscard]] Tek::PrimitiveSpan tekPrimitives() const { return m_tube.primitives(); }
+
+    /// Returns the width of Tek space, which the primitives are addressed in.
+    ///
+    /// - Returns: The width, in Tek units.
+    [[nodiscard]] int tekScreenWidth() const { return Tek::tekGridWidth; }
+
+    /// Returns the height of Tek space, which the primitives are addressed in.
+    ///
+    /// - Returns: The height, in Tek units.
+    [[nodiscard]] int tekScreenHeight() const { return Tek::tekGridHeight; }
+
+    /// Whether the GIN crosshair is shown.
+    ///
+    /// - Returns: Whether it is.
+    [[nodiscard]] bool isTekGraphicInputActive() const { return m_tube.isGraphicInputActive(); }
+
+    /// Returns the GIN crosshair's column, in Tek space.
+    ///
+    /// - Returns: The column.
+    [[nodiscard]] int tekGraphicInputX() const { return m_tube.graphicInputX(); }
+
+    /// Returns the GIN crosshair's row, in Tek space.
+    ///
+    /// - Returns: The row.
+    [[nodiscard]] int tekGraphicInputY() const { return m_tube.graphicInputY(); }
+
+    /// Returns what the host asked the tube to draw with, for the colour
+    /// resolvers (`Tek::tekBackground`, `Tek::tekBeam`, `Tek::tekCursor`,
+    /// `Tek::isWritingSpotDrawn`).
+    ///
+    /// - Returns: The requests.
+    [[nodiscard]] Tek::HostColorRequests tekHostColorRequests() const { return m_tube.hostColorRequests(); }
+
+    /// Returns the terminal's own default background, which the tube's clear
+    /// colour falls back to.
+    ///
+    /// - Returns: The colour, 16-bit channels.
+    [[nodiscard]] PaletteRGB tekThemeBackground() const { return m_tube.themeBackground(); }
+
+    /// Returns the terminal's own default foreground, which the beam falls
+    /// back to.
+    ///
+    /// - Returns: The colour, 16-bit channels.
+    [[nodiscard]] PaletteRGB tekThemeForeground() const { return m_tube.themeForeground(); }
 
     /// Builds the captured frame into `out`.
     ///
@@ -875,6 +938,8 @@ private:
     TerminalFrameInputs* m_frame; // Owned; released by the capture's destructor.
     FrameRecordHeader m_header;
     FrameDamage m_damage;
+    // The storage tube a Tek frame shows, copied with the record.
+    Tek::TubeFrame m_tube;
 } UBIQUITTY_SHARED_REFERENCE(retainFrameCapture, releaseFrameCapture);
 
 } // namespace Ubiquitty::Rendering
