@@ -475,12 +475,12 @@ public:
             m_renderer.join();
     }
 
-    void lockModel() override
+    void lockModel() override UBIQUITTY_ACQUIRES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS
     {
         m_modelLock.lock();
         ++lockAcquisitions;
     }
-    void unlockModel() override { m_modelLock.unlock(); }
+    void unlockModel() override UBIQUITTY_RELEASES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_modelLock.unlock(); }
     void onSyncFrameReadyLocked(Ubiquitty::Runtime::SyncFrameReason) override { ++syncFrames; }
 
     long lockAcquisitions = 0; // written under the lock by the draining thread

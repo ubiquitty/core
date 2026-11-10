@@ -289,27 +289,30 @@ struct CallTimes {
     std::array<Clock::time_point, frontendCallCount> longestBlockedAt {};
     std::array<int, frontendCallCount> count {};
 
+    // Times one call, from its construction to the end of its scope.
+    struct Stamp {
+        CallTimes& times;
+        FrontendCall call;
+        Clock::time_point start = Clock::now();
+        Clock::duration startCPU = threadCPUTime();
+        ~Stamp()
+        {
+            const Clock::duration took = Clock::now() - start;
+            const Clock::duration blocked = took - (threadCPUTime() - startCPU);
+            const auto index = static_cast<std::size_t>(call);
+            ++times.count[index];
+            times.longest[index] = std::max(times.longest[index], took);
+            if (blocked > times.longestBlocked[index]) {
+                times.longestBlocked[index] = blocked;
+                times.longestBlockedAt[index] = start;
+            }
+        }
+    };
+
     template<typename Body>
     auto time(FrontendCall call, Body&& body)
     {
-        struct Stamp {
-            CallTimes& times;
-            FrontendCall call;
-            Clock::time_point start = Clock::now();
-            Clock::duration startCPU = threadCPUTime();
-            ~Stamp()
-            {
-                const Clock::duration took = Clock::now() - start;
-                const Clock::duration blocked = took - (threadCPUTime() - startCPU);
-                const auto index = static_cast<std::size_t>(call);
-                ++times.count[index];
-                times.longest[index] = std::max(times.longest[index], took);
-                if (blocked > times.longestBlocked[index]) {
-                    times.longestBlocked[index] = blocked;
-                    times.longestBlockedAt[index] = start;
-                }
-            }
-        } stamp { *this, call };
+        const Stamp stamp { *this, call };
         return body();
     }
 };
@@ -682,7 +685,10 @@ private:
     template<typename DeclineUnderLock>
     void readLive(SelectionAtAsk selection, DeclineUnderLock&& declineUnderLock)
     {
-        m_times.time(FrontendCall::LockForRead, [&] { m_session.lockForRead(); });
+        {
+            const CallTimes::Stamp stamp { m_times, FrontendCall::LockForRead };
+            m_session.lockForRead();
+        }
         Terminal* terminal = m_session.terminal();
         FrameDecline declined = terminal ? declineUnderLock(*terminal) : FrameDecline::None;
         Present present { .at = m_slot, .takenAt = Clock::now(), .route = FrameRoute::LiveRead, .isFresh = true, .didSelectionStand = selection == SelectionAtAsk::Standing };

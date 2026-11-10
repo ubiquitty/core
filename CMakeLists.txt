@@ -259,6 +259,7 @@ if(UBIQUITTY_FRONTEND STREQUAL "Host")
     target_compile_options(ubiquitty-host PRIVATE
         -fno-exceptions -fno-rtti -Wall -Wextra
         ${UBIQUITTY_NARROWING_WARNING}
+        ${UBIQUITTY_OWNERSHIP_WARNINGS}
         "$<$<BOOL:${UBIQUITTY_WERROR}>:-Werror>")
     # A release's host trusts its successor, its app and its relay by the
     # release team's code signature alone, and refuses an unsigned or ad hoc
@@ -526,6 +527,7 @@ elseif(UBIQUITTY_FRONTEND STREQUAL "Agent")
     target_compile_options(ubq PRIVATE
         -fno-exceptions -fno-rtti -Wall -Wextra
         ${UBIQUITTY_NARROWING_WARNING}
+        ${UBIQUITTY_OWNERSHIP_WARNINGS}
         "$<$<BOOL:${UBIQUITTY_WERROR}>:-Werror>")
 
 # ----------------------------------------------------------------------
@@ -563,6 +565,7 @@ elseif(UBIQUITTY_FRONTEND STREQUAL "Core")
     target_compile_options(core-consumer PRIVATE
         -fno-exceptions -fno-rtti -Wall -Wextra
         ${UBIQUITTY_NARROWING_WARNING}
+        ${UBIQUITTY_OWNERSHIP_WARNINGS}
         "$<$<BOOL:${UBIQUITTY_WERROR}>:-Werror>")
 
     # Cross-platform golden-image producer. It links the same installable Core
@@ -575,6 +578,7 @@ elseif(UBIQUITTY_FRONTEND STREQUAL "Core")
     target_compile_options(ubiquitty-snapshot PRIVATE
         -fno-exceptions -fno-rtti -Wall -Wextra
         ${UBIQUITTY_NARROWING_WARNING}
+        ${UBIQUITTY_OWNERSHIP_WARNINGS}
         "$<$<BOOL:${UBIQUITTY_WERROR}>:-Werror>")
     # forkpty lives in libutil on Linux/glibc (PTYStream is in the lib via the
     # POSIX PAL backend's transitive surface); a no-op on macOS.

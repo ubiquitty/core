@@ -73,6 +73,12 @@ void TerminalRuntime::installTerminalClients(Ubiquitty::Terminal& term)
     term.tickClock = &m_readClock;
 }
 
+void TerminalRuntime::claimRepliesBeforeIngest()
+{
+    if (m_term)
+        m_term->replyAuthority = ReplyAuthority::ThisTerminal;
+}
+
 void TerminalRuntime::tickTerminalClock()
 {
     m_readClock.tick(PAL::monotonicTicks());
@@ -122,8 +128,7 @@ bool TerminalRuntime::launch(const LaunchCommand& command, const PAL::TerminalId
     republishSnapshot();
     // The runtime that reads a program's stream answers its queries, even
     // on a terminal that last held a host's picture.
-    if (m_term)
-        m_term->replyAuthority = ReplyAuthority::ThisTerminal;
+    claimRepliesBeforeIngest();
     m_stream = PAL::openPTY(command.arguments(), { .initialDirectory = command.initialDirectory(), .characterLocalePolicy = command.characterLocalePolicy(), .identity = identity, .argument0Style = command.argument0Style(), .sessionRecord = command.sessionRecord(), .environmentOverrides = command.environmentOverrides() });
     handStreamItsWindowSize();
     attachProcessTreeNotifier();
@@ -135,8 +140,7 @@ std::expected<void, std::unique_ptr<PAL::Stream>> TerminalRuntime::adoptStream(s
     if (!stream || !isLocalStreamEnabled())
         return std::unexpected(std::move(stream));
     m_hasProcessWalk = false;
-    if (m_term)
-        m_term->replyAuthority = ReplyAuthority::ThisTerminal;
+    claimRepliesBeforeIngest();
     m_stream = std::move(stream);
     handStreamItsWindowSize();
     attachProcessTreeNotifier();
@@ -458,14 +462,14 @@ DrainOutcome TerminalRuntime::drainAvailable(DrainHost& host)
             // agent's own greeting elicits an immediate resend.
             return runtime.tapRawBytes(bytes);
         }
-        void noteParseBegin() override
+        void noteParseBegin() override UBIQUITTY_REQUIRES(modelLockRole)
         {
             if (presentationInterval)
                 runtime.noteDrainInput();
         }
-        void flushReplies() override { runtime.flushReplies(); }
-        void noteSyncClear() override { runtime.noteSyncClearParsed(); }
-        void publishMidReadSyncFrame(DrainHost& host) override
+        void flushReplies() override UBIQUITTY_REQUIRES(modelLockRole) { runtime.flushReplies(); }
+        void noteSyncClear() override UBIQUITTY_REQUIRES(modelLockRole) { runtime.noteSyncClearParsed(); }
+        void publishMidReadSyncFrame(DrainHost& host) override UBIQUITTY_REQUIRES(modelLockRole)
         {
             runtime.publishMidReadBoundaryIfCoherent(host);
             // This close has unread bytes behind it. If its capture cleared
@@ -481,7 +485,9 @@ DrainOutcome TerminalRuntime::drainAvailable(DrainHost& host)
     // Read once per pass so the ride-the-burst policy is consistent across
     // the whole burst. A throttled pane collapses the budgets to 0 (ends on the
     // first gap so the poll() loop parks the ingest thread at 0 CPU).
-    const DrainPassResult pass = runDrainPass(*m_term, *m_stream, host, owner,
+    // Lent, not read: the pass takes the model lock for each bite it parses.
+    Ubiquitty::Terminal& terminal = *m_term.get();
+    const DrainPassResult pass = runDrainPass(terminal, *m_stream, host, owner,
         { .doesRideBurst = m_drainRidesBurst.load(std::memory_order_relaxed), .modelLockBiteBytes = effectiveModelLockBite(), .maxMicroseconds = presentationInterval });
     outcome.bytesDrained = pass.bytesDrained;
     outcome.end = pass.end;
@@ -664,6 +670,9 @@ void TerminalRuntime::finishDrainPass(DrainHost& host, DrainOutcome& outcome)
         foregroundIsShell = probe.name.has_value() && m_cachedForegroundIsShell;
         if (probe.name) {
             const std::string sampledDirectory = m_stream->process().foregroundCurrentDirectory();
+            // The probe's syscalls ran above, off the lock; its facts land in
+            // the model under it, where the frontend reads them.
+            host.lockModel();
             if (m_term) {
                 // The shell has the terminal back: where it marks no prompt,
                 // that is where a program's working or blocked record ends.
@@ -691,6 +700,7 @@ void TerminalRuntime::finishDrainPass(DrainHost& host, DrainOutcome& outcome)
                 if (Ubiquitty::retireTitleIfStale(*m_term, m_cachedForegroundGroup))
                     m_term->titleChanged = true;
             }
+            host.unlockModel();
             // Outside the Terminal guard above: the process facts a title is made
             // of belong to the session, not to the grid, and a pane whose Terminal
             // has not been built still has a child worth naming.
@@ -714,17 +724,25 @@ void TerminalRuntime::finishDrainPass(DrainHost& host, DrainOutcome& outcome)
         }
         m_lastForegroundProbeTicks = probeTicks;
         m_foregroundProbeValid = true;
-    } else if (!outcome.reachedEnd && m_term
-        && ((Ubiquitty::didDrainLeaveAReportUnstamped(*m_term) && foregroundObservation() != ForegroundObservation::Unread)
-            || (m_mouseTrackingProcessGroup == 0 && (Mouse::tracksPointer(m_term.get()) || m_term->modes.mouseRelativePointerLock)))) {
+    } else if (!outcome.reachedEnd && m_term) {
         // Attribute fresh reports and pointer capture on the drain that parsed
         // them, even when the full holder sample is throttled. A later sample
-        // could observe the shell after their writer has already exited.
-        foregroundGroup = m_stream->process().foregroundProcessGroup().value_or(0);
-        foregroundIsShell = false;
-        if (foregroundObservation() != ForegroundObservation::Unread)
-            Ubiquitty::stampUnstampedReports(*m_term, foregroundGroup);
-        Mouse::stampUnstampedTrackingOwner(*m_term, m_mouseTrackingProcessGroup, foregroundGroup);
+        // could observe the shell after their writer has already exited. The
+        // model is read and stamped under the lock; the group's syscall runs
+        // between the two holds, off it.
+        host.lockModel();
+        const bool isAttributionOwed = (Ubiquitty::didDrainLeaveAReportUnstamped(*m_term) && foregroundObservation() != ForegroundObservation::Unread)
+            || (m_mouseTrackingProcessGroup == 0 && (Mouse::tracksPointer(m_term.get()) || m_term->modes.mouseRelativePointerLock));
+        host.unlockModel();
+        if (isAttributionOwed) {
+            foregroundGroup = m_stream->process().foregroundProcessGroup().value_or(0);
+            foregroundIsShell = false;
+            host.lockModel();
+            if (foregroundObservation() != ForegroundObservation::Unread)
+                Ubiquitty::stampUnstampedReports(*m_term, foregroundGroup);
+            Mouse::stampUnstampedTrackingOwner(*m_term, m_mouseTrackingProcessGroup, foregroundGroup);
+            host.unlockModel();
+        }
     }
 
     // Replies + bell + grid dims read/mutate the Terminal, so under the lock. The

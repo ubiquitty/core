@@ -500,7 +500,7 @@ public:
         // that never learns it lays every proportional run out with the grid
         // face — a drag inside the run then lands on whole cells.
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             if (Ubiquitty::Terminal* term = modelTerm())
                 installTextMeasurer(*term);
         }
@@ -531,7 +531,7 @@ public:
     void feedBytes(ByteSpan bytes UBIQUITTY_NOESCAPE)
     {
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             const auto previousStatusGeneration = modelTerm() ? modelTerm()->tabStatusGeneration : 0;
             const std::uint32_t eraseGenerationBefore = m_runtime->eraseGeneration();
             bool didFeed = false;
@@ -602,7 +602,7 @@ public:
     /// - Returns: How many bytes, whether to echo, and the resolved transition.
     [[nodiscard]] KeyEncoding encodeKey(const KeyPress& press, Keys::Keymap::EncodedKeyBytes output)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return {};
@@ -651,7 +651,7 @@ public:
     {
         bool mayRead = false;
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             const auto* terminal = modelTerm();
             if (!terminal || !terminal->modes.shouldReportPasteEvents)
                 return false;
@@ -681,7 +681,7 @@ public:
         Input::BracketedPaste bracketedPaste;
         Input::PasteOptions options;
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             const auto* terminal = modelTerm();
             if (!terminal)
                 return {};
@@ -702,7 +702,7 @@ public:
     /// off the model as the encoder's caller reads it.
     [[nodiscard]] bool shouldEchoInputLocally()
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return false;
@@ -1237,7 +1237,7 @@ public:
             return;
         m_hostedPaneSource = reinterpret_cast<HostedWindowSource*>(sourceAddress);
         m_hostedPaneID = paneID;
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         auto publication = m_externalTerminal && m_hostedPaneSource
             ? m_hostedPaneSource->panePublicationHandle(paneID, *m_externalTerminal)
             : nullptr;
@@ -1327,7 +1327,7 @@ public:
         const std::string& workspaceName, bool endsWhenDetached, // bool-ok: mirrors the HELLO lifetime flag
         PostedWorkLoop loop)
     {
-        if (hasUnresolvedLocalAdoption() || !modelTerm() || m_remote || !loop.isComplete()) {
+        if (hasUnresolvedLocalAdoption() || !modelTermIdentity() || m_remote || !loop.isComplete()) {
             return RemoteWorkspaceAttachOutcome::Rejected;
         }
         PostedDispatcher dispatcher(loop);
@@ -1398,7 +1398,7 @@ public:
         remote->workspaceName = workspaceName;
         remote->dispatcher = dispatcher;
         remote->observer.session = this;
-        remote->core = std::make_unique<Session::RemoteSessionCore>(modelTerm(), *remote->workspaceConnection, &remote->observer);
+        remote->core = std::make_unique<Session::RemoteSessionCore>(modelTermIdentity(), *remote->workspaceConnection, &remote->observer);
         readHostEffectDecisions(*remote->core);
         if (m_pixelGeometry)
             remote->core->setPixelGeometry(*m_pixelGeometry);
@@ -1452,7 +1452,7 @@ public:
     /// - Returns: Whether the pane joined the shared connection.
     bool attachRemoteSibling(TerminalSession& source, std::uint32_t sessionID)
     {
-        if (hasUnresolvedLocalAdoption() || !modelTerm() || m_remote || !source.m_remote || !source.m_remote->workspaceConnection
+        if (hasUnresolvedLocalAdoption() || !modelTermIdentity() || m_remote || !source.m_remote || !source.m_remote->workspaceConnection
             || !source.m_remote->workspaceConnection->canAttachSession(sessionID)) {
             return false;
         }
@@ -1468,7 +1468,7 @@ public:
         remote->dispatcher = source.m_remote->dispatcher;
         remote->observer.session = this;
         remote->core = std::make_unique<Ubiquitty::Session::RemoteSessionCore>(
-            modelTerm(), *remote->workspaceConnection, &remote->observer);
+            modelTermIdentity(), *remote->workspaceConnection, &remote->observer);
         readHostEffectDecisions(*remote->core);
         if (m_pixelGeometry)
             remote->core->setPixelGeometry(*m_pixelGeometry);
@@ -1501,7 +1501,7 @@ public:
         TermPalette baseline;
         std::string themeName;
         {
-            const std::scoped_lock hold(*source.m_activeLock);
+            const ModelLockHold hold(*source.m_activeLock);
             const Ubiquitty::Terminal* term = source.modelTerm();
             if (!term) {
                 return false;
@@ -1513,7 +1513,7 @@ public:
             themeName = source.m_chosenThemeName;
         }
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             Ubiquitty::Terminal* term = modelTerm();
             if (!term) {
                 return false;
@@ -1627,7 +1627,7 @@ public:
             return false;
         }
         if (enabled) {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             if (modelTerm() && modelTerm()->osc52ClipboardReadPolicy == OSC::ClipboardReadPolicy::Deny) {
                 return false;
             }
@@ -2624,7 +2624,7 @@ public:
     /// - Returns: Whether the queue is now the terminal's window client.
     bool installWindowRequestQueue() // bool-ok: reports what happened, not a mode chosen at the call site
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return false;
@@ -2646,7 +2646,7 @@ public:
     /// Whether an application asked the window for anything not yet taken.
     [[nodiscard]] bool hasPendingWindowRequest() const // bool-ok: the queue's own state, not a call-site constant
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         return !m_windowRequests.empty();
     }
 
@@ -2660,7 +2660,7 @@ public:
     /// - Returns: The request, or one whose kind is `None` when there is none.
     [[nodiscard]] WindowRequest takeWindowRequest()
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         if (m_windowRequests.empty())
             return WindowRequest {};
         WindowRequest request = std::move(m_windowRequests.front());
@@ -2671,7 +2671,7 @@ public:
     /// Installs the model-lock-protected native drag command queue.
     [[nodiscard]] bool installDragDropQueue() // bool-ok: reports installation
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         auto* term = modelTerm();
         if (!term)
             return false;
@@ -2689,7 +2689,7 @@ public:
     /// Transfers one native command out of the model lock.
     [[nodiscard]] DragDrop::CommandRecord takeDragDropCommand()
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         return m_dragDropQueue.take();
     }
 
@@ -2699,7 +2699,7 @@ public:
     /// Allows another data chunk while the transport has bounded reply headroom.
     [[nodiscard]] bool canSendNativeDragData()
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         if (m_remote && m_remote->core)
             return m_remote->core->pendingOutboundBytes() < (1 << 20);
         const auto* term = modelTerm();
@@ -2727,7 +2727,7 @@ public:
     /// Allocates a native lifetime identity without reusing one after RIS or adoption.
     [[nodiscard]] std::uint64_t nextNativeDragSession()
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         if (auto* term = modelTerm(); term && term->dragDropSession)
             m_nativeDragSession = std::max(m_nativeDragSession, term->dragDropSession->registrationState().lastNativeSession);
         if (m_nativeDragSession == std::numeric_limits<std::uint64_t>::max())
@@ -2740,7 +2740,7 @@ public:
     void sendDragDropEvent(const DragDrop::Event& event)
     {
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             if (auto* term = modelTerm()) {
                 DragDrop::receive(*term, event);
                 if (m_externalTerminal && m_tmuxPrimaryStream)
@@ -2758,7 +2758,7 @@ public:
     {
         if (m_remote && m_remote->core)
             (void)m_remote->core->sendNativeDragEvent({ .kind = DragDrop::EventKind::Cancel }, {});
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         if (auto* term = modelTerm())
             DragDrop::reset(*term);
     }
@@ -2801,7 +2801,7 @@ public:
     /// - Returns: Whether the queue is now the terminal's shell client.
     bool installNotificationQueue() // bool-ok: reports what happened, not a mode chosen at the call site
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return false;
@@ -2821,7 +2821,7 @@ public:
     ///   reaches the system clipboard.
     bool installSystemClipboardWriter() // bool-ok: reports what happened, not a mode chosen at the call site
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return false;
@@ -2871,7 +2871,7 @@ public:
     /// Whether an application asked for a banner not yet taken.
     [[nodiscard]] bool hasPendingNotification() const // bool-ok: the queue's own state, not a call-site constant
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         return !m_notifications.empty();
     }
 
@@ -2882,7 +2882,7 @@ public:
     /// - Returns: The notification, or an absent one when there is none.
     [[nodiscard]] Notification takeNotification()
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         if (m_notifications.empty())
             return Notification {};
         Notification notification = std::move(m_notifications.front());
@@ -2906,7 +2906,7 @@ public:
     /// - Returns: Whether the queue is now the terminal's trigger client.
     bool installTriggerQueue() // bool-ok: reports what happened, not a mode chosen at the call site
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return false;
@@ -2927,7 +2927,7 @@ public:
     /// Whether a trigger matched and its report is not yet taken.
     [[nodiscard]] bool hasPendingTriggerMatch() const // bool-ok: the queue's own state, not a call-site constant
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         return !m_triggerMatches.empty();
     }
 
@@ -2948,7 +2948,7 @@ public:
         for (;;) {
             TriggerMatch match;
             {
-                const std::scoped_lock hold(*m_activeLock);
+                const ModelLockHold hold(*m_activeLock);
                 if (m_triggerMatches.empty())
                     return TriggerEffect {};
                 match = std::move(m_triggerMatches.front());
@@ -2972,7 +2972,7 @@ public:
     /// - Parameter title: The name, already resolved by ``resolveTriggerEffect``.
     void applyTriggerTitle(const std::string& title)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         if (Ubiquitty::Terminal* term = modelTerm())
             term->titleUTF8 = title;
     }
@@ -2989,7 +2989,7 @@ public:
     /// - Returns: What was refused, in words, or empty when nothing was.
     [[nodiscard]] std::string applyTriggerConfiguration(const Preferences::Values& configuration)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return {};
@@ -3298,7 +3298,7 @@ public:
     /// - Returns: The title, or empty without a model.
     [[nodiscard]] std::string titleForTest()
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         return term != nullptr ? term->titleUTF8.copyToString() : std::string();
     }
@@ -4598,7 +4598,7 @@ public:
             return 0;
         std::string directory;
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             directory = currentDirectory();
         }
         auto target = Session::resolveHostFileLink(candidate, syntax, directory, host);
@@ -4884,7 +4884,7 @@ public:
             m_loop.raiseWake();
             return;
         }
-        const std::scoped_lock hold(m_modelLock);
+        const ModelLockHold hold(m_modelLock);
         m_runtime->applyCommand(command);
     }
 
@@ -5029,19 +5029,19 @@ private:
     /// ``lockForWrite`` for the length of a scope, and ``unlockAfterWrite`` at
     /// its end: the form every write this session makes outside a drain pass
     /// takes, so none of them can leave the publication behind the model.
-    class ModelWrite {
+    class UBIQUITTY_SCOPED_CAPABILITY ModelWrite {
     public:
         /// Takes the model lock for a write outside a drain pass.
         ///
         /// - Parameter session: The session whose model the scope writes.
-        explicit ModelWrite(TerminalSession& session)
+        explicit ModelWrite(TerminalSession& session) UBIQUITTY_ACQUIRES(modelLockRole)
             : m_session(session)
         {
             m_session.lockForWrite();
         }
 
         /// Publishes the scope's write and releases the model lock.
-        ~ModelWrite() { m_session.unlockAfterWrite(); }
+        ~ModelWrite() UBIQUITTY_RELEASES() { m_session.unlockAfterWrite(); }
         ModelWrite(const ModelWrite&) = delete;
         ModelWrite& operator=(const ModelWrite&) = delete;
 
@@ -5120,7 +5120,7 @@ public:
     {
         if (!m_externalTerminal && !readSnapshot().syncHoldActive)
             return m_runtime->presentationHoldTicksRemaining(nullptr, nowTicks, PAL::monotonicMicros());
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         return m_runtime->presentationHoldTicksRemaining(modelTerm(), nowTicks, PAL::monotonicMicros());
     }
 
@@ -5140,7 +5140,7 @@ public:
     /// presenting it later would put older rows over newer ones. The capture
     /// is retired here and this frame plans whole.
     [[nodiscard]] Rendering::RetainedFramePlan planRetainedFrame(Ubiquitty::Terminal& terminal,
-        const Rendering::RetainedFrameRequest& request, Rendering::RowDirtySpan rowDirty)
+        const Rendering::RetainedFrameRequest& request, Rendering::RowDirtySpan rowDirty) UBIQUITTY_REQUIRES(modelLockRole)
     {
         if (m_syncSlot.drain() >= 0)
             m_retainedBaseline = {};
@@ -5152,7 +5152,7 @@ public:
     /// so its lineage stays one with the boundary captures. Caller holds the
     /// model lock.
     [[nodiscard]] Rendering::RetainedFramePlan planSkippedGridFrame(Ubiquitty::Terminal& terminal,
-        const Rendering::RetainedFrameRequest& request, Rendering::RowDirtySpan rowDirty)
+        const Rendering::RetainedFrameRequest& request, Rendering::RowDirtySpan rowDirty) UBIQUITTY_REQUIRES(modelLockRole)
     {
         return Rendering::planSkippedGridFrame(terminal, m_retainedBaseline, request, rowDirty);
     }
@@ -5160,7 +5160,7 @@ public:
     /// Invalidates the shared baseline; the next frame on either route is Full.
     ///
     /// - Parameter terminal: The model whose baseline is dropped.
-    void invalidateRetainedFrame(Ubiquitty::Terminal& terminal)
+    void invalidateRetainedFrame(Ubiquitty::Terminal& terminal) UBIQUITTY_REQUIRES(modelLockRole)
     {
         Rendering::invalidateRetainedFrame(terminal, m_retainedBaseline);
     }
@@ -5172,7 +5172,7 @@ public:
         std::optional<RichText::TypographyFacts> facts;
         bool hasBlocks = false;
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             if (!generation || generation <= m_fontCatalogGeneration || !rendererRevision)
                 return false;
             m_fontCatalogGeneration = generation;
@@ -5187,7 +5187,7 @@ public:
             return false;
         if (!hasBlocks)
             return false;
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         if (auto* terminal = modelTerm())
             Rendering::invalidateRetainedFrame(*terminal, m_retainedBaseline);
         return true;
@@ -5227,7 +5227,7 @@ public:
     /// - Returns: Whether a rewrap is pending.
     [[nodiscard]] bool hasDeferredHistoryRewrap()
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         const Ubiquitty::Terminal* term = modelTerm();
         return term != nullptr && term->pendingHistoryRewrapColumns != 0;
     }
@@ -5259,7 +5259,7 @@ public:
     ///   - reflow: Whether soft-wrapped history re-wraps to the new width.
     void resizeGrid(int rows, int columns, Ubiquitty::Modes::ReflowMode reflow)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         m_runtime->resizeGrid(rows, columns, reflow);
     }
 
@@ -5270,8 +5270,13 @@ public:
     /// snapshot driver — has a trivial bracket; a live drive brackets with the
     /// same lock its feed thread holds.
     ///
+    /// The thread-safety analysis does not check the bracket here: the Swift
+    /// callers it serves are outside the analysis, and a C++ caller that wants
+    /// its reads checked holds a ``ModelLockHold`` and reads ``modelTerm()``'s
+    /// model through it.
+    ///
     /// - Returns: The Terminal, or null before ``start``.
-    [[nodiscard]] Ubiquitty::Terminal* terminal() { return modelTerm(); }
+    [[nodiscard]] Ubiquitty::Terminal* terminal() UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { return modelTerm(); }
 
     /// The grid geometry, as a cheap field copy.
     [[nodiscard]] DimensionSnapshot dimensions() const { return m_runtime->dimensions(); }
@@ -5374,7 +5379,7 @@ public:
     [[nodiscard]] Session::SessionInfo inspectorInfo()
     {
         auto records = m_runtime->processRecords();
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         auto* term = modelTerm();
         auto* stream = !m_externalTerminal && !m_remote ? m_runtime->stream() : nullptr;
         auto info = Session::captureSessionInfo(term, stream, records);
@@ -5392,7 +5397,7 @@ public:
     /// - Returns: A concealed or visible message, or empty for a host-owned session.
     [[nodiscard]] std::string inspectorAnswerbackDisplay()
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         const auto* term = modelTerm();
         return !m_remote && term && !term->mirrorClient ? std::string(answerbackForDisplay(*term)) : std::string();
     }
@@ -5402,7 +5407,7 @@ public:
     /// - Returns: False for a host-owned session or an absent terminal.
     [[nodiscard]] bool setInspectorAnswerback(const std::string& value)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         auto* term = modelTerm();
         if (m_remote || !term || term->mirrorClient)
             return false;
@@ -5415,7 +5420,7 @@ public:
     /// - Returns: False for host-owned sessions or absent directory reports.
     [[nodiscard]] bool canClearReportedDirectory()
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         const auto* term = modelTerm();
         return !m_remote && term && !term->reportedDirectory.empty();
     }
@@ -5429,7 +5434,7 @@ public:
     [[nodiscard]] bool clearReportedDirectory()
     {
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             auto* term = modelTerm();
             if (m_remote || !term || term->reportedDirectory.empty()) {
                 return false;
@@ -5492,7 +5497,7 @@ public:
     /// - Returns: Whether a background override is present.
     [[nodiscard]] bool canResetBackground()
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         const auto* term = modelTerm();
         if (!term) {
             return false;
@@ -5558,7 +5563,7 @@ public:
         TermPalette baseline;
         std::uint64_t paletteEpoch = 0;
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             const auto* term = modelTerm();
             if (!term) {
                 return -1;
@@ -5614,7 +5619,7 @@ public:
     {
         if (const Themes::Theme* theme = Themes::get(currentThemeIndex()))
             return theme->statusColors();
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         const Ubiquitty::Terminal* term = modelTerm();
         return term ? App::statusColors(*term) : Themes::StatusColors {};
     }
@@ -5847,7 +5852,7 @@ public:
         if (command.tmuxControlHost()) {
             m_tmuxSSHHost = *command.tmuxControlHost();
             if (!m_tmuxSSHHost.empty()) {
-                const std::scoped_lock hold(m_modelLock);
+                const ModelLockHold hold(m_modelLock);
                 modelTerm()->currentCapabilityOrigin = CapabilityOrigin::Remote;
             }
             beginHostingWindows(HostedControlState::AwaitingHandshake);
@@ -5880,7 +5885,7 @@ public:
     /// The caller holds the model lock.
     ///
     /// - Returns: The directory, or empty when neither source reports one.
-    [[nodiscard]] std::string currentDirectory()
+    [[nodiscard]] std::string currentDirectory() UBIQUITTY_REQUIRES(modelLockRole)
     {
         const auto* term = modelTerm();
         if (term && !term->currentDirectory.empty()) {
@@ -5896,7 +5901,7 @@ public:
     ///
     /// - Returns: The text, empty when the pane reports no status or before
     ///   the model exists.
-    [[nodiscard]] std::string statusHelpText()
+    [[nodiscard]] std::string statusHelpText() UBIQUITTY_REQUIRES(modelLockRole)
     {
         const auto* term = modelTerm();
         return term ? App::statusHelpText(*term) : std::string();
@@ -5907,7 +5912,7 @@ public:
     ///
     /// - Returns: The text, empty when the pane reports no status, its record
     ///   says nothing, or before the model exists.
-    [[nodiscard]] std::string programActivityText()
+    [[nodiscard]] std::string programActivityText() UBIQUITTY_REQUIRES(modelLockRole)
     {
         const auto* term = modelTerm();
         return term ? App::programActivityText(term->programStatus) : std::string();
@@ -6017,7 +6022,7 @@ public:
     /// Returns the directory that can represent a folder on this machine.
     ///
     /// Remote replicas and foreground connections have no local folder proxy.
-    [[nodiscard]] std::string representedLocalDirectory()
+    [[nodiscard]] std::string representedLocalDirectory() UBIQUITTY_REQUIRES(modelLockRole)
     {
         if (m_remote || !Title::isLocalDirectory(m_runtime->remoteTarget(), m_runtime->reportedHost())) {
             return {};
@@ -6036,7 +6041,7 @@ public:
     /// The caller holds the model lock.
     ///
     /// - Returns: The directory, or empty when the title names none.
-    [[nodiscard]] std::string titleDirectory()
+    [[nodiscard]] std::string titleDirectory() UBIQUITTY_REQUIRES(modelLockRole)
     {
         std::string directory = currentDirectory();
         const auto* term = modelTerm();
@@ -6112,15 +6117,16 @@ public:
     ///
     /// A focus event or a query answered between drains sits in the reply
     /// queue until the next drain; a frontend that just posted one flushes
-    /// so the application sees it now.
-    void flushReplies() { m_runtime->flushReplies(); }
+    /// so the application sees it now. The caller holds the model lock, or is
+    /// the model's own thread inside a ``ModelReadScope``.
+    void flushReplies() UBIQUITTY_REQUIRES(modelLockRole) { m_runtime->flushReplies(); }
 
     /// Resolves a pending OSC 52 clipboard read with the frontend's answer.
     ///
     /// - Parameters:
     ///   - setSpec: The selection spec the request named.
     ///   - decision: Allow with the clipboard's bytes, or refuse.
-    void completeClipboardRead(std::string_view setSpec, Ubiquitty::OSC::ClipboardReadDecision decision)
+    void completeClipboardRead(std::string_view setSpec, Ubiquitty::OSC::ClipboardReadDecision decision) UBIQUITTY_REQUIRES(modelLockRole)
     {
         m_runtime->completeClipboardRead(setSpec, decision);
     }
@@ -6139,7 +6145,7 @@ public:
     void resolveClipboardRead(std::string_view setSpec, Ubiquitty::OSC::ClipboardReadDecision decision)
     {
         if (m_externalTerminal) {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             Ubiquitty::OSC::completeClipboardReadQuery(*m_externalTerminal, setSpec, decision);
             if (m_tmuxPrimaryStream) {
                 Ubiquitty::Protocol::Tmux::flushPaneReplies(*m_externalTerminal, m_tmuxRoutingClient, m_tmuxRoutingPaneID, *m_tmuxPrimaryStream);
@@ -6230,7 +6236,7 @@ public:
     ///   - context: Handed back to the sink verbatim.
     void setReplySink(TerminalRuntime::ReplySink sink, void* context)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         m_runtime->setReplySink(sink, context);
     }
 
@@ -6566,7 +6572,7 @@ public:
     [[nodiscard]] FontRequestDelivery beginFontRequest(
         const std::string& configuredFamily, double configuredSizePoints)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         if (Ubiquitty::Terminal* term = modelTerm()) {
             const OSC::FontRequestLease lease = term->fontRequests.begin();
             if (!lease.receipt.isValid()) {
@@ -6603,7 +6609,7 @@ public:
     {
         bool shouldSignal = false;
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             Ubiquitty::Terminal* term = modelTerm();
             if (!term || actualFamily.size() > Ubiquitty::Terminal::maxFontLength
                 || !term->fontRequests.acknowledge(receipt, outcome, actualFamily, actualSizePoints)) {
@@ -6635,7 +6641,7 @@ public:
     {
         bool shouldSignal = false;
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             Ubiquitty::Terminal* term = modelTerm();
             if (!term || family.size() > Ubiquitty::Terminal::maxFontLength || !term->fontRequests.publishActualFont(family, sizePoints)) {
                 return false;
@@ -6740,7 +6746,7 @@ public:
     ///   by; the per-frame borrowed tiers are assembled at the boundary.
     void setSyncFrameCaptureGeometry(const SyncFrameCaptureGeometry& geometry)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         if (!m_syncCaptures[0]) {
             for (Rendering::FrameCapture*& capture : m_syncCaptures)
                 capture = Rendering::FrameCapture::make();
@@ -6753,8 +6759,8 @@ public:
         // New geometry, new lineage: the next boundary records Full, and every row is owed.
         m_retainedBaseline = {};
         oweAllSyncRows();
-        m_isSyncCaptureArmed = std::ranges::all_of(m_syncCaptures, [](const auto* capture) { return capture; });
-        m_host.setDrainPassPresentation(m_isSyncCaptureArmed && m_isSyncFramePresented.load(std::memory_order_relaxed)
+        m_isSyncCaptureArmed.store(std::ranges::all_of(m_syncCaptures, [](const auto* capture) { return capture; }), std::memory_order_relaxed);
+        m_host.setDrainPassPresentation(m_isSyncCaptureArmed.load(std::memory_order_relaxed) && m_isSyncFramePresented.load(std::memory_order_relaxed)
                 ? PanePresentation::Presented
                 : PanePresentation::Hidden);
     }
@@ -6775,12 +6781,12 @@ public:
         if (m_isSyncFramePresented.load(std::memory_order_relaxed) == isPresented) {
             return;
         }
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         if (m_isSyncFramePresented.load(std::memory_order_relaxed) == isPresented) {
             return;
         }
         m_isSyncFramePresented.store(isPresented, std::memory_order_relaxed);
-        m_host.setDrainPassPresentation(m_isSyncCaptureArmed && isPresented ? PanePresentation::Presented : PanePresentation::Hidden);
+        m_host.setDrainPassPresentation(m_isSyncCaptureArmed.load(std::memory_order_relaxed) && isPresented ? PanePresentation::Presented : PanePresentation::Hidden);
         (void)m_syncSlot.drain();
         m_retainedBaseline = {};
         oweAllSyncRows();
@@ -6804,7 +6810,7 @@ public:
     /// - Parameter hover: The run under the pointer, or an inactive one.
     void setSyncFrameHoverLink(const Rendering::FrameHoverLink& hover)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         m_syncFrameHover = hover;
     }
 
@@ -6953,7 +6959,7 @@ public:
     /// screen shows.
     ///
     /// - Returns: Whether anything is unpainted, false when there is no grid.
-    [[nodiscard]] bool hasGridWorkSinceLastPaint()
+    [[nodiscard]] bool hasGridWorkSinceLastPaint() UBIQUITTY_REQUIRES(modelLockRole)
     {
         Ubiquitty::Terminal* term = modelTerm();
         return term && term->grid && term->grid->hasUnpaintedWork();
@@ -6972,7 +6978,7 @@ public:
     }
 
     /// Whether the session holds the capture storage a boundary writes into.
-    [[nodiscard]] bool isSyncCaptureArmed() const { return m_isSyncCaptureArmed; }
+    [[nodiscard]] bool isSyncCaptureArmed() const { return m_isSyncCaptureArmed.load(std::memory_order_relaxed); }
 
     /// Boundaries the drain asked the host to publish, before its throttle.
     [[nodiscard]] std::uint64_t syncFrameBoundaryRequestCount() const { return m_host.boundaryRequestCount(); }
@@ -7118,7 +7124,7 @@ public:
     void setTextMeasurer(TextMeasureFunction measure, void* context)
     {
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             m_textMeasurer.measure = measure;
             m_textMeasurer.context = context;
             if (Ubiquitty::Terminal* term = modelTerm())
@@ -7145,7 +7151,7 @@ public:
     ///   - context: Borrowed callback state.
     void setRichTextShaper(RichText::Shaper::Function shape, void* context)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         m_richTextShaper = { shape, context };
         if (Ubiquitty::Terminal* term = modelTerm()) {
             term->typography.shaper = m_richTextShaper;
@@ -7160,7 +7166,7 @@ public:
     ///   - context: Borrowed state for the callback's renderer snapshot.
     void setFontCatalogProvider(RichText::FontCatalogProvider::Function query, void* context)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         m_fontCatalogProvider = { query, context };
         if (Ubiquitty::Terminal* term = modelTerm())
             term->typography.fontCatalog = m_fontCatalogProvider;
@@ -7180,7 +7186,7 @@ public:
         if (!RichText::isAdoptable(facts))
             return false;
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             if (m_typography && *m_typography == facts)
                 return true;
             m_typography = std::make_shared<const RichText::TypographyFacts>(facts);
@@ -7216,7 +7222,7 @@ public:
     ///
     /// - Parameter codePoints: The run's text, set in the regular face.
     /// - Returns: The cell count, or -1 without a model terminal.
-    [[nodiscard]] int proportionalRunCells(CodePointSpan codePoints)
+    [[nodiscard]] int proportionalRunCells(CodePointSpan codePoints) UBIQUITTY_REQUIRES(modelLockRole)
     {
         Ubiquitty::Terminal* term = modelTerm();
         return term ? OSC::TextSizing::proportionalRunCells(*term, codePoints, Ubiquitty::ProportionalRunStyle {}) : -1;
@@ -7392,15 +7398,16 @@ public:
     ///   false answer leaves the key to whatever would have handled it.
     bool reportTekGraphicInput(char key, double pointX, double pointY, double viewWidth, double viewHeight)
     {
-        lockForRead();
+        const ModelLockHold hold(*m_activeLock);
         bool didReport = false;
         if (Ubiquitty::Terminal* term = modelTerm()) {
             didReport = Ubiquitty::tekReportGraphicInputKey(*term, key, static_cast<float>(pointX),
                 static_cast<float>(pointY), static_cast<float>(viewWidth), static_cast<float>(viewHeight));
         }
-        unlockForRead();
+        // The report waits in the model's reply queue, which the drain also
+        // writes, so it is sent under the same hold.
         if (didReport)
-            flushReplies();
+            m_runtime->flushReplies();
         return didReport;
     }
 
@@ -7592,7 +7599,7 @@ public:
     /// only the authority mutates a mirrored grid.
     void softResetTerminal()
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         if (m_remote)
             return;
         if (Ubiquitty::Terminal* term = modelTerm()) {
@@ -7661,7 +7668,7 @@ public:
     /// - Returns: Whether a command was found.
     bool hasCommandUnderRow(int absoluteRow)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         const Ubiquitty::Terminal* term = modelTerm();
         return term != nullptr && Ubiquitty::Selection::hasCommandUnderRow(*term, absoluteRow);
     }
@@ -7674,7 +7681,7 @@ public:
     /// - Returns: Whether a command was found.
     bool selectCommandLineUnderRow(int absoluteRow, Ubiquitty::SelectionState& selection)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         const Ubiquitty::Terminal* term = modelTerm();
         return term != nullptr && Ubiquitty::Selection::selectCommandLineUnderRow(selection, *term, absoluteRow);
     }
@@ -7687,7 +7694,7 @@ public:
     /// - Returns: Whether a command with output was found.
     bool selectCommandOutputUnderRow(int absoluteRow, Ubiquitty::SelectionState& selection)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         const Ubiquitty::Terminal* term = modelTerm();
         return term != nullptr && Ubiquitty::Selection::selectCommandOutputUnderRow(selection, *term, absoluteRow);
     }
@@ -7703,7 +7710,7 @@ public:
     /// - Returns: The absolute row, or -1 with no model to read.
     int absoluteRowForVisibleRow(int visibleRow, int viewOffset)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         const Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return -1;
@@ -7714,7 +7721,7 @@ public:
 private:
     bool findLastCommandOutput(Ubiquitty::SelectionState* selection)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term || !term->screens.active)
             return false;
@@ -7745,7 +7752,7 @@ public:
     /// - Returns: Whether a match was handed over.
     bool handOffActiveSearchMatch(Ubiquitty::SelectionState& selection)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         if (m_search.controller && m_search.controller->status().generation != m_search.controller->requestedGeneration())
             return false;
         const Ubiquitty::Terminal* term = modelTerm();
@@ -7763,7 +7770,7 @@ public:
     /// something a test can step through rather than wait out.
     void noteUserActivity()
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         const auto now = frameTicksNow();
         Ubiquitty::Cursor::noteUserActivity(modelTerm(), now);
         if (auto* term = modelTerm(); term && !term->mirrorClient) {
@@ -7894,7 +7901,7 @@ public:
         PointerOutcome outcome;
         Ubiquitty::Input::PointerRoute route;
         {
-            const std::scoped_lock hold(*m_activeLock); // per motion event from the frontend's thread
+            const ModelLockHold hold(*m_activeLock); // per motion event from the frontend's thread
             Ubiquitty::Terminal* term = modelTerm();
             if (!term)
                 return outcome;
@@ -7937,7 +7944,7 @@ public:
     {
         Ubiquitty::Input::PointerRoute route;
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             Ubiquitty::Terminal* term = modelTerm();
             if (!term)
                 return;
@@ -7962,7 +7969,7 @@ public:
     /// - Parameter grab: Whether the grab is held.
     void notePointerLockGrab(Ubiquitty::Input::PointerLockGrab grab)
     {
-        const std::scoped_lock hold(*m_activeLock); // per event or delivery from the frontend's thread
+        const ModelLockHold hold(*m_activeLock); // per event or delivery from the frontend's thread
         Ubiquitty::Input::notePointerLockGrab(m_pointerLadder, grab);
     }
 
@@ -7977,7 +7984,7 @@ public:
     /// - Returns: Whether to hold the grab.
     [[nodiscard]] Ubiquitty::Input::PointerLockVerdict pointerLockVerdict(const Ubiquitty::Input::PointerLockFacts& facts)
     {
-        const std::scoped_lock hold(*m_activeLock); // per event or delivery from the frontend's thread
+        const ModelLockHold hold(*m_activeLock); // per event or delivery from the frontend's thread
         const Ubiquitty::Terminal* term = modelTerm();
         const auto mode = term && term->modes.mouseRelativePointerLock ? Ubiquitty::Input::PointerLockMode::Set : Ubiquitty::Input::PointerLockMode::Clear;
         return Ubiquitty::Input::resolvePointerLock(mode, facts);
@@ -7988,7 +7995,7 @@ public:
     /// - Parameter keys: The modifiers and whether any other key is down.
     void notePointerLockChord(const Ubiquitty::Input::PointerLockKeyState& keys)
     {
-        const std::scoped_lock hold(*m_activeLock); // per event or delivery from the frontend's thread
+        const ModelLockHold hold(*m_activeLock); // per event or delivery from the frontend's thread
         Ubiquitty::Input::notePointerLockChord(m_pointerLadder, keys, frameTicksNow());
     }
 
@@ -8002,7 +8009,7 @@ public:
     {
         Ubiquitty::Input::PointerLockChordVerdict verdict = Ubiquitty::Input::PointerLockChordVerdict::Keep;
         {
-            const std::scoped_lock hold(*m_activeLock); // per event or delivery from the frontend's thread
+            const ModelLockHold hold(*m_activeLock); // per event or delivery from the frontend's thread
             verdict = Ubiquitty::Input::tickPointerLockChord(m_pointerLadder, keysNow, frameTicksNow());
         }
         if (verdict == Ubiquitty::Input::PointerLockChordVerdict::BreakOut)
@@ -8016,7 +8023,7 @@ public:
     /// - Returns: Ticks until the deadline, or 0.
     [[nodiscard]] std::uint32_t pointerLockChordTicksUntilDeadline() const
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         return Ubiquitty::Input::pointerLockChordTicksUntilDeadline(m_pointerLadder, frameTicksNow());
     }
 
@@ -8141,7 +8148,7 @@ public:
         request.labelLimit = labelLimit;
         if (firstRow >= 0) {
             request.scope.emplace();
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             if (const auto* term = modelTerm(); term && firstRow <= lastRow) {
                 const auto first = Ubiquitty::Screen::capturePosition(*term, firstRow, 0);
                 const auto last = Ubiquitty::Screen::capturePosition(*term, lastRow, 0);
@@ -8157,7 +8164,7 @@ public:
     /// - Returns: Bounded text and durable positions; empty while a replacement is pending.
     [[nodiscard]] std::vector<Ubiquitty::Search::Label> searchLabels()
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         const auto& controller = m_search.controller;
         if (!controller || controller->status().generation != controller->requestedGeneration())
             return {};
@@ -8170,7 +8177,7 @@ public:
     /// - Returns: The view offset revealing its text, or -1 when it is gone.
     [[nodiscard]] int searchPositionViewOffset(const Ubiquitty::Screen::LogicalPosition& position)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         const auto* term = modelTerm();
         if (!term)
             return -1;
@@ -8244,7 +8251,7 @@ public:
     SearchOutcome stepSearchMatch(SearchStep step)
     {
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             Ubiquitty::Terminal* term = modelTerm();
             if (!term || !m_search.controller || term != m_search.terminal)
                 return {};
@@ -8266,7 +8273,7 @@ public:
             return;
         }
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             if (auto* term = modelTerm())
                 Ubiquitty::Screen::ScrollSearch::clear(term);
             m_runtime->setSearchStatus({ .isComplete = true });
@@ -8298,7 +8305,7 @@ public:
     void searchDidChange()
     {
         {
-            const std::scoped_lock hold(*m_search.lock);
+            const ModelLockHold hold(*m_search.lock);
             if (m_search.controller->status().generation != m_search.controller->requestedGeneration())
                 return;
             m_runtime->setSearchStatus(m_search.controller->status());
@@ -8323,7 +8330,7 @@ public:
         ModelLock* lock = m_activeLock;
         Ubiquitty::Terminal* term = nullptr;
         {
-            const std::scoped_lock hold(*lock);
+            const ModelLockHold hold(*lock);
             term = modelTerm();
         }
         if (!term)
@@ -8334,7 +8341,7 @@ public:
         if (m_search.controller)
             m_search.controller->setChangedCallback([](void* context) { static_cast<TerminalSession*>(context)->searchDidChange(); }, this);
         {
-            const std::scoped_lock hold(*lock);
+            const ModelLockHold hold(*lock);
             if (m_search.controller)
                 m_runtime->setModelPublishHook([](void* context, const Ubiquitty::Terminal& terminal) {
                     static_cast<Ubiquitty::Search::SearchController*>(context)->noteModelChanged(terminal);
@@ -8352,7 +8359,7 @@ public:
         if (!m_search.controller)
             return;
         {
-            const std::scoped_lock hold(*m_search.lock);
+            const ModelLockHold hold(*m_search.lock);
             m_runtime->setModelPublishHook(nullptr, nullptr);
         }
         m_search.controller->detach();
@@ -8375,7 +8382,7 @@ public:
         bool shouldCopy = Ubiquitty::Preferences::Effective::copyOnSelect(m_configuration);
         std::string text;
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             Ubiquitty::Terminal* term = modelTerm();
             if (!term)
                 return;
@@ -8406,7 +8413,7 @@ public:
     {
         if (!selection)
             return false;
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return false;
@@ -8425,7 +8432,7 @@ public:
     {
         if (!selection)
             return false;
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return false;
@@ -8440,7 +8447,7 @@ public:
     {
         if (!selection)
             return;
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         if (Ubiquitty::Terminal* term = modelTerm(); term && m_remote && !m_tmuxPrimaryStream)
             Ubiquitty::Selection::observeViewport(*selection, *term, static_cast<int>(viewOffset));
         else {
@@ -8457,7 +8464,7 @@ public:
     {
         if (!selection)
             return;
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         if (const auto* term = modelTerm())
             Ubiquitty::Selection::noteViewportBeforeResize(*selection, *term, static_cast<int>(viewOffset));
     }
@@ -8469,7 +8476,7 @@ public:
     /// - Returns: The offset showing the anchored text, or the oldest survivor.
     [[nodiscard]] int selectionViewportAfterResize(Ubiquitty::Selection::Session* selection, std::ptrdiff_t viewOffset)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         const auto* term = modelTerm();
         if (!term)
             return 0;
@@ -8493,7 +8500,7 @@ public:
     /// - Returns: The new viewport and whether the selection changed.
     [[nodiscard]] Ubiquitty::Selection::OutputUpdate updateSelectionAfterOutput(Ubiquitty::Selection::Session* selection, std::ptrdiff_t viewOffset, const Ubiquitty::Screen::HistoryFacts& history)
     {
-        Ubiquitty::Terminal* term = modelTerm();
+        Ubiquitty::Terminal* term = modelTermIdentity();
         if (!selection || !term) {
             return {};
         }
@@ -8557,7 +8564,7 @@ public:
     {
         if (!selection)
             return;
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         if (Ubiquitty::Terminal* term = modelTerm())
             Ubiquitty::Selection::selectAllText(*selection, *term);
     }
@@ -8571,7 +8578,7 @@ public:
     {
         if (!selection)
             return {};
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return {};
@@ -8596,7 +8603,7 @@ public:
     {
         if (!selection)
             return {};
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return {};
@@ -8630,7 +8637,7 @@ public:
         ScrollOutcome outcome;
         Ubiquitty::Input::ScrollRoute route;
         {
-            const std::scoped_lock hold(*m_activeLock); // per event or delivery from the frontend's thread
+            const ModelLockHold hold(*m_activeLock); // per event or delivery from the frontend's thread
             Ubiquitty::Terminal* term = modelTerm();
             if (!term)
                 return outcome;
@@ -8661,9 +8668,10 @@ public:
     {
         if (!readSnapshot().hiliteAwaiting)
             return false;
-        const std::unique_lock hold(*m_activeLock, std::try_to_lock);
-        if (!hold.owns_lock())
+        ModelLock& lock = *m_activeLock;
+        if (!lock.try_lock())
             return false;
+        const ModelLockHold hold(lock, std::adopt_lock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return false;
@@ -8687,7 +8695,7 @@ public:
     /// - Returns: Whether the viewport must return to the live tail.
     bool runClearCommand(Ubiquitty::Screen::ClearCommand command, Ubiquitty::SelectionState* selection)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
             return false;
@@ -8716,7 +8724,7 @@ public:
     /// unpublished until the next drain.
     void republishSnapshot()
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         republishModel();
     }
 
@@ -8728,7 +8736,7 @@ public:
     /// sends the reset cannot re-trap the pointer without a fresh set.
     void breakOutOfPointerLock()
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term || !term->modes.mouseRelativePointerLock)
             return;
@@ -8767,7 +8775,7 @@ public:
         if (elapsedMilliseconds == 0 || !readSnapshot().imagesAnimating)
             return false;
         m_lastImageAdvanceMicros = nowMicros;
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term || !Ubiquitty::Image::anyAnimating(term))
             return false;
@@ -8827,16 +8835,16 @@ public:
     /// Pairs with ``unlockForRead``. An ordinary acquisition of the model
     /// lock: a contended one is handed the lock by the drain's next release,
     /// so it waits about one bite. See ``ModelLock``.
-    void lockForRead() { m_activeLock->lock(); }
+    void lockForRead() UBIQUITTY_ACQUIRES(modelLockRole) { m_activeLock->lock(); }
 
     /// Releases the model lock taken by ``lockForRead``.
-    void unlockForRead() { m_activeLock->unlock(); }
+    void unlockForRead() UBIQUITTY_RELEASES(modelLockRole) { m_activeLock->unlock(); }
 
     /// Acquires the model lock for a write outside a drain pass: an embedder
     /// or a frontend editing the model directly.
     ///
     /// Pairs with ``unlockAfterWrite``, which publishes what was written.
-    void lockForWrite() { m_activeLock->lock(); }
+    void lockForWrite() UBIQUITTY_ACQUIRES(modelLockRole) { m_activeLock->lock(); }
 
     /// Publishes the model written since ``lockForWrite``, then releases the
     /// lock.
@@ -8846,7 +8854,7 @@ public:
     /// modes, the chrome its colours. A write outside a drain pass has no pass
     /// end to publish it, so its release does, under the lock, and no reader
     /// is left on the model from before the write.
-    void unlockAfterWrite()
+    void unlockAfterWrite() UBIQUITTY_RELEASES(modelLockRole)
     {
         republishModel();
         m_activeLock->unlock();
@@ -8868,13 +8876,16 @@ public:
     /// Read the Terminal, let the scope end, then ask. Nor around
     /// ``stopIngest``, which joins a thread that may be waiting on the lock
     /// the scope holds.
-    class [[nodiscard]] ModelReadScope final {
+    ///
+    /// The analysis credits the scope with ``modelLockRole`` either way: the
+    /// lock when another thread drains, the model's own thread when none does.
+    class [[nodiscard]] UBIQUITTY_SCOPED_CAPABILITY ModelReadScope final {
     public:
         /// Takes the hold: the lock when the session's ingest thread runs,
         /// nothing otherwise.
         ///
         /// - Parameter session: The session whose model is read.
-        explicit ModelReadScope(TerminalSession& session)
+        explicit ModelReadScope(TerminalSession& session) UBIQUITTY_ACQUIRES(modelLockRole)
             : m_session(session.m_ingestThread.joinable() ? &session : nullptr)
         {
             if (m_session && m_session->m_modelReadDepth++ == 0)
@@ -8882,7 +8893,7 @@ public:
         }
 
         /// Ends the hold, releasing the lock with the outermost scope.
-        ~ModelReadScope()
+        ~ModelReadScope() UBIQUITTY_RELEASES()
         {
             if (m_session && --m_session->m_modelReadDepth == 0)
                 m_session->unlockForRead();
@@ -8891,7 +8902,7 @@ public:
         ModelReadScope& operator=(const ModelReadScope&) = delete;
 
         /// Ends the hold early, for a reader that has read and now asks.
-        void release()
+        void release() UBIQUITTY_RELEASES() UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS
         {
             if (m_session && --m_session->m_modelReadDepth == 0)
                 m_session->unlockForRead();
@@ -8904,7 +8915,11 @@ public:
 
     /// Holds the model for a direct read on the frontend's thread; see
     /// ``ModelReadScope``.
-    [[nodiscard]] ModelReadScope modelReadScope() { return ModelReadScope(*this); }
+    ///
+    /// The scope is made here and returned, which the thread-safety analysis
+    /// does not follow; a caller constructs ``ModelReadScope`` itself to have
+    /// its reads checked.
+    [[nodiscard]] ModelReadScope modelReadScope() UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { return ModelReadScope(*this); }
 
     /// The model lock itself, for a render adapter that brackets with it.
     ///
@@ -8947,7 +8962,7 @@ public:
         // destroyed while that terminal still references it is the CheckedPtr
         // abort — the exact teardown every tmux pane close was taking.
         if (m_externalTerminal && m_externalTerminal != terminal) {
-            const std::scoped_lock uninstall(*m_activeLock);
+            const ModelLockHold uninstall(*m_activeLock);
             for (auto& owned : m_ownedClients) {
                 owned.detach(*m_externalTerminal, *owned.client);
             }
@@ -8974,7 +8989,7 @@ public:
             const std::scoped_lock identityHold(m_themeIdentityLock);
             m_themeIdentity.reset();
         }
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         // The adopted terminal answers to this session: a window verb, a
         // banner or a trigger report it raises is queued on the adapter that
         // renders it, so the frontend attributes it to that pane. The owner's
@@ -8998,7 +9013,7 @@ public:
     {
         if (!m_externalTerminal)
             return false;
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         return m_externalTerminal->windowClient.isInstalled(&m_windowClient) && m_externalTerminal->shellClient.get() == &m_shellClient
             && m_externalTerminal->triggerClient.get() == &m_triggerClient;
     }
@@ -9090,7 +9105,7 @@ public:
     ///
     /// - Returns: Whether the lock was taken; pair a true with
     ///   ``unlockForRead``.
-    [[nodiscard]] bool tryLockForRead() { return m_activeLock->try_lock(); }
+    [[nodiscard]] bool tryLockForRead() UBIQUITTY_TRY_ACQUIRES(true, modelLockRole) { return m_activeLock->try_lock(); }
 
     /// Allocates a session reading the configuration it is handed.
     ///
@@ -9158,7 +9173,7 @@ private:
             return discipline ? discipline->eraseCharacter : std::optional<std::uint8_t> { 0x7f };
         }
 
-        Session::PaneView view() override
+        Session::PaneView view() override UBIQUITTY_REQUIRES(modelLockRole)
         {
             auto* const terminal = m_owner.m_externalTerminal ? m_owner.m_externalTerminal : m_owner.m_runtime->borrowTermForRender();
             // Full adopted facts are borrowed only under this model's lock.
@@ -9179,12 +9194,12 @@ private:
             // A hosted model's source remains its geometry authority.
             if (m_owner.m_externalTerminal && m_owner.m_hostedPaneSource) {
                 m_owner.m_hostedPaneSource->resizePane(m_owner.m_hostedPaneID, viewport.columns, viewport.rows);
-                const std::scoped_lock hold(*m_owner.m_activeLock);
+                const ModelLockHold hold(*m_owner.m_activeLock);
                 m_owner.republishModel();
                 return;
             }
             {
-                const std::scoped_lock hold(*m_owner.m_activeLock);
+                const ModelLockHold hold(*m_owner.m_activeLock);
                 // A non-shell program repaints its own rows on SIGWINCH;
                 // rewrapping those rows underneath it duplicates them.
                 Ubiquitty::Terminal* term = m_owner.modelTerm();
@@ -9205,7 +9220,7 @@ private:
         {
             if (!m_owner.m_runtime->isLocalStreamEnabled())
                 return;
-            const std::scoped_lock hold(*m_owner.m_activeLock);
+            const ModelLockHold hold(*m_owner.m_activeLock);
             if (!m_owner.m_preparedRemote) {
                 if (auto* const terminal = m_owner.modelTerm())
                     Ubiquitty::publishPixelGeometry(*terminal, geometry);
@@ -9222,7 +9237,7 @@ private:
         /// only scalar notification state for the presentation owner to poll.
         ///
         /// - Parameter terminal: This link's model, under its canonical lock.
-        void publishModel(const Ubiquitty::Terminal& terminal)
+        void publishModel(const Ubiquitty::Terminal& terminal) UBIQUITTY_REQUIRES(modelLockRole)
         {
             const auto* expected = m_owner.m_externalTerminal ? m_owner.m_externalTerminal : m_owner.m_runtime->borrowTermForRender();
             if (&terminal != expected || m_owner.m_preparedRemote)
@@ -9268,7 +9283,7 @@ private:
                 } else {
                     // A raw adopted model has no writer publication protocol.
                     // Its supported borrowed-model contract still requires a lock.
-                    const std::scoped_lock hold(*m_owner.m_activeLock);
+                    const ModelLockHold hold(*m_owner.m_activeLock);
                     publishModel(*m_owner.m_externalTerminal);
                     publication = m_publication.read();
                 }
@@ -9293,7 +9308,7 @@ private:
             if (m_owner.m_externalTerminal) {
                 if (m_owner.m_hostedPaneSource)
                     (void)m_owner.m_hostedPaneSource->setPaneFocus(m_owner.m_hostedPaneID, *m_owner.m_externalTerminal, focus);
-                const std::scoped_lock hold(*m_owner.m_activeLock);
+                const ModelLockHold hold(*m_owner.m_activeLock);
                 // A raw adopted model has no program-focus route. Its local
                 // presentation still follows focus; a hosted source above
                 // owns any DEC 1004 report and drains it to that exact pane.
@@ -9345,7 +9360,7 @@ private:
         /// Refreshes owned facts while the canonical model lock protects them.
         ///
         /// - Parameter terminal: The model whose borrowed facts this link exposes.
-        void refreshFacts(const Ubiquitty::Terminal& terminal)
+        void refreshFacts(const Ubiquitty::Terminal& terminal) UBIQUITTY_REQUIRES(modelLockRole)
         {
             if (m_hostFacts.isAdopted != !!m_owner.m_externalTerminal)
                 m_hostFacts = {};
@@ -9434,12 +9449,14 @@ private:
     {
         // A flood bite leaves its scroll-lane run open for the next bite to
         // extend; whoever reads the model between two bites commits it first.
-        m_modelLock.setReaderEntry([](void* runtime) { static_cast<TerminalRuntime*>(runtime)->flushScrollLaneForModelRead(); }, m_runtime.get());
+        m_modelLock.setReaderEntry([](void* runtime) UBIQUITTY_REQUIRES(modelLockRole) { static_cast<TerminalRuntime*>(runtime)->flushScrollLaneForModelRead(); }, m_runtime.get());
         if (const auto* theme = Themes::get(launchThemeIndex(configuration))) {
             m_chosenThemeName = theme->name;
         }
         m_runtime->setEventSink(&m_events);
-        m_runtime->setPanePublishHook([](void* context, const Ubiquitty::Terminal* terminal) {
+        // Called under the model lock, or while no other thread shares the
+        // model: before ingest starts, and with no terminal once it has stopped.
+        m_runtime->setPanePublishHook([](void* context, const Ubiquitty::Terminal* terminal) UBIQUITTY_REQUIRES(modelLockRole) {
             auto& link = static_cast<TerminalSession*>(context)->m_localPaneLink;
             if (terminal)
                 link.publishModel(*terminal);
@@ -9472,7 +9489,7 @@ private:
         // exactly where one is owed, and a quiet screen's settles find the slot
         // empty and still pay nothing.
         m_host.setPublishHook(
-            [](void* context, SyncFrameReason reason) {
+            [](void* context, SyncFrameReason reason) UBIQUITTY_REQUIRES(modelLockRole) {
                 auto* session = static_cast<TerminalSession*>(context);
                 if (reason == SyncFrameReason::Boundary) {
                     // Counted before the capture's own armed check, so a reader
@@ -9660,7 +9677,7 @@ private:
             return m_runtime->shouldWithholdPresentation(nullptr, nowTicks, PAL::monotonicMicros()) ? FrameDecline::HeldByPresentation : FrameDecline::None;
         CaptureWithhold withhold;
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             if (auto* terminal = modelTerm())
                 withhold = withholdCapture(*terminal, nowTicks);
             else
@@ -9680,9 +9697,9 @@ private:
     /// ``takeSyncFrameReady``'s own coalescing contract. The drive's buffer is
     /// never the target, so the frame a caller holds is stable until its next
     /// drain.
-    void captureSyncFrame()
+    void captureSyncFrame() UBIQUITTY_REQUIRES(modelLockRole)
     {
-        if (!m_isSyncCaptureArmed || !m_isSyncFramePresented.load(std::memory_order_relaxed))
+        if (!m_isSyncCaptureArmed.load(std::memory_order_relaxed) || !m_isSyncFramePresented.load(std::memory_order_relaxed))
             return;
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
@@ -9871,7 +9888,7 @@ private:
     ///   - viewOffset: The rows the frame is scrolled back.
     ///   - out: The capture target's selection.
     /// - Returns: How many rich text cuts ``m_syncBlockSelections`` holds.
-    int resolveSelectionForCapture(Ubiquitty::Terminal& term, int viewOffset, Ubiquitty::Selection::CapturedSelection& out)
+    int resolveSelectionForCapture(Ubiquitty::Terminal& term, int viewOffset, Ubiquitty::Selection::CapturedSelection& out) UBIQUITTY_REQUIRES(modelLockRole)
     {
         const std::uint64_t version = m_selectionForCaptures.version();
         if (version != m_selectionForCapturesVersionSeen) {
@@ -9884,18 +9901,22 @@ private:
             Ubiquitty::Selection::BlockSelections(m_syncBlockSelections));
     }
 
-    // Geometry the boundary capture reads; guarded by the model lock, written
-    // by setSyncFrameCaptureGeometry and read by captureSyncFrame.
-    SyncFrameCaptureGeometry m_syncCaptureGeometry;
+    /// Geometry the boundary capture reads, under the model lock: written by
+    /// setSyncFrameCaptureGeometry and read by captureSyncFrame.
+    SyncFrameCaptureGeometry m_syncCaptureGeometry UBIQUITTY_GUARDED_BY(modelLockRole);
     // Written only by setSyncFramePresentation, under the model lock; atomic so
     // that setter can see an unchanged value without taking the lock.
     std::atomic<bool> m_isSyncFramePresented { true };
-    // The hovered run the boundary capture draws the emphasis over; same lock,
-    // its own setter. Separate from the geometry because it changes on pointer
-    // moves rather than on placement edges, and one field written on both
-    // cadences is a field that holds the wrong one of them.
-    Rendering::FrameHoverLink m_syncFrameHover;
-    std::uint64_t m_syncViewGeneration = 0;
+    /// The hovered run the boundary capture draws the emphasis over, under the
+    /// model lock, with its own setter.
+    ///
+    /// Separate from the geometry because it changes on pointer moves rather
+    /// than on placement edges, and one field written on both cadences is a
+    /// field that holds the wrong one of them.
+    Rendering::FrameHoverLink m_syncFrameHover UBIQUITTY_GUARDED_BY(modelLockRole);
+    /// The registration a capture is stamped with, under the model lock: each
+    /// geometry registration starts a new one.
+    std::uint64_t m_syncViewGeneration UBIQUITTY_GUARDED_BY(modelLockRole) = 0;
     std::uint64_t m_nextSyncFrameSequence = 1;
 
     // The boundary capture's status-row scratch: the capture borrows the
@@ -9966,7 +9987,7 @@ private:
         CallbackTextMeasureClient measurer;
         MeasuredFacesKey key;
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             const Ubiquitty::Terminal* terminal = modelTerm();
             if (!terminal || !OSC::TextSizing::mayOfferFaceFacts(*terminal))
                 return;
@@ -10043,7 +10064,7 @@ private:
         ///   - family: The requested family, or empty for a size change or reset.
         ///   - sizePoints: The absolute point size, or zero.
         ///   - sizeDelta: The relative point-size change, or zero.
-        [[nodiscard]] bool setFont(std::string_view family, double sizePoints, double sizeDelta) override
+        [[nodiscard]] bool setFont(std::string_view family, double sizePoints, double sizeDelta) override UBIQUITTY_REQUIRES(modelLockRole)
         {
             if (!session) {
                 return false;
@@ -10059,7 +10080,7 @@ private:
         /// frontend's next delivery, the family kept.
         ///
         /// The parser holds the model lock and has authorized the request.
-        [[nodiscard]] bool resetFontSize() override
+        [[nodiscard]] bool resetFontSize() override UBIQUITTY_REQUIRES(modelLockRole)
         {
             if (!session) {
                 return false;
@@ -10767,7 +10788,7 @@ private:
             {
                 bool didQueue = false;
                 {
-                    const std::scoped_lock hold(*session->m_activeLock);
+                    const ModelLockHold hold(*session->m_activeLock);
                     if (message.epoch != session->m_remoteDragEpoch) {
                         session->m_dragDropQueue.clear();
                         DragDrop::Metadata stop;
@@ -10783,7 +10804,7 @@ private:
                 }
                 if (!didQueue) {
                     session->cancelDragDrop();
-                    const std::scoped_lock hold(*session->m_activeLock);
+                    const ModelLockHold hold(*session->m_activeLock);
                     session->m_dragDropQueue.clear();
                     DragDrop::Metadata stop;
                     stop.type = DragDrop::Type::StopAccepting;
@@ -10836,7 +10857,7 @@ private:
             /// Requests a single attention cue under the local effect policy.
             void onAttention() override
             {
-                const std::scoped_lock hold(*session->m_activeLock);
+                const ModelLockHold hold(*session->m_activeLock);
                 if (auto* term = session->modelTerm()) {
                     if (auto* window = effectClient(*term, term->windowClient, Capability::RequestAttention))
                         window->requestAttention(AttentionRequest::Once);
@@ -11194,7 +11215,7 @@ private:
     {
         const std::uint32_t sessionID = m_sharing->sessionID;
         const auto connection = anchor.m_remote->workspaceConnection;
-        Ubiquitty::Terminal* term = modelTerm();
+        Ubiquitty::Terminal* term = modelTermIdentity();
         if (!term || !connection->canAttachSession(sessionID) || connection->connection().daemonInstanceID() != m_sharing->daemonInstanceID)
             return false;
         auto remote = std::make_unique<RemoteParts>();
@@ -11361,7 +11382,7 @@ private:
             return ConnectionMove::Refused;
         if (m_remote->workspaceConnection == successor)
             return ConnectionMove::Moved;
-        Ubiquitty::Terminal* term = modelTerm();
+        Ubiquitty::Terminal* term = modelTermIdentity();
         const std::uint32_t sessionID = m_remote->core->sessionID();
         const Session::RemoteSessionCore& from = m_remote->workspaceConnection->connection();
         const Session::RemoteSessionCore& to = successor->connection();
@@ -11626,7 +11647,7 @@ private:
         }
         std::expected<Protocol::Sync::HandoverBytes, Session::ShareEncoding> terminalBody = std::unexpected(Session::ShareEncoding::NothingToShare);
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             if (Ubiquitty::Terminal* term = modelTerm())
                 terminalBody = Session::captureShareTerminal(*term, Protocol::Local::maxAdoptBodyBytes, PAL::monotonicTicks());
         }
@@ -12093,7 +12114,7 @@ public:
     /// - Returns: Whether the exact prepared owner was installed without I/O.
     [[nodiscard]] bool prepareRemoteResume(std::uintptr_t ownerAddress, std::uint64_t paneLow, std::uint64_t paneHigh)
     {
-        if (hasUnresolvedLocalAdoption() || !ownerAddress || m_remote || m_preparedRemote || !modelTerm())
+        if (hasUnresolvedLocalAdoption() || !ownerAddress || m_remote || m_preparedRemote || !modelTermIdentity())
             return false;
         auto& prepared = *reinterpret_cast<std::unique_ptr<Protocol::Sync::SyncClientCore>*>(ownerAddress);
         if (!prepared)
@@ -12101,7 +12122,7 @@ public:
         bool didDraw = false;
         std::optional<std::uint64_t> generation;
         if (paneLow || paneHigh) {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             generation = prepared->preparedPaneGeneration({ paneLow, paneHigh });
             if (!generation)
                 return false;
@@ -12240,7 +12261,7 @@ private:
     {
         if (hasUnresolvedLocalAdoption() || !loop.isComplete())
             return false;
-        if (!modelTerm() || m_remote)
+        if (!modelTermIdentity() || m_remote)
             return false;
         m_remote = std::make_unique<RemoteParts>();
         m_remote->dispatcher = PostedDispatcher(loop);
@@ -12262,7 +12283,7 @@ private:
     /// - Returns: Whether the attach started.
     bool startRemote(std::uint32_t reattachSessionID)
     {
-        Ubiquitty::Terminal* term = modelTerm();
+        Ubiquitty::Terminal* term = modelTermIdentity();
         if (!term || !m_remote)
             return false;
         // A share went to this machine's own daemon whatever carries it; any
@@ -12308,7 +12329,7 @@ private:
             m_remote->core->setNetworkCost(*m_networkCost);
         std::shared_ptr<const RichText::TypographyFacts> typography;
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             typography = m_typography;
         }
         if (typography)
@@ -12829,6 +12850,9 @@ private:
     {
         if (!m_remote || !m_remote->core)
             return;
+        // The policy and the client are the model's, read and used under its
+        // lock as the write beside this applies them.
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         Ubiquitty::Clipboard::ServeFacts gate;
         gate.didClaimServe = m_remote->core->didClaimClipboardServe();
@@ -12849,7 +12873,7 @@ private:
     ///   - items: Borrowed representations that remain live through delivery.
     void applyRemoteClipboardWriteItems(ClipboardBuffer buffer, std::span<const ClipboardItem> items)
     {
-        const std::scoped_lock hold(*m_activeLock);
+        const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term || !term->clipboardClient || term->osc52ClipboardWritePolicy == Ubiquitty::OSC::ClipboardWritePolicy::Deny)
             return;
@@ -12862,7 +12886,7 @@ private:
     void applyRemoteNotificationRequest(const NotificationRequest& request)
     {
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             Ubiquitty::Terminal* term = modelTerm();
             Ubiquitty::ShellClient* shell = term ? term->shellClient.get() : nullptr;
             if (!shell)
@@ -12888,7 +12912,7 @@ private:
     {
         if (state != Ubiquitty::Session::State::Connected) {
             {
-                const std::scoped_lock hold(*m_activeLock);
+                const ModelLockHold hold(*m_activeLock);
                 m_remoteDragEpoch = 0;
                 m_dragDropQueue.clear();
                 DragDrop::Metadata stop;
@@ -13298,7 +13322,7 @@ private:
         bool didProgressChange = false;
         bool didTabStatusChange = false;
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             if (const Ubiquitty::Terminal* term = modelTerm()) {
                 didProgressChange = term->progressState != m_remoteProgressSeen.state || term->progressValue != m_remoteProgressSeen.value;
                 m_remoteProgressSeen = { term->progressState, term->progressValue };
@@ -13329,7 +13353,7 @@ private:
     void applyRemoteTitle(std::string_view utf8)
     {
         {
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             if (Ubiquitty::Terminal* term = modelTerm())
                 term->titleUTF8.assign(std::string_view(utf8.data(), utf8.size()));
         }
@@ -13379,7 +13403,9 @@ private:
     // Wall micros at the previous image-frame advance, cyclic; zero when the
     // clock awaits its seed. Main-thread state, like the gesture's.
     std::uint32_t m_lastImageAdvanceMicros = 0;
-    bool m_isSyncCaptureArmed = false;
+    // Whether every capture buffer exists: written under the model lock with
+    // the geometry, read by the capture under it and by diagnostics without it.
+    std::atomic<bool> m_isSyncCaptureArmed { false };
     // Three owned captures: one the drive reads, one ready, and one the ingest
     // thread can write without waiting for either.
     std::array<Rendering::FrameCapture*, SyncFrameSlot::slotCount> m_syncCaptures {};
@@ -13389,30 +13415,35 @@ private:
     // the frontend only while it holds that capture, which no capture
     // rewrites.
     std::array<Ubiquitty::Selection::CapturedSelection, SyncFrameSlot::slotCount> m_syncSelections {};
-    // The capture's rich text cuts, borrowed by the capture call alone; the
-    // ingest thread's, under the model lock.
-    std::array<Ubiquitty::RichText::BlockSelection, 2 * Ubiquitty::RichText::maxBlocksPerScreen> m_syncBlockSelections {};
+    /// The capture's rich text cuts, borrowed by the capture call alone; the
+    /// ingest thread's, under the model lock.
+    std::array<Ubiquitty::RichText::BlockSelection, 2 * Ubiquitty::RichText::maxBlocksPerScreen> m_syncBlockSelections UBIQUITTY_GUARDED_BY(modelLockRole) {};
     // The view's selection handed to the captures: one writer, the frontend's
     // thread in publishSelectionForCaptures; read at each capture.
     SnapshotPublisher<Ubiquitty::Selection::PublishedSelection> m_selectionForCaptures;
     // The frontend's record of its last hand-off; the frontend's thread only.
     Ubiquitty::Selection::PublishedSelection m_selectionHandedOff;
-    // The drain's copy of the hand-off, carried from capture to capture, and
-    // the publication it last read; the ingest thread's, under the model lock.
-    Ubiquitty::Selection::PublishedSelection m_selectionAtCapture;
-    std::uint64_t m_selectionForCapturesVersionSeen = 0;
+    /// The drain's copy of the hand-off, carried from capture to capture; the
+    /// ingest thread's, under the model lock.
+    Ubiquitty::Selection::PublishedSelection m_selectionAtCapture UBIQUITTY_GUARDED_BY(modelLockRole);
+    /// The hand-off's publication the drain last read; the ingest thread's,
+    /// under the model lock.
+    std::uint64_t m_selectionForCapturesVersionSeen UBIQUITTY_GUARDED_BY(modelLockRole) = 0;
     /// Settles that found a standing capture and replaced it rather than
     /// announcing over it. A rising count with no lingering glyph is the
     /// replacement doing its work; the same count against a visible linger
     /// means the replacement itself is being stranded somewhere later.
     std::atomic<std::uint64_t> m_staleCaptureReplacedCount { 0 };
-    // Delta lineage of the boundary captures. The baseline and the mask scratch
-    // are the ingest thread's, under the model lock. The owed words are the rows
+    // Delta lineage of the boundary captures. The owed words are the rows
     // published but not yet taken: the ingest thread sets bits before it
     // publishes, the render thread clears the taken frame's own bits, so a
     // capture superseded in the slot leaves its rows in the next capture's mask.
-    Rendering::RetainedFrameBaseline m_retainedBaseline;
-    std::vector<std::uint8_t> m_syncRowDirty;
+    /// The baseline the boundary captures' deltas are recorded against, under
+    /// the model lock.
+    Rendering::RetainedFrameBaseline m_retainedBaseline UBIQUITTY_GUARDED_BY(modelLockRole);
+    /// The capture's row-dirty mask scratch; the ingest thread's, under the
+    /// model lock.
+    std::vector<std::uint8_t> m_syncRowDirty UBIQUITTY_GUARDED_BY(modelLockRole);
     std::array<std::atomic<std::uint64_t>, (maxRows + 63) / 64> m_syncOwedRows {};
     std::uint64_t m_lastSyncFrameSequence = 0;
 
@@ -13554,20 +13585,32 @@ private:
     /// the runtime's own.
     ///
     /// - Returns: The presented terminal.
-    [[nodiscard]] Ubiquitty::Terminal* modelTerm()
+    [[nodiscard]] Ubiquitty::Terminal* modelTerm() UBIQUITTY_REQUIRES(modelLockRole) { return modelTermIdentity(); }
+
+    /// The same terminal as ``modelTerm()``, as an identity only: to test for
+    /// a model, or to hand it to an owner that locks it or owns its thread.
+    /// Nothing reads the model through it.
+    ///
+    /// - Returns: The presented terminal.
+    [[nodiscard]] Ubiquitty::Terminal* modelTermIdentity()
     {
         if (m_remote && m_remote->core && !m_tmuxPrimaryStream)
             return m_remote->core->view().terminal;
         return m_externalTerminal ? m_externalTerminal : m_runtime->borrowTermForRender();
     }
 
+    /// Reads the frame clock's inputs from the writer's publication, without
+    /// the model lock. A raw adopted model publishes nothing, so it is read
+    /// under its lock.
+    ///
+    /// - Returns: The presented model's frame-clock inputs.
     [[nodiscard]] FramePresentationState framePresentationState()
     {
         if (m_externalTerminal) {
             if (m_hostedPanePublication)
                 return m_hostedPanePublication->read().presentation;
             // Unknown adopted writers have no publish protocol to read.
-            const std::scoped_lock hold(*m_activeLock);
+            const ModelLockHold hold(*m_activeLock);
             return captureFramePresentationState(m_externalTerminal);
         }
         return m_runtime->link().presentation.read();
@@ -13621,7 +13664,7 @@ private:
         const HostedWindowSourceFactory factory = s_hostedWindowSourceFactory.load(std::memory_order_acquire);
         if (!factory || m_hostedWindows || m_remote || m_externalTerminal)
             return;
-        Ubiquitty::Terminal* term = modelTerm();
+        Ubiquitty::Terminal* term = modelTermIdentity();
         PAL::Stream* stream = m_runtime->stream();
         if (!term || !stream)
             return;

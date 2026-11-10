@@ -3,6 +3,7 @@
 
 #include "Core/Terminal.h"
 #include "Harness.h"
+#include "SoleModelThread.h"
 
 //
 // Tests/Core/Runtime/test_runtime.cpp — host unit test for the portable
@@ -597,6 +598,7 @@ namespace {
 /// a drain does, publishing nothing on the way.
 bool feedThroughSyncClears(TerminalRuntime& runtime, std::string_view bytes)
 {
+    ownModelOnTestThread();
     while (!bytes.empty()) {
         const FeedResult fed = runtime.feedChunkUpToSyncClear({ bytes.data(), bytes.size() });
         if (fed.consumed <= 0)
@@ -753,6 +755,7 @@ TEST(anOSC94ReportIsPublishedAndRaisesOneEdge)
 
 TEST(passwordDetectionReadsTheStreamInBothIngestPaths)
 {
+    ownModelOnTestThread();
     using namespace Ubiquitty;
     using namespace Ubiquitty::Runtime;
     for (const bool usesPipeline : { false, true }) {
@@ -766,6 +769,7 @@ TEST(passwordDetectionReadsTheStreamInBothIngestPaths)
         stream->discipline = PAL::LineDiscipline {};
         CountingDrainHost host;
         const auto input = [&](std::string_view text) {
+            ownModelOnTestThread();
             if (usesPipeline) {
                 CHECK_EQ(runtime.feedChunkUpToSyncClear({ text.data(), text.size() }).consumed, static_cast<int>(text.size()));
                 // The pipeline reads the prompt where it closes a pass on a pause.
@@ -791,6 +795,7 @@ TEST(passwordDetectionReadsTheStreamInBothIngestPaths)
 
 TEST(aReplicaRuntimeKeepsTheHostsPasswordVerdict)
 {
+    ownModelOnTestThread();
     using namespace Ubiquitty::Runtime;
     TerminalRuntime runtime;
     runtime.init(parameters80x24());
@@ -926,6 +931,7 @@ TEST(theOutboundTapSeesInputAndReplies)
 
 TEST(refusedBulkRepliesWaitForCapacityWithoutTruncationOrDuplicateTaps)
 {
+    ownModelOnTestThread();
     TerminalRuntime runtime;
     runtime.init(parameters80x24());
     auto* stream = attachPipe(runtime);
@@ -965,6 +971,7 @@ TEST(refusedBulkRepliesWaitForCapacityWithoutTruncationOrDuplicateTaps)
 
 TEST(aRefusedSmallReplyStaysAheadOfBulkOutput)
 {
+    ownModelOnTestThread();
     TerminalRuntime runtime;
     runtime.init(parameters80x24());
     auto* stream = attachPipe(runtime);
@@ -1021,6 +1028,7 @@ TEST(aThrottledDrainSkipsTheFullSnapshotItWillNotPublish)
 
 TEST(aBurstEndPublishesTheFinalThrottledHistory)
 {
+    ownModelOnTestThread();
     using namespace Ubiquitty::Runtime;
     for (const auto context : { TerminalRuntime::SettleContext::CaughtUp, TerminalRuntime::SettleContext::BurstEnd }) {
         Ubiquitty::PAL::s_fakeMicroseconds = 1;
@@ -1062,6 +1070,7 @@ TEST(aBurstEndPublishesTheFinalThrottledHistory)
 
 TEST(aFontRequestPublishesItsGenerationBeforeAThrottledDrainEvent)
 {
+    ownModelOnTestThread();
     using namespace Ubiquitty::Runtime;
 
     Ubiquitty::PAL::s_fakeMicroseconds = 1;
@@ -1085,6 +1094,7 @@ TEST(aFontRequestPublishesItsGenerationBeforeAThrottledDrainEvent)
 
 TEST(runtimeCases)
 {
+    ownModelOnTestThread();
 
     using namespace Ubiquitty::Runtime;
     namespace PAL = Ubiquitty::PAL;
@@ -2719,6 +2729,7 @@ TEST(aSessionTakesInputOnlyWhileARouteReachesAHost)
 /// outside -- reaches the host rather than being dropped.
 TEST(aSeededLocatorSendsTheReportItsRectangleOwes)
 {
+    ownModelOnTestThread();
     auto* session = Ubiquitty::Runtime::TerminalSession::make();
     REQUIRE(session != nullptr);
     session->start(24, 80);
@@ -3740,6 +3751,7 @@ TEST(refillGapsWithinOneForegroundGroupDoNotRepeatTheProcessWalk)
 
 TEST(aFrontendSamplesQuietProcessFactsThroughTheSessionCache)
 {
+    ownModelOnTestThread();
     auto* session = Ubiquitty::Runtime::TerminalSession::make();
     REQUIRE(session != nullptr);
     session->start(24, 80);
@@ -4305,6 +4317,7 @@ TEST(aReportedHostDoesNotOutliveTheProgramThatReportedIt)
 // new tab still starts where the ssh was run.
 TEST(aConnectionsTitleNamesOnlyWhatItsFarSideReports)
 {
+    ownModelOnTestThread();
     namespace Process = Ubiquitty::PAL::Process;
     auto* session = Ubiquitty::Runtime::TerminalSession::make();
     REQUIRE(session != nullptr);
@@ -4408,6 +4421,7 @@ TEST(aQuietForegroundChangeRetiresReportedMetadata)
 
 TEST(aProvenGoneGroupRetiresOnlyItsReportsAndPointerModes)
 {
+    ownModelOnTestThread();
     TerminalRuntime runtime;
     runtime.init(parameters80x24());
     auto* pipe = attachPipe(runtime);
@@ -4846,6 +4860,7 @@ TEST(aNonnullStreamAdoptionReplacesTheOwnerAndRunsItsInstallationHooks)
 
 TEST(aStreamAdoptedIntoASizedRuntimeLearnsItsGrid)
 {
+    ownModelOnTestThread();
     TerminalRuntime rt;
     rt.init(parameters80x24());
     rt.resizeGrid(30, 100, Ubiquitty::Modes::ReflowMode::Fixed);
@@ -5021,6 +5036,7 @@ TEST(aWholeScreenEraseHoldsThePresentUntilTheRedrawSettles)
 // its first query and the blank screen is presented.
 TEST(aPipelinedEraseHoldsThePresentLikeASequentialOne)
 {
+    ownModelOnTestThread();
     TerminalRuntime rt;
     rt.init(parameters80x24());
     REQUIRE(attachPipe(rt) != nullptr);
@@ -5042,6 +5058,7 @@ TEST(aPipelinedEraseHoldsThePresentLikeASequentialOne)
 // screen with nothing holding it back.
 TEST(aCaptureBeforeTheErasingPassEndsArmsTheHold)
 {
+    ownModelOnTestThread();
     TerminalRuntime rt;
     rt.init(parameters80x24());
     REQUIRE(attachPipe(rt) != nullptr);
@@ -5102,6 +5119,7 @@ TEST(aByteStampedAfterThePresentersNowKeepsTheHold)
 
 TEST(aContinuousResizePresentsBetweenDisplayRefreshes)
 {
+    ownModelOnTestThread();
     TerminalRuntime runtime;
     runtime.init(parameters80x24());
     REQUIRE(attachPipe(runtime) != nullptr);
@@ -5131,6 +5149,7 @@ TEST(aContinuousResizePresentsBetweenDisplayRefreshes)
 // time budget has not caught up.
 TEST(aResizeCaptureHoldsAnEraseUntilTheTransportGoesQuietAfterItsRedraw)
 {
+    ownModelOnTestThread();
     TerminalRuntime rt;
     rt.init(parameters80x24());
     REQUIRE(attachPipe(rt) != nullptr);
@@ -5258,6 +5277,7 @@ TEST(onlyALiveResizeArmsTheQuietInterval)
 // parsed whole ends it, so a later erase is held on a deadline of its own.
 TEST(aResizeCaptureHoldIsBoundedByTheSettleAndItsOwnWatchdog)
 {
+    ownModelOnTestThread();
     constexpr std::string_view erase = "\x1b[H\x1b[2Jfirst rows";
     {
         TerminalRuntime rt;
@@ -5371,6 +5391,7 @@ TEST(aDragsFirstStepIsHeldHoweverLongAfterTheLastEraseItComes)
 // flood pipeline's empty pass, is no quiet: the writer may be refilling.
 TEST(theQuietIntervalOrTheStreamsEndFinishesARedraw)
 {
+    ownModelOnTestThread();
     for (const int path : { 0, 1, 2 }) {
         TerminalRuntime rt;
         rt.init(parameters80x24());
@@ -5411,6 +5432,7 @@ TEST(theQuietIntervalOrTheStreamsEndFinishesARedraw)
 // program's redraw is under way, leaves that redraw arriving.
 TEST(onlyAFeedCarryingItsOwnEraseFinishesARedraw)
 {
+    ownModelOnTestThread();
     TerminalRuntime rt;
     rt.init(parameters80x24());
     REQUIRE(attachPipe(rt) != nullptr);
@@ -5419,6 +5441,7 @@ TEST(onlyAFeedCarryingItsOwnEraseFinishesARedraw)
     Ubiquitty::Terminal* terminal = rt.borrowTermForRender();
     REQUIRE(terminal != nullptr);
     const auto feed = [&](std::string_view bytes) {
+        ownModelOnTestThread();
         const std::uint32_t before = rt.eraseGeneration();
         (void)rt.feedChunkUpToSyncClear(bytes);
         rt.noteFeedParsed(before);
@@ -5440,6 +5463,7 @@ TEST(onlyAFeedCarryingItsOwnEraseFinishesARedraw)
 
 TEST(repeatedErasesCannotRestartThePresentationWatchdog)
 {
+    ownModelOnTestThread();
     for (const auto urgency : { Ubiquitty::Modes::ResizeUrgency::Settled, Ubiquitty::Modes::ResizeUrgency::Interactive }) {
         TerminalRuntime runtime;
         runtime.init(parameters80x24());
@@ -5469,6 +5493,7 @@ TEST(repeatedErasesCannotRestartThePresentationWatchdog)
 // across a nap as a pass of zero bytes, which is the writer having paused.
 TEST(aPipelinedPauseOnAPassBoundaryClearsSaturation)
 {
+    ownModelOnTestThread();
     TerminalRuntime rt;
     rt.init(parameters80x24());
     REQUIRE(attachPipe(rt) != nullptr);
@@ -5583,6 +5608,7 @@ TEST(aPartialEraseHoldsNothing)
 
 TEST(aModeTwentyFortyEightResizeReportReachesTheChildWithTheResize)
 {
+    ownModelOnTestThread();
     TerminalRuntime rt;
     rt.init(parameters80x24());
     auto* s = attachPipe(rt);
@@ -5964,6 +5990,7 @@ TEST(aClockReleaseIsCapturedOnlyWhileTheWriterIsWriting)
 TEST(aBlockOpenedUnderAHeldFrameExpiresOnTheRulesTimer)
 {
     const auto expiresOnTheTimer = [](bool isFed) {
+        ownModelOnTestThread();
         TerminalRuntime runtime;
         HandClock clock;
         clock.drive(runtime);
@@ -6896,6 +6923,7 @@ TEST(aFloodBehindAWholeScreenEraseKeepsItsTimeBudgetFrames)
 // the gate ends with the resize.
 TEST(aLiveResizeTakesNoDrainFrameOfARedrawStillArriving)
 {
+    ownModelOnTestThread();
     TerminalRuntime runtime;
     HandClock clock;
     clock.drive(runtime);
@@ -6908,6 +6936,7 @@ TEST(aLiveResizeTakesNoDrainFrameOfARedrawStillArriving)
     REQUIRE(runtime.drainAvailable(host).caughtUp);
     settleHeldFrame(runtime, host, clock);
     const auto parse = [&](std::string_view bytes, DrainPassEnd end) {
+        ownModelOnTestThread();
         (void)runtime.feedChunkUpToSyncClear(bytes);
         (void)runtime.finishExternalDrainPass(host, static_cast<int>(bytes.size()), end);
     };
@@ -7042,6 +7071,7 @@ struct CountingMeasurer {
 // grid face and a drag inside it lands on whole cells.
 TEST(theTextMeasurerReachesATerminalStartedOrAdoptedAfterItWasSet)
 {
+    ownModelOnTestThread();
     const std::uint32_t text[] = { 'a', 'b', 'c' };
 
     CountingMeasurer beforeStart;
@@ -7482,6 +7512,7 @@ TEST(goneGroupDebtRespectsObservationAndPhysicalStreamOwnership)
 
 TEST(anUnresolvedLocalAdoptionFreezesEveryLocalIOPathAndRefusesTeardown)
 {
+    ownModelOnTestThread();
     LocalAdoptionFixture fixture;
     REQUIRE(fixture.pipe);
     REQUIRE(fixture.session->terminal());
@@ -7942,6 +7973,7 @@ TEST(anUnresolvedPaneRestartPreservesItsOwnerAndPendingIntent)
 
 TEST(runtimeServicesCRTDeadlineWithoutARead)
 {
+    ownModelOnTestThread();
     ::setenv("UBIQUITTY_FAKE_TICKS", "100", 1);
     TerminalRuntime runtime;
     runtime.init(parameters80x24());

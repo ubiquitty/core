@@ -351,13 +351,17 @@ private:
 
     /// The terminal a delivery run writes, pinned and locked for the run.
     ///
+    /// The run's pane lock is held across calls, from the first byte routed to
+    /// the pane until ``releaseDelivery``, so the thread-safety analysis, which
+    /// follows one function at a time, does not check the pair.
+    ///
     /// - Parameter paneID: The tmux pane.
     /// - Returns: The pane's terminal, or the primary for an unknown pane.
-    [[nodiscard]] Ubiquitty::Terminal* deliveryTarget(PaneID paneID);
+    [[nodiscard]] Ubiquitty::Terminal* deliveryTarget(PaneID paneID) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS;
 
     /// Ends a delivery run: flushes the pane's replies to tmux, releases its
     /// lock and pin, and marks it for a repaint.
-    void releaseDelivery();
+    void releaseDelivery() UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS;
 
     /// Appends a change for the frontend and raises the session's bit.
     ///

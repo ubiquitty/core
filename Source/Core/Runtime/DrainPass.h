@@ -21,6 +21,7 @@
 // terminal's events, the daemon relays them to its clients.
 
 #include "Base/Types.h"
+#include "Core/ModelLock.h"
 
 #include <cstdint>
 #include <limits>
@@ -76,22 +77,22 @@ public:
     ///
     /// The owner can start its pending frame's age without adding a lock
     /// acquisition. Disabled time budgeting does not call this hook.
-    virtual void noteParseBegin() { }
+    virtual void noteParseBegin() UBIQUITTY_REQUIRES(modelLockRole) { }
 
     /// Drains the replies the parser queued, after it stopped at reply
     /// pressure. Called with the model lock held.
-    virtual void flushReplies() = 0;
+    virtual void flushReplies() UBIQUITTY_REQUIRES(modelLockRole) = 0;
 
     /// Notes a DEC 2026 block closing inside the pass. Called with the model
     /// lock held.
-    virtual void noteSyncClear() = 0;
+    virtual void noteSyncClear() UBIQUITTY_REQUIRES(modelLockRole) = 0;
 
     /// Takes, or declines, the frame a DEC 2026 block closed with more of the
     /// read still to parse: the close is that frame's only instant. Called
     /// with the model lock held, after `noteSyncClear`.
     ///
     /// - Parameter host: The pass's drain host.
-    virtual void publishMidReadSyncFrame(DrainHost& host) = 0;
+    virtual void publishMidReadSyncFrame(DrainHost& host) UBIQUITTY_REQUIRES(modelLockRole) = 0;
 
     /// Notes that a read is about to begin. An owner that settles input by
     /// the time a read that found nothing began reads its clock here; the

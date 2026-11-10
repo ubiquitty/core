@@ -135,7 +135,7 @@ public:
     /// - Parameter session: The session to equip.
     static void installDefaultClients(TerminalSession& session)
     {
-        const std::scoped_lock hold(*session.modelLockPointer());
+        const ModelLockHold hold(*session.modelLockPointer());
         if (s_defaultClientInstaller) {
             s_defaultClientInstaller(s_defaultClientInstallerContext, session);
         }
@@ -374,7 +374,7 @@ public:
                     if (session->isRemoteAttached()) {
                         info.origin.transport = Transport::OriginKind::Daemon;
                     }
-                    const std::scoped_lock hold(*session->modelLockPointer());
+                    const ModelLockHold hold(*session->modelLockPointer());
                     info.directory = session->representedLocalDirectory();
                     if (const auto* terminal = session->terminal()) {
                         info.title = terminal->titleUTF8;

@@ -11,6 +11,7 @@
 #include "Harness.h"
 #include "TerminalFixture.h"
 
+#include "Base/ThreadSafety.h"
 #include "Core/LineStore.h"
 #include "Core/Screen/HistoryLines.h"
 #include "Core/Screen/ScrollSearch.h"
@@ -40,8 +41,8 @@ namespace {
 // plain one.
 class TestLock final : public Ubiquitty::PAL::PriorityInheritingLock {
 public:
-    void lock() override { m_mutex.lock(); }
-    void unlock() override { m_mutex.unlock(); }
+    void lock() override UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_mutex.lock(); }
+    void unlock() override UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_mutex.unlock(); }
 
 private:
     std::mutex m_mutex;

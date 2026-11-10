@@ -15,6 +15,7 @@
 // is the row that was stored (run under ThreadSanitizer and AddressSanitizer on
 // Linux, where a torn or freed read is a report rather than luck).
 
+#include "Base/ThreadSafety.h"
 #include "Core/LineStore.h"
 #include "Core/TerminalOperations.h"
 
@@ -126,8 +127,8 @@ std::vector<Cell> decodeScratch() { return std::vector<Cell>(8192); }
 // plain one, which is all a test needs from the platform's.
 class TestLock final : public Ubiquitty::PAL::PriorityInheritingLock {
 public:
-    void lock() override { m_mutex.lock(); }
-    void unlock() override { m_mutex.unlock(); }
+    void lock() override UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_mutex.lock(); }
+    void unlock() override UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_mutex.unlock(); }
 
 private:
     std::mutex m_mutex;

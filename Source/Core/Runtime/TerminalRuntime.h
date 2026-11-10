@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "Core/ModelLock.h"
 #include "Core/Modes/TerminalModes.h"
 #include "Core/Network/FileTransferDetect.h"
 #include "Core/OSC/Dispatch.h"
@@ -147,8 +148,8 @@ enum class SyncFrameReason {
 class DrainHost {
 public:
     virtual ~DrainHost() = default;
-    virtual void lockModel() = 0; // acquire the per-pane model lock
-    virtual void unlockModel() = 0; // release it
+    virtual void lockModel() UBIQUITTY_ACQUIRES(modelLockRole) = 0; // acquire the per-pane model lock
+    virtual void unlockModel() UBIQUITTY_RELEASES(modelLockRole) = 0; // release it
     // A frame just completed — called while the lock is held, so the platform can
     // capture/publish it race-free. The reason says whether the frame must be
     // captured here (Boundary, SaturatedPass, ContinuingPass) or only announced (Settle).
@@ -540,7 +541,7 @@ public:
 
     /// Publishes a display blanking or wake edge while the caller holds the model lock.
     /// - Parameter host: The frame delivery hooks.
-    void publishDisplayChange(DrainHost& host);
+    void publishDisplayChange(DrainHost& host) UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Takes whatever frame the coherence rule still holds, because nothing
     /// will ask the rule for it again: the driver is stopping, or the stream
@@ -584,7 +585,7 @@ public:
     /// inside a pass. Caller holds the model lock; TERM-WRITER.
     ///
     /// - Parameter host: The drain host whose publish hook announces the frame.
-    void publishMidReadBoundaryIfCoherent(DrainHost& host);
+    void publishMidReadBoundaryIfCoherent(DrainHost& host) UBIQUITTY_REQUIRES(modelLockRole);
 
 #if UBIQUITTY_UI_TESTS
     // Bytes parsed while the model lock was held, for the contention scenarios:
@@ -971,7 +972,7 @@ public:
     /// on this cadence while a reader observes the pane.
     ///
     /// - Returns: Milliseconds between directory samples, or zero for none.
-    [[nodiscard]] std::uint32_t directorySampleMilliseconds() const;
+    [[nodiscard]] std::uint32_t directorySampleMilliseconds() const UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Probes the foreground now, off any drain, and walks the process table
     /// while process state is read.
@@ -1045,7 +1046,7 @@ public:
     ///
     /// - Parameter bytes: The chunk, which need not end on a sequence boundary.
     /// - Returns: How much was consumed and whether a sync clear was reached.
-    FeedResult feedChunkUpToSyncClear(std::span<const char> bytes);
+    FeedResult feedChunkUpToSyncClear(std::span<const char> bytes) UBIQUITTY_REQUIRES(modelLockRole);
 
     // Portable ingest drain: read all available host bytes and pump them into Core
     // up to each DECSET-2026 boundary, then flush replies + resolve the bell — all
@@ -1118,11 +1119,11 @@ public:
     /// host output is the model's, not the caller's. TERM-WRITER.
     ///
     /// - Parameter bytes: The bytes to feed.
-    void feedHostBytes(std::span<const char> bytes);
+    void feedHostBytes(std::span<const char> bytes) UBIQUITTY_REQUIRES(modelLockRole);
 
     // Drain Core's reply buffer to the stream. Internal step of the feed calls;
     // exposed for explicit flush points. TERM-WRITER (reply ordering).
-    void flushReplies();
+    void flushReplies() UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Completes an OSC 52 clipboard read once the prompt policy has decided.
     ///
@@ -1132,7 +1133,7 @@ public:
     /// - Parameters:
     ///   - setSpec: The selection specification the request named.
     ///   - decision: Whether to read the clipboard or reply empty.
-    void completeClipboardRead(std::string_view setSpec, Ubiquitty::OSC::ClipboardReadDecision decision);
+    void completeClipboardRead(std::string_view setSpec, Ubiquitty::OSC::ClipboardReadDecision decision) UBIQUITTY_REQUIRES(modelLockRole);
 
     // --- input → host (stream-only) ----------------------------------------
     /// Writes input bytes to the host, bypassing the model.
@@ -1160,7 +1161,7 @@ public:
     ///   - columns: The new column count.
     ///   - reflow: The foreground-is-shell gate the bridge computes; never decided
     ///     here.
-    void resizeGrid(int rows, int columns, Ubiquitty::Modes::ReflowMode reflow);
+    void resizeGrid(int rows, int columns, Ubiquitty::Modes::ReflowMode reflow) UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Resizes the grid, choosing when the history rewrap is paid for.
     ///
@@ -1171,7 +1172,7 @@ public:
     ///   - urgency: `Interactive` defers a width step's rewrap to the settle.
     ///   - anchor: Which edge of the grid stays put.
     void resizeGrid(int rows, int columns, Ubiquitty::Modes::ReflowMode reflow, Ubiquitty::Modes::ResizeUrgency urgency,
-        Ubiquitty::Modes::AnchorMode anchor);
+        Ubiquitty::Modes::AnchorMode anchor) UBIQUITTY_REQUIRES(modelLockRole);
     // Stream-only. TIOCSWINSZ — run after resizeGrid, off the model lock.
     // A grid change is applied at once. A change of pixels alone is applied
     // when the interval since the last applied size has passed, otherwise
@@ -1242,7 +1243,7 @@ public:
     /// ended. A pass that ends at a would-block is none of these: a full-screen
     /// repaint reaches the drain a tty's worth at a time, and a pass can end
     /// inside the writer's refill. Caller holds the model lock.
-    void noteEraseRedrawParsed();
+    void noteEraseRedrawParsed() UBIQUITTY_REQUIRES(modelLockRole);
 
     /// How long the transport stays empty after an erase's last redraw byte
     /// before the redraw is reported whole.
@@ -1292,7 +1293,7 @@ public:
     /// erased the screen itself. Caller holds the model lock.
     ///
     /// - Returns: The model's erase generation, or 0 without a model.
-    [[nodiscard]] std::uint32_t eraseGeneration() const;
+    [[nodiscard]] std::uint32_t eraseGeneration() const UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Records a feed's redraw as parsed whole when the feed itself erased the
     /// whole screen and no redraw from the stream was arriving before it.
@@ -1302,7 +1303,7 @@ public:
     /// the model lock.
     ///
     /// - Parameter eraseGenerationBefore: ``eraseGeneration()`` before the feed.
-    void noteFeedParsed(std::uint32_t eraseGenerationBefore);
+    void noteFeedParsed(std::uint32_t eraseGenerationBefore) UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Reads the password prompt the program's output has left at the cursor,
     /// for a pause in that output the caller has observed.
@@ -1311,7 +1312,7 @@ public:
     /// process; a streamless one falls back to the cursor row. One ioctl per
     /// pause, so a feed calls it once for the whole write. Caller holds the
     /// model lock.
-    void settlePasswordPromptAtPause();
+    void settlePasswordPromptAtPause() UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Sets whether the frontend is in a live resize.
     ///
@@ -1408,12 +1409,12 @@ public:
     /// (`markAttentionSeen`).
     ///
     /// - Parameter focus: The new state.
-    void setFocused(Ubiquitty::Modes::FocusState focus);
+    void setFocused(Ubiquitty::Modes::FocusState focus) UBIQUITTY_REQUIRES(modelLockRole);
 
     // --- commands (main -> writer) -----------------------------------------
     // Apply one command main posted to the Terminal. TERM-WRITER (caller holds the
     // lock); the no-ingest-loop fallback path calls it inline.
-    void applyCommand(const Command&);
+    void applyCommand(const Command&) UBIQUITTY_REQUIRES(modelLockRole);
     // Drain + apply every command queued in link().commands under the host's
     // lock. The ingest loop calls this each iteration; no-op + no lock when empty.
     // Returns true when at least one queued command was consumed, giving the
@@ -1497,7 +1498,7 @@ public:
     ///   - host: The drain host whose publish hook announces the frame.
     ///   - context: How the drain arrived here, which decides the reason the
     ///     frame is announced with.
-    void publishSettledFrameIfCoherent(DrainHost& host, SettleContext context);
+    void publishSettledFrameIfCoherent(DrainHost& host, SettleContext context) UBIQUITTY_REQUIRES(modelLockRole);
 
     // Sample the per-pane read-state into `out` + bump its version. TERM-WRITER;
     // the writer calls it each drain and publishes link().reads.
@@ -1516,7 +1517,7 @@ public:
     /// Refreshes only the frame clock after activity under the model lock.
     ///
     /// - Parameter terminal: The locked model, or null to clear its clock state.
-    void republishPresentationForTerm(const Ubiquitty::Terminal* terminal)
+    void republishPresentationForTerm(const Ubiquitty::Terminal* terminal) UBIQUITTY_REQUIRES(modelLockRole)
     {
         m_link.presentation.publish(terminal ? captureFramePresentationState(terminal) : FramePresentationState {});
     }
@@ -1578,7 +1579,7 @@ public:
     // the drain (the flood pipeline's bite returns leave runs open; paint state
     // is stale until the flush). The session's model lock runs it on every
     // acquisition but the drain's. Call under the model lock.
-    void flushScrollLaneForModelRead();
+    void flushScrollLaneForModelRead() UBIQUITTY_REQUIRES(modelLockRole);
     PAL::Stream* stream(); // ObjC++-only; never reachable from Swift
 
     /// Stamps host-output activity for the presentation-pacing policy.
@@ -1715,7 +1716,7 @@ public:
     ///
     /// Does nothing for a session with a stream, whose replies its own drain
     /// writes, or with no sink installed. TERM-WRITER.
-    void flushRepliesToSink();
+    void flushRepliesToSink() UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Transfers queued replies to the stream, retaining refused bytes for retry.
     ///
@@ -1852,7 +1853,7 @@ private:
     /// - Parameters:
     ///   - frameClass: The class the rule admitted it in.
     ///   - nowMicroseconds: When it was taken, on the rule's clock.
-    void takeAdmittedFrame(FrameClass frameClass, std::uint64_t nowMicroseconds);
+    void takeAdmittedFrame(FrameClass frameClass, std::uint64_t nowMicroseconds) UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Publishes the DECUDK table when `term` has one.
     ///
@@ -1895,7 +1896,7 @@ private:
     /// back to back has opened the next one by then, and a pass ending inside
     /// every update would publish no colours for as long as it keeps writing.
     /// Writer thread, under the model lock.
-    void noteSyncClearParsed();
+    void noteSyncClearParsed() UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Asks the coherence rule whether it admits the frame now.
     ///
@@ -1976,6 +1977,15 @@ private:
     /// - Parameter term: The terminal ``init`` made.
     void installTerminalClients(Ubiquitty::Terminal& term);
 
+    /// Makes this runtime the one that answers its terminal's queries, as a
+    /// stream it reads is installed.
+    ///
+    /// Writes the model without the model lock, which this runtime does not
+    /// own, so the thread-safety analysis does not check it: the stream is
+    /// installed on the frontend's thread before the ingest thread that would
+    /// share the model starts.
+    void claimRepliesBeforeIngest() UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS;
+
     /// Ticks the terminal's clock to now, before bytes that just arrived are
     /// parsed.
     void tickTerminalClock();
@@ -1984,7 +1994,10 @@ private:
     // must outlive it (members destroy in reverse order).
     ReadClock m_readClock;
     BellRoute m_bellRoute;
-    TermHolder m_term;
+    /// The model this runtime parses into, read and written under the model
+    /// lock; the pointer itself is set and cleared only while no other thread
+    /// shares the runtime.
+    TermHolder m_term UBIQUITTY_POINTEE_GUARDED_BY(modelLockRole);
     // The session's byte stream — OWNED (RAII). launch()/adoptStream() install it,
     // close()/dtor reset it. PAL::Stream is incomplete here — the dtor lives in the
     // .cpp where Stream.h completes it for unique_ptr's deleter.
@@ -2231,7 +2244,7 @@ private:
     ///
     /// - Parameter processGroup: The positively absent group, or zero without proof.
     /// - Returns: The report changes to publish to observers.
-    [[nodiscard]] DrainOutcome retireReportsOwnedByGoneGroup(int processGroup);
+    [[nodiscard]] DrainOutcome retireReportsOwnedByGoneGroup(int processGroup) UBIQUITTY_REQUIRES(modelLockRole);
     /// Clears the owed foreground probe before the probe reads the foreground.
     ///
     /// An edge raises the flag after the state it reports has moved, so a flag

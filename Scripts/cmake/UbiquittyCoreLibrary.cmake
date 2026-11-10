@@ -88,6 +88,7 @@ function(ubiquitty_add_core_ios_library target)
     target_compile_options(${target} PRIVATE
         -fno-exceptions -fno-rtti -Wall -Wextra
         ${UBIQUITTY_NARROWING_WARNING}
+        ${UBIQUITTY_OWNERSHIP_WARNINGS}
         "$<$<BOOL:${UBIQUITTY_WERROR}>:-Werror>")
 endfunction()
 
@@ -363,6 +364,7 @@ function(ubiquitty_add_core_layer_libraries)
         target_compile_options(${_ubq_layer_target} PRIVATE
             -fno-exceptions -fno-rtti -Wall -Wextra
         ${UBIQUITTY_NARROWING_WARNING}
+        ${UBIQUITTY_OWNERSHIP_WARNINGS}
             "$<$<BOOL:${UBIQUITTY_WERROR}>:-Werror>"
             -Wno-deprecated-declarations -Wno-multichar -Wno-comment)
     endforeach()
