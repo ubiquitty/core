@@ -106,6 +106,9 @@ jobs:
         run: ./Scripts/ci-linux-image.sh python3 Scripts/ci_batteries.py run preflight
       # The commit rules the push hook runs and the preflight battery does not,
       # through the hook's own runner. Strict: a gate that stands down fails.
+      # The profile-orphan rule reads the Linux profile, which the image's
+      # default LLVM is too old to read; UBQ_PGO_LLVM names the LLVM that wrote
+      # it, as the battery's pgo stage puts it first on PATH.
       - name: Push gates (commit rules)
         if: steps.reach.outputs.preflight != 'false'
         env:
@@ -115,7 +118,10 @@ jobs:
           UBQ_PREPUSH_SELECT: all
           UBQ_PREPUSH_STRICT: "1"
           UBIQUITTY_PREPUSH_CACHE: "off"
-        run: ./Scripts/ci-linux-image.sh ./Scripts/pre-push-gates.sh
+        run: |
+          ./Scripts/ci-linux-image.sh bash -c '
+            export PATH="${UBQ_PGO_LLVM:+$UBQ_PGO_LLVM:}$PATH"
+            exec ./Scripts/pre-push-gates.sh'
       # Saved whether or not a gate failed: the image was built either way.
       - name: Save the CI image
         if: always() && steps.image.outputs.digest != '' && steps.restore-image.outputs.cache-hit != 'true'
