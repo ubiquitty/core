@@ -108,6 +108,7 @@ struct RuntimeSnapshot {
     bool mouseSGRPixelsActive = false; // 1016 SGR-pixel coordinates
     bool alternateScrollActive = false; // 1007 alt-screen wheel->arrows
     bool locatorActive = false; // DECELR armed — the DEC locator pointer grab
+    bool isReadlinePointerActive = false; // a click moves, or a right click deletes, the shell's readline point
 
     // OSC 22 (kitty pointer shapes). Published rather than reported, because a
     // frontend that installs no WindowClient has no other channel to it, and

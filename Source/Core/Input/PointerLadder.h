@@ -32,6 +32,10 @@
 // drag local, whether a reported press drops the selection, and how many wheel
 // reports a trackpad flick is worth; here each question has one answer.
 
+namespace Ubiquitty::Rendering {
+class FrameCapture;
+}
+
 namespace Ubiquitty::Input {
 
 /// One pointer fact, as a frontend's event loop saw it — coordinates and
@@ -557,5 +561,43 @@ struct PointerMoment {
 ///   - chrome: Whether the window has a title bar.
 /// - Returns: Whether the frontend moves its window with this press.
 [[nodiscard]] bool isWindowDragPress(const PointerFact& fact, std::string_view dragModifierSpec, WindowChrome chrome);
+
+/// The modes a session publishes that decide whether a pointer fact reaches
+/// past every rung above the selection.
+struct PublishedPointerModes {
+    /// A program asked for mouse reports (X10, 1000, 1001, 1002 or 1003).
+    bool isMouseReporting = false;
+    /// The private relative pointer lock (7403) holds the pointer.
+    bool isRelativePointerLock = false;
+    /// The DEC locator (DECELR) is armed.
+    bool isLocatorActive = false;
+    /// The Tektronix storage tube owns the frame.
+    bool isTekModeActive = false;
+    /// A click moves, or a right click deletes, the shell's readline point.
+    bool isReadlinePointerActive = false;
+};
+
+/// ``routePointer`` for a fact only the selection rung would take, over the
+/// frame a view presents, without the terminal or its lock.
+///
+/// The rungs above the selection read the terminal; from the session's
+/// published modes this answers only when none of them could act, the frame
+/// can take the gesture (``Rendering::CapturedGrid::canExpandGestures``) and
+/// the session can be brought to it. Then the selection rung runs over the
+/// frame as ``routePointer`` runs it over the terminal, the rows under the
+/// pointer being the frame's. The published modes are a writer turn old: a
+/// mode a program sets meets the next fact after its publication.
+///
+/// - Parameters:
+///   - ladder: The session's ladder state, on its thread.
+///   - presented: The frame the view presents, held.
+///   - selection: The view's selection session, or null.
+///   - viewFact: The event, in the frame's visible rows.
+///   - policy: The pointer preferences.
+///   - modes: The session's published pointer modes.
+/// - Returns: The route, or nothing, with the ladder and the session as they
+///   were, for a fact ``routePointer`` must take under the lock.
+[[nodiscard]] std::optional<PointerRoute> routePointerOverCapture(PointerLadder& ladder, const Rendering::FrameCapture& presented,
+    Selection::Session* selection, const PointerFact& viewFact, const PointerPolicy& policy, const PublishedPointerModes& modes);
 
 } // namespace Ubiquitty::Input

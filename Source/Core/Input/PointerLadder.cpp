@@ -7,6 +7,7 @@
 #include "Core/Mouse/Hilite.h"
 #include "Core/Mouse/Locator.h"
 #include "Core/Mouse/Mouse.h"
+#include "Core/Rendering/CapturedGrid.h"
 #include "Core/RichText/Blocks.h"
 #include "Core/Tek/Tek4014.h"
 #include "Core/TerminalOperations.h"
@@ -15,6 +16,7 @@
 #include <cmath>
 #include <cstdio>
 #include <span>
+#include <type_traits>
 
 namespace Ubiquitty::Input {
 
@@ -333,6 +335,170 @@ void anchorReadlineExtension(Selection::Session& selection, Terminal& terminal, 
     return rowDistance >= swallowedDragCells || columnDistance >= swallowedDragCells;
 }
 
+// The grids the selection rung reads: the terminal, under the model lock, or
+// the frame the view presents. Each pair answers the same question of either.
+[[nodiscard]] int gridRows(const Terminal& terminal) noexcept { return terminal.rows; }
+[[nodiscard]] int gridRows(const Rendering::CapturedGrid& grid) noexcept { return grid.rows(); }
+[[nodiscard]] int gridColumns(const Terminal& terminal) noexcept { return terminal.columns; }
+[[nodiscard]] int gridColumns(const Rendering::CapturedGrid& grid) noexcept { return grid.columns(); }
+
+bool beginGestureOn(Selection::Session& selection, Terminal& terminal, const PointerFact& fact, int clickCount, const Selection::GestureStyle& style)
+{
+    return Selection::beginGesture(selection, terminal, static_cast<int>(fact.row), static_cast<int>(fact.column), clickCount,
+        static_cast<int>(fact.viewOffset), style, fact.xInCells, fact.yInRows);
+}
+
+bool beginGestureOn(Selection::Session& selection, const Rendering::CapturedGrid& grid, const PointerFact& fact, int clickCount, const Selection::GestureStyle& style)
+{
+    return Selection::beginGesture(selection, grid, static_cast<int>(fact.row), static_cast<int>(fact.column), clickCount, style);
+}
+
+[[nodiscard]] Selection::CaretResolution caretUnder(Terminal& terminal, const PointerFact& fact) { return resolvedCaret(terminal, fact); }
+
+[[nodiscard]] Selection::CaretResolution caretUnder(const Rendering::CapturedGrid& grid, const PointerFact& fact)
+{
+    const int columns = std::max(grid.columns(), 1);
+    const int boundary = std::isfinite(fact.xInCells)
+        ? std::clamp(static_cast<int>(std::floor(fact.xInCells + 0.5)), 0, columns)
+        : std::clamp(static_cast<int>(fact.column), 0, columns);
+    return Selection::resolveSelectionCaret(grid, static_cast<int>(fact.row), boundary, fact.xInCells);
+}
+
+[[nodiscard]] Selection::CaretResolution caretAtEdge(Terminal& terminal, const PointerFact& fact, int row, int column)
+{
+    return Selection::resolveSelectionCaret(terminal, static_cast<int>(fact.viewOffset), row, column, column, row);
+}
+
+[[nodiscard]] Selection::CaretResolution caretAtEdge(const Rendering::CapturedGrid& grid, const PointerFact&, int row, int column)
+{
+    return Selection::resolveSelectionCaret(grid, row, column, column);
+}
+
+bool dragCaretOn(Selection::Session& selection, Terminal& terminal, const Selection::CaretResolution& head, const PointerFact& fact)
+{
+    return Selection::dragCharacterCaretGesture(selection, terminal, head, static_cast<int>(fact.viewOffset));
+}
+
+bool dragCaretOn(Selection::Session& selection, const Rendering::CapturedGrid& grid, const Selection::CaretResolution& head, const PointerFact&)
+{
+    return Selection::dragCharacterCaretGesture(selection, grid, head);
+}
+
+bool dragGestureOn(Selection::Session& selection, Terminal& terminal, const PointerFact& fact, int row, int column, double xInCells, double yInRows)
+{
+    return Selection::dragGesture(selection, terminal, row, column, static_cast<int>(fact.viewOffset), xInCells, yInRows);
+}
+
+bool dragGestureOn(Selection::Session& selection, const Rendering::CapturedGrid& grid, const PointerFact&, int row, int column, double, double)
+{
+    return Selection::dragGesture(selection, grid, row, column);
+}
+
+// The selection rung, the ladder's last: a press, drag or release no rung
+// above took. One body for the terminal and for the frame a view presents;
+// only the terminal's readline right click, which reads the screen, is the
+// terminal's alone.
+template<typename Grid>
+void routeSelectionRung(PointerLadder& ladder, Grid& grid, Selection::Session& selection, const PointerFact& fact, const PointerPolicy& policy,
+    const PointerReportingState& state, bool isReadlineRight, std::uint32_t nowTicks, PointerRoute& route) // bool-ok: whether the right click is readline's, which the rung above decided
+{
+    // Reaching through while an application holds the mouse is the gesture the
+    // hint teaches; having performed it once, the user is not told again.
+    if (state.isMouseReporting && (state.isSelectionOverrideModifierArmed || state.isBlockSelectionOverrideModifierArmed || fact.isSelectionGesture))
+        ladder.hasUsedSelectionOverride = true;
+    if (fact.kind == PointerFact::Kind::Press) {
+        ladder.reportedPressRow = -1;
+        ladder.reportedPressColumn = -1;
+        ladder.hasTaughtThisDrag = false;
+    }
+    switch (fact.kind) {
+    case PointerFact::Kind::Press: {
+        if (isReadlineRight) {
+            ladder.isReadlineDeletePending = ladder.hasReadlineRightRelease && fact.clickCount == 2
+                && fact.row == ladder.readlineRightRow && fact.column == ladder.readlineRightColumn
+                && nowTicks - ladder.readlineRightReleaseTicks <= 30;
+            ladder.readlineRightPressTicks = nowTicks;
+            ladder.hasReadlineRightRelease = false;
+            if constexpr (std::is_same_v<Grid, Terminal>)
+                anchorReadlineExtension(selection, grid, fact);
+        }
+        Selection::GestureStyle style;
+        style.isRectangular = state.isBlockSelectionOverrideModifierArmed;
+        // Shift extends a standing selection where the surface is already
+        // ours. Where an application is holding the mouse it is instead the
+        // bypass that made this selection possible at all, so it begins a
+        // fresh one — the reader reached through to select here, not to grow
+        // something they made before the application took the mouse.
+        style.mode = isReadlineRight || (fact.hasShift && !state.isMouseReporting) ? Selection::GestureMode::Extend : Selection::GestureMode::Fresh;
+        style.smartToken = policy.smartToken;
+        style.isWindowActivating = fact.isWindowActivating;
+        route.didChangeSelection = beginGestureOn(selection, grid, fact, isReadlineRight ? 1 : static_cast<int>(fact.clickCount), style);
+        ladder.isSelectionGestureOpen = Selection::isGestureOpen(selection);
+        // A single click gets its caret from the pointer. Word presses keep
+        // any character bounds that beginGesture resolved inside packed text.
+        if (!isReadlineRight && ladder.isSelectionGestureOpen && isCaretDrivenGesture(fact)) {
+            Selection::configureCharacterCaretGesture(selection, grid, caretUnder(grid, fact));
+        }
+        route.wasConsumed = true;
+        route.didOpenSelectionGesture = ladder.isSelectionGestureOpen;
+        break;
+    }
+    case PointerFact::Kind::Motion:
+        if (fact.isDragging && ladder.isSelectionGestureOpen) {
+            int row = static_cast<int>(fact.row);
+            int column = static_cast<int>(fact.column);
+            const bool isRectangular = selection.gesture.dragBegan
+                ? Selection::isRectangular(&selection.state)
+                : selection.gestureStyle.isRectangular;
+            const int rows = gridRows(grid);
+            const bool isBeyondViewport = !isRectangular && rows > 0 && std::isfinite(fact.yInRows)
+                && (fact.yInRows < 0 || fact.yInRows >= rows);
+            if (isBeyondViewport) {
+                // Beyond a vertical edge, the linear selection includes that
+                // whole row; its trailing void is no longer under the pointer.
+                row = fact.yInRows < 0 ? 0 : rows - 1;
+                column = fact.yInRows < 0 ? 0 : gridColumns(grid);
+            }
+            // A gesture opened on carets moves on carets to its end: a motion
+            // routed on cells would re-anchor it on the cell the model keeps
+            // as its lower end, which on a drag towards the left is the
+            // pointer's side, and the selection would collapse under it.
+            if (selection.usesCharacterCarets && selection.gesture.clickCount != 2) {
+                const Selection::CaretResolution head = isBeyondViewport ? caretAtEdge(grid, fact, row, column) : caretUnder(grid, fact);
+                route.didChangeSelection = dragCaretOn(selection, grid, head, fact);
+            } else {
+                route.didChangeSelection = dragGestureOn(selection, grid, fact, row, column,
+                    isBeyondViewport ? column : fact.xInCells, isBeyondViewport ? row : fact.yInRows);
+            }
+            route.wasConsumed = true;
+        }
+        break;
+    case PointerFact::Kind::Release:
+        if (ladder.isSelectionGestureOpen) {
+            ladder.isSelectionGestureOpen = false;
+            route.wasConsumed = true;
+            route.didChangeSelection = true;
+            route.didFinishSelectionGesture = Selection::endGesture(selection);
+            if (isReadlineRight) {
+                const bool shouldDelete = ladder.isReadlineDeletePending && fact.clickCount == 2
+                    && fact.row == ladder.readlineRightRow && fact.column == ladder.readlineRightColumn
+                    && nowTicks - ladder.readlineRightPressTicks <= 30;
+                if constexpr (std::is_same_v<Grid, Terminal>) {
+                    if (shouldDelete)
+                        deleteReadlineSelection(grid, selection, policy, route);
+                }
+                ladder.isReadlineDeletePending = false;
+                ladder.hasReadlineRightRelease = !shouldDelete;
+                ladder.readlineRightRow = static_cast<int>(fact.row);
+                ladder.readlineRightColumn = static_cast<int>(fact.column);
+                ladder.readlineRightReleaseTicks = nowTicks;
+            }
+        }
+        break;
+    }
+    route.needsDisplay = route.needsDisplay || route.didChangeSelection;
+}
+
 } // namespace
 
 PointerRoute routePointer(PointerLadder& ladder, Terminal& terminal, Selection::Session* selection, const PointerFact& viewFact, const PointerPolicy& policy, std::uint32_t nowTicks)
@@ -449,100 +615,7 @@ PointerRoute routePointer(PointerLadder& ladder, Terminal& terminal, Selection::
 
     if ((!isLeft && !isReadlineRight) || !selection)
         return route;
-    // Reaching through while an application holds the mouse is the gesture the
-    // hint teaches; having performed it once, the user is not told again.
-    if (state.isMouseReporting && (state.isSelectionOverrideModifierArmed || state.isBlockSelectionOverrideModifierArmed || fact.isSelectionGesture))
-        ladder.hasUsedSelectionOverride = true;
-    if (fact.kind == PointerFact::Kind::Press) {
-        ladder.reportedPressRow = -1;
-        ladder.reportedPressColumn = -1;
-        ladder.hasTaughtThisDrag = false;
-    }
-    switch (fact.kind) {
-    case PointerFact::Kind::Press: {
-        if (isReadlineRight) {
-            ladder.isReadlineDeletePending = ladder.hasReadlineRightRelease && fact.clickCount == 2
-                && fact.row == ladder.readlineRightRow && fact.column == ladder.readlineRightColumn
-                && nowTicks - ladder.readlineRightReleaseTicks <= 30;
-            ladder.readlineRightPressTicks = nowTicks;
-            ladder.hasReadlineRightRelease = false;
-            anchorReadlineExtension(*selection, terminal, fact);
-        }
-        Selection::GestureStyle style;
-        style.isRectangular = state.isBlockSelectionOverrideModifierArmed;
-        // Shift extends a standing selection where the surface is already
-        // ours. Where an application is holding the mouse it is instead the
-        // bypass that made this selection possible at all, so it begins a
-        // fresh one — the reader reached through to select here, not to grow
-        // something they made before the application took the mouse.
-        style.mode = isReadlineRight || (fact.hasShift && !state.isMouseReporting) ? Selection::GestureMode::Extend : Selection::GestureMode::Fresh;
-        style.smartToken = policy.smartToken;
-        style.isWindowActivating = fact.isWindowActivating;
-        route.didChangeSelection = Selection::beginGesture(*selection, terminal, static_cast<int>(fact.row), static_cast<int>(fact.column),
-            isReadlineRight ? 1 : static_cast<int>(fact.clickCount), static_cast<int>(fact.viewOffset), style, fact.xInCells, fact.yInRows);
-        ladder.isSelectionGestureOpen = Selection::isGestureOpen(*selection);
-        // A single click gets its caret from the pointer. Word presses keep
-        // any character bounds that beginGesture resolved inside packed text.
-        if (!isReadlineRight && ladder.isSelectionGestureOpen && isCaretDrivenGesture(fact)) {
-            Selection::configureCharacterCaretGesture(*selection, terminal, resolvedCaret(terminal, fact));
-        }
-        route.wasConsumed = true;
-        route.didOpenSelectionGesture = ladder.isSelectionGestureOpen;
-        break;
-    }
-    case PointerFact::Kind::Motion:
-        if (fact.isDragging && ladder.isSelectionGestureOpen) {
-            int row = static_cast<int>(fact.row);
-            int column = static_cast<int>(fact.column);
-            const bool isRectangular = selection->gesture.dragBegan
-                ? Selection::isRectangular(&selection->state)
-                : selection->gestureStyle.isRectangular;
-            const bool isBeyondViewport = !isRectangular && terminal.rows > 0 && std::isfinite(fact.yInRows)
-                && (fact.yInRows < 0 || fact.yInRows >= terminal.rows);
-            if (isBeyondViewport) {
-                // Beyond a vertical edge, the linear selection includes that
-                // whole row; its trailing void is no longer under the pointer.
-                row = fact.yInRows < 0 ? 0 : terminal.rows - 1;
-                column = fact.yInRows < 0 ? 0 : terminal.columns;
-            }
-            // A gesture opened on carets moves on carets to its end: a motion
-            // routed on cells would re-anchor it on the cell the model keeps
-            // as its lower end, which on a drag towards the left is the
-            // pointer's side, and the selection would collapse under it.
-            if (selection->usesCharacterCarets && selection->gesture.clickCount != 2) {
-                const Selection::CaretResolution head = isBeyondViewport
-                    ? Selection::resolveSelectionCaret(terminal, static_cast<int>(fact.viewOffset), row, column, column, row)
-                    : resolvedCaret(terminal, fact);
-                route.didChangeSelection = Selection::dragCharacterCaretGesture(*selection, terminal, head, static_cast<int>(fact.viewOffset));
-            } else {
-                route.didChangeSelection = Selection::dragGesture(*selection, terminal, row, column, static_cast<int>(fact.viewOffset),
-                    isBeyondViewport ? column : fact.xInCells, isBeyondViewport ? row : fact.yInRows);
-            }
-            route.wasConsumed = true;
-        }
-        break;
-    case PointerFact::Kind::Release:
-        if (ladder.isSelectionGestureOpen) {
-            ladder.isSelectionGestureOpen = false;
-            route.wasConsumed = true;
-            route.didChangeSelection = true;
-            route.didFinishSelectionGesture = Selection::endGesture(*selection);
-            if (isReadlineRight) {
-                const bool shouldDelete = ladder.isReadlineDeletePending && fact.clickCount == 2
-                    && fact.row == ladder.readlineRightRow && fact.column == ladder.readlineRightColumn
-                    && nowTicks - ladder.readlineRightPressTicks <= 30;
-                if (shouldDelete)
-                    deleteReadlineSelection(terminal, *selection, policy, route);
-                ladder.isReadlineDeletePending = false;
-                ladder.hasReadlineRightRelease = !shouldDelete;
-                ladder.readlineRightRow = static_cast<int>(fact.row);
-                ladder.readlineRightColumn = static_cast<int>(fact.column);
-                ladder.readlineRightReleaseTicks = nowTicks;
-            }
-        }
-        break;
-    }
-    route.needsDisplay = route.needsDisplay || route.didChangeSelection;
+    routeSelectionRung(ladder, terminal, *selection, fact, policy, state, isReadlineRight, nowTicks, route);
     return route;
 }
 
@@ -768,6 +841,40 @@ std::uint32_t pointerLockChordTicksUntilDeadline(const PointerLadder& ladder, st
     const std::uint32_t deadline = ladder.pointerLockChord.armedAtTicks + pointerLockBreakoutHoldTicks;
     const auto left = static_cast<std::int32_t>(deadline - nowTicks);
     return left > 0 ? static_cast<std::uint32_t>(left) : 0;
+}
+
+std::optional<PointerRoute> routePointerOverCapture(PointerLadder& ladder, const Rendering::FrameCapture& presented, Selection::Session* selection,
+    const PointerFact& viewFact, const PointerPolicy& policy, const PublishedPointerModes& modes)
+{
+    // Every rung above the selection reads the terminal: the relative lock, the
+    // locator, Tek graphic input, the hilite gesture and the reports a program
+    // asked for, and a readline point a click moves. A fact any of them could
+    // take goes to the terminal, as does one a frame cannot take.
+    if (!selection || modes.isMouseReporting || modes.isRelativePointerLock || modes.isLocatorActive || modes.isTekModeActive
+        || modes.isReadlinePointerActive || ladder.isHiliteGestureActive)
+        return std::nullopt;
+    const Rendering::CapturedGrid grid(presented);
+    if (!grid.canExpandGestures())
+        return std::nullopt;
+    Selection::Session probe = *selection;
+    if (Selection::rebaseOverCapture(probe, grid) == Selection::CaptureRebase::NeedsOwner)
+        return std::nullopt;
+    // The rows under the pointer are the rows the frame shows.
+    PointerFact fact = viewFact;
+    fact.viewOffset = grid.viewOffset();
+    // What the ladder does on its way past the rungs above when each is quiet.
+    ladder.hasReadlineRightRelease = false;
+    ladder.isReadlineDeletePending = false;
+    ladder.isReadlineClickPending = false;
+    PointerRoute route;
+    if (fact.button != PointerButton::Left)
+        return route;
+    const PointerMoment moment {
+        .held = { .hasCommand = fact.hasCommand, .hasControl = fact.hasControl, .hasAlternate = fact.hasAlternate, .hasShift = fact.hasShift },
+        .isMouseReporting = false,
+    };
+    routeSelectionRung(ladder, grid, *selection, fact, policy, pointerReportingState(moment, policy), false, 0, route);
+    return route;
 }
 
 } // namespace Ubiquitty::Input

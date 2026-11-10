@@ -1287,6 +1287,8 @@ void captureDrainState(const Ubiquitty::Terminal& term, std::uint32_t version, R
     // DEC locator (DECELR) is a pointer grab parallel to the xterm mouse modes,
     // so it rides the same snapshot rather than a second publish path.
     out.locatorActive = term.locatorEnabled;
+    out.isReadlinePointerActive = term.modes.shouldMoveReadlinePointOnClick || term.modes.shouldMoveReadlinePointBeforePaste
+        || term.modes.shouldDeleteReadlineSelection;
     // Keyboard / terminal modes the input path reads on every keystroke.
     out.modes = sampleModes(term);
 }

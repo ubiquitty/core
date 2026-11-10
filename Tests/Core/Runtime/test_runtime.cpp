@@ -57,6 +57,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <format>
+#include <future>
 #include <memory>
 #include <optional>
 #include <semaphore>
@@ -8614,4 +8615,51 @@ TEST(marksWrittenOutsideADrainReachTheOverlayReader)
     session->unlockAfterWrite();
     const OverlayCapture cleared = captureSessionFrame(*session);
     CHECK_EQ(readPublishedOverlay(*session, *cleared).counts.triggers, 0);
+}
+
+// A plain selection gesture over the frame a view presents never waits on the
+// parser: a press, a drag and a release complete while another thread holds
+// the model lock, and the view's selection is the one the frame shows.
+TEST(aSelectionGestureOverThePresentedFrameTakesNoModelLock)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(6, 30);
+    const std::string_view text = "select these words\r\nand this row";
+    session->feedBytes({ text.data(), text.size() });
+    const OverlayCapture presented = captureSessionFrame(*session);
+    Ubiquitty::Selection::Session selection;
+    Ubiquitty::Selection::init(selection);
+
+    std::promise<void> held;
+    std::promise<void> release;
+    std::thread holder([&] {
+        session->lockForWrite();
+        held.set_value();
+        release.get_future().wait();
+        session->unlockAfterWrite();
+    });
+    held.get_future().wait();
+    const auto fact = [](Ubiquitty::Input::PointerFact::Kind kind, int row, double xInCells) {
+        Ubiquitty::Input::PointerFact pointer;
+        pointer.kind = kind;
+        pointer.button = Ubiquitty::Input::PointerButton::Left;
+        pointer.row = row;
+        pointer.column = static_cast<std::ptrdiff_t>(xInCells);
+        pointer.xInCells = xInCells;
+        pointer.yInRows = row + 0.5;
+        pointer.clickCount = 1;
+        pointer.isDragging = kind == Ubiquitty::Input::PointerFact::Kind::Motion;
+        return pointer;
+    };
+    std::future<bool> gesture = std::async(std::launch::async, [&] {
+        (void)session->pointerFact(fact(Ubiquitty::Input::PointerFact::Kind::Press, 0, 0.2), &selection, presented.get());
+        (void)session->pointerFact(fact(Ubiquitty::Input::PointerFact::Kind::Motion, 0, 6.4), &selection, presented.get());
+        return Ubiquitty::Selection::hasSelection(selection);
+    });
+    const bool didFinish = gesture.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+    release.set_value();
+    holder.join();
+    CHECK_MSG(didFinish, "the gesture waited on the model lock");
+    CHECK(gesture.get());
 }

@@ -7898,6 +7898,50 @@ public:
         return outcome;
     }
 
+    /// Runs one pointer fact through the ladder over the frame the view
+    /// presents, without the model lock where the ladder's rungs allow.
+    ///
+    /// A fact that only the selection rung would take, by the session's
+    /// published pointer modes, expands over `presented`
+    /// (``Input::routePointerOverCapture``): a press, a drag and a release of
+    /// a plain selection never wait on the parser. Any other fact, and every
+    /// fact over a frame that cannot take the gesture, takes the two-argument
+    /// ``pointerFact`` under the lock. A finished gesture's copy-on-select
+    /// reads the selected text under the lock as before.
+    ///
+    /// - Parameters:
+    ///   - fact: The event's facts, in the presented frame's visible rows.
+    ///   - selection: The caller-owned selection session.
+    ///   - presented: The frame the view presents, held by the caller, or
+    ///     null for a view that keeps none.
+    /// - Returns: What remains for the frontend.
+    PointerOutcome pointerFact(const PointerFact& fact, Ubiquitty::Selection::Session* selection, const Rendering::FrameCapture* presented) UBIQUITTY_EXCLUDES(modelLockRole)
+    {
+        if (presented) {
+            assertOnPointerLadderThread();
+            const RuntimeSnapshot snapshot = readSnapshot();
+            const Ubiquitty::Input::PublishedPointerModes modes {
+                .isMouseReporting = snapshot.mouseReportsActive,
+                .isRelativePointerLock = snapshot.mouseRelativePointerLockActive,
+                .isLocatorActive = snapshot.locatorActive,
+                .isTekModeActive = snapshot.isTekModeActive,
+                .isReadlinePointerActive = snapshot.isReadlinePointerActive,
+            };
+            if (const std::optional<Ubiquitty::Input::PointerRoute> route = Ubiquitty::Input::routePointerOverCapture(m_pointerLadder, *presented, selection, fact, pointerPolicy(), modes)) {
+                if (route->didFinishSelectionGesture)
+                    applyCopyOnSelect(selection);
+                PointerOutcome outcome;
+                outcome.needsDisplay = route->needsDisplay;
+                outcome.hint = route->hint;
+                outcome.didChangeSelection = route->didChangeSelection;
+                outcome.wasConsumed = route->wasConsumed;
+                outcome.didOpenSelectionGesture = route->didOpenSelectionGesture;
+                return outcome;
+            }
+        }
+        return pointerFact(fact, selection);
+    }
+
     /// Tells the DEC locator where a stationary pointer is.
     ///
     /// The locator's arm edge, which only a frontend can see: see
