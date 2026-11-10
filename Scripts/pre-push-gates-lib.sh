@@ -42,6 +42,19 @@
 # simulator dominate quick from a cold build root. The PGO total-drift gate
 # compiles every portable-core unit on every run.
 #
+# Before the first gate runs, a preflight (ubq_preflight, below) answers two
+# questions. If the diff touches documentation alone (Scripts/prepush_preflight.py
+# defines the set), the default tiers run the lint tier and say so: the style and
+# commit-rule gates judge prose too, and nothing it changes is built or tested.
+# Otherwise it plans the push (this script run again with plan variables only the
+# preflight issues) and builds the products the planned gates read, incrementally,
+# or names them with the exact command and refuses, before any gate runs, instead
+# of failing the gate that reads them after the gates ahead of it. A gate whose
+# work is chosen at run time declares its products with `ubq_need <id> <why>`.
+# UBQ_PREPUSH_PREREQUISITES=build|refuse|off and UBQ_PREPUSH_DOCS_ONLY=off adjust
+# either for one push; the hook clears the internal variables it does not accept
+# from the environment.
+#
 # UBIQUITTY_PREPUSH selects the tier for one push; `git config
 # ubiquitty.prepushTier <tier>` sets this clone's standing choice, for a machine
 # whose limits are a property of the machine rather than of the push. There is no
@@ -79,6 +92,14 @@ source "$UBQ_LIB/gate-report-lib.sh"
 source "$UBQ_LIB/pre-push-cache.sh"
 # shellcheck source=Scripts/pre-push-runner.sh
 source "$UBQ_LIB/pre-push-runner.sh"
+
+# A plan is issued by the preflight below. A plan variable that arrives from the
+# environment, from a debug shell or a test harness, would make every gate record
+# and none run, and the push read as a pass: it is dropped, and said.
+if [ -n "${UBQ_PREPUSH_PLAN:-}${UBQ_PREPUSH_PLAN_FILE:-}" ] && ! ubq_plan_active; then
+    echo "pre-push gates: ignoring UBQ_PREPUSH_PLAN / UBQ_PREPUSH_PLAN_FILE — only the preflight issues them." >&2
+    unset UBQ_PREPUSH_PLAN UBQ_PREPUSH_PLAN_FILE
+fi
 
 # The checkout judged is the one holding the script that sourced this file.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -166,12 +187,16 @@ trap 'exit 130' INT
 # path, which a caller reads as "anything may have changed".
 ubq_changed_with_libraries() {
     local changed library pinned pinnedHere expanded rest
-    changed="$(git diff --name-only origin/main...HEAD 2>/dev/null)" || return 1
+    # Without rename detection a rename lists only its destination, so a test or a
+    # gate renamed into Docs/ as Markdown would read as a documentation change;
+    # with it off both sides are listed. Submodules are never ignored, whatever a
+    # contributor's config says, so a pin bump stays a change.
+    changed="$(git diff --name-only --no-renames --ignore-submodules=none origin/main...HEAD 2>/dev/null)" || return 1
     for library in ubiquitty-core ubiquitty-kit; do
         grep -qxF "Libraries/$library" <<<"$changed" || continue
         pinned="$(git rev-parse --verify --quiet "origin/main:Libraries/$library" 2>/dev/null)" || continue
         pinnedHere="$(git rev-parse --verify --quiet "HEAD:Libraries/$library" 2>/dev/null)" || continue
-        expanded="$(git -C "Libraries/$library" diff --name-only "$pinned" "$pinnedHere" 2>/dev/null)" || continue
+        expanded="$(git -C "Libraries/$library" diff --name-only --no-renames --ignore-submodules=none "$pinned" "$pinnedHere" 2>/dev/null)" || continue
         [ -n "$expanded" ] || continue
         rest="$(grep -vxF "Libraries/$library" <<<"$changed")" || rest=""
         changed="$rest"$'\n'"$expanded"
@@ -182,6 +207,8 @@ ubq_changed_with_libraries() {
 # The end of a run: what stood down, what warned, what failed and where its log
 # is, and the line saying how much a pass covers. Returns the run's status.
 ubq_pre_push_finish() {
+    # A plan only records: print nothing, leave the file for the preflight.
+    ubq_plan_active && exit 0
     # Whether anyone has built what the last merges produced. A rebase merge
     # replays a branch onto a base it was never built against and pushes without
     # building the result, so the first tree in which two changes coexist is main
@@ -210,6 +237,9 @@ ubq_pre_push_finish() {
     fi
 
     echo >&2
+    if [ -n "${UBQ_TIER_NARROWED_NOTE:-}" ]; then
+        echo "pre-push gates: $UBQ_TIER_NARROWED_NOTE" >&2
+    fi
     ubq_gate_report_skipped
     ubq_gate_report_warned
     ubq_gate_report_elsewhere
@@ -246,3 +276,66 @@ ubq_pre_push_finish() {
     echo "  did. UBIQUITTY_PREPUSH=default adds the whole suite, =linux the Linux build." >&2
     return 0
 }
+
+# Whether every ref this push updates is the checkout's HEAD. The gates judge
+# HEAD, and the hook hands over the refs it was given (UBQ_PREPUSH_REFS), so a push
+# of another branch from a documentation-only HEAD is not narrowed on HEAD's say.
+# Deletions push no commit and are ignored.
+ubq_pushes_only_head() {
+    [ -n "${UBQ_PREPUSH_REFS:-}" ] || return 0
+    local head sha rest
+    head="$(git rev-parse HEAD 2>/dev/null)" || return 1
+    while read -r _ sha rest; do
+        case "$sha" in "" | 0000000000000000000000000000000000000000) continue ;; esac
+        [ "$sha" = "$head" ] || return 1
+    done <<<"$UBQ_PREPUSH_REFS"
+    return 0
+}
+
+# Before the first gate: is this a push that builds and tests nothing, and if not,
+# do the gates it will run have the build products they read?
+#
+# A diff that touches documentation alone (Scripts/prepush_preflight.py defines
+# the set) runs the lint tier: every style and commit-rule gate, which judge prose
+# as well as code, and no build or test. It is narrowed only in the default tiers,
+# only when the push is HEAD, and never below lint. An explicit ctest, linux or
+# full tier, and lint itself, are never narrowed. UBQ_PREPUSH_DOCS_ONLY=off turns
+# the narrowing off.
+#
+# The second answer comes from a plan: this script run again with the plan
+# variables the preflight issues, in which `run` records the gate it would run
+# instead of running it. Selection is then the runner's own, scopes and cache
+# included. UBQ_PREPUSH_PREREQUISITES=build (default) builds the products the
+# gates read, incrementally; refuse only checks and names what is missing; off
+# skips the check for one push. A plan that cannot be made is reported, and the
+# gates then run without the check.
+ubq_preflight() {
+    ubq_plan_active && return 0
+    local changed class mode="${UBQ_PREPUSH_PREREQUISITES:-build}" preflight="$UBQ_LIB/prepush_preflight.py"
+    if { [ "$TIER" = quick ] || [ "$TIER" = default ]; } && [ "${UBQ_PREPUSH_DOCS_ONLY:-on}" != off ] \
+            && ubq_pushes_only_head; then
+        changed="$(ubq_changed_with_libraries)" || changed=""
+        class="$(printf '%s\n' "$changed" | python3 "$preflight" classify 2>/dev/null)" || class=""
+        if [ "$class" = docs ]; then
+            TIER=lint
+            ubq_gate_cache_init "$ROOT" "$TIER"
+            UBQ_TIER_NARROWED_NOTE="documentation-only diff — ran the lint tier (every style and commit-rule gate); no build or test, as this diff touches none. UBQ_PREPUSH_DOCS_ONLY=off runs the whole tier."
+            return 0
+        fi
+    fi
+    [ "$mode" = off ] && return 0
+    local scratch plan nonce
+    scratch="$(mktemp -d)" || return 0
+    plan="$scratch/plan"
+    : >"$plan"
+    nonce="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" || { rm -rf "$scratch"; return 0; }
+    if python3 "$preflight" plan --file "$plan" --nonce "$nonce" --timeout "${UBQ_PREPUSH_PLAN_TIMEOUT:-180}" -- bash "$0"; then
+        python3 "$preflight" check --plan "$plan" --build-root "$UBQ_BUILD_ROOT" \
+            --core-root "${UBQ_CORE_ROOT:-$ROOT}" --kit-root "${UBQ_KIT_ROOT:-${UBQ_CORE_ROOT:-$ROOT}}" \
+            --subject-root "$ROOT" --mode "$mode" || { rm -rf "$scratch"; exit 1; }
+    else
+        echo "pre-push gates: running the gates WITHOUT the build-product check." >&2
+    fi
+    rm -rf "$scratch"
+}
+ubq_preflight

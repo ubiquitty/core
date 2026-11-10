@@ -213,7 +213,28 @@ ubq_whole_here() {
     return 0
 }
 
+# A plan is a run issued by the preflight, never one an environment asks for: the
+# preflight writes a fresh token beside the plan file and puts the same token in
+# UBQ_PREPUSH_PLAN, so a variable inherited from another shell, an agent or a
+# test harness matches nothing and leaves the run real.
+ubq_plan_active() {
+    [ -n "${UBQ_PREPUSH_PLAN:-}" ] && [ -n "${UBQ_PREPUSH_PLAN_FILE:-}" ] \
+        && [ -f "$UBQ_PREPUSH_PLAN_FILE.nonce" ] \
+        && [ "$UBQ_PREPUSH_PLAN" = "$(cat "$UBQ_PREPUSH_PLAN_FILE.nonce" 2>/dev/null)" ]
+}
+
+# Declares a build product the selected gates read: `ubq_need <id> <why>`. Only a
+# plan records it (see `run`); a real run has been through the preflight already.
+ubq_need() {
+    ubq_plan_active || return 0
+    printf 'NEED\t%s\t%s\n' "$1" "${2:-$1}" >>"$UBQ_PREPUSH_PLAN_FILE"
+}
+
 # run <name> <command...> — a gate. A missing tool reports SKIPPED, never passes.
+#
+# A plan shares the one entry point every gate goes through, so the selection
+# logic exists once: it records the gate that would run, unless the cache already
+# holds its pass, and runs nothing.
 run() {
     local name="$1"; shift
     local arguments=() argument
@@ -222,14 +243,18 @@ run() {
     done
     set -- "${arguments[@]}"
     local log cache_key="" started
-    log="$(mktemp)"
-    started="$(ubq_gate_now)"
-    ubq_gate_progress "$name"
     if [ -n "${UBQ_GATE_SCOPE:-}" ]; then
         cache_key="$(ubq_gate_cache_scoped_key "$UBQ_GATE_SCOPE" "$@")" || cache_key=""
     else
         cache_key="$(ubq_gate_cache_key "$name" "$@")" || cache_key=""
     fi
+    if ubq_plan_active; then
+        ubq_gate_cache_has "$cache_key" || printf 'GATE\t%s\t%s\n' "$name" "$*" >>"$UBQ_PREPUSH_PLAN_FILE"
+        return 0
+    fi
+    log="$(mktemp)"
+    started="$(ubq_gate_now)"
+    ubq_gate_progress "$name"
     if ubq_gate_cache_has "$cache_key"; then
         ubq_gate_outcome "$name" cached "$started" 1
         PASSED+=("$name")

@@ -16,6 +16,9 @@ CORE_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 while IFS= read -r variable; do
     unset "$variable"
 done < <(git rev-parse --local-env-vars)
+# Variables only this hook and the preflight set. One inherited from a debug
+# shell or a test harness would change what the gates do without a word.
+unset UBQ_PREPUSH_PLAN UBQ_PREPUSH_PLAN_FILE UBQ_PREPUSH_REFS UBQ_DOCS_ONLY UBQ_TIER_NARROWED_NOTE
 cd "$ROOT" || exit 1
 
 # The bypass lives at the call site for one push, rather than mutating the clone's
@@ -27,7 +30,7 @@ REFS="$(cat)"
 # The gates the CI workflow runs, run here. A deleted branch pushes no commits
 # and has nothing to check.
 if [ -n "$(printf '%s' "$REFS" | grep -v '^(delete)' || true)" ]; then
-    "$ROOT/Scripts/pre-push-gates.sh" || exit 1
+    UBQ_PREPUSH_REFS="$REFS" "$ROOT/Scripts/pre-push-gates.sh" || exit 1
 fi
 
 # Checks the clone's owner added for this clone (Scripts/run-local-hooks.sh),
