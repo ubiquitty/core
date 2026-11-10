@@ -262,6 +262,27 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
     for (int row = 0; row < terminal.rows; ++row)
         m_rowFlags[static_cast<std::size_t>(row)] = Screen::rowFlags(&terminal, firstAbsoluteRow + row);
 
+    // The rows as a selection reads them, by the same reads it makes of the
+    // terminal: the primary's absolute rows, the alternate screen's own.
+    m_selectionRows.resize(rowCount);
+    const bool isAlternate = terminal.screens.isUsingAlternateScreen;
+    for (int row = 0; row < terminal.rows; ++row) {
+        CapturedSelectionRow& facts = m_selectionRows[static_cast<std::size_t>(row)];
+        if (isAlternate) {
+            const Screen::VisibleRow visible = Screen::resolveVisibleRow(&terminal, 0, row);
+            facts.storedLength = visible.base ? visible.length : 0;
+            facts.needsShaping = visible.needsShaping;
+            facts.isWrapped = Screen::visibleRowWrapped(&terminal, 0, row);
+            facts.lineAttribute = terminal.screens.active->lineAttribute[row];
+        } else {
+            const Screen::AbsoluteRow resolved = Screen::resolveAbsoluteRow(&terminal, firstAbsoluteRow + row);
+            facts.storedLength = resolved.base ? resolved.length : 0;
+            facts.needsShaping = resolved.needsShaping;
+            facts.isWrapped = Screen::absoluteRowWrapped(&terminal, firstAbsoluteRow + row);
+            facts.lineAttribute = resolved.lineAttribute;
+        }
+    }
+
     FrameSource source;
     source.cells = capturedCells->data();
     source.lineAttributes = capturedLineAttributes->data();
