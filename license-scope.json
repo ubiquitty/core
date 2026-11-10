@@ -475,6 +475,7 @@
         "Resources/fonts/manifest.json",
         "Scripts/clang-format-pin",
         "Scripts/core-srcs-excluded.txt",
+        "Scripts/frame-path-blocking.txt",
         "Scripts/gate-ledger.core.txt",
         "Scripts/linux-images.txt",
         "Scripts/macos-deployment-target.txt",

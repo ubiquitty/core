@@ -140,8 +140,19 @@ endif()
 option(UBIQUITTY_OWNERSHIP_ANALYSIS
     "Check model-lock ownership with Clang's thread-safety analysis, as errors"
     ${_ubq_ownership_analysis_default})
+# Clang's function-effect analysis (clang 20 and later) proves that a
+# function marked UBIQUITTY_NONBLOCKING takes no lock, waits on nothing and
+# allocates nothing; a frontend's per-tick calls carry the mark. An older
+# Clang lacks the flag, so it is asked for only where the compiler takes it.
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag(-Wfunction-effects UBIQUITTY_HAS_FUNCTION_EFFECTS)
+set(_ubq_ownership_flags -Wthread-safety -Werror=thread-safety)
+if(UBIQUITTY_HAS_FUNCTION_EFFECTS)
+    list(APPEND _ubq_ownership_flags -Wfunction-effects -Werror=function-effects)
+endif()
+list(JOIN _ubq_ownership_flags ";" _ubq_ownership_flags)
 set(UBIQUITTY_OWNERSHIP_WARNINGS
-    "$<$<AND:$<BOOL:${UBIQUITTY_OWNERSHIP_ANALYSIS}>,$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>>:-Wthread-safety;-Werror=thread-safety>")
+    "$<$<AND:$<BOOL:${UBIQUITTY_OWNERSHIP_ANALYSIS}>,$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>>:${_ubq_ownership_flags}>")
 
 # ----------------------------------------------------------------------
 # QUIC transport (ngtcp2 + AWS-LC) — the resilient always-on datagram transport

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#include "Base/ThreadSafety.h"
 #include "Core/Selection/SelectionSpans.h"
 #include "Core/Selection/TerminalSelection.h"
 
@@ -102,7 +103,7 @@ struct CapturedSelection {
 ///   - handedOff: The frontend's record of its last hand-off, advanced to the
 ///     next one.
 /// - Returns: Whether `handedOff` now holds a hand-off to publish.
-[[nodiscard]] bool prepareHandOff(const Session& selection, PublishedSelection& handedOff) noexcept;
+[[nodiscard]] bool prepareHandOff(const Session& selection, PublishedSelection& handedOff) noexcept UBIQUITTY_NONBLOCKING;
 
 /// The answer of ``takeCapturedSelection``.
 struct CaptureSpans {
@@ -137,6 +138,6 @@ struct CaptureSpans {
 /// - Returns: How many spans were written, the outcome, and whether the view
 ///   took the resolved session.
 [[nodiscard]] CaptureSpans takeCapturedSelection(Session& selection, PublishedSelection& handedOff, const CapturedSelection& captured,
-    ViewportSpans out, ViewportEnds& ends) noexcept;
+    ViewportSpans out, ViewportEnds& ends) noexcept UBIQUITTY_NONBLOCKING;
 
 } // namespace Ubiquitty::Selection

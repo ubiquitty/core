@@ -1,0 +1,26 @@
+# The calls a frontend makes at a display tick that are not
+# UBIQUITTY_NONBLOCKING, and why each still is not.
+#
+# A per-tick call is one the display-free cadence test's frontend thread makes
+# (Tests/Core/Runtime/test_frame_cadence.cpp, `m_session.<member>(`). Every one
+# is either declared UBIQUITTY_NONBLOCKING in TerminalSession.h, which Clang's
+# -Wfunction-effects proves takes no lock and waits on nothing, or listed here
+# with the wait it still makes. Scripts/check-model-lock-holds.py counts these
+# lines into the ledger's `model-lock-holds` budget, which only falls: a call
+# moves off this list by losing its wait and gaining the mark.
+#
+# <member> <why it is not nonblocking>
+frameClockFactsNow reads a raw adopted model, which no writer publishes, under the model lock
+liveReadDecline reads the model under the live read's hold
+lockForRead the live read waits for the model lock
+presentationHoldTicksRemaining judges an open synchronized update under the model lock
+sendKey encodes the key and notes the activity under the model lock
+setPresentedViewOffset a remote pane's offset asks its host for history
+setSyncFrameCaptureGeometry registers the capture geometry under the model lock
+shouldWithholdCapture reads the model under the live read's hold
+shouldWithholdFrame judges an open synchronized update under the model lock
+takeEventFlags polls the pane link, which reads a raw adopted model under the model lock
+takeFrame judges an open synchronized update under the model lock
+terminal hands the live read the model its hold covers
+unlockForRead releases the live read's hold
+updateSelectionAfterOutput try-locks the model to judge the selection after output

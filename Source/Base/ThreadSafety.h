@@ -66,3 +66,17 @@
 /// the bodies of the primitives that implement a capability, which hold it by
 /// means the analysis cannot see.
 #define UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS UBIQUITTY_THREAD_ANNOTATION(no_thread_safety_analysis)
+
+/// Marks a function Clang's function-effect analysis proves cannot block: it
+/// takes no lock, waits on nothing, allocates nothing and calls only functions
+/// that are themselves nonblocking. A frontend's per-tick calls carry it, so a
+/// change that makes one wait on the parser does not compile.
+#if defined(__has_cpp_attribute)
+#if __has_cpp_attribute(clang::nonblocking)
+#define UBIQUITTY_NONBLOCKING [[clang::nonblocking]]
+#else
+#define UBIQUITTY_NONBLOCKING
+#endif
+#else
+#define UBIQUITTY_NONBLOCKING
+#endif
