@@ -989,9 +989,9 @@ void TerminalRuntime::publishSettledFrameIfCoherent(DrainHost& host, SettleConte
 
 FrameAdmission TerminalRuntime::admitFrame(std::uint64_t now, ReadReadiness readiness)
 {
-    const bool wasSyncOutputActive = m_term->modes.syncOutput;
+    const Modes::SyncOutput::BlockMark block = Modes::SyncOutput::blockMark(*m_term);
     const FrameAdmission admission = m_coherence.admit(*m_term, now, PAL::monotonicTicks(), readiness);
-    if (wasSyncOutputActive && !m_term->modes.syncOutput)
+    if (Modes::SyncOutput::blockMark(*m_term) != block)
         republishSnapshot();
     return admission;
 }
@@ -1060,11 +1060,12 @@ std::optional<std::uint64_t> TerminalRuntime::publishHeldFrameIfDue(DrainHost& h
         // one that has outlived its budget, and the frame is then asked for on
         // the rule's ordinary schedule.
         const Ticks ticks = PAL::monotonicTicks();
-        const bool wasSyncOutputActive = m_term->modes.syncOutput;
+        const Modes::SyncOutput::BlockMark block = Modes::SyncOutput::blockMark(*m_term);
         static_cast<void>(Modes::SyncOutput::shouldWithholdFrame(*m_term, ticks));
-        // An expired block is published here, under the lock that expired it,
-        // so the frontend's lock-free withhold stops reading it as open.
-        if (wasSyncOutputActive && !m_term->modes.syncOutput)
+        // A stamp or an expiry is published here, under the lock that wrote
+        // it, so the frontend's lock-free withhold reads the block's budget
+        // and stops reading an expired block as open.
+        if (Modes::SyncOutput::blockMark(*m_term) != block)
             republishSnapshot();
         due = m_coherence.microsecondsUntilAsk(*m_term, coherenceNow(), ticks);
         // Released by the clock, not by a pass. A writer that stopped makes
@@ -1138,6 +1139,7 @@ void captureDrainState(const Ubiquitty::Terminal& term, std::uint32_t version, R
     out.mouseHiliteActive = term.modes.mouseHilite;
     out.hiliteAwaiting = term.modes.hiliteAwaiting;
     out.syncHoldActive = term.modes.syncOutput;
+    out.syncHoldTouchTicks = term.modes.syncOutputTouchTicks;
     out.isColumnCountHeld = term.modes.columns132;
     out.isEdgeToEdge = Ubiquitty::Rendering::isFrameEdgeToEdge(term);
     out.letterboxColor = term.fullscreenContentDisplay.letterboxColor;
@@ -1583,13 +1585,27 @@ bool TerminalRuntime::shouldWithholdPresentation(std::uint32_t nowMicros) noexce
     return shouldWithholdPresentationAfterErase(nowMicros);
 }
 
-std::uint32_t TerminalRuntime::presentationHoldTicksRemaining(const Ubiquitty::Terminal& terminal, Ticks nowTicks, std::uint32_t nowMicros) const
+namespace {
+
+// The hold that releases first: either alone, or the sooner of the two.
+[[nodiscard]] std::uint32_t soonerHoldTicks(std::uint32_t blockTicks, std::uint32_t eraseTicks) noexcept UBIQUITTY_NONBLOCKING
 {
-    const std::uint32_t blockTicks = Modes::SyncOutput::ticksUntilHoldExpires(terminal, nowTicks);
-    const std::uint32_t eraseTicks = presentationHoldTicksRemaining(nowMicros);
     if (blockTicks == 0 || eraseTicks == 0)
         return std::max(blockTicks, eraseTicks);
     return std::min(blockTicks, eraseTicks);
+}
+
+} // namespace
+
+std::uint32_t TerminalRuntime::presentationHoldTicksRemaining(const Ubiquitty::Terminal& terminal, Ticks nowTicks, std::uint32_t nowMicros) const
+{
+    return soonerHoldTicks(Modes::SyncOutput::ticksUntilHoldExpires(terminal, nowTicks), presentationHoldTicksRemaining(nowMicros));
+}
+
+std::uint32_t TerminalRuntime::presentationHoldTicksRemaining(const RuntimeSnapshot& published, Ticks nowTicks, std::uint32_t nowMicros) const noexcept UBIQUITTY_NONBLOCKING
+{
+    const std::uint32_t blockTicks = published.syncHoldActive ? Modes::SyncOutput::ticksUntilHoldExpires(published.syncHoldTouchTicks, nowTicks) : 0;
+    return soonerHoldTicks(blockTicks, presentationHoldTicksRemaining(nowMicros));
 }
 
 std::uint32_t TerminalRuntime::presentationHoldTicksRemaining(std::uint32_t nowMicros) const noexcept UBIQUITTY_NONBLOCKING

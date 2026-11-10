@@ -42,13 +42,24 @@ void expire(Ubiquitty::Terminal* t)
         t->grid->requestFullRedraw();
 }
 
+BlockMark blockMark(const Ubiquitty::Terminal& t)
+{
+    return { .isOpen = t.modes.syncOutput, .touchTicks = t.modes.syncOutputTouchTicks };
+}
+
 uint32_t ticksUntilHoldExpires(const Ubiquitty::Terminal& t, Ticks currentTicks)
 {
     if (!isActive(&t))
         return 0;
+    return ticksUntilHoldExpires(t.modes.syncOutputTouchTicks, currentTicks);
+}
+
+uint32_t ticksUntilHoldExpires(uint32_t touchTicks, Ticks currentTicks) noexcept UBIQUITTY_NONBLOCKING
+{
     // An unstamped hold has its whole budget ahead of it: the stamp lands on
-    // the first touch, which the asking frontend performs on the way here.
-    const uint32_t elapsed = elapsedTicks(&t, currentTicks);
+    // the first touch, which the asking frontend performs on the way here. A
+    // clock behind the stamp has wrapped, and the block reads as fresh.
+    const uint32_t elapsed = touchTicks == 0 || currentTicks.count < touchTicks ? 0 : currentTicks.count - touchTicks;
     if (elapsed > maxHoldTicks)
         return 1;
     return maxHoldTicks - elapsed + 1;
