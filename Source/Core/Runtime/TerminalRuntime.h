@@ -608,14 +608,18 @@ public:
 
     // --- lifecycle ---------------------------------------------------------
     // TERM-WRITER. Allocates + initialises the Ubiquitty::Terminal to parameters (no Values read).
-    void init(const RuntimeInitParameters&);
+    // It builds the model and publishes its first snapshot before anything
+    // else can reach the model, as a constructor would, so the thread-safety
+    // analysis, which does not check constructors, does not check it either.
+    void init(const RuntimeInitParameters&) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS;
 
     // Launch `command` on a fresh local PTY and OWN the resulting stream (RAII:
     // closed in close()/dtor). `identity` is what the child's environment is
     // stamped with; the runtime reads no Values of its own, so the owner's
     // configuration is the only source. Returns false if the open failed.
-    // Pairs with close().
-    bool launch(const LaunchCommand&, const PAL::TerminalIdentity& identity);
+    // Pairs with close(). The caller holds the model lock: the launch claims
+    // the model and publishes it before any ingest reads it.
+    bool launch(const LaunchCommand&, const PAL::TerminalIdentity& identity) UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Whether this session ends when the child it launched does.
     ///
@@ -1011,10 +1015,11 @@ public:
     ///
     /// A null stream is refused without changing the active stream or running
     /// installation hooks. A nonnull stream explicitly replaces the active owner.
+    /// The caller holds the model lock: the stream claims the model's replies.
     ///
     /// - Parameter stream: The endpoint to own, returned intact on refusal.
     /// - Returns: Success, or the exact refused owner; null is never installation.
-    [[nodiscard]] std::expected<void, std::unique_ptr<PAL::Stream>> adoptStream(std::unique_ptr<PAL::Stream> stream);
+    [[nodiscard]] std::expected<void, std::unique_ptr<PAL::Stream>> adoptStream(std::unique_ptr<PAL::Stream> stream) UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Subscribes to the stream's fork/exec/exit edge, so a tree that changed
     /// under a steady foreground still re-walks.
@@ -1392,7 +1397,7 @@ public:
     ///   - nowTicks: Now, on the 60 Hz monotonic clock.
     ///   - nowMicros: Now, in monotonic microseconds.
     /// - Returns: Whether to paint.
-    [[nodiscard]] bool takeOwedPaint(Ticks nowTicks, std::uint32_t nowMicros);
+    [[nodiscard]] bool takeOwedPaint(Ticks nowTicks, std::uint32_t nowMicros) UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Returns how long that frontend may wait before asking again.
     ///
@@ -1402,7 +1407,7 @@ public:
     /// - Returns: Milliseconds until a withheld paint may release, or -1 when
     ///   none is owed, or the coherence rule holds the frame and its own wait
     ///   (from ``publishHeldFrameIfDue``) wakes the loop.
-    [[nodiscard]] int owedPaintWaitMilliseconds(Ticks nowTicks, std::uint32_t nowMicros) const;
+    [[nodiscard]] int owedPaintWaitMilliseconds(Ticks nowTicks, std::uint32_t nowMicros) const UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Records a focus change. TERM-WRITER. Gaining the focus is a person
     /// looking at the pane, which clears its unseen attention
@@ -1502,17 +1507,17 @@ public:
 
     // Sample the per-pane read-state into `out` + bump its version. TERM-WRITER;
     // the writer calls it each drain and publishes link().reads.
-    void captureSnapshot(RuntimeSnapshot& out);
+    void captureSnapshot(RuntimeSnapshot& out) UBIQUITTY_REQUIRES(modelLockRole);
 
     // Capture + publish the read-snapshot now, for a Ubiquitty::Terminal written without a
     // drain pass (the tmux render-only pane, whose bytes bypass drainAvailable so its
     // modes would stay stale). Caller must hold the model lock.
-    void republishSnapshot();
+    void republishSnapshot() UBIQUITTY_REQUIRES(modelLockRole);
 
     // Publish a read-snapshot captured from an EXTERNAL Ubiquitty::Terminal this runtime does
     // not own (the tmux render adapter: the Session owns the pane Terminal). Caller
     // holds that Terminal's model lock.
-    void republishSnapshotForTerm(Ubiquitty::Terminal* externalTerm);
+    void republishSnapshotForTerm(Ubiquitty::Terminal* externalTerm) UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Refreshes only the frame clock after activity under the model lock.
     ///
@@ -1574,7 +1579,17 @@ public:
     // Non-const Ubiquitty::Terminal borrow for the renderer. Safety is the caller's lock
     // bracket, not constness (the renderer writes Terminal: palette write-back).
     // ObjC++-only; never reachable from Swift.
-    Ubiquitty::Terminal* borrowTermForRender();
+    Ubiquitty::Terminal* borrowTermForRender() UBIQUITTY_REQUIRES(modelLockRole);
+
+    /// Lends the model to a caller that reads nothing through this call: a
+    /// drain pass that takes the model lock for each bite it parses, or an
+    /// owner that tests for a model or hands it on.
+    ///
+    /// The one route to the model the thread-safety analysis does not check;
+    /// every reader takes ``borrowTermForRender()`` under the lock.
+    ///
+    /// - Returns: The model, or null before ``init`` and after ``close``.
+    [[nodiscard]] Ubiquitty::Terminal* lendModelTerminal() const UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { return m_term.get(); }
     // Commit any open scroll-lane run before the model is read by anything but
     // the drain (the flood pipeline's bite returns leave runs open; paint state
     // is stale until the flush). The session's model lock runs it on every
@@ -1879,7 +1894,7 @@ private:
     ///   - snap: The snapshot to publish.
     ///   - term: The terminal whose table and colours ride ahead of it;
     ///     nullptr publishes the snapshot alone.
-    void publishReads(const RuntimeSnapshot& snap, Ubiquitty::Terminal* term);
+    void publishReads(const RuntimeSnapshot& snap, Ubiquitty::Terminal* term) UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Publishes a terminal's colours as the ones its frame shows.
     ///
@@ -1910,7 +1925,7 @@ private:
     ///   - now: The coherence clock's reading.
     ///   - readiness: Whether the read has gone quiet.
     /// - Returns: The rule's admission.
-    FrameAdmission admitFrame(std::uint64_t now, ReadReadiness readiness);
+    FrameAdmission admitFrame(std::uint64_t now, ReadReadiness readiness) UBIQUITTY_REQUIRES(modelLockRole);
 
     void emit(EventKind, std::uint32_t data0 = 0);
 
@@ -1978,13 +1993,8 @@ private:
     void installTerminalClients(Ubiquitty::Terminal& term);
 
     /// Makes this runtime the one that answers its terminal's queries, as a
-    /// stream it reads is installed.
-    ///
-    /// Writes the model without the model lock, which this runtime does not
-    /// own, so the thread-safety analysis does not check it: the stream is
-    /// installed on the frontend's thread before the ingest thread that would
-    /// share the model starts.
-    void claimRepliesBeforeIngest() UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS;
+    /// stream it reads is installed. The caller holds the model lock.
+    void claimRepliesBeforeIngest() UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Ticks the terminal's clock to now, before bytes that just arrived are
     /// parsed.
@@ -1998,6 +2008,9 @@ private:
     /// lock; the pointer itself is set and cleared only while no other thread
     /// shares the runtime.
     TermHolder m_term UBIQUITTY_POINTEE_GUARDED_BY(modelLockRole);
+
+    /// The model, for a caller that holds the model lock.
+    [[nodiscard]] Ubiquitty::Terminal* modelTerminal() const UBIQUITTY_REQUIRES(modelLockRole) { return m_term.get(); }
     // The session's byte stream — OWNED (RAII). launch()/adoptStream() install it,
     // close()/dtor reset it. PAL::Stream is incomplete here — the dtor lives in the
     // .cpp where Stream.h completes it for unique_ptr's deleter.

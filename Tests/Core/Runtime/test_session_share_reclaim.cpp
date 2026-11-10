@@ -246,6 +246,7 @@ bool waitFor(Condition condition, int budgetMilliseconds)
 /// Whether any visible row of a stopped session's model carries `text`.
 bool screenContains(TerminalSession& session, const std::string& text)
 {
+    const Ubiquitty::ModelLockHold hold(*session.modelLockPointer());
     const Ubiquitty::Terminal* term = session.terminal();
     if (term == nullptr)
         return false;

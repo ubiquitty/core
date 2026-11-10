@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "Harness.h"
+#include "SoleModelThread.h"
 
 // test_window_request_queue.cpp — the session's own WindowClient, for a
 // frontend that installs none.
@@ -201,7 +202,7 @@ TEST(theWindowQueueYieldsToAFrontendThatInstalledItsOwnClient)
     session->start(24, 80);
 
     RecordingWindowClient client;
-    Ubiquitty::Terminal* term = session->terminal();
+    Ubiquitty::Terminal* term = withSessionModel(*session, [](Ubiquitty::Terminal& model) { return &model; });
     CHECK(term != nullptr);
     term->windowClient = &client;
     CHECK(!session->installWindowRequestQueue());
@@ -252,7 +253,7 @@ TEST(theBufferedFontRequestPublishesItsFieldsGenerationAndEvent)
     const std::unique_ptr<Session, decltype(&releaseTerminalSession)> session(Session::make(), releaseTerminalSession);
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    Ubiquitty::Terminal* terminal = session->terminal();
+    Ubiquitty::Terminal* terminal = withSessionModel(*session, [](Ubiquitty::Terminal& model) { return &model; });
     REQUIRE(terminal != nullptr);
     terminal->allowFontOperations = true;
     CHECK(session->publishActualFont("Original Face", 13.0));
@@ -296,7 +297,7 @@ TEST(minttysEmptySizeOperandRestoresTheSizeAndKeepsTheFamily)
     const std::unique_ptr<Session, decltype(&releaseTerminalSession)> session(Session::make(), releaseTerminalSession);
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    Ubiquitty::Terminal* terminal = session->terminal();
+    Ubiquitty::Terminal* terminal = withSessionModel(*session, [](Ubiquitty::Terminal& model) { return &model; });
     REQUIRE(terminal != nullptr);
     terminal->allowFontOperations = true;
     REQUIRE(session->publishActualFont("Original Face", 13.0));
@@ -327,14 +328,16 @@ TEST(fontQueriesReportAcknowledgedFamilies)
     const std::unique_ptr<Session, decltype(&releaseTerminalSession)> session(Session::make(), releaseTerminalSession);
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    session->terminal()->allowFontOperations = true;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.allowFontOperations = true; });
     REQUIRE(session->publishActualFont("Original Face", 13.0));
     const auto query = [&] {
         feed(session.get(), "\033]50;?\007");
         std::string reply;
-        Ubiquitty::flushOutput(*session->terminal(), [](void* context, std::span<const char> bytes) {
-            static_cast<std::string*>(context)->append(bytes.data(), bytes.size());
-            return true; }, &reply);
+        withSessionModel(*session, [&](Ubiquitty::Terminal& model) {
+            Ubiquitty::flushOutput(model, [](void* context, std::span<const char> bytes) {
+                static_cast<std::string*>(context)->append(bytes.data(), bytes.size());
+                return true; }, &reply);
+        });
         return reply;
     };
     CHECK(query() == "\033]50;Original Face\007");
@@ -360,7 +363,7 @@ TEST(refusedFontRequestsPreserveAcceptedStateWithAndWithoutTheBufferedClient)
             const std::unique_ptr<Session, decltype(&releaseTerminalSession)> session(Session::make(), releaseTerminalSession);
             REQUIRE(session != nullptr);
             session->start(24, 80);
-            Ubiquitty::Terminal* terminal = session->terminal();
+            Ubiquitty::Terminal* terminal = withSessionModel(*session, [](Ubiquitty::Terminal& model) { return &model; });
             REQUIRE(terminal != nullptr);
             terminal->allowFontOperations = true;
             if (!hasBufferedClient) {
@@ -392,12 +395,16 @@ TEST(theBufferedFontEventCannotPrecedeItsPublishedGeneration)
     const std::unique_ptr<Session, decltype(&releaseTerminalSession)> session(Session::make(), releaseTerminalSession);
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    Ubiquitty::Terminal* terminal = session->terminal();
+    Ubiquitty::Terminal* terminal = withSessionModel(*session, [](Ubiquitty::Terminal& model) { return &model; });
     REQUIRE(terminal != nullptr);
     terminal->allowFontOperations = true;
     const auto bit = 1u << static_cast<unsigned>(EventKind::FontSwapRequested);
 
-    Ubiquitty::processBytes(terminal, "\x1b]50;Menlo:size=17\x07");
+    {
+        // The parser calls the session's clients under the model lock.
+        const Ubiquitty::ModelLockHold hold(*session->modelLockPointer());
+        Ubiquitty::processBytes(terminal, "\x1b]50;Menlo:size=17\x07");
+    }
     CHECK_EQ(terminal->fontRequests.generation(), 1u);
     CHECK_EQ(session->readSnapshot().fontRequestGeneration, 0u);
     CHECK((session->takeEventFlags() & bit) == 0);
@@ -414,7 +421,7 @@ TEST(directFontFeedsWaitForTheModelLock)
     const std::unique_ptr<Session, decltype(&releaseTerminalSession)> session(Session::make(), releaseTerminalSession);
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    session->terminal()->allowFontOperations = true;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.allowFontOperations = true; });
     std::promise<void> workerStarted;
     session->lockForRead();
     auto fed = std::async(std::launch::async, [&] {
@@ -434,7 +441,7 @@ TEST(directFontFeedSignalsAfterUnlockingAndPublishing)
     const std::unique_ptr<Session, decltype(&releaseTerminalSession)> session(Session::make(), releaseTerminalSession);
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    session->terminal()->allowFontOperations = true;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.allowFontOperations = true; });
     struct SignalState {
         Session* session;
         bool wasCalled { false };
@@ -467,7 +474,7 @@ TEST(bufferedFontRequestsComposeInParserOrder)
     const std::unique_ptr<Session, decltype(&releaseTerminalSession)> session(Session::make(), releaseTerminalSession);
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    session->terminal()->allowFontOperations = true;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.allowFontOperations = true; });
     CHECK(session->publishActualFont("Original Face", 13.0));
     auto applyNext = [&] {
         const auto delivery = session->beginFontRequest("Configured Face", 14.0);
@@ -508,7 +515,7 @@ TEST(fontReceiptsCannotConsumeNewerOrAlreadyCompletedOperations)
     const std::unique_ptr<Session, decltype(&releaseTerminalSession)> session(Session::make(), releaseTerminalSession);
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    session->terminal()->allowFontOperations = true;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.allowFontOperations = true; });
     CHECK(session->publishActualFont("Original Face", 13.0));
     feed(session.get(), "\x1b]50;Menlo:size=17\x07");
     const auto first = session->beginFontRequest("Configured Face", 14.0);
@@ -518,7 +525,7 @@ TEST(fontReceiptsCannotConsumeNewerOrAlreadyCompletedOperations)
     CHECK(first.resolution.family == "Menlo");
     CHECK_EQ(first.resolution.sizePoints, 17.0);
     CHECK(session->acknowledgeFontRequest(first.receipt, FontAdoptionOutcome::Applied, "Substituted Face", 18.0));
-    CHECK(session->terminal()->font == "Newer Face");
+    CHECK(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.font; }) == "Newer Face");
     CHECK(!session->acknowledgeFontRequest(first.receipt, FontAdoptionOutcome::Applied, "Stale Face", 99.0));
 
     const auto second = session->beginFontRequest("Configured Face", 14.0);
@@ -527,7 +534,7 @@ TEST(fontReceiptsCannotConsumeNewerOrAlreadyCompletedOperations)
     CHECK_EQ(second.resolution.sizePoints, 22.0);
     CHECK(!session->acknowledgeFontRequest(first.receipt, FontAdoptionOutcome::Refused, "", 0.0));
     CHECK(session->acknowledgeFontRequest(second.receipt, FontAdoptionOutcome::Applied, "Actual Newer Face", 21.0));
-    CHECK(session->terminal()->font == "Actual Newer Face");
+    CHECK(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.font; }) == "Actual Newer Face");
     const auto third = session->beginFontRequest("Configured Face", 14.0);
     REQUIRE(third.receipt.isValid());
     CHECK(third.resolution.family == "Actual Newer Face");
@@ -541,13 +548,13 @@ TEST(refusedFontAdoptionsLeaveTheNextOperationOnTheActualFont)
     const std::unique_ptr<Session, decltype(&releaseTerminalSession)> session(Session::make(), releaseTerminalSession);
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    session->terminal()->allowFontOperations = true;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.allowFontOperations = true; });
     CHECK(session->publishActualFont("Original Face", 13.0));
     feed(session.get(), "\x1b]50;Missing Face:size=30\x07\x1b]50;#+3\x07");
     const auto missing = session->beginFontRequest("Configured Face", 14.0);
-    CHECK(session->terminal()->font == "Missing Face");
+    CHECK(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.font; }) == "Missing Face");
     CHECK(session->acknowledgeFontRequest(missing.receipt, FontAdoptionOutcome::Refused, "Original Face", 13.0));
-    CHECK(session->terminal()->font == "Original Face");
+    CHECK(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.font; }) == "Original Face");
     const auto relative = session->beginFontRequest("Configured Face", 14.0);
     CHECK(relative.resolution.family == "Original Face");
     CHECK_EQ(relative.resolution.sizePoints, 16.0);
@@ -559,14 +566,14 @@ TEST(externalFontChangesInvalidateReceiptsWithoutDiscardingTheirRequests)
     const std::unique_ptr<Session, decltype(&releaseTerminalSession)> session(Session::make(), releaseTerminalSession);
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    session->terminal()->allowFontOperations = true;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.allowFontOperations = true; });
     CHECK(session->publishActualFont("Original Face", 13.0));
     feed(session.get(), "\x1b]50;#+3\x07");
     const auto beforeZoom = session->beginFontRequest("Configured Face", 14.0);
     CHECK_EQ(beforeZoom.resolution.sizePoints, 16.0);
     CHECK(session->publishActualFont("Zoomed Face", 20.0));
     CHECK(!session->acknowledgeFontRequest(beforeZoom.receipt, FontAdoptionOutcome::Applied, "Original Face", 16.0));
-    CHECK(session->terminal()->font == "Zoomed Face");
+    CHECK(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.font; }) == "Zoomed Face");
     const auto afterZoom = session->beginFontRequest("Configured Face", 14.0);
     CHECK(afterZoom.resolution.family == "Zoomed Face");
     CHECK_EQ(afterZoom.resolution.sizePoints, 23.0);
@@ -575,7 +582,7 @@ TEST(externalFontChangesInvalidateReceiptsWithoutDiscardingTheirRequests)
 
     feed(session.get(), "\x1b]50;Accepted Face\x07");
     CHECK(session->publishActualFont("Configured New Face", 18.0));
-    CHECK(session->terminal()->font == "Accepted Face");
+    CHECK(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.font; }) == "Accepted Face");
     const auto named = session->beginFontRequest("Configured New Face", 18.0);
     CHECK(named.resolution.family == "Accepted Face");
     CHECK_EQ(named.resolution.sizePoints, 18.0);
@@ -586,7 +593,7 @@ TEST(fontQueueOverflowRefusesBeforeChangingAcceptedState)
     const std::unique_ptr<Session, decltype(&releaseTerminalSession)> session(Session::make(), releaseTerminalSession);
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    session->terminal()->allowFontOperations = true;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.allowFontOperations = true; });
     CHECK(session->publishActualFont("Original Face", 13.0));
     constexpr std::size_t maxRequests = Ubiquitty::OSC::FontRequestQueue::maxPendingRequests;
     static_assert(maxRequests == Session::windowRequestQueueLimit);
@@ -597,11 +604,11 @@ TEST(fontQueueOverflowRefusesBeforeChangingAcceptedState)
     }
     (void)session->takeEventFlags();
     feed(session.get(), "\x1b]50;Refused Face:size=30\x07");
-    CHECK_EQ(session->terminal()->fontRequests.pendingCount(), maxRequests);
-    CHECK_EQ(session->terminal()->fontRequests.generation(), maxRequests);
+    CHECK_EQ(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.fontRequests.pendingCount(); }), maxRequests);
+    CHECK_EQ(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.fontRequests.generation(); }), maxRequests);
     CHECK_EQ(session->readSnapshot().fontRequestGeneration, maxRequests);
-    CHECK(session->terminal()->font == "Accepted Face");
-    CHECK(!session->terminal()->fontRequestChanged);
+    CHECK(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.font; }) == "Accepted Face");
+    CHECK(!withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.fontRequestChanged; }));
     CHECK((session->takeEventFlags() & (1u << static_cast<unsigned>(EventKind::FontSwapRequested))) == 0);
     CHECK(session->acknowledgeFontRequest(head.receipt, FontAdoptionOutcome::Applied, "Accepted Face", 14.0));
     for (std::size_t index = 1; index < maxRequests; ++index) {
@@ -612,8 +619,8 @@ TEST(fontQueueOverflowRefusesBeforeChangingAcceptedState)
     }
     CHECK(!session->beginFontRequest("Configured Face", 14.0).receipt.isValid());
     feed(session.get(), "\x1b]50;Admitted Face:size=30\x07");
-    CHECK_EQ(session->terminal()->fontRequests.generation(), maxRequests + 1);
-    CHECK(session->terminal()->font == "Admitted Face");
+    CHECK_EQ(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.fontRequests.generation(); }), maxRequests + 1);
+    CHECK(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.font; }) == "Admitted Face");
 }
 
 TEST(invalidFontAxesAndUnsupportedClientsNeverClaimAcceptance)
@@ -621,22 +628,22 @@ TEST(invalidFontAxesAndUnsupportedClientsNeverClaimAcceptance)
     const std::unique_ptr<Session, decltype(&releaseTerminalSession)> session(Session::make(), releaseTerminalSession);
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    session->terminal()->allowFontOperations = true;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.allowFontOperations = true; });
     CHECK(session->publishActualFont("Original Face", 13.0));
     feed(session.get(), "\x1b]50;" + std::string(Ubiquitty::Terminal::maxFontLength + 1, 'x') + "\x07");
     feed(session.get(), "\x1b]50;#nan\x07\x1b]50;#+inf\x07");
-    CHECK_EQ(session->terminal()->fontRequests.generation(), 0u);
-    CHECK_EQ(session->terminal()->fontRequests.pendingCount(), 0u);
-    CHECK(session->terminal()->font == "Original Face");
+    CHECK_EQ(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.fontRequests.generation(); }), 0u);
+    CHECK_EQ(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.fontRequests.pendingCount(); }), 0u);
+    CHECK(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.font; }) == "Original Face");
     CHECK(!session->publishActualFont("Invalid Face", std::numeric_limits<double>::quiet_NaN()));
-    CHECK(session->terminal()->font == "Original Face");
+    CHECK(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.font; }) == "Original Face");
 
     Ubiquitty::WindowClient unsupported;
-    session->terminal()->windowClient = &unsupported;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.windowClient = &unsupported; });
     feed(session.get(), "\x1b]50;Unsupported Face:size=20\x07");
-    CHECK_EQ(session->terminal()->fontRequests.generation(), 0u);
-    CHECK(session->terminal()->font == "Original Face");
-    session->terminal()->windowClient = nullptr;
+    CHECK_EQ(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.fontRequests.generation(); }), 0u);
+    CHECK(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.font; }) == "Original Face");
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.windowClient = nullptr; });
 }
 
 TEST(fontReceiptsRejectWrongSessionsAndInvalidSuccessfulOutcomes)
@@ -647,7 +654,7 @@ TEST(fontReceiptsRejectWrongSessionsAndInvalidSuccessfulOutcomes)
     REQUIRE(second != nullptr);
     for (Session* session : { first.get(), second.get() }) {
         session->start(24, 80);
-        session->terminal()->allowFontOperations = true;
+        withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.allowFontOperations = true; });
         CHECK(session->publishActualFont("Original Face", 13.0));
         feed(session, "\x1b]50;Menlo:size=17\x07");
     }
@@ -656,7 +663,7 @@ TEST(fontReceiptsRejectWrongSessionsAndInvalidSuccessfulOutcomes)
     CHECK(!second->acknowledgeFontRequest(firstRequest.receipt, FontAdoptionOutcome::Applied, "Wrong Face", 33.0));
     CHECK(!second->acknowledgeFontRequest(secondRequest.receipt, FontAdoptionOutcome::Applied, "", 17.0));
     CHECK(!second->acknowledgeFontRequest(secondRequest.receipt, FontAdoptionOutcome::Applied, "Menlo", std::numeric_limits<double>::infinity()));
-    CHECK_EQ(second->terminal()->fontRequests.pendingCount(), 1u);
+    CHECK_EQ(withSessionModel(*second, [&](Ubiquitty::Terminal& model) { return model.fontRequests.pendingCount(); }), 1u);
     CHECK(second->acknowledgeFontRequest(secondRequest.receipt, FontAdoptionOutcome::Applied, "Menlo", 17.0));
     CHECK(first->acknowledgeFontRequest(firstRequest.receipt, FontAdoptionOutcome::Refused, "Original Face", 13.0));
 }
@@ -666,7 +673,7 @@ TEST(arrivalsBetweenNotificationAndLeaseNeverReplaceTheOldestRequest)
     const std::unique_ptr<Session, decltype(&releaseTerminalSession)> session(Session::make(), releaseTerminalSession);
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    session->terminal()->allowFontOperations = true;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.allowFontOperations = true; });
     CHECK(session->publishActualFont("Original Face", 13.0));
     feed(session.get(), "\x1b]50;#+2\x07");
     CHECK_EQ(session->readSnapshot().fontRequestGeneration, 1u);
@@ -686,14 +693,14 @@ TEST(hardResetPreservesAcceptedFontOperationsAndTheirLease)
     const std::unique_ptr<Session, decltype(&releaseTerminalSession)> session(Session::make(), releaseTerminalSession);
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    session->terminal()->allowFontOperations = true;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.allowFontOperations = true; });
     CHECK(session->publishActualFont("Original Face", 13.0));
     feed(session.get(), "\x1b]50;Menlo:size=17\x07\x1b]50;#+3\x07");
     const auto first = session->beginFontRequest("Configured Face", 14.0);
     feed(session.get(), "\x1b"
                         "c");
-    CHECK(session->terminal()->font == "Menlo");
-    CHECK_EQ(session->terminal()->fontRequests.generation(), 2u);
+    CHECK(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.font; }) == "Menlo");
+    CHECK_EQ(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.fontRequests.generation(); }), 2u);
     CHECK(session->acknowledgeFontRequest(first.receipt, FontAdoptionOutcome::Applied, "Menlo", 17.0));
     const auto second = session->beginFontRequest("Configured Face", 14.0);
     CHECK_EQ(second.resolution.sizePoints, 20.0);
@@ -707,7 +714,7 @@ TEST(sharedRendererPublicationDoesNotReplayOrAcknowledgeAnotherPane)
     REQUIRE(second != nullptr);
     for (Session* session : { first.get(), second.get() }) {
         session->start(24, 80);
-        session->terminal()->allowFontOperations = true;
+        withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.allowFontOperations = true; });
         CHECK(session->publishActualFont("Shared Face", 13.0));
     }
     feed(first.get(), "\x1b]50;#+2\x07");
@@ -734,7 +741,7 @@ TEST(fontAcknowledgmentsAndExternalPublicationsSignalOutsideTheModelLock)
     const std::unique_ptr<Session, decltype(&releaseTerminalSession)> session(Session::make(), releaseTerminalSession);
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    session->terminal()->allowFontOperations = true;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.allowFontOperations = true; });
     CHECK(session->publishActualFont("Original Face", 13.0));
     feed(session.get(), "\x1b]50;#+2\x07\x1b]50;#+3\x07");
     const auto first = session->beginFontRequest("Configured Face", 14.0);

@@ -1012,6 +1012,7 @@ private:
 // still open: here it never ends, so nothing waits on its teardown.
 TEST(testAPipelinedPauseOnAPassBoundaryDeliversBeforeTheBurstEnds)
 {
+    ownModelOnTestThread();
     constexpr std::size_t burstBytes = 3 * static_cast<std::size_t>(TerminalRuntime::drainPassCapacityBytes);
     std::string burst;
     constexpr std::string_view line = "0123456789abcdefghijklmnopqrstuvwxyz\n";
@@ -1076,6 +1077,7 @@ TEST(testAPipelinedPauseOnAPassBoundaryDeliversBeforeTheBurstEnds)
 
 TEST(testATimedPipelinePauseReleasesAHeldFrameBeforeTheBurstEnds)
 {
+    ownModelOnTestThread();
     class TimedPausedDrainHost final : public DrainHost {
     public:
         void lockModel() override UBIQUITTY_ACQUIRES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_lock.lock(); }
@@ -1179,6 +1181,7 @@ private:
 // late.
 TEST(testAHeldFrameIsAnnouncedOnTheRulesScheduleWhileADeliveryIsHeld)
 {
+    ownModelOnTestThread();
     int pipeDescriptors[2] = { -1, -1 };
     REQUIRE(::pipe(pipeDescriptors) == 0);
     Ubiquitty::PAL::UnixFileDescriptor readEnd(pipeDescriptors[0]);
@@ -1232,6 +1235,7 @@ TEST(testAHeldFrameIsAnnouncedOnTheRulesScheduleWhileADeliveryIsHeld)
 // held frame is released, and announced, on the way out.
 TEST(testALoopThatStopsReleasesTheFrameTheRuleHolds)
 {
+    ownModelOnTestThread();
     int pipeDescriptors[2] = { -1, -1 };
     REQUIRE(::pipe(pipeDescriptors) == 0);
     Ubiquitty::PAL::UnixFileDescriptor readEnd(pipeDescriptors[0]);
@@ -1430,7 +1434,7 @@ public:
         m_clockMicroseconds.fetch_add(static_cast<std::uint64_t>(std::chrono::microseconds(modelLockHold).count()), std::memory_order_relaxed);
     }
     void unlockModel() override UBIQUITTY_RELEASES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_lock.unlock(); }
-    void onSyncFrameReadyLocked(SyncFrameReason reason) override
+    void onSyncFrameReadyLocked(SyncFrameReason reason) override UBIQUITTY_REQUIRES(Ubiquitty::modelLockRole)
     {
         if (reason == SyncFrameReason::SaturatedPass && m_shouldPaceAfterCapacity)
             m_interval = 8'000;
@@ -1495,6 +1499,9 @@ enum class FloodContent {
 ShapedFloodOutcome runShapedFlood(Ubiquitty::PAL::ReadShape shape, FramePacing pacing = FramePacing::Never,
     FloodContent content = FloodContent::Lines)
 {
+    // This thread reads the model only before the loop starts and after it
+    // stops, when no other thread does.
+    ownModelOnTestThread();
     ShapedFloodOutcome outcome;
     // Past the drain pass capacity, so the flood rides the pipeline, and
     // small enough that the slow parser finishes it in a few hundred ms.
@@ -1629,6 +1636,9 @@ TEST(testATimedPassHandsAFloodToTheReader)
 // and the flood rides the reader.
 TEST(testPassesThatEachEndAtAWouldBlockHandAFastWriterToTheReader)
 {
+    // This thread reads the model only before the loop starts and after it
+    // stops, when no other thread does.
+    ownModelOnTestThread();
     // 64 KB between pauses, each one would-block longer than a pass's refill
     // band re-reads: it ends the pass that meets it, and the next pass finds
     // the writer's next 64 KB.
@@ -1699,6 +1709,7 @@ TEST(testTheReadersTimedPassesTakeFramesInsideASequence)
 // the interval rather than only when the rule's clock lands between bites.
 TEST(testAStarvedWritersFloodKeepsTakingFramesAtTheInterval)
 {
+    ownModelOnTestThread();
     class StarvedWriterDrainHost final : public DrainHost {
     public:
         void lockModel() override UBIQUITTY_ACQUIRES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_lock.lock(); }

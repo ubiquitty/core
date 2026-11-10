@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "Harness.h"
+#include "SoleModelThread.h"
 
 #include "Core/Runtime/TerminalSession.h"
 #include "Core/TerminalOperations.h"
@@ -76,8 +77,8 @@ TEST(embeddedFeedPublishesStatusAndBellBeforeEventDelivery)
         Runtime::TerminalSession::make(), releaseTerminalSession);
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    session->terminal()->bellMode = BellMode::Visual;
-    session->terminal()->bellRaisesUrgency = true;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.bellMode = BellMode::Visual; });
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.bellRaisesUrgency = true; });
     (void)session->takeEventFlags();
     const std::string bytes = "\x1b]21337;indicator=#5f87ff;status=Waiting\x07\x07";
     session->feedBytes(Runtime::ByteSpan(bytes.data(), bytes.size()));
@@ -114,7 +115,7 @@ TEST(sessionPasteEventsPrecedeBracketsAndRetainReadPolicy)
     CHECK(session->sendPaste("clipboard contents").empty());
     CHECK(input == OSC::clipboardPasteNotification("text/plain", ClipboardBuffer::Clipboard));
     input.clear();
-    session->terminal()->osc52ClipboardReadPolicy = OSC::ClipboardReadPolicy::Deny;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.osc52ClipboardReadPolicy = OSC::ClipboardReadPolicy::Deny; });
     CHECK(session->sendPasteNotification("image/png"));
     CHECK(input == "\033]5522;type=read:status=EPERM\033\\");
     input.clear();

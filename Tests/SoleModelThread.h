@@ -13,3 +13,20 @@
 
 /// Declares that the calling test thread is its model's only thread.
 inline void ownModelOnTestThread() UBIQUITTY_ASSERTS_CAPABILITY(Ubiquitty::modelLockRole) { }
+
+/// Runs `access` on a session's model under the session's own model lock, for
+/// a test that drives the session from its frontend's thread.
+///
+/// The lock is held for `access` alone, so a test calls no session member
+/// that takes the lock from inside it.
+///
+/// - Parameters:
+///   - session: The session whose model is read or written.
+///   - access: Called with the model; its result is returned.
+/// - Returns: What `access` returns.
+template<typename Session, typename Access>
+decltype(auto) withSessionModel(Session& session, Access&& access) UBIQUITTY_EXCLUDES(Ubiquitty::modelLockRole)
+{
+    const Ubiquitty::ModelLockHold hold(*session.modelLockPointer());
+    return access(*session.terminal());
+}

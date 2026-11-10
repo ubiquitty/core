@@ -494,6 +494,11 @@ std::optional<std::uint8_t> RemoteSessionCore::lineEraseCharacter() const
 
 PaneView RemoteSessionCore::view()
 {
+    return viewOnSessionThread();
+}
+
+PaneView RemoteSessionCore::viewOnSessionThread()
+{
     if (m_stopped || !m_sessionID)
         return { .terminal = m_term };
     // The terminal outlives a carrier. History and records borrow the live
@@ -561,7 +566,7 @@ void RemoteSessionCore::setViewOffset(int rowsAboveTail)
     // cache, so neither moves under the decision.
     if (m_stopped || !m_ackSeen || !m_sessionID || !m_term)
         return;
-    const PaneView pane = view();
+    const PaneView pane = viewOnSessionThread();
     if (!pane.history)
         return;
     const std::optional<Protocol::Sync::HistoryPull::Want> want = m_historyPull.wantFor(*pane.history, *m_term, rowsAboveTail);

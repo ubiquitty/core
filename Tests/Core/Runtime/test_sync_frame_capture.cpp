@@ -12,6 +12,7 @@
 // by a frontend wiring them.
 
 #include "Harness.h"
+#include "SoleModelThread.h"
 #include "StrictAtlas.h"
 #include "TerminalFixture.h"
 
@@ -366,8 +367,8 @@ TEST(timedPartialCommandsCaptureOwnedCellsAndCompleteWithoutChangingTheStream)
         static_cast<void>(fixture.session->drain());
         control.stream->toRead += prefix + std::string(command.suffix) + "\x1b[6n";
         static_cast<void>(control.session->drain());
-        const auto& actual = *fixture.session->terminal();
-        const auto& expected = *control.session->terminal();
+        const Terminal& actual = withSessionModel(*fixture.session, [](Terminal& terminal) -> Terminal& { return terminal; });
+        const Terminal& expected = withSessionModel(*control.session, [](Terminal& terminal) -> Terminal& { return terminal; });
         CHECK(actual.parser.parseState == expected.parser.parseState);
         CHECK_EQ(actual.screens.active->cursorX, expected.screens.active->cursorX);
         CHECK_EQ(actual.screens.active->cursorY, expected.screens.active->cursorY);
@@ -431,7 +432,7 @@ TEST(aPersistentHiddenCursorAllowsEveryTimedPartialCommandCapture)
         CHECK(!outcome.caughtUp && !outcome.reachedEnd);
         CHECK(fixture.session->isDrainSaturated());
         CHECK(!fixture.session->isFrameHeld());
-        CHECK(!VT::isParserAtGround(fixture.session->terminal()));
+        CHECK(!withSessionModel(*fixture.session, [](Terminal& terminal) { return VT::isParserAtGround(&terminal); }));
         ++expectedCaptures;
         CHECK_EQ(fixture.session->syncFramePublicationCount(), expectedCaptures);
         TakenFrame frame { fixture.session->takeSyncFrame() };
@@ -453,8 +454,8 @@ TEST(aPersistentHiddenCursorAllowsEveryTimedPartialCommandCapture)
     whole += suffix;
     control.stream->toRead += whole;
     static_cast<void>(control.session->drain());
-    const auto& actual = *fixture.session->terminal();
-    const auto& expected = *control.session->terminal();
+    const Terminal& actual = withSessionModel(*fixture.session, [](Terminal& terminal) -> Terminal& { return terminal; });
+    const Terminal& expected = withSessionModel(*control.session, [](Terminal& terminal) -> Terminal& { return terminal; });
     CHECK(VT::isParserAtGround(&actual));
     CHECK(actual.parser.parseState == expected.parser.parseState);
     CHECK_EQ(actual.screens.active->cursorX, expected.screens.active->cursorX);
@@ -506,13 +507,17 @@ TEST(cursorMotionPolicyStaysWithTheCapturedFrame)
     SessionFixture fx(24, 80);
     REQUIRE(fx.isReady);
     fx.session->setSyncFrameCaptureGeometry(testGeometry());
-    fx.session->terminal()->cursorMotionModePref = CursorMotionMode::Long;
-    fx.session->terminal()->cursorMotionDurationMilliseconds = 180;
+    withSessionModel(*fx.session, [](Terminal& terminal) {
+        terminal.cursorMotionModePref = CursorMotionMode::Long;
+        terminal.cursorMotionDurationMilliseconds = 180;
+    });
     fx.drainSyncFrame("motion");
     const TakenFrame frame { fx.session->takeSyncFrame() };
     CHECK(frame != nullptr);
-    fx.session->terminal()->cursorMotionModePref = CursorMotionMode::Off;
-    fx.session->terminal()->cursorMotionDurationMilliseconds = 0;
+    withSessionModel(*fx.session, [](Terminal& terminal) {
+        terminal.cursorMotionModePref = CursorMotionMode::Off;
+        terminal.cursorMotionDurationMilliseconds = 0;
+    });
     CHECK(frame->cursorMotionMode() == CursorMotionMode::Long);
     CHECK_EQ(frame->cursorMotionDurationMilliseconds(), 180u);
 }
@@ -540,7 +545,7 @@ TEST(aPlainSettleAnnouncesButDoesNotCapture)
     CHECK(!fx.session->isFrameHeld());
     // The re-ask also names the CRT saver's deadline. With the saver off,
     // nothing is left to wait for.
-    fx.session->terminal()->modes.shouldSaveCRT = false;
+    withSessionModel(*fx.session, [](Terminal& terminal) { terminal.modes.shouldSaveCRT = false; });
     CHECK(!fx.session->publishHeldFrameIfDue().has_value());
     CHECK(fx.session->takeSyncFrameReady()); // announced: the render still wakes
     CHECK(fx.session->takeSyncFrame() == nullptr); // but nothing was captured
@@ -557,7 +562,7 @@ TEST(aBlockTheHeldFrameTimerExpiresIsPublishedClosed)
     } restoreTicks;
     SessionFixture fixture(24, 80);
     REQUIRE(fixture.isReady);
-    fixture.session->terminal()->modes.shouldSaveCRT = false;
+    withSessionModel(*fixture.session, [](Terminal& terminal) { terminal.modes.shouldSaveCRT = false; });
     fixture.session->setSyncFrameCaptureGeometry(testGeometry());
     fixture.drainSyncFrame("before");
     static_cast<void>(fixture.session->takeSyncFrame());
@@ -565,14 +570,14 @@ TEST(aBlockTheHeldFrameTimerExpiresIsPublishedClosed)
     Ubiquitty::PAL::s_testTicks = 100;
     fixture.stream->toRead += "\x1b[?2026h\x1b[Hafter";
     REQUIRE(fixture.session->drain().caughtUp);
-    REQUIRE(fixture.session->terminal()->modes.syncOutput);
+    REQUIRE(withSessionModel(*fixture.session, [](Terminal& terminal) { return terminal.modes.syncOutput; }));
     REQUIRE(fixture.session->isFrameHeld());
     CHECK(fixture.session->readSnapshot().syncHoldActive);
 
     Ubiquitty::PAL::s_testTicks = 161;
     Ubiquitty::PAL::s_testMicroseconds += 1'100'000;
     static_cast<void>(fixture.session->publishHeldFrameIfDue());
-    CHECK(!fixture.session->terminal()->modes.syncOutput);
+    CHECK(!withSessionModel(*fixture.session, [](Terminal& terminal) { return terminal.modes.syncOutput; }));
     CHECK(!fixture.session->readSnapshot().syncHoldActive);
     CHECK(!fixture.session->shouldWithholdFrame(Ticks(161)));
 }
@@ -602,13 +607,13 @@ TEST(aPassThatExpiresABlockPublishesItsColors)
     const RestoreTestTicks restoreTicks;
     SessionFixture fixture(24, 80);
     REQUIRE(fixture.isReady);
-    fixture.session->terminal()->modes.shouldSaveCRT = false;
+    withSessionModel(*fixture.session, [](Terminal& terminal) { terminal.modes.shouldSaveCRT = false; });
     const std::uint64_t epochBefore = fixture.session->readCoherentColors().paletteEpoch;
 
     Ubiquitty::PAL::s_testTicks = 100;
     fixture.stream->toRead += "\x1b[?2026h\x1b]11;rgb:00/77/77\x07\x1b[Hflood";
     REQUIRE(fixture.session->drain().bytesDrained > 0);
-    REQUIRE(fixture.session->terminal()->modes.syncOutput);
+    REQUIRE(withSessionModel(*fixture.session, [](Terminal& terminal) { return terminal.modes.syncOutput; }));
     CHECK(fixture.session->readSnapshot().syncHoldActive);
     CHECK_EQ(fixture.session->readCoherentColors().paletteEpoch, epochBefore);
 
@@ -616,7 +621,7 @@ TEST(aPassThatExpiresABlockPublishesItsColors)
     Ubiquitty::PAL::s_testMicroseconds += 1'100'000;
     fixture.stream->toRead += "\x1b[Hmore flood";
     CHECK(fixture.session->drain().bytesDrained > 0);
-    REQUIRE(!fixture.session->terminal()->modes.syncOutput);
+    REQUIRE(!withSessionModel(*fixture.session, [](Terminal& terminal) { return terminal.modes.syncOutput; }));
     CHECK(!fixture.session->readSnapshot().syncHoldActive);
     CHECK_NE(fixture.session->readCoherentColors().paletteEpoch, epochBefore);
     CHECK(isPublishedBackgroundSet(*fixture.session));
@@ -630,7 +635,7 @@ TEST(aBlockTheHeldFrameTimerExpiresReleasesItsFrameWithItsColors)
     const RestoreTestTicks restoreTicks;
     SessionFixture fixture(24, 80);
     REQUIRE(fixture.isReady);
-    fixture.session->terminal()->modes.shouldSaveCRT = false;
+    withSessionModel(*fixture.session, [](Terminal& terminal) { terminal.modes.shouldSaveCRT = false; });
     fixture.session->setSyncFrameCaptureGeometry(testGeometry());
     fixture.drainSyncFrame("before");
     static_cast<void>(fixture.session->takeSyncFrame());
@@ -941,6 +946,7 @@ TEST(boundaryRecordsCarryMonotonicIdentityAndEpochs)
 
 TEST(aDeltaRecordOwnsDamageAndMalformedDamagePromotesToFull)
 {
+    ownModelOnTestThread();
     SessionFixture fx(4, 8);
     REQUIRE(fx.isReady);
     FrameCapture* capture = FrameCapture::make();
@@ -1196,9 +1202,10 @@ TEST(theRegisteredPlacementAndStyleReachTheBoundaryFrame)
     // it off the model's palette under the lock, as the live capture does,
     // so there is no registration for a caller to scribble over. A slot
     // dimmed in the palette draws dimmed on the boundary frame.
-    Terminal* terminal = fx.session->terminal();
-    REQUIRE(terminal != nullptr);
-    terminal->palette.indexedAlpha[7] = 0x80;
+    REQUIRE(withSessionModel(*fx.session, [](Terminal& terminal) {
+        terminal.palette.indexedAlpha[7] = 0x80;
+        return true;
+    }));
 
     fx.drainSyncFrame("\x1b[37mstyled");
     const TakenFrame frame { fx.session->takeSyncFrame() };

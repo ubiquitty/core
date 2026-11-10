@@ -18,6 +18,7 @@
 #include "Core/Protocol/Sync/SyncClientCore.h"
 #include "Harness.h"
 #include "ScreenPlaneFixture.h"
+#include "SoleModelThread.h"
 #include "WorkspaceStructureFixture.h"
 #include <algorithm>
 #include <array>
@@ -3593,6 +3594,8 @@ TEST(retiredTopologyReplyHeadersCannotCompleteATypedWorkspaceCall)
 
 TEST(paneLinksReadOnlyTheirOwnWorkspaceReplicaAndHistory)
 {
+    // The links' replicas are written on this thread alone.
+    ownModelOnTestThread();
     namespace Sync = Protocol::Sync;
     Fixture fixture;
     fixture.second.start(22, 80, 24);
@@ -3641,6 +3644,8 @@ TEST(paneLinksReadOnlyTheirOwnWorkspaceReplicaAndHistory)
 
 TEST(paneLinksRefuseInvalidAndDetachedHistoryWithoutSending)
 {
+    // The links' replicas are written on this thread alone.
+    ownModelOnTestThread();
     namespace Sync = Protocol::Sync;
     Fixture fixture;
     fixture.second.start(22, 80, 24);
@@ -3666,6 +3671,8 @@ TEST(paneLinksRefuseInvalidAndDetachedHistoryWithoutSending)
 
 TEST(paneLinksKeepLossSeparateFromTheTwoStallReasons)
 {
+    // The links' replicas are written on this thread alone.
+    ownModelOnTestThread();
     Fixture fixture;
     Session::PaneLink& link = fixture.first;
     CHECK(link.linkState(1'000'000).phase == Session::LinkPhase::Live);

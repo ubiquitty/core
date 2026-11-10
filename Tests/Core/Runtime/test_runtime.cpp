@@ -456,6 +456,27 @@ struct CountingDrainHost : DrainHost {
     }
 };
 
+/// A drain host that takes a session's own model lock around each bite, as
+/// the session's drain does, for a test that drains a session's runtime
+/// itself: the session's hooks assert that lock at their entry.
+struct SessionLockDrainHost final : CountingDrainHost {
+    explicit SessionLockDrainHost(Ubiquitty::ModelLock& lock)
+        : lock(lock)
+    {
+    }
+    void lockModel() override UBIQUITTY_ACQUIRES(Ubiquitty::modelLockRole)
+    {
+        CountingDrainHost::lockModel();
+        lock.lockForDrain();
+    }
+    void unlockModel() override UBIQUITTY_RELEASES(Ubiquitty::modelLockRole)
+    {
+        static_cast<void>(lock.unlockForDrain());
+        CountingDrainHost::unlockModel();
+    }
+    Ubiquitty::ModelLock& lock;
+};
+
 RuntimeInitParameters parameters80x24()
 {
     RuntimeInitParameters p;
@@ -495,6 +516,8 @@ void settleHeldFrame(TerminalRuntime& runtime, DrainHost& host, HandClock& clock
 // test can script toRead / inspect written. Valid until rt closes or is destroyed.
 Ubiquitty::PAL::StreamTestPipe* attachPipe(TerminalRuntime& rt)
 {
+    // The runtime is the test thread's alone, with no lock to take.
+    ownModelOnTestThread();
     auto pipe = std::make_unique<Ubiquitty::PAL::StreamTestPipe>();
     Ubiquitty::PAL::StreamTestPipe* borrow = pipe.get();
     auto adoption = rt.adoptStream(std::move(pipe));
@@ -622,6 +645,7 @@ bool isCoherentBackground(const TerminalRuntime& runtime, std::uint8_t red, std:
 // the next update in the read that closed the last.
 TEST(theCoherentColoursAreTheFramesAndNeverAnOpenUpdates)
 {
+    ownModelOnTestThread();
     TerminalRuntime runtime;
     runtime.init(parameters80x24());
 
@@ -995,6 +1019,7 @@ TEST(aRefusedSmallReplyStaysAheadOfBulkOutput)
 
 TEST(aThrottledDrainSkipsTheFullSnapshotItWillNotPublish)
 {
+    ownModelOnTestThread();
     using namespace Ubiquitty::Runtime;
 
     Ubiquitty::PAL::s_fakeMicroseconds = 1;
@@ -1744,7 +1769,9 @@ TEST(aPublishedRichTextCatalogRequestsOneReplacementFrame)
     auto* session = Ubiquitty::Runtime::TerminalSession::make();
     REQUIRE(session != nullptr);
     session->start(24, 80);
-    auto* terminal = session->terminal();
+    // Named under the lock and read here, the session's only thread: it runs
+    // no ingest, and the font-catalog calls below take the lock themselves.
+    auto* terminal = withSessionModel(*session, [](Ubiquitty::Terminal& model) { return &model; });
     REQUIRE(terminal != nullptr);
     Ubiquitty::RichText::TypographyFacts facts;
     facts.cellWidth = 8 * 64;
@@ -2009,9 +2036,9 @@ TEST(pointerLockBreakoutClearsThePublishedModeAndNotifiesItsHostOnce)
     REQUIRE(adoption.has_value());
     constexpr std::string_view lock = "\x1b[?7403h";
     session->feedBytes({ lock.data(), lock.size() });
-    REQUIRE(session->terminal()->modes.mouseRelativePointerLock);
+    REQUIRE(withSessionModel(*session, [](Ubiquitty::Terminal& model) { return model.modes.mouseRelativePointerLock; }));
     session->breakOutOfPointerLock();
-    CHECK(!session->terminal()->modes.mouseRelativePointerLock);
+    CHECK(!withSessionModel(*session, [](Ubiquitty::Terminal& model) { return model.modes.mouseRelativePointerLock; }));
     CHECK(!session->readSnapshot().mouseRelativePointerLockActive);
     CHECK(observed->written == "\x1b[?7403;2$y");
     session->breakOutOfPointerLock();
@@ -2729,7 +2756,6 @@ TEST(aSessionTakesInputOnlyWhileARouteReachesAHost)
 /// outside -- reaches the host rather than being dropped.
 TEST(aSeededLocatorSendsTheReportItsRectangleOwes)
 {
-    ownModelOnTestThread();
     auto* session = Ubiquitty::Runtime::TerminalSession::make();
     REQUIRE(session != nullptr);
     session->start(24, 80);
@@ -2755,7 +2781,10 @@ TEST(aSeededLocatorSendsTheReportItsRectangleOwes)
     observed->written.clear();
     constexpr std::string_view request = "\x1b['|";
     session->feedBytes({ request.data(), request.size() });
-    session->flushReplies();
+    {
+        const Ubiquitty::ModelLockHold hold(*session->modelLockPointer());
+        session->flushReplies();
+    }
     CHECK_MSG(observed->written == "\x1b[1;0;3;6;1&w", "DECRQLP answers the seeded position");
 
     session->close();
@@ -3476,6 +3505,7 @@ TEST(aDrainOutcomeNeverCountsKeysTheLinkHasNotPublished)
 // counts it, or a key pressed in that pane resolves against nothing.
 TEST(aRepublishedExternalTerminalPublishesItsTableFirst)
 {
+    ownModelOnTestThread();
     using namespace Ubiquitty::Runtime;
 
     TerminalRuntime runtime;
@@ -3505,6 +3535,7 @@ TEST(aRepublishedExternalTerminalPublishesItsTableFirst)
 // ends with the stream.
 TEST(aSessionThatReachesEndOfFileStopsNamingItsProcessAndStopsOfferingACaret)
 {
+    ownModelOnTestThread();
     TerminalRuntime runtime;
     runtime.init(parameters80x24());
     auto* stream = attachPipe(runtime);
@@ -3648,6 +3679,7 @@ TEST(anEdgeLandingDuringTheDrainProbeStaysOwed)
 // walk runs only once process state has a reader.
 TEST(aTitleAndDirectoryReaderProbesTheHolderWithoutWalking)
 {
+    ownModelOnTestThread();
     using namespace Ubiquitty::Runtime;
     TerminalRuntime runtime;
     runtime.init(parameters80x24());
@@ -3751,7 +3783,6 @@ TEST(refillGapsWithinOneForegroundGroupDoNotRepeatTheProcessWalk)
 
 TEST(aFrontendSamplesQuietProcessFactsThroughTheSessionCache)
 {
-    ownModelOnTestThread();
     auto* session = Ubiquitty::Runtime::TerminalSession::make();
     REQUIRE(session != nullptr);
     session->start(24, 80);
@@ -3769,6 +3800,8 @@ TEST(aFrontendSamplesQuietProcessFactsThroughTheSessionCache)
     child.isForeground = true;
     pipe->scriptedRecords = { child };
     CHECK(session->adoptStream(std::move(stream)).has_value());
+    // No ingest runs: from here this thread drains the session it reads.
+    ownModelOnTestThread();
     (void)session->sampleProcessStateOffDrain();
     CHECK(session->processChain().find("writer") != std::string::npos);
     CHECK(session->currentDirectory() == "/sampled");
@@ -4317,7 +4350,6 @@ TEST(aReportedHostDoesNotOutliveTheProgramThatReportedIt)
 // new tab still starts where the ssh was run.
 TEST(aConnectionsTitleNamesOnlyWhatItsFarSideReports)
 {
-    ownModelOnTestThread();
     namespace Process = Ubiquitty::PAL::Process;
     auto* session = Ubiquitty::Runtime::TerminalSession::make();
     REQUIRE(session != nullptr);
@@ -4336,6 +4368,8 @@ TEST(aConnectionsTitleNamesOnlyWhatItsFarSideReports)
     pipe->scriptedRecords = { shell };
     pipe->foregroundGroup = 4242;
     CHECK(session->adoptStream(std::move(stream)).has_value());
+    // No ingest runs: from here this thread drains the session it reads.
+    ownModelOnTestThread();
 
     // The local shell reports where it is, and the title names it.
     pipe->toRead = "\x1b]7;file://localhost/Users/user/project\x07$ ";
@@ -4478,6 +4512,7 @@ TEST(aProvenGoneGroupRetiresOnlyItsReportsAndPointerModes)
 
 TEST(aFreshDrainAttributesReportsAndCaptureToItsGoneForegroundGroup)
 {
+    ownModelOnTestThread();
     for (const auto presence : { Ubiquitty::PAL::ProcessGroupPresence::Gone, Ubiquitty::PAL::ProcessGroupPresence::Unknown }) {
         TerminalRuntime runtime;
         runtime.init(parameters80x24());
@@ -4527,6 +4562,7 @@ TEST(aFreshDrainAttributesReportsAndCaptureToItsGoneForegroundGroup)
 
 TEST(unknownAndPresentGroupsDoNotCreateAnIdleProbeOrRetireReports)
 {
+    ownModelOnTestThread();
     for (const auto presence : { Ubiquitty::PAL::ProcessGroupPresence::Unknown, Ubiquitty::PAL::ProcessGroupPresence::Present }) {
         TerminalRuntime runtime;
         runtime.init(parameters80x24());
@@ -4558,6 +4594,7 @@ TEST(unknownAndPresentGroupsDoNotCreateAnIdleProbeOrRetireReports)
 
 TEST(aGoneGroupProofDoesNotRetireAnotherOrUnstampedReports)
 {
+    ownModelOnTestThread();
     for (const int owner : { 0, 333 }) {
         TerminalRuntime runtime;
         runtime.init(parameters80x24());
@@ -4584,6 +4621,7 @@ TEST(aGoneGroupProofDoesNotRetireAnotherOrUnstampedReports)
 
 TEST(aLiveHolderOrSameNumberRevivalCompletesTheGoneGroupHandoff)
 {
+    ownModelOnTestThread();
     for (const int nextGroup : { 100, 222 }) {
         TerminalRuntime runtime;
         runtime.init(parameters80x24());
@@ -4678,6 +4716,7 @@ TEST(aSameNameGroupRevivalRefreshesTheCachedNoncheapProcessChainOnce)
 
 TEST(anUnknownPresenceDoesNotReuseAnOldGoneProofAgainstANewReport)
 {
+    ownModelOnTestThread();
     TerminalRuntime runtime;
     runtime.init(parameters80x24());
     auto* pipe = attachPipe(runtime);
@@ -4740,6 +4779,7 @@ TEST(aFullProcessStateProbeKeepsANewerNativeEdgeOwed)
 
 TEST(aQuietShellReturnReleasesOnlyTheDepartedApplicationsPointerCapture)
 {
+    ownModelOnTestThread();
     for (const std::string_view mode : { "\x1b[?1000h", "\x1b[?7403h", "\x1b[?1000;7403h" }) {
         TerminalRuntime runtime;
         runtime.init(parameters80x24());
@@ -4779,6 +4819,7 @@ TEST(aQuietShellReturnReleasesOnlyTheDepartedApplicationsPointerCapture)
 
 TEST(aNullStreamAdoptionRefusesWithoutChangingTheInstalledOwner)
 {
+    ownModelOnTestThread();
     const int destroyedBefore = Ubiquitty::PAL::g_streamDestroyCount;
     TerminalRuntime runtime;
     runtime.init(parameters80x24());
@@ -4821,6 +4862,7 @@ TEST(aNullStreamAdoptionRefusesWithoutChangingTheInstalledOwner)
 
 TEST(aNonnullStreamAdoptionReplacesTheOwnerAndRunsItsInstallationHooks)
 {
+    ownModelOnTestThread();
     const int destroyedBefore = Ubiquitty::PAL::g_streamDestroyCount;
     TerminalRuntime runtime;
     runtime.init(parameters80x24());
@@ -5514,10 +5556,11 @@ TEST(aPipelinedPauseOnAPassBoundaryClearsSaturation)
 // of a settled drain renders the whole screen twice.
 TEST(aSingleThreadedFrontendPaintsADrainOnceAndNeverInsideABlock)
 {
+    ownModelOnTestThread();
     // The loop a single-threaded frontend runs: drain, ask the rule again for
     // a frame it held once its wait is up, tell the runtime whether either
     // painted, and paint what the runtime says is owed.
-    const auto drainAndPaint = [](TerminalRuntime& rt, CountingDrainHost& host, HandClock& clock) {
+    const auto drainAndPaint = [](TerminalRuntime& rt, CountingDrainHost& host, HandClock& clock) UBIQUITTY_REQUIRES(Ubiquitty::modelLockRole) {
         const int framesBefore = host.frames;
         (void)rt.drainAvailable(host);
         settleHeldFrame(rt, host, clock);
@@ -5708,6 +5751,7 @@ TEST(aSessionCountsOnlyItsOwnPanesBells)
 // terminal's clock, and two panes each by their own reads.
 TEST(twoRuntimesTimeTheirCommandsByWhenTheyReadTheirMarks)
 {
+    ownModelOnTestThread();
     using namespace Ubiquitty::Runtime;
     TerminalRuntime left;
     TerminalRuntime right;
@@ -5727,7 +5771,7 @@ TEST(twoRuntimesTimeTheirCommandsByWhenTheyReadTheirMarks)
     readAt(left, *leftStream, "160", "\x1b]133;D;0\x07");
     readAt(right, *rightStream, "5090", "\x1b]133;D;0\x07");
     ::unsetenv("UBIQUITTY_FAKE_TICKS");
-    const auto lastDuration = [](TerminalRuntime& runtime) {
+    const auto lastDuration = [](TerminalRuntime& runtime) UBIQUITTY_REQUIRES(Ubiquitty::modelLockRole) {
         const Ubiquitty::Terminal& term = *runtime.borrowTermForRender();
         return term.commandDurationTicksRing[(term.commandCompletedGeneration + 7) % 8];
     };
@@ -6255,6 +6299,7 @@ TEST(everyReaderCommitsTheScrollLaneRunAFloodBiteLeftOpen)
             break;
         case Acquisition::Plain: {
             const std::lock_guard hold(*session->modelLockPointer());
+            session->modelLockPointer()->assertHeld();
             isOpen = session->terminal()->scrollLaneRun.active;
             break;
         }
@@ -6842,6 +6887,7 @@ TEST(aTimedDrainPublishesContinuingInputWithoutClaimingQuiet)
 
 TEST(onlyAnElapsedPassBudgetReleasesAnIncompleteCommand)
 {
+    ownModelOnTestThread();
     for (const auto end : { DrainPassEnd::OwnerFence, DrainPassEnd::None, DrainPassEnd::TimeBudget }) {
         TerminalRuntime runtime;
         HandClock clock;
@@ -6884,6 +6930,7 @@ TEST(onlyAnElapsedPassBudgetReleasesAnIncompleteCommand)
 // lasts, as it does for any other flood.
 TEST(aFloodBehindAWholeScreenEraseKeepsItsTimeBudgetFrames)
 {
+    ownModelOnTestThread();
     for (const std::string_view opening : { std::string_view("\x1b[H\x1b[2J"), std::string_view("\x1b[?1049h") }) {
         TerminalRuntime runtime;
         HandClock clock;
@@ -6995,6 +7042,7 @@ TEST(aTimedReadRearmsTheDirtyEpochAfterAMidReadSynchronizedFrame)
 
 TEST(aTimedDrainFinishesItsReadBeforeReturningAndPreservesTheNextQuery)
 {
+    ownModelOnTestThread();
     TerminalRuntime runtime;
     HandClock clock;
     clock.drive(runtime);
@@ -7071,7 +7119,6 @@ struct CountingMeasurer {
 // grid face and a drag inside it lands on whole cells.
 TEST(theTextMeasurerReachesATerminalStartedOrAdoptedAfterItWasSet)
 {
-    ownModelOnTestThread();
     const std::uint32_t text[] = { 'a', 'b', 'c' };
 
     CountingMeasurer beforeStart;
@@ -7080,7 +7127,10 @@ TEST(theTextMeasurerReachesATerminalStartedOrAdoptedAfterItWasSet)
     REQUIRE(session != nullptr);
     session->setTextMeasurer(CountingMeasurer::measure, &beforeStart);
     session->start(24, 80);
-    CHECK_EQ(session->proportionalRunCells(Ubiquitty::Runtime::TerminalSession::CodePointSpan(text)), 3);
+    {
+        const Ubiquitty::ModelLockHold hold(*session->modelLockPointer());
+        CHECK_EQ(session->proportionalRunCells(Ubiquitty::Runtime::TerminalSession::CodePointSpan(text)), 3);
+    }
     CHECK_EQ(beforeStart.calls, 1);
 
     // An adopted terminal answers through the same measurer, and the one the
@@ -7097,7 +7147,10 @@ TEST(theTextMeasurerReachesATerminalStartedOrAdoptedAfterItWasSet)
     external.drawsProportionalText = true;
     Ubiquitty::ModelLock externalLock;
     host->adoptExternalTerminal(&external, reinterpret_cast<std::uintptr_t>(&externalLock));
-    CHECK_EQ(host->proportionalRunCells(Ubiquitty::Runtime::TerminalSession::CodePointSpan(text)), 3);
+    {
+        const Ubiquitty::ModelLockHold hold(externalLock);
+        CHECK_EQ(host->proportionalRunCells(Ubiquitty::Runtime::TerminalSession::CodePointSpan(text)), 3);
+    }
     CHECK_EQ(adopted.calls, 1);
     host->adoptExternalTerminal(nullptr, 0);
     CHECK(external.textMeasureClient.get() == nullptr);
@@ -7109,12 +7162,13 @@ TEST(theTextMeasurerReachesATerminalStartedOrAdoptedAfterItWasSet)
 // stand for as long as the pane does.
 TEST(programActivityEndsWhenTheForegroundReturnsToAShellThatMarksNoPrompt)
 {
+    ownModelOnTestThread();
     TerminalRuntime runtime;
     runtime.init(parameters80x24());
     auto* pipe = attachPipe(runtime);
     REQUIRE(pipe);
     CountingDrainHost host;
-    const auto records = [&runtime] { return runtime.borrowTermForRender()->programStatus.records.size(); };
+    const auto records = [&runtime]() UBIQUITTY_REQUIRES(Ubiquitty::modelLockRole) { return runtime.borrowTermForRender()->programStatus.records.size(); };
 
     // The foreground facts are probed on a tick budget, so each step moves the
     // tick past it.
@@ -7147,12 +7201,13 @@ TEST(programActivityEndsWhenTheForegroundReturnsToAShellThatMarksNoPrompt)
 // when the pane loses the focus.
 TEST(aFocusedPaneHasHadItsLatchedAttentionSeen)
 {
+    ownModelOnTestThread();
     TerminalRuntime runtime;
     runtime.init(parameters80x24());
     auto* pipe = attachPipe(runtime);
     REQUIRE(pipe);
     CountingDrainHost host;
-    const auto unseen = [&runtime] { return Ubiquitty::unseenAttention(runtime.borrowTermForRender()); };
+    const auto unseen = [&runtime]() UBIQUITTY_REQUIRES(Ubiquitty::modelLockRole) { return Ubiquitty::unseenAttention(runtime.borrowTermForRender()); };
     const auto focus = [&](bool isFocused) { // bool-ok: the command ring's own flag
         Command command;
         command.kind = CommandKind::SetFocus;
@@ -7190,12 +7245,13 @@ TEST(aFocusedPaneHasHadItsLatchedAttentionSeen)
 // one handing the terminal back is not the function's end.
 TEST(programActivityOutlivesAProgramUnderAShellThatMarksItsPrompts)
 {
+    ownModelOnTestThread();
     TerminalRuntime runtime;
     runtime.init(parameters80x24());
     auto* pipe = attachPipe(runtime);
     REQUIRE(pipe);
     CountingDrainHost host;
-    const auto records = [&runtime] { return runtime.borrowTermForRender()->programStatus.records.size(); };
+    const auto records = [&runtime]() UBIQUITTY_REQUIRES(Ubiquitty::modelLockRole) { return runtime.borrowTermForRender()->programStatus.records.size(); };
 
     setenv("UBIQUITTY_FAKE_TICKS", "100", 1);
     pipe->foregroundShell = true;
@@ -7470,7 +7526,7 @@ TEST(goneGroupDebtRespectsObservationAndPhysicalStreamOwnership)
     REQUIRE(fixture.pipe != nullptr);
     auto& runtime = Ubiquitty::Runtime::LocalAdoptionTestAccess::runtime(*fixture.session);
     auto* pipe = fixture.pipe;
-    CountingDrainHost host;
+    SessionLockDrainHost host(*fixture.session->modelLockPointer());
     pipe->foregroundGroup = 222;
     pipe->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Gone;
     (void)runtime.sampleProcessStateOffDrain(host);
@@ -7491,13 +7547,21 @@ TEST(goneGroupDebtRespectsObservationAndPhysicalStreamOwnership)
     CHECK(pipe->foregroundGroupCalls == groups);
     REQUIRE(fixture.session->resolveLocalAdoption(reinterpret_cast<std::uintptr_t>(&abortLocalAdoption)) == ShareOwnership::Local);
     CHECK(hasDebt());
-    CHECK(!runtime.adoptStream(nullptr).has_value());
+    {
+        const Ubiquitty::ModelLockHold hold(*fixture.session->modelLockPointer());
+        CHECK(!runtime.adoptStream(nullptr).has_value());
+    }
     CHECK(hasDebt());
     auto replacement = std::make_unique<Ubiquitty::PAL::StreamTestPipe>();
     auto* next = replacement.get();
     replacement->foregroundGroup = 100;
     replacement->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Present;
-    REQUIRE(runtime.adoptStream(std::move(replacement)).has_value());
+    bool isAdopted = false;
+    {
+        const Ubiquitty::ModelLockHold hold(*fixture.session->modelLockPointer());
+        isAdopted = runtime.adoptStream(std::move(replacement)).has_value();
+    }
+    REQUIRE(isAdopted);
     CHECK(!hasDebt());
     CHECK(runtime.hasPendingProcessTreeEdge());
     next->scriptedGroupPresence = Ubiquitty::PAL::ProcessGroupPresence::Gone;
@@ -7512,10 +7576,9 @@ TEST(goneGroupDebtRespectsObservationAndPhysicalStreamOwnership)
 
 TEST(anUnresolvedLocalAdoptionFreezesEveryLocalIOPathAndRefusesTeardown)
 {
-    ownModelOnTestThread();
     LocalAdoptionFixture fixture;
     REQUIRE(fixture.pipe);
-    REQUIRE(fixture.session->terminal());
+    REQUIRE(withSessionModel(*fixture.session, [](Ubiquitty::Terminal&) { return true; }));
     const auto destroyedBefore = Ubiquitty::PAL::g_streamDestroyCount;
     const auto dimensionsBefore = fixture.session->dimensions();
     const auto sizeBefore = fixture.pipe->windowColumns;
@@ -7546,11 +7609,14 @@ TEST(anUnresolvedLocalAdoptionFreezesEveryLocalIOPathAndRefusesTeardown)
     constexpr std::string_view blockedEcho = "blocked echo";
     fixture.session->sendInput({ blockedInput.data(), blockedInput.size() });
     fixture.session->feedBytes({ blockedEcho.data(), blockedEcho.size() });
-    Ubiquitty::processBytes(fixture.session->terminal(), "\x1b[6n");
-    const auto queuedReplies = fixture.session->terminal()->outputLength;
-    REQUIRE(queuedReplies > 0);
-    fixture.session->flushReplies();
-    CHECK(fixture.session->terminal()->outputLength == queuedReplies);
+    {
+        const Ubiquitty::ModelLockHold hold(*fixture.session->modelLockPointer());
+        Ubiquitty::processBytes(fixture.session->terminal(), "\x1b[6n");
+        const auto queuedReplies = fixture.session->terminal()->outputLength;
+        REQUIRE(queuedReplies > 0);
+        fixture.session->flushReplies();
+        CHECK(fixture.session->terminal()->outputLength == queuedReplies);
+    }
     CHECK(!fixture.session->drainPendingWrite());
     CHECK(fixture.pipe->pendingWriteDrainCalls == 0);
     CHECK(fixture.pipe->pendingWrite);
@@ -7688,7 +7754,8 @@ TEST(anUnresolvedAdoptionCannotRebindItsActiveModelOrInstallBorrowedInputRoutes)
 {
     LocalAdoptionFixture fixture;
     REQUIRE(fixture.pipe);
-    auto* const originalModel = fixture.session->terminal();
+    const auto modelIdentity = [](Ubiquitty::Terminal& model) { return &model; };
+    auto* const originalModel = withSessionModel(*fixture.session, modelIdentity);
     auto* const originalLock = fixture.session->modelLockPointer();
     const auto referencesBefore = fixture.session->swiftReferences.load(std::memory_order_acquire);
     CHECK(fixture.begin() == 0);
@@ -7699,7 +7766,7 @@ TEST(anUnresolvedAdoptionCannotRebindItsActiveModelOrInstallBorrowedInputRoutes)
     Ubiquitty::resize(external, 3, 5, Ubiquitty::Modes::ReflowMode::Fixed);
     Ubiquitty::ModelLock externalLock;
     fixture.session->adoptExternalTerminal(&external, reinterpret_cast<std::uintptr_t>(&externalLock));
-    CHECK(fixture.session->terminal() == originalModel);
+    CHECK(withSessionModel(*fixture.session, modelIdentity) == originalModel);
     CHECK(fixture.session->modelLockPointer() == originalLock);
     CHECK(!external.windowClient.installed());
     CHECK(external.shellClient.get() == nullptr);

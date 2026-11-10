@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "Core/ModelLock.h"
 #include "Core/Modes/TerminalModes.h"
 #include "Core/Protocol/Sync/Liveness.h"
 #include "Core/Protocol/Sync/Messages.h"
@@ -112,8 +113,9 @@ public:
     /// - Returns: Whether the route admitted the handoff, not delivery proof.
     virtual bool send(const PaneInput& input) = 0;
 
-    /// Borrows this pane's model and the history and records beside it.
-    [[nodiscard]] virtual PaneView view() = 0;
+    /// Borrows this pane's model and the history and records beside it,
+    /// under the model lock the caller holds.
+    [[nodiscard]] virtual PaneView view() UBIQUITTY_REQUIRES(modelLockRole) = 0;
 
     /// Reads the PTY erase character under the model lock.
     /// - Returns: VERASE, absent when disabled, or DEL when unknown.

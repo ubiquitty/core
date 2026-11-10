@@ -104,7 +104,7 @@ void TerminalRuntime::init(const RuntimeInitParameters& parameters)
     // before the first drain.
     RuntimeSnapshot initial;
     captureSnapshot(initial);
-    publishReads(initial, m_term.get());
+    publishReads(initial, modelTerminal());
 }
 
 bool TerminalRuntime::launch(const LaunchCommand& command, const PAL::TerminalIdentity& identity)
@@ -327,7 +327,7 @@ FeedResult TerminalRuntime::feedChunkUpToSyncClear(std::span<const char> bytes)
     noteBytesArrived(PAL::monotonicMicros());
     tickTerminalClock();
     bool stoppedAtSyncClear = false;
-    const int consumed = Ubiquitty::processBytesUpToSyncClear(m_term.get(), std::string_view(bytes.data(), static_cast<std::size_t>(length)), &stoppedAtSyncClear);
+    const int consumed = Ubiquitty::processBytesUpToSyncClear(modelTerminal(), std::string_view(bytes.data(), static_cast<std::size_t>(length)), &stoppedAtSyncClear);
 #if UBIQUITTY_UI_TESTS
     uiTestBytesUnderModelLock.fetch_add(static_cast<std::uint64_t>((consumed > 0) ? consumed : length), std::memory_order_relaxed);
 #endif
@@ -356,7 +356,7 @@ void TerminalRuntime::feedHostBytes(std::span<const char> bytes)
     if (!m_term || length <= 0 || !isLocalStreamEnabled())
         return;
     tickTerminalClock();
-    Ubiquitty::processBytes(m_term.get(), std::string_view(bytes.data(), static_cast<std::size_t>(length))); // local echo path
+    Ubiquitty::processBytes(modelTerminal(), std::string_view(bytes.data(), static_cast<std::size_t>(length))); // local echo path
     flushReplies();
     emit(EventKind::ScreenDirty);
 }
@@ -395,7 +395,7 @@ void TerminalRuntime::flushRepliesToSink()
         return;
     std::array<char, 4096> reply;
     int n;
-    while ((n = Ubiquitty::drainOutput(m_term.get(), { reply.data(), reply.size() })) > 0) {
+    while ((n = Ubiquitty::drainOutput(modelTerminal(), { reply.data(), reply.size() })) > 0) {
         if (m_outboundByteTap)
             m_outboundByteTap(m_outboundByteTapContext, { reply.data(), static_cast<std::size_t>(n) });
         m_replySink(m_replySinkContext, { reply.data(), static_cast<std::size_t>(n) });
@@ -486,7 +486,7 @@ DrainOutcome TerminalRuntime::drainAvailable(DrainHost& host)
     // the whole burst. A throttled pane collapses the budgets to 0 (ends on the
     // first gap so the poll() loop parks the ingest thread at 0 CPU).
     // Lent, not read: the pass takes the model lock for each bite it parses.
-    Ubiquitty::Terminal& terminal = *m_term.get();
+    Ubiquitty::Terminal& terminal = *lendModelTerminal();
     const DrainPassResult pass = runDrainPass(terminal, *m_stream, host, owner,
         { .doesRideBurst = m_drainRidesBurst.load(std::memory_order_relaxed), .modelLockBiteBytes = effectiveModelLockBite(), .maxMicroseconds = presentationInterval });
     outcome.bytesDrained = pass.bytesDrained;
@@ -584,7 +584,7 @@ void TerminalRuntime::recordSessionEnd(DrainHost& host, DrainOutcome& outcome)
         // selecting and copying with it. Written through the parser like any
         // other bytes, so every arm renders it with no arm-side work; there is
         // no live content to confuse it with, because nothing follows it.
-        Ubiquitty::processBytes(m_term.get(), "\r\n[Process exited]\r\n");
+        Ubiquitty::processBytes(modelTerminal(), "\r\n[Process exited]\r\n");
         OSC::finishProgramActivity(*m_term);
         m_term->contexts = {};
         OSC::activityChanged(*m_term);
@@ -732,7 +732,7 @@ void TerminalRuntime::finishDrainPass(DrainHost& host, DrainOutcome& outcome)
         // between the two holds, off it.
         host.lockModel();
         const bool isAttributionOwed = (Ubiquitty::didDrainLeaveAReportUnstamped(*m_term) && foregroundObservation() != ForegroundObservation::Unread)
-            || (m_mouseTrackingProcessGroup == 0 && (Mouse::tracksPointer(m_term.get()) || m_term->modes.mouseRelativePointerLock));
+            || (m_mouseTrackingProcessGroup == 0 && (Mouse::tracksPointer(modelTerminal()) || m_term->modes.mouseRelativePointerLock));
         host.unlockModel();
         if (isAttributionOwed) {
             foregroundGroup = m_stream->process().foregroundProcessGroup().value_or(0);
@@ -761,9 +761,9 @@ void TerminalRuntime::finishDrainPass(DrainHost& host, DrainOutcome& outcome)
     if (outcome.reachedEnd)
         noteEraseRedrawParsed();
     const auto nowTicks = PAL::monotonicTicks();
-    outcome.bell = resolveBellEvent(m_term.get(), nowTicks);
+    outcome.bell = resolveBellEvent(modelTerminal(), nowTicks);
     outcome.bellsRung = m_bellRoute.take();
-    outcome.bellWantsNotification = (outcome.bell != BellMode::Off) && Ubiquitty::Modes::bellWantsNotification(m_term.get());
+    outcome.bellWantsNotification = (outcome.bell != BellMode::Off) && Ubiquitty::Modes::bellWantsNotification(modelTerminal());
     outcome.bellRaisesUrgency = (outcome.bell != BellMode::Off) && m_term->bellRaisesUrgency;
     outcome.popOnBell = (outcome.bell != BellMode::Off) && m_term->popOnBell;
     // The person at a focused pane is looking at it: what this pass latched
@@ -815,7 +815,7 @@ void TerminalRuntime::finishDrainPass(DrainHost& host, DrainOutcome& outcome)
     // with nothing left to send DECRST. Once the shell is back in the foreground under
     // a different group with tracking still on, clear the tracking modes locally —
     // before the snapshot below publishes them to the platform's input path.
-    const bool isMouseTracking = Ubiquitty::Mouse::tracksPointer(m_term.get()) || m_term->modes.mouseRelativePointerLock;
+    const bool isMouseTracking = Ubiquitty::Mouse::tracksPointer(modelTerminal()) || m_term->modes.mouseRelativePointerLock;
     m_mouseTrackingActiveLastDrain = isMouseTracking; // next drain probes fresh while on
     (void)Ubiquitty::Mouse::retireTrackingIfStale(*m_term, m_mouseTrackingProcessGroup, foregroundGroup, foregroundIsShell);
 
@@ -832,7 +832,7 @@ void TerminalRuntime::finishDrainPass(DrainHost& host, DrainOutcome& outcome)
     RuntimeSnapshot snap;
     if (isSnapshotDue) {
         captureSnapshot(snap);
-        publishReads(snap, m_term.get());
+        publishReads(snap, modelTerminal());
         m_lastSnapshotPublishMicros = passMicros;
     } else {
         captureDrainState(*m_term, m_generation, snap);
@@ -847,8 +847,8 @@ void TerminalRuntime::finishDrainPass(DrainHost& host, DrainOutcome& outcome)
     }
     outcome.columns = snap.columns;
     outcome.rows = snap.rows;
-    outcome.scrollbackCount = Ubiquitty::Screen::scrollableRowCount(m_term.get());
-    outcome.history = Ubiquitty::Screen::historyFacts(m_term.get());
+    outcome.scrollbackCount = Ubiquitty::Screen::scrollableRowCount(modelTerminal());
+    outcome.history = Ubiquitty::Screen::historyFacts(modelTerminal());
     outcome.mouseReportsActive = snap.mouseReportsActive;
     outcome.mouseMotionReportsActive = snap.mouseMotionReportsActive;
     outcome.mouseAnyEventActive = snap.mouseAnyEventActive;
@@ -903,7 +903,7 @@ void TerminalRuntime::finishDrainPass(DrainHost& host, DrainOutcome& outcome)
     // pass has no next pass to clear this, and a render side reading it as
     // saturated would wait for a capture that never comes.
     m_isDrainSaturated.store((isSaturatedPass || isTimedPass) && !outcome.reachedEnd, std::memory_order_relaxed);
-    if (outcome.bytesDrained > 0 && (outcome.caughtUp || isSaturatedPass || isTimedPass || Ubiquitty::Image::placementCount(m_term.get()) > 0))
+    if (outcome.bytesDrained > 0 && (outcome.caughtUp || isSaturatedPass || isTimedPass || Ubiquitty::Image::placementCount(modelTerminal()) > 0))
         publishSettledFrameIfCoherent(host, context);
     host.unlockModel();
 }
@@ -992,7 +992,7 @@ void TerminalRuntime::takeAdmittedFrame(FrameClass frameClass, std::uint64_t now
     // Notification generations describe every admission, independently of
     // the host's display-rate throttle on copying capture storage.
     if (m_panePublishHook)
-        m_panePublishHook(m_panePublishContext, m_term.get());
+        m_panePublishHook(m_panePublishContext, modelTerminal());
 }
 
 void TerminalRuntime::publishMidReadBoundaryIfCoherent(DrainHost& host)
@@ -1019,7 +1019,7 @@ void TerminalRuntime::releaseHeldFrame(DrainHost& host)
 {
     host.lockModel();
     if (m_term && m_coherence.isDirty()) {
-        const bool isCoherent = Ubiquitty::VT::isParserAtGround(m_term.get()) && !m_term->modes.syncOutput && !m_coherence.isBracketHolding();
+        const bool isCoherent = Ubiquitty::VT::isParserAtGround(modelTerminal()) && !m_term->modes.syncOutput && !m_coherence.isBracketHolding();
         takeAdmittedFrame(isCoherent ? FrameClass::Settled : FrameClass::Forced, coherenceNow());
         host.onSyncFrameReadyLocked(SyncFrameReason::BurstEnd);
     }
@@ -1078,7 +1078,7 @@ void TerminalRuntime::publishDisplayChange(DrainHost& host)
 {
     if (!m_term)
         return;
-    const bool isCoherent = VT::isParserAtGround(m_term.get()) && !m_term->modes.syncOutput && !m_coherence.isBracketHolding();
+    const bool isCoherent = VT::isParserAtGround(modelTerminal()) && !m_term->modes.syncOutput && !m_coherence.isBracketHolding();
     takeAdmittedFrame(isCoherent ? FrameClass::Settled : FrameClass::Forced, coherenceNow());
     republishSnapshot();
     emit(EventKind::ScreenDirty);
@@ -1089,7 +1089,7 @@ void TerminalRuntime::republishSnapshot()
 {
     RuntimeSnapshot snap;
     captureSnapshot(snap);
-    publishReads(snap, m_term.get());
+    publishReads(snap, modelTerminal());
 }
 
 void TerminalRuntime::republishSnapshotForTerm(Ubiquitty::Terminal* externalTerm)
@@ -1273,7 +1273,7 @@ void TerminalRuntime::captureSnapshot(RuntimeSnapshot& out)
 #if UBIQUITTY_ENABLE_TEST_HOOKS
     ++m_fullSnapshotCaptureCountForTest;
 #endif
-    captureSnapshotFromTerm(m_term.get(), m_generation, out);
+    captureSnapshotFromTerm(modelTerminal(), m_generation, out);
     // Runtime-side state the term cannot carry: the free capture leaves it
     // zero, and only these member sites publish.
     out.titleGeneration = m_titleGeneration;
@@ -1341,7 +1341,7 @@ void TerminalRuntime::resizeGrid(int rows, int columns, Ubiquitty::Modes::Reflow
     // Republish so lock-free readers see the new grid immediately, not one drain late.
     RuntimeSnapshot snap;
     captureSnapshot(snap);
-    publishReads(snap, m_term.get());
+    publishReads(snap, modelTerminal());
     // The resize may have queued the DECSET 2048 in-band report (CSI 48 t).
     // Written to the child here, under the model lock the caller holds and in
     // the model-then-queue order the ingest's flush takes: left in the buffer
@@ -1556,7 +1556,7 @@ bool TerminalRuntime::takeOwedPaint(Ticks nowTicks, std::uint32_t nowMicros)
 {
     // A frame the coherence rule holds is painted when the rule admits it, by
     // the host; painting it here would show the screen the rule held back.
-    if (!m_isPaintOwed || isFrameHeld() || shouldWithholdPresentation(m_term.get(), nowTicks, nowMicros))
+    if (!m_isPaintOwed || isFrameHeld() || shouldWithholdPresentation(modelTerminal(), nowTicks, nowMicros))
         return false;
     m_isPaintOwed = false;
     return true;
@@ -1567,7 +1567,7 @@ int TerminalRuntime::owedPaintWaitMilliseconds(Ticks nowTicks, std::uint32_t now
     // A held frame's wake is the rule's, from publishHeldFrameIfDue.
     if (!m_isPaintOwed || isFrameHeld())
         return -1;
-    const std::uint32_t ticks = presentationHoldTicksRemaining(m_term.get(), nowTicks, nowMicros);
+    const std::uint32_t ticks = presentationHoldTicksRemaining(modelTerminal(), nowTicks, nowMicros);
     return static_cast<int>((ticks * 1000 + 59) / 60);
 }
 
@@ -1788,7 +1788,7 @@ DrainOutcome TerminalRuntime::sampleProcessStateOffDrain(DrainHost& host)
         if (outcome.titleChanged || outcome.currentDirectoryChanged || didRetirePointer) {
             RuntimeSnapshot snapshot;
             captureSnapshot(snapshot);
-            publishReads(snapshot, m_term.get());
+            publishReads(snapshot, modelTerminal());
         }
     }
     host.unlockModel();
@@ -1802,7 +1802,7 @@ DrainOutcome TerminalRuntime::sampleProcessStateOffDrain(DrainHost& host)
     if (outcome.processStateChanged && m_panePublishHook) {
         host.lockModel();
         if (m_term)
-            m_panePublishHook(m_panePublishContext, m_term.get());
+            m_panePublishHook(m_panePublishContext, modelTerminal());
         host.unlockModel();
     }
     m_lastForegroundProbeTicks = PAL::monotonicTicks();
@@ -1830,7 +1830,7 @@ DrainOutcome TerminalRuntime::sampleCurrentDirectoryOffDrain(DrainHost& host)
             m_term->currentDirectoryChanged = false;
             RuntimeSnapshot snapshot;
             captureSnapshot(snapshot);
-            publishReads(snapshot, m_term.get());
+            publishReads(snapshot, modelTerminal());
         }
     }
     host.unlockModel();
@@ -1886,7 +1886,7 @@ DrainOutcome TerminalRuntime::retireReportsOwnedByGoneGroup(int processGroup)
     outcome.currentDirectoryChanged = retireReportedHostOwnedByProcessGroup(*m_term, processGroup) || outcome.currentDirectoryChanged;
     outcome.processStateChanged = Mouse::retireTrackingOwnedByProcessGroup(*m_term, m_mouseTrackingProcessGroup, processGroup);
     if (outcome.processStateChanged)
-        m_mouseTrackingActiveLastDrain = Mouse::tracksPointer(m_term.get()) || m_term->modes.mouseRelativePointerLock;
+        m_mouseTrackingActiveLastDrain = Mouse::tracksPointer(modelTerminal()) || m_term->modes.mouseRelativePointerLock;
     return outcome;
 }
 
@@ -2062,7 +2062,7 @@ void TerminalRuntime::setFocused(Ubiquitty::Modes::FocusState focus)
 {
     if (!m_term || !isLocalStreamEnabled())
         return;
-    Ubiquitty::Modes::focusChanged(m_term.get(), focus);
+    Ubiquitty::Modes::focusChanged(modelTerminal(), focus);
     // A local terminal's frontend reports the focus of the person at it, so
     // a pane that gains it has had its bell and notification seen.
     if (focus == Ubiquitty::Modes::FocusState::Focused)
@@ -2138,7 +2138,7 @@ DimensionSnapshot TerminalRuntime::dimensions() const
     return snapshot;
 }
 
-Ubiquitty::Terminal* TerminalRuntime::borrowTermForRender() { return m_term.get(); }
+Ubiquitty::Terminal* TerminalRuntime::borrowTermForRender() { return modelTerminal(); }
 
 PAL::Stream* TerminalRuntime::stream() { return isLocalStreamEnabled() ? m_stream.get() : nullptr; }
 
