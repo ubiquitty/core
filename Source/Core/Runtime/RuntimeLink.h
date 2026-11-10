@@ -28,6 +28,7 @@
 #include <span>
 #include <string>
 #include <type_traits>
+#include <utility>
 
 // The per-pane cross-thread seam between the off-main ingest/writer (owning
 // Ubiquitty::Terminal under the model lock) and the main-thread frontend. TWO
@@ -462,6 +463,65 @@ private:
     T m_slots[Capacity] {};
     std::atomic<std::size_t> m_head { 0 }; // producer index (monotonic)
     std::atomic<std::size_t> m_tail { 0 }; // consumer index (monotonic)
+};
+
+/// A bounded lock-free single-producer, single-consumer ring of the records the
+/// writer raises for its frontend: notifications, window requests.
+///
+/// The producer is whoever holds the model lock, one at a time, and the lock's
+/// release and acquire order its pushes. The consumer is the frontend thread.
+/// Neither waits for the other: a push onto a full ring is refused and a pop of
+/// an empty one answers false. Records are moved in and out, so a record that
+/// owns text costs no copy.
+///
+/// The counts only rise, so a producer that remembers the sequence of its last
+/// push can tell whether the consumer has taken it since.
+template<typename T, std::size_t Capacity> class OwnerEventRing {
+    static_assert((Capacity & (Capacity - 1)) == 0, "Capacity must be a power of two");
+
+public:
+    /// Appends a record. Producer only.
+    ///
+    /// - Parameter item: The record, moved from on success.
+    /// - Returns: Whether it was appended; false when the ring is full.
+    bool tryPush(T&& item)
+    {
+        const std::size_t pushed = m_pushed.load(std::memory_order_relaxed);
+        if (pushed - m_consumed.load(std::memory_order_acquire) >= Capacity)
+            return false;
+        m_slots[pushed & mask] = std::move(item);
+        m_pushed.store(pushed + 1, std::memory_order_release);
+        return true;
+    }
+
+    /// Takes the oldest record. Consumer only.
+    ///
+    /// - Parameter out: Receives the record.
+    /// - Returns: Whether one was taken; false when the ring is empty.
+    bool tryPop(T& out)
+    {
+        const std::size_t consumed = m_consumed.load(std::memory_order_relaxed);
+        if (consumed == m_pushed.load(std::memory_order_acquire))
+            return false;
+        out = std::move(m_slots[consumed & mask]);
+        m_consumed.store(consumed + 1, std::memory_order_release);
+        return true;
+    }
+
+    /// Whether no record is waiting. Any thread.
+    [[nodiscard]] bool isEmpty() const { return m_consumed.load(std::memory_order_acquire) == m_pushed.load(std::memory_order_acquire); }
+
+    /// How many records have been appended, ever. Producer.
+    [[nodiscard]] std::size_t pushedCount() const { return m_pushed.load(std::memory_order_relaxed); }
+
+    /// How many records have been taken, ever. Any thread.
+    [[nodiscard]] std::size_t consumedCount() const { return m_consumed.load(std::memory_order_acquire); }
+
+private:
+    static constexpr std::size_t mask = Capacity - 1;
+    std::array<T, Capacity> m_slots {};
+    std::atomic<std::size_t> m_pushed { 0 };
+    std::atomic<std::size_t> m_consumed { 0 };
 };
 
 /// The newest user input's tick, which the frontend posts and the writer

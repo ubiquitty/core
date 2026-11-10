@@ -2902,8 +2902,7 @@ public:
     /// Whether an application asked for a banner not yet taken.
     [[nodiscard]] bool hasPendingNotification() const // bool-ok: the queue's own state, not a call-site constant UBIQUITTY_EXCLUDES(modelLockRole)
     {
-        const ModelLockHold hold(*m_activeLock);
-        return !m_notifications.empty();
+        return !m_notificationRing.isEmpty();
     }
 
     /// The oldest notification, removed from the queue.
@@ -2913,11 +2912,9 @@ public:
     /// - Returns: The notification, or an absent one when there is none.
     [[nodiscard]] Notification takeNotification() UBIQUITTY_EXCLUDES(modelLockRole)
     {
-        const ModelLockHold hold(*m_activeLock);
-        if (m_notifications.empty())
+        Notification notification;
+        if (!m_notificationRing.tryPop(notification))
             return Notification {};
-        Notification notification = std::move(m_notifications.front());
-        m_notifications.erase(m_notifications.begin());
         return notification;
     }
 
@@ -10442,13 +10439,20 @@ private:
             // of eight copies of it costs the reader eight banners to dismiss.
             // The rate limit the backend applies is per window and per second;
             // this is per queue and exact, and the two bound different things.
-            if (!session->m_notifications.empty() && session->m_notifications.back().title == display.title
-                && session->m_notifications.back().body == display.body && session->m_notifications.back().identifier == request.identifier)
+            // The consumer takes records without this lock, so the tail is
+            // remembered here rather than read from the queue: it stands for
+            // the newest push while that push has not been taken.
+            const bool isTailStanding = session->m_hasPostedNotification && session->m_lastPostedNotificationSequence >= session->m_notificationRing.consumedCount();
+            if (isTailStanding && session->m_lastPostedNotification.title == display.title
+                && session->m_lastPostedNotification.body == display.body && session->m_lastPostedNotification.identifier == request.identifier)
                 return;
-            if (session->m_notifications.size() >= notificationQueueLimit)
+            Notification posted { std::move(display.title), std::move(display.body), std::string(request.identifier), request.occasion, true };
+            const Notification copy = posted;
+            if (!session->m_notificationRing.tryPush(std::move(posted)))
                 return; // the new one is dropped, as the window queue drops its overrun
-            session->m_notifications.push_back(
-                Notification { std::move(display.title), std::move(display.body), std::string(request.identifier), request.occasion, true });
+            session->m_lastPostedNotification = copy;
+            session->m_lastPostedNotificationSequence = session->m_notificationRing.pushedCount() - 1;
+            session->m_hasPostedNotification = true;
             // Raised here rather than in the drain's deliver hook, for the
             // reason the window queue gives: bytes also arrive through
             // `feedBytes`, and a banner that reached the queue must be
@@ -10464,7 +10468,13 @@ private:
     std::uint64_t m_nativeDragSession = 0;
     std::uint64_t m_remoteDragEpoch = 0;
     bool m_supportsNativeDrag = false;
-    std::vector<Notification> m_notifications UBIQUITTY_GUARDED_BY(modelLockRole);
+    /// The banners posted and not yet taken. Pushed under the model lock, taken
+    /// without it.
+    OwnerEventRing<Notification, notificationQueueLimit> m_notificationRing;
+    /// The newest banner pushed, for folding a repeat of it, and its sequence.
+    Notification m_lastPostedNotification UBIQUITTY_GUARDED_BY(modelLockRole);
+    std::size_t m_lastPostedNotificationSequence UBIQUITTY_GUARDED_BY(modelLockRole) = 0;
+    bool m_hasPostedNotification UBIQUITTY_GUARDED_BY(modelLockRole) = false;
 
     /// One matched trigger, as the engine reported it.
     ///
