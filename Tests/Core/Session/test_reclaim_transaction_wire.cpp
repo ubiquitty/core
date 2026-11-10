@@ -516,7 +516,7 @@ TEST(reclaimWireRealCompleteTerminalAndSuffixReachTheExistingIrreversibleGate)
     UbiquittyTest::feed(terminal, "history\r\nhistory\r\nhistory\r\nhistory\r\nhistory\r\nhistory\r\n"
                                   "\033]133;A\007prompt\033]133;B\007\0337\033[2;4r\033[6n");
     terminal.answerback = "complete reclaim owner";
-    const auto body = Sync::encodeHandoverTerminal(terminal, 9, terminalLimits);
+    const auto body = Sync::encodeHandoverTerminal(terminal, 9, terminalLimits, {});
     REQUIRE(body);
     const auto original = capsule(body->view());
     std::array<Local::ReclaimWireRun, 128> sourceRuns {}, decodedRuns {};
@@ -530,7 +530,7 @@ TEST(reclaimWireRealCompleteTerminalAndSuffixReachTheExistingIrreversibleGate)
     REQUIRE(decoded);
     const auto imported = reclaimCapsuleFromWire(*decoded, selector, correlation, transferLimits, importedRuns);
     REQUIRE(imported);
-    auto prepared = ReclaimTransfer::prepare(target, operation, barrier, *imported, transferLimits);
+    auto prepared = ReclaimTransfer::prepare(target, operation, barrier, *imported, transferLimits, {});
     REQUIRE(prepared);
     auto& transfer = **prepared;
     REQUIRE(transfer.beginCommit());
@@ -553,7 +553,7 @@ TEST(reclaimWireRealCompleteTerminalAndSuffixReachTheExistingIrreversibleGate)
     REQUIRE(installation && installation->terminal.terminal);
     CHECK(transfer.ownership() == ReclaimOwnership::Local);
     CHECK(!transfer.takeCommitted());
-    const auto roundtrip = Sync::encodeHandoverTerminal(*installation->terminal.terminal, 9, terminalLimits);
+    const auto roundtrip = Sync::encodeHandoverTerminal(*installation->terminal.terminal, 9, terminalLimits, {});
     REQUIRE(roundtrip);
     CHECK(std::ranges::equal(roundtrip->view(), original.terminalBody));
     CHECK(std::string_view(installation->acceptedPTY.bytes().data(), installation->acceptedPTY.bytes().size()) == "defreply");

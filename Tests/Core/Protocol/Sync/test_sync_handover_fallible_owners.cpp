@@ -68,13 +68,13 @@ TEST(handoverHostTextAllocationRefusalPreservesEveryDestinationOwner)
     source.answerback = "replacement answerback";
     source.currentDirectory = "/replacement/directory/longer";
     source.commandStartedGeneration = 99;
-    const auto bytes = encodeHandoverHostState(source, hostStateLimit);
+    const auto bytes = encodeHandoverHostState(source, hostStateLimit, {});
     REQUIRE(bytes);
     Ubiquitty::Terminal destination;
     destination.answerback = "retained answerback";
     destination.currentDirectory = "/retained";
     destination.commandStartedGeneration = 7;
-    const auto before = encodeHandoverHostState(destination, hostStateLimit);
+    const auto before = encodeHandoverHostState(destination, hostStateLimit, {});
     REQUIRE(before);
     const auto* answerbackOwner = destination.answerback.data();
     const auto* directoryOwner = destination.currentDirectory.data();
@@ -84,13 +84,13 @@ TEST(handoverHostTextAllocationRefusalPreservesEveryDestinationOwner)
         const auto priorRefusals = ScopedNothrowAllocationRefusal::refusalCount();
         {
             ScopedNothrowAllocationRefusal refusal(failedSize);
-            const auto result = restoreHandoverHostState(bytes->view(), destination, hostStateLimit);
+            const auto result = restoreHandoverHostState(bytes->view(), destination, hostStateLimit, {});
             CHECK(!result && result.error() == HandoverBodyError::AllocationRefused);
         }
         CHECK_EQ(ScopedNothrowAllocationRefusal::refusalCount(), priorRefusals + 1);
         CHECK(destination.answerback.data() == answerbackOwner);
         CHECK(destination.currentDirectory.data() == directoryOwner);
-        const auto after = encodeHandoverHostState(destination, hostStateLimit);
+        const auto after = encodeHandoverHostState(destination, hostStateLimit, {});
         REQUIRE(after);
         CHECK(std::ranges::equal(before->view(), after->view()));
     }
@@ -103,10 +103,10 @@ TEST(handoverHostTextRestorationOwnsCanonicalBytesAfterSourceDestruction)
         Ubiquitty::Terminal source;
         source.answerback = "replacement answerback";
         source.currentDirectory = "/replacement/directory";
-        const auto bytes = encodeHandoverHostState(source, hostStateLimit);
+        const auto bytes = encodeHandoverHostState(source, hostStateLimit, {});
         REQUIRE(bytes);
-        REQUIRE(restoreHandoverHostState(bytes->view(), destination, hostStateLimit));
-        const auto encodedAgain = encodeHandoverHostState(destination, hostStateLimit);
+        REQUIRE(restoreHandoverHostState(bytes->view(), destination, hostStateLimit, {}));
+        const auto encodedAgain = encodeHandoverHostState(destination, hostStateLimit, {});
         REQUIRE(encodedAgain);
         CHECK(std::ranges::equal(bytes->view(), encodedAgain->view()));
     }
@@ -161,7 +161,7 @@ TEST(handoverCheckpointUsesItsIndependentHostStorageAllowance)
     Ubiquitty::Terminal source;
     Ubiquitty::resize(source, 7, 23);
     REQUIRE(UbiquittyTest::seedCheckpointOwners(source));
-    const auto bytes = encodeHandoverTerminal(source, 23, limits);
+    const auto bytes = encodeHandoverTerminal(source, 23, limits, {});
     REQUIRE(bytes);
     ScreenPublisher publisher;
     AttachmentBaseline baseline;
@@ -174,15 +174,15 @@ TEST(handoverCheckpointUsesItsIndependentHostStorageAllowance)
     REQUIRE(cost);
     for (const auto allowance : { std::size_t { 0 }, *cost - 1 }) {
         limits.maxCheckpointStorageCost = allowance;
-        const auto restored = decodeHandoverTerminal(bytes->view(), limits);
+        const auto restored = decodeHandoverTerminal(bytes->view(), limits, {});
         CHECK(!restored && restored.error() == HandoverBodyError::AllocationRefused);
     }
     limits.maxCheckpointStorageCost = *cost;
-    auto restored = decodeHandoverTerminal(bytes->view(), limits);
+    auto restored = decodeHandoverTerminal(bytes->view(), limits, {});
     REQUIRE(restored);
     CHECK(restored->generation == 23);
     CHECK(restored->terminal->rows == source.rows && restored->terminal->columns == source.columns);
-    const auto roundTrip = encodeHandoverTerminal(*restored->terminal, 23, limits);
+    const auto roundTrip = encodeHandoverTerminal(*restored->terminal, 23, limits, {});
     REQUIRE(roundTrip);
     CHECK(std::ranges::equal(bytes->view(), roundTrip->view()));
 }

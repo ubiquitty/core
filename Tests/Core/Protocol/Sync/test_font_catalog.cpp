@@ -608,7 +608,7 @@ TEST(handoverCannotDropPendingOrBackpressuredFontAndMeasurementOutcomes)
             quiesce.notePass(terminal, Runtime::FrameClass::Settled, 1);
             CHECK(quiesce.phase() != Runtime::QuiescePhase::Ready);
             constexpr std::size_t maxHostStateBytes = 8 * 1024 * 1024;
-            const auto refused = encodeHandoverHostState(terminal, maxHostStateBytes);
+            const auto refused = encodeHandoverHostState(terminal, maxHostStateBytes, {});
             REQUIRE(!refused);
             CHECK(refused.error() == HandoverBodyError::NotAtGround);
             if (isCompleted) {
@@ -620,10 +620,10 @@ TEST(handoverCannotDropPendingOrBackpressuredFontAndMeasurementOutcomes)
             CHECK(!terminalHandoverBlockers(terminal).contains(HandoverBlocker::RichTextMeasurement));
             quiesce.notePass(terminal, Runtime::FrameClass::Settled, 2);
             CHECK(quiesce.phase() == Runtime::QuiescePhase::Ready);
-            const auto encoded = encodeHandoverHostState(terminal, maxHostStateBytes);
+            const auto encoded = encodeHandoverHostState(terminal, maxHostStateBytes, {});
             REQUIRE(encoded);
             Terminal successor;
-            REQUIRE(restoreHandoverHostState(encoded->view(), successor, maxHostStateBytes));
+            REQUIRE(restoreHandoverHostState(encoded->view(), successor, maxHostStateBytes, {}));
             const auto reply = drainCatalog(successor);
             CHECK(reply == drainCatalog(terminal));
             CHECK(reply.starts_with(isCompleted ? (isCatalog ? "\x1b]7404;a=f:i=1:" : "\x1b]7404;a=r:i=1:")

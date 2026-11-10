@@ -108,7 +108,7 @@ std::expected<std::array<std::span<const std::uint8_t>, sectionCount>, Error> sp
 
 } // namespace
 
-std::expected<Sync::HandoverBytes, Error> SessionHandover::capture(const Session& session, const SessionHandoverLimits& limits)
+std::expected<Sync::HandoverBytes, Error> SessionHandover::capture(const Session& session, const SessionHandoverLimits& limits, Ticks now)
 {
     if (!session.term || !session.stream || !session.screenSource || !session.inputEncoder)
         return std::unexpected(Error::Malformed);
@@ -117,7 +117,7 @@ std::expected<Sync::HandoverBytes, Error> SessionHandover::capture(const Session
     const auto input = session.inputEncoder->continuation();
     if (!pending || !coherence || !input)
         return std::unexpected(Error::NotAtGround);
-    const auto pane = Sync::encodePaneHandover(*session.screenSource, SessionHandoverFacts::capture(session), *pending, limits.pane);
+    const auto pane = Sync::encodePaneHandover(*session.screenSource, SessionHandoverFacts::capture(session), *pending, limits.pane, now);
     if (!pane)
         return std::unexpected(pane.error());
     const auto effects = encodeHandoverEffects(session.capabilityPolicy, session.effects, limits.effects);
@@ -133,7 +133,7 @@ std::expected<Sync::HandoverBytes, Error> SessionHandover::capture(const Session
 }
 
 std::expected<std::unique_ptr<SessionHandover::Session>, Error> SessionHandover::restore(Daemon& daemon,
-    std::span<const std::uint8_t> bytes, std::unique_ptr<PAL::Stream> stream, const SessionHandoverLimits& limits)
+    std::span<const std::uint8_t> bytes, std::unique_ptr<PAL::Stream> stream, const SessionHandoverLimits& limits, Ticks now)
 {
     if (!stream)
         return std::unexpected(Error::Malformed);
@@ -150,7 +150,7 @@ std::expected<std::unique_ptr<SessionHandover::Session>, Error> SessionHandover:
     auto effects = decodeHandoverEffects((*sections)[1], limits.effects);
     if (!effects)
         return std::unexpected(bodyError(effects.error()));
-    auto pane = Sync::decodePaneHandover((*sections)[0], limits.pane);
+    auto pane = Sync::decodePaneHandover((*sections)[0], limits.pane, now);
     if (!pane)
         return std::unexpected(pane.error());
     std::unique_ptr<Session> session(new (std::nothrow) Session(effects->policy.decisions));

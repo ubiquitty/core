@@ -2299,6 +2299,7 @@ std::expected<void, HandoverBodyError> readGraphicCancellation(WireReader& reade
 }
 
 struct HostSection {
+    std::uint16_t version = handoverBodyVersion;
     struct Variable {
         bool used = false;
         std::string_view name;
@@ -2469,6 +2470,83 @@ void readHostTriggers(WireReader& reader, Triggers::Engine* candidate = nullptr)
     }
 }
 
+// The last body version whose ticks travel absolute, on the sender's clock.
+constexpr std::uint16_t lastAbsoluteTickBodyVersion = 35;
+
+// A host section carries every tick as its age at the sender's now, so a
+// receiver on another clock re-bases it on its own (Docs/sync.md §6.13,
+// "Clocks"). A tick whose zero means none yet travels as its age plus one, so
+// none stays none.
+std::uint32_t ageAt(std::uint32_t tick, Ticks now)
+{
+    return now.since(Ticks(tick));
+}
+
+std::uint32_t optionalAgeAt(std::uint32_t tick, Ticks now)
+{
+    if (!tick)
+        return 0;
+    const std::uint32_t age = ageAt(tick, now);
+    return age == std::numeric_limits<std::uint32_t>::max() ? age : age + 1;
+}
+
+std::uint32_t tickOfAge(std::uint32_t age, Ticks now)
+{
+    return now.count - age;
+}
+
+std::uint32_t optionalTickOfAge(std::uint32_t age, Ticks now)
+{
+    if (!age)
+        return 0;
+    const std::uint32_t tick = tickOfAge(age - 1, now);
+    return tick ? tick : 1;
+}
+
+// A tick known only to have been set, stamped now.
+std::uint32_t stampedNow(std::uint32_t tick, Ticks now)
+{
+    if (!tick)
+        return 0;
+    return now.count ? now.count : 1;
+}
+
+void ageHostTicks(HostSection& section, Ticks now)
+{
+    auto& scalars = section.scalars;
+    scalars.lastActivityTick = optionalAgeAt(scalars.lastActivityTick, now);
+    scalars.lastBellTick = optionalAgeAt(scalars.lastBellTick, now);
+    scalars.displayActivityTick = ageAt(scalars.displayActivityTick, now);
+    scalars.commandStartTick = ageAt(scalars.commandStartTick, now);
+    for (auto& command : std::span(section.shellCommands).first(section.shellCommandCount))
+        command.startTick = ageAt(command.startTick, now);
+}
+
+void rebaseHostTicks(HostSection& section, HandoverReceiverClock clock)
+{
+    auto& scalars = section.scalars;
+    if (section.version > lastAbsoluteTickBodyVersion) {
+        scalars.lastActivityTick = optionalTickOfAge(scalars.lastActivityTick, clock.now);
+        scalars.lastBellTick = optionalTickOfAge(scalars.lastBellTick, clock.now);
+        scalars.displayActivityTick = tickOfAge(scalars.displayActivityTick, clock.now);
+        scalars.commandStartTick = tickOfAge(scalars.commandStartTick, clock.now);
+        for (auto& command : std::span(section.shellCommands).first(section.shellCommandCount))
+            command.startTick = tickOfAge(command.startTick, clock.now);
+        return;
+    }
+    if (clock.sender == HandoverSenderClock::Shared)
+        return;
+    scalars.lastActivityTick = stampedNow(scalars.lastActivityTick, clock.now);
+    scalars.lastBellTick = stampedNow(scalars.lastBellTick, clock.now);
+    scalars.displayActivityTick = clock.now.count;
+    scalars.hasCommandStartTick = false;
+    scalars.commandStartTick = 0;
+    for (auto& command : std::span(section.shellCommands).first(section.shellCommandCount)) {
+        command.hasStartTick = false;
+        command.startTick = 0;
+    }
+}
+
 void writeHostState(SectionWriter& writer, const HostSection& section, const Triggers::Engine* engine)
 {
     writer.scalar(handoverBodyVersion);
@@ -2558,8 +2636,8 @@ std::expected<HostSection, HandoverBodyError> readHostState(std::span<const std:
     if (!covered)
         return std::unexpected(covered.error());
     WireReader reader(*covered);
-    (void)reader.u16();
     HostSection section;
+    section.version = reader.u16();
     hostScalars([&](auto& value) { readHostField(reader, value); }, section.scalars);
     for (std::size_t index = 0; index < hostStrings.size(); ++index)
         section.strings[index] = stringView(readHostBytes(reader, hostStrings[index].second));
@@ -2656,7 +2734,7 @@ struct HostBuffer {
 
 } // namespace
 
-std::expected<HandoverBytes, HandoverBodyError> encodeHandoverHostState(const Terminal& terminal, std::size_t maxBytes)
+std::expected<HandoverBytes, HandoverBodyError> encodeHandoverHostState(const Terminal& terminal, std::size_t maxBytes, Ticks now)
 {
     if (!terminalHandoverBlockers(terminal).isEmpty())
         return std::unexpected(HandoverBodyError::NotAtGround);
@@ -2736,16 +2814,19 @@ std::expected<HandoverBytes, HandoverBodyError> encodeHandoverHostState(const Te
     }
     if (!isHostStateValid(section))
         return std::unexpected(HandoverBodyError::Malformed);
+    ageHostTicks(section, now);
     return encodeSection(maxBytes, [&](SectionWriter& writer) { writeHostState(writer, section, terminal.triggersEngine.get()); });
 }
 
-std::expected<void, HandoverBodyError> restoreHandoverHostState(std::span<const std::uint8_t> bytes, Terminal& terminal, std::size_t maxBytes)
+std::expected<void, HandoverBodyError> restoreHandoverHostState(std::span<const std::uint8_t> bytes, Terminal& terminal, std::size_t maxBytes,
+    HandoverReceiverClock clock)
 {
     if (!terminalHandoverBlockers(terminal).isEmpty())
         return std::unexpected(HandoverBodyError::NotAtGround);
     auto section = readHostState(bytes, maxBytes);
     if (!section)
         return std::unexpected(section.error());
+    rebaseHostTicks(*section, clock);
     std::unique_ptr<DragDrop::Session> dragDrop;
     if (section->dragDrop) {
         dragDrop.reset(new (std::nothrow) DragDrop::Session);
@@ -2973,7 +3054,8 @@ bool isLiveParserAnchorBounded(const Terminal& terminal)
 
 } // namespace
 
-std::expected<HandoverBytes, HandoverBodyError> encodeHandoverTerminal(const Terminal& terminal, std::uint64_t generation, const HandoverTerminalLimits& limits)
+std::expected<HandoverBytes, HandoverBodyError> encodeHandoverTerminal(const Terminal& terminal, std::uint64_t generation, const HandoverTerminalLimits& limits,
+    Ticks now)
 {
     if (!terminalHandoverBlockers(terminal).isEmpty())
         return std::unexpected(HandoverBodyError::NotAtGround);
@@ -3025,7 +3107,7 @@ std::expected<HandoverBytes, HandoverBodyError> encodeHandoverTerminal(const Ter
         return std::unexpected(result.error());
     if (auto result = add(TerminalSection::Sounds, encodeHandoverSounds(terminal, limits.sounds)); !result)
         return std::unexpected(result.error());
-    if (auto result = add(TerminalSection::Host, encodeHandoverHostState(terminal, limits.maxHostStateBytes)); !result)
+    if (auto result = add(TerminalSection::Host, encodeHandoverHostState(terminal, limits.maxHostStateBytes, now)); !result)
         return std::unexpected(result.error());
     if (auto result = add(TerminalSection::GridWidths, encodeSection(maxGridWidthBytes, [&](SectionWriter& writer) {
             writer.scalar(handoverBodyVersion);
@@ -3048,7 +3130,7 @@ std::expected<HandoverBytes, HandoverBodyError> encodeHandoverTerminal(const Ter
 }
 
 std::expected<HandoverTerminal, HandoverBodyError> decodeHandoverTerminal(std::span<const std::uint8_t> bytes, const HandoverTerminalLimits& limits,
-    std::shared_ptr<MemoryBudget> decodeMemory)
+    HandoverReceiverClock clock, std::shared_ptr<MemoryBudget> decodeMemory)
 {
     const auto covered = verifiedSection(bytes, limits.maxRecordBytes);
     if (!covered)
@@ -3186,7 +3268,7 @@ std::expected<HandoverTerminal, HandoverBodyError> decodeHandoverTerminal(std::s
         return std::unexpected(restored.error());
     if (auto restored = restoreHandoverSounds(section(TerminalSection::Sounds), terminal, limits.sounds); !restored)
         return std::unexpected(restored.error());
-    if (auto restored = restoreHandoverHostState(section(TerminalSection::Host), terminal, limits.maxHostStateBytes); !restored)
+    if (auto restored = restoreHandoverHostState(section(TerminalSection::Host), terminal, limits.maxHostStateBytes, clock); !restored)
         return std::unexpected(restored.error());
     handoverParserFields([](auto& to, const auto& from) { to = from; }, terminal.parser, *parser);
     if (!isLiveParserAnchorBounded(terminal) || !terminalHandoverBlockers(terminal).isEmpty())
@@ -4084,7 +4166,7 @@ constexpr std::size_t paneSectionCount = std::to_underlying(PaneSection::Count);
 } // namespace
 
 std::expected<HandoverBytes, HandoverBodyError> encodePaneHandover(const PaneSource& source,
-    const SessionFacts& session, const PAL::OutputQueue::Unwritten& unwrittenPTY, const HandoverPaneLimits& limits)
+    const SessionFacts& session, const PAL::OutputQueue::Unwritten& unwrittenPTY, const HandoverPaneLimits& limits, Ticks now)
 {
     const auto state = source.continuation();
     if (!state)
@@ -4107,7 +4189,7 @@ std::expected<HandoverBytes, HandoverBodyError> encodePaneHandover(const PaneSou
         return std::unexpected(result.error());
     if (auto result = add(PaneSection::Publication, encodeHandoverPublication(source, limits.publication)); !result)
         return std::unexpected(result.error());
-    if (auto result = add(PaneSection::Terminal, encodeHandoverTerminal(source.terminal(), source.generation(), limits.terminal)); !result)
+    if (auto result = add(PaneSection::Terminal, encodeHandoverTerminal(source.terminal(), source.generation(), limits.terminal, now)); !result)
         return std::unexpected(result.error());
     if (auto result = add(PaneSection::PTY, encodeSection(std::min(limits.maxAcceptedPTYBytes, PAL::OutputQueue::maxPending) + maxPTYMetadataBytes, [&](SectionWriter& writer) {
             writer.scalar(handoverBodyVersion);
@@ -4129,7 +4211,7 @@ std::expected<HandoverBytes, HandoverBodyError> encodePaneHandover(const PaneSou
 }
 
 std::expected<HandoverPaneImage, HandoverBodyError> decodePaneHandover(std::span<const std::uint8_t> bytes, const HandoverPaneLimits& limits,
-    std::shared_ptr<MemoryBudget> decodeMemory)
+    Ticks now, std::shared_ptr<MemoryBudget> decodeMemory)
 {
     const auto verified = verifiedSection(bytes, limits.maxRecordBytes);
     if (!verified)
@@ -4167,7 +4249,7 @@ std::expected<HandoverPaneImage, HandoverBodyError> decodePaneHandover(std::span
     if (paneID != publication->paneID || paneID != state->effects.paneID || paneID.low != session->sessionID
         || session->describedStructuralGeneration > publication->structuralGeneration)
         return std::unexpected(HandoverBodyError::Malformed);
-    auto terminal = decodeHandoverTerminal(section(PaneSection::Terminal), limits.terminal, std::move(decodeMemory));
+    auto terminal = decodeHandoverTerminal(section(PaneSection::Terminal), limits.terminal, { .now = now, .sender = HandoverSenderClock::Shared }, std::move(decodeMemory));
     if (!terminal)
         return std::unexpected(terminal.error());
     if (terminal->generation != publication->generation)

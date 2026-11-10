@@ -76,7 +76,7 @@ struct DecodedAdopt {
 /// - Returns: The body and what it decodes to, or nothing when it does not.
 std::optional<DecodedAdopt> decodeAdopt(const std::vector<std::uint8_t>& body)
 {
-    auto terminal = Protocol::Sync::decodeHandoverTerminal(body, Session::localShareTerminalLimits(Local::maxAdoptBodyBytes));
+    auto terminal = Protocol::Sync::decodeHandoverTerminal(body, Session::localShareTerminalLimits(Local::maxAdoptBodyBytes), {});
     if (!terminal)
         return std::nullopt;
     return DecodedAdopt { .continuation = std::move(*terminal), .payload = body };
@@ -93,7 +93,7 @@ std::optional<DecodedAdopt> decodeAdopt(const std::vector<std::uint8_t>& body)
 Session::ShareEncoding shareFrames(Terminal& term, std::vector<std::uint8_t>& body, std::size_t maxBodyBytes = Local::maxAdoptBodyBytes)
 {
     body.clear();
-    const auto captured = Session::captureShareTerminal(term, maxBodyBytes);
+    const auto captured = Session::captureShareTerminal(term, maxBodyBytes, {});
     if (!captured)
         return captured.error();
     body.assign(captured->view().begin(), captured->view().end());
@@ -147,7 +147,7 @@ std::unique_ptr<Terminal> windowWithHistory(int columns, int lines, int rows = 4
 /// - Returns: The terminal, or nothing when any continuation was refused.
 std::unique_ptr<Terminal> adopted(const DecodedAdopt& adopt, int rows, int columns)
 {
-    auto terminal = Protocol::Sync::decodeHandoverTerminal(adopt.payload, Session::localShareTerminalLimits(Local::maxAdoptBodyBytes));
+    auto terminal = Protocol::Sync::decodeHandoverTerminal(adopt.payload, Session::localShareTerminalLimits(Local::maxAdoptBodyBytes), {});
     if (!terminal || terminal->terminal->rows != rows || terminal->terminal->columns != columns)
         return nullptr;
     return std::move(terminal->terminal);
@@ -238,7 +238,7 @@ TEST(localShareBodiesRefuseTruncationTrailingBytesAndOversize)
     auto trailing = body;
     trailing.push_back(0);
     CHECK(!decodeAdopt(trailing));
-    CHECK(!Protocol::Sync::decodeHandoverTerminal(body, Session::localShareTerminalLimits(body.size() - 1)));
+    CHECK(!Protocol::Sync::decodeHandoverTerminal(body, Session::localShareTerminalLimits(body.size() - 1), {}));
 }
 
 TEST(aTerminalWithNoGridEncodesNothing)
@@ -389,7 +389,7 @@ TEST(adoptionCarriesTheVisibleScreenAndTheLocalHistory)
     // A corrupt joined record never produces a partially restored terminal.
     std::vector<std::uint8_t> forged = adopt->payload;
     forged.back() ^= 0x01;
-    CHECK(!Protocol::Sync::decodeHandoverTerminal(forged, Session::localShareTerminalLimits(Local::maxAdoptBodyBytes)));
+    CHECK(!Protocol::Sync::decodeHandoverTerminal(forged, Session::localShareTerminalLimits(Local::maxAdoptBodyBytes), {}));
     for (int row = 0; row < 4; ++row) {
         CHECK(rowText(*daemon, row) == rowText(*window, row));
     }
@@ -447,7 +447,7 @@ TEST(aHistoryOfMoreLinesThanOneBodyHoldsArrivesWhole)
     CHECK_EQ(daemon->lineStore->count(), window->lineStore->count());
     CHECK_MSG(holdTheSame(*daemon, *window), "a history of several bodies did not arrive as the window holds it");
 
-    const auto roundTrip = Protocol::Sync::encodeHandoverTerminal(*daemon, 1, Session::localShareTerminalLimits(Local::maxAdoptBodyBytes));
+    const auto roundTrip = Protocol::Sync::encodeHandoverTerminal(*daemon, 1, Session::localShareTerminalLimits(Local::maxAdoptBodyBytes), {});
     REQUIRE(roundTrip);
     CHECK(std::ranges::equal(roundTrip->view(), adopt->payload));
 }
@@ -553,7 +553,7 @@ TEST(aShareCarriesHostParserImagesAndTextContinuationWithoutMutatingTheSource)
     REQUIRE(window->softFont && window->sampleBank && window->pendingSound && window->pendingSound->front());
     REQUIRE(window->images.stored[0].frameCount == 2 && window->outputLength > 0);
     const auto limits = Session::localShareTerminalLimits(Local::maxAdoptBodyBytes);
-    const auto before = Protocol::Sync::encodeHandoverTerminal(*window, 1, limits);
+    const auto before = Protocol::Sync::encodeHandoverTerminal(*window, 1, limits, {});
     REQUIRE(before);
 
     std::vector<std::uint8_t> frames;
@@ -576,8 +576,8 @@ TEST(aShareCarriesHostParserImagesAndTextContinuationWithoutMutatingTheSource)
     CHECK_EQ(daemon.sampleBank->slots[0][0], 7);
     CHECK(daemon.images.stored[0].pixels != window->images.stored[0].pixels);
     CHECK(daemon.images.stored[0].frames[1].pixels != window->images.stored[0].frames[1].pixels);
-    const auto restored = Protocol::Sync::encodeHandoverTerminal(daemon, 1, limits);
-    const auto unchanged = Protocol::Sync::encodeHandoverTerminal(*window, 1, limits);
+    const auto restored = Protocol::Sync::encodeHandoverTerminal(daemon, 1, limits, {});
+    const auto unchanged = Protocol::Sync::encodeHandoverTerminal(*window, 1, limits, {});
     REQUIRE(restored && unchanged);
     CHECK(std::ranges::equal(restored->view(), before->view()));
     CHECK(std::ranges::equal(unchanged->view(), before->view()));
@@ -592,8 +592,8 @@ TEST(aShareCarriesHostParserImagesAndTextContinuationWithoutMutatingTheSource)
     CHECK_EQ(window->outputLength, daemon.outputLength);
     REQUIRE(window->outputLength >= 0 && daemon.outputLength >= 0);
     CHECK(std::ranges::equal(std::span(window->outputBuffer).first(static_cast<std::size_t>(window->outputLength)), std::span(daemon.outputBuffer).first(static_cast<std::size_t>(daemon.outputLength))));
-    const auto futureWindow = Protocol::Sync::encodeHandoverTerminal(*window, 1, limits);
-    const auto futureDaemon = Protocol::Sync::encodeHandoverTerminal(daemon, 1, limits);
+    const auto futureWindow = Protocol::Sync::encodeHandoverTerminal(*window, 1, limits, {});
+    const auto futureDaemon = Protocol::Sync::encodeHandoverTerminal(daemon, 1, limits, {});
     REQUIRE(futureWindow && futureDaemon);
     CHECK(std::ranges::equal(futureWindow->view(), futureDaemon->view()));
 }
@@ -637,7 +637,7 @@ TEST(localShareRefusesThinCheckpointPayloadsAndReceiverPolicyMismatches)
     REQUIRE(shareFrames(*window, frames) == Session::ShareEncoding::Encoded);
     const auto complete = decodeAdopt(frames);
     REQUIRE(complete);
-    CHECK(!Protocol::Sync::decodeHandoverTerminal(complete->payload, Session::localShareTerminalLimits(complete->payload.size() - 1)));
+    CHECK(!Protocol::Sync::decodeHandoverTerminal(complete->payload, Session::localShareTerminalLimits(complete->payload.size() - 1), {}));
     window->images.kittyImageBytesBudget = Image::terminalImageBytesBudgetDefault + 1;
     frames = { 1, 2, 3 };
     CHECK(shareFrames(*window, frames) == Session::ShareEncoding::TooLong);

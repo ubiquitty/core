@@ -2055,6 +2055,24 @@ Frontend code (macOS Swift, iOS, Linux, UbiquittyKit `onFrame`) has no
   naming it, choosing it from the listing, or holding a saved reference to it. That is the workspace coming
   back with new sessions, not a resume.
 
+
+#### Clocks
+
+A handover terminal body moves a session between processes whose monotonic
+clocks need not share an epoch: a daemon and its successor share one, but a
+session the app shares into the local daemon, or reclaims from it, crosses
+between the app's clock, which stops while the Mac sleeps, and the daemon's,
+which does not. So the body carries no absolute tick (principle 16). The
+terminal's activity, display-idle, bell and command-start stamps travel as
+ages against the sender's clock at encode, and the receiver re-bases each on
+its own clock at decode; a stamp whose zero means none yet travels as its age
+plus one, so none stays none. Each codec entry point takes the clock it reads
+against (`HandoverReceiverClock` on decode). A body at version 35 carries the
+stamps absolute: a daemon successor, on the same clock, takes them as they
+are, and a share or a reclaim, which cannot read the sender's clock, takes
+them as unknown. It stamps an activity, display-idle or bell tick now, and
+leaves a command's start unknown, so its duration reads as unknown.
+
 ---
 
 ## 7. Frame grammar

@@ -11537,7 +11537,7 @@ private:
         {
             const std::scoped_lock hold(*m_activeLock);
             if (Ubiquitty::Terminal* term = modelTerm())
-                terminalBody = Session::captureShareTerminal(*term, Protocol::Local::maxAdoptBodyBytes);
+                terminalBody = Session::captureShareTerminal(*term, Protocol::Local::maxAdoptBodyBytes, PAL::monotonicTicks());
         }
         if (!terminalBody) {
             m_runtime->confirmLocalStreamOwnership();

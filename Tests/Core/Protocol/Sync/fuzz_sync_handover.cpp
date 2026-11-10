@@ -50,10 +50,10 @@ void checkPane(std::span<const std::uint8_t> input)
             { 1 << 16, Ubiquitty::Tek::tekMaxPrimitives }, { 1 << 18, 1 << 18 }, 4 << 20 },
         { 1 << 18, 4096, 1024, 1024, 4096 }, 2 << 20, 1 << 20, 1 << 18, 1 << 18, 1 << 18, 8
     };
-    auto restored = decodePaneHandover(input, limits);
+    auto restored = decodePaneHandover(input, limits, {});
     if (!restored)
         return;
-    const auto repeated = encodePaneHandover(*restored->source, restored->session, restored->unwrittenPTY, limits);
+    const auto repeated = encodePaneHandover(*restored->source, restored->session, restored->unwrittenPTY, limits, {});
     assert(repeated && std::ranges::equal(repeated->view(), input));
 }
 

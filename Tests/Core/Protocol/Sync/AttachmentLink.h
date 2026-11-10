@@ -194,12 +194,12 @@ inline std::unique_ptr<SuccessorHost> handOver(Host& predecessor, ID128 successo
     const auto unwritten = Ubiquitty::PAL::OutputQueue::Unwritten::copyOf({}, {});
     if (!unwritten)
         return refuse("no unwritten queue");
-    const auto record = encodePaneHandover(*predecessor.pane.source, session, *unwritten, handoverPaneLimits);
+    const auto record = encodePaneHandover(*predecessor.pane.source, session, *unwritten, handoverPaneLimits, {});
     if (!record) {
         std::fprintf(stderr, "handOver: the pane did not encode (%d)\n", static_cast<int>(record.error()));
         return nullptr;
     }
-    auto image = decodePaneHandover(record->view(), handoverPaneLimits);
+    auto image = decodePaneHandover(record->view(), handoverPaneLimits, {});
     if (!image) {
         std::fprintf(stderr, "handOver: the pane did not decode (%d)\n", static_cast<int>(image.error()));
         return nullptr;

@@ -130,12 +130,15 @@ public:
     ///   - barrier: The client's frozen final numbering, not a new input event.
     ///   - capsule: A complete unchanged offer, including the actual ledger receipt.
     ///   - limits: Explicit receiver policy; no transport cap becomes a memory budget.
+    ///   - now: Now, on the clock the reclaiming process keeps the terminal's
+    ///     ticks on; the daemon that sent the capsule keeps another.
     ///   - decodeMemory: The receiving process's decode owner, which the
     ///     staged terminal charges until it is installed or dropped.
     /// - Returns: A complete inactive owner, or refusal preserving all live state.
     [[nodiscard]] static std::expected<std::unique_ptr<ReclaimTransfer>, ReclaimTransferError> prepare(
         const Protocol::Control::ReclaimTarget& target, AdoptOperation operation, ReclaimInputBarrier barrier,
-        const ReclaimCapsuleView& capsule, const ReclaimTransferLimits& limits, std::shared_ptr<Protocol::Sync::MemoryBudget> decodeMemory = nullptr);
+        const ReclaimCapsuleView& capsule, const ReclaimTransferLimits& limits, Ticks now,
+        std::shared_ptr<Protocol::Sync::MemoryBudget> decodeMemory = nullptr);
     ~ReclaimTransfer();
     ReclaimTransfer(const ReclaimTransfer&) = delete;
     ReclaimTransfer& operator=(const ReclaimTransfer&) = delete;

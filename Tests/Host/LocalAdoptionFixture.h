@@ -332,7 +332,7 @@ public:
     {
         if (owner.frozen.data || owner.result.attempt)
             return false;
-        auto captured = Session::captureShareTerminal(*owner.terminal, Protocol::Local::maxAdoptBodyBytes);
+        auto captured = Session::captureShareTerminal(*owner.terminal, Protocol::Local::maxAdoptBodyBytes, {});
         if (!captured)
             return false;
         owner.frozen = std::move(*captured);

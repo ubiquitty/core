@@ -144,11 +144,11 @@ TEST(handoverCarriesRegistrationsButRefusesAnActiveNativeDrop)
     Terminal source, restored;
     source.dragDropClient = &queue;
     feed(source, "\033]72;t=a:i=42;text/plain image/png\033\\\033]72;t=a:x=1;1:other\033\\\033]72;t=o:x=1:i=43;1:offer\033\\");
-    auto encoded = encodeHandoverHostState(source, 1024 * 1024);
+    auto encoded = encodeHandoverHostState(source, 1024 * 1024, {});
     CHECK(encoded.has_value());
     if (!encoded)
         return;
-    CHECK(restoreHandoverHostState(encoded->view(), restored, 1024 * 1024).has_value());
+    CHECK(restoreHandoverHostState(encoded->view(), restored, 1024 * 1024, {}).has_value());
     CHECK(restored.dragDropSession);
     if (!restored.dragDropSession)
         return;
@@ -161,7 +161,7 @@ TEST(handoverCarriesRegistrationsButRefusesAnActiveNativeDrop)
     CHECK(state.dropIdentity == 42);
     CHECK(state.offerIdentity == 43);
     drop(source);
-    auto active = encodeHandoverHostState(source, 1024 * 1024);
+    auto active = encodeHandoverHostState(source, 1024 * 1024, {});
     CHECK(!active && active.error() == HandoverBodyError::NotAtGround);
 }
 
