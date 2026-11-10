@@ -44,7 +44,8 @@ DrainPassResult runDrainPass(Terminal& terminal, PAL::Stream& stream, DrainHost&
             const int safePrefix = owner.judgeRead({ buffer.data(), static_cast<std::size_t>(n) });
             const int parseEnd = (safePrefix >= 0) ? std::min(safePrefix, n) : n;
             int offset = 0;
-            while (offset < parseEnd) {
+            bool isFenced = false;
+            while (offset < parseEnd && !isFenced) {
                 // Clamped to the owner's verdict, not to the read: the outer
                 // condition only gates entry, and one bite spans the whole
                 // chunk — a bound of n parses the bytes the owner just fenced.
@@ -56,9 +57,15 @@ DrainPassResult runDrainPass(Terminal& terminal, PAL::Stream& stream, DrainHost&
                     const int remaining = biteEnd - offset;
                     bool stoppedAtSyncClear = false;
                     const int consumed = Ubiquitty::processBytesUpToSyncClear(&terminal, std::string_view(buffer.data() + offset, static_cast<std::size_t>(remaining)), &stoppedAtSyncClear);
-                    offset += (consumed > 0) ? consumed : remaining; // guard: never spin
+                    // A fence consumes nothing more, and what it stopped in
+                    // front of is the owner's to keep: the guard below would
+                    // skip it.
+                    isFenced = terminal.asyncDecodes.isFenced();
+                    offset += (consumed > 0 || isFenced) ? consumed : remaining; // guard: never spin
                     if (stoppedAtSyncClear)
                         owner.noteSyncClear();
+                    if (isFenced)
+                        break;
                     if (consumed > 0 && consumed < remaining) {
                         if (stoppedAtSyncClear) // stopped at a DECSET-2026 clear: a frame is complete
                             owner.publishMidReadSyncFrame(host);
@@ -69,6 +76,11 @@ DrainPassResult runDrainPass(Terminal& terminal, PAL::Stream& stream, DrainHost&
                 host.unlockModel();
             }
             result.bytesDrained += n;
+            if (isFenced) {
+                owner.carryFencedBytes({ buffer.data() + offset, static_cast<std::size_t>(parseEnd - offset) });
+                result.end = DrainPassEnd::DecodeFence;
+                break;
+            }
             // The owner fenced the rest of this read: another read would carry
             // the stream past the point it means to hand on.
             if (safePrefix >= 0) {

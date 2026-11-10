@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "Harness.h"
+#include "KittyGraphicsFixture.h"
 #include "SoleModelThread.h"
 
 // test_ingest_loop.cpp — the portable ingest loop and the session that owns
@@ -20,6 +21,7 @@
 #include "Core/Runtime/TerminalSession.h"
 
 #include "Core/CellGrid.h"
+#include "Core/Image/TerminalImage.h"
 #include "Core/Terminal.h"
 #include "Core/Title/WalkPacing.h"
 #include "Core/VT/ParseState.h"
@@ -109,12 +111,31 @@ struct ReadShape {
     int pauseReads = 0;
 };
 
+// What the stream's program reads back: every reply the runtime writes.
+struct ReplySink {
+    std::mutex lock;
+    std::string bytes;
+
+    void append(std::span<const char> written)
+    {
+        const std::scoped_lock hold(lock);
+        bytes.append(written.data(), written.size());
+    }
+
+    std::string text()
+    {
+        const std::scoped_lock hold(lock);
+        return bytes;
+    }
+};
+
 class PrefilledEndpoint final : public PollableByteStream {
 public:
-    explicit PrefilledEndpoint(UnixFileDescriptor descriptor, ReadShape shape = {}, ReadBands* readBands = nullptr)
+    explicit PrefilledEndpoint(UnixFileDescriptor descriptor, ReadShape shape = {}, ReadBands* readBands = nullptr, ReplySink* replies = nullptr)
         : m_descriptor(std::move(descriptor))
         , m_shape(shape)
         , m_readBands(readBands)
+        , m_replies(replies)
     {
     }
 
@@ -152,8 +173,13 @@ public:
             return std::to_underlying(StreamStatus::EndOfFile);
         return std::to_underlying(StreamStatus::Fatal);
     }
-    int write(std::span<const char> bytes) override { return static_cast<int>(bytes.size()); }
-    int writeAll(std::span<const char> bytes) override { return static_cast<int>(bytes.size()); }
+    int write(std::span<const char> bytes) override
+    {
+        if (m_replies)
+            m_replies->append(bytes);
+        return static_cast<int>(bytes.size());
+    }
+    int writeAll(std::span<const char> bytes) override { return write(bytes); }
     bool drainPendingWrite() override { return false; }
     [[nodiscard]] bool hasPendingWrite() const override { return false; }
     [[nodiscard]] int lastError() const override { return 0; }
@@ -166,13 +192,14 @@ public:
         UnixFileDescriptor duplicate(::dup(m_descriptor.get()));
         if (!duplicate)
             return nullptr;
-        return std::make_unique<PrefilledEndpoint>(std::move(duplicate), m_shape, m_readBands);
+        return std::make_unique<PrefilledEndpoint>(std::move(duplicate), m_shape, m_readBands, m_replies);
     }
 
 private:
     UnixFileDescriptor m_descriptor;
     ReadShape m_shape;
     ReadBands* m_readBands;
+    ReplySink* m_replies;
     std::chrono::steady_clock::time_point m_lastReturn {};
     int m_bytesSincePause = 0;
     int m_pauseReadsLeft = 0;
@@ -181,9 +208,9 @@ private:
 // A session transport whose whole stream is on disk before ingest starts.
 class PrefilledStream final : public Stream, private ProcessFacts {
 public:
-    explicit PrefilledStream(UnixFileDescriptor descriptor, ReadShape shape = {}, ReadBands* readBands = nullptr)
+    explicit PrefilledStream(UnixFileDescriptor descriptor, ReadShape shape = {}, ReadBands* readBands = nullptr, ReplySink* replies = nullptr)
         : m_rawDescriptor(descriptor.get())
-        , m_endpoint(std::move(descriptor), shape, readBands)
+        , m_endpoint(std::move(descriptor), shape, readBands, replies)
     {
     }
 
@@ -419,7 +446,7 @@ namespace {
 // Writes `bytes` to an unlinked temporary file and hands the session a
 // transport positioned at its start, whose reads note their threads' bands in
 // `readBands` when one is given.
-bool adoptPrefilledStream(TerminalSession& session, std::string_view bytes, Ubiquitty::PAL::ReadBands* readBands = nullptr)
+bool adoptPrefilledStream(TerminalSession& session, std::string_view bytes, Ubiquitty::PAL::ReadBands* readBands = nullptr, Ubiquitty::PAL::ReplySink* replies = nullptr)
 {
     const char* directory = std::getenv("TMPDIR");
     std::string path = std::string(directory && *directory ? directory : "/tmp") + "/ubiquitty-flood-XXXXXX";
@@ -440,7 +467,7 @@ bool adoptPrefilledStream(TerminalSession& session, std::string_view bytes, Ubiq
         ::close(descriptor);
         return false;
     }
-    auto adoption = session.adoptStream(std::make_unique<Ubiquitty::PAL::PrefilledStream>(Ubiquitty::PAL::UnixFileDescriptor(descriptor), Ubiquitty::PAL::ReadShape {}, readBands));
+    auto adoption = session.adoptStream(std::make_unique<Ubiquitty::PAL::PrefilledStream>(Ubiquitty::PAL::UnixFileDescriptor(descriptor), Ubiquitty::PAL::ReadShape {}, readBands, replies));
     return adoption.has_value();
 }
 
@@ -2261,6 +2288,69 @@ void spinFor(std::chrono::microseconds span)
     }
 }
 
+// The visible rows' text and the cursor, under the model lock.
+struct ScreenText {
+    std::vector<std::string> rows;
+    int cursorRow = 0;
+    int cursorColumn = 0;
+    int placements = 0;
+    int storedImages = 0;
+};
+
+ScreenText readScreen(TerminalSession& session)
+{
+    ScreenText screen;
+    session.lockForRead();
+    if (Ubiquitty::Terminal* term = session.terminal()) {
+        for (int row = 0; row < term->rows; ++row) {
+            std::string line;
+            for (int column = 0; column < term->columns; ++column) {
+                const Ubiquitty::Cell* cell = term->grid->cellAt(Ubiquitty::Row(row), Ubiquitty::Column(column));
+                line.push_back(cell && cell->codePoint >= 0x20 && cell->codePoint < 0x7F ? static_cast<char>(cell->codePoint) : ' ');
+            }
+            screen.rows.push_back(line);
+        }
+        if (term->screens.active) {
+            screen.cursorRow = term->screens.active->cursorY;
+            screen.cursorColumn = term->screens.active->cursorX;
+        }
+        screen.placements = Ubiquitty::Image::placementCount(term);
+        for (int slot = 0; slot < Ubiquitty::Image::maxTerminalImageCount; ++slot)
+            screen.storedImages += term->images.stored[slot].used && term->images.stored[slot].pixels ? 1 : 0;
+    }
+    session.unlockForRead();
+    return screen;
+}
+
+// What the same bytes leave on a screen that decodes inline, fed whole.
+ScreenText screenAfterFeed(std::string_view bytes)
+{
+    SessionHandle handle;
+    TerminalSession& session = *handle.session;
+    session.start(24, 80);
+    session.feedBytes({ bytes.data(), bytes.size() });
+    return readScreen(session);
+}
+
+// A PNG whose pixels do not compress, so its decode is a real inflate.
+std::vector<std::uint8_t> makeNoisePNG(int width, int height)
+{
+    std::vector<std::uint8_t> rgba(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4);
+    std::uint32_t state = 0x9E3779B9u;
+    for (std::uint8_t& byte : rgba) {
+        state = state * 1664525u + 1013904223u;
+        byte = static_cast<std::uint8_t>(state >> 24);
+    }
+    for (std::size_t alpha = 3; alpha < rgba.size(); alpha += 4)
+        rgba[alpha] = 0xFF;
+    return Ubiquitty::Rendering::encodePNG(rgba, { width, height });
+}
+
+std::string kittyImage(const std::vector<std::uint8_t>& png, const std::string& keys)
+{
+    return UbiquittyTest::Kitty::apc("a=T,f=100," + keys, UbiquittyTest::Kitty::base64(png));
+}
+
 } // namespace
 
 // A program repaints the screen in slices a writer's refill apart. The loop
@@ -2362,6 +2452,126 @@ TEST(testAWriterStalledLongerThanTheQuietIntervalHasItsRedrawCalledWhole)
     }
     harness.stop();
     CHECK_MSG(stepsWholeMidRedraw == 4, "a stall longer than the quiet interval is taken for the end of the redraw");
+}
+
+// An image decodes beside the parse, and the bytes after it wait behind it:
+// the screen the loop leaves is the one a host that decodes inline leaves for
+// the same bytes, the text after the image beside and below its placement, up
+// to the line the loop prints when the stream ends.
+TEST(testBytesAfterAnImageKeepTheirOrderBehindItsDecode)
+{
+    const std::string stream = "before\r\n" + kittyImage(UbiquittyTest::Kitty::makePNG(64, 64), "q=2") + "after the image\r\nlast line";
+    const ScreenText inlineScreen = screenAfterFeed(stream);
+    REQUIRE_MSG(inlineScreen.placements == 1, "premise: the image is placed");
+
+    SessionHandle handle;
+    TerminalSession& session = *handle.session;
+    session.start(24, 80);
+    REQUIRE(adoptPrefilledStream(session, stream));
+    REQUIRE(session.startIngest());
+    const SessionWatch watch = watchUntilExit(session, 30000);
+    REQUIRE(watch.exited);
+    const ScreenText loopScreen = readScreen(session);
+    CHECK_EQ(loopScreen.placements, inlineScreen.placements);
+    for (int row = 0; row <= inlineScreen.cursorRow; ++row) {
+        const auto index = static_cast<std::size_t>(row);
+        CHECK_MSG(loopScreen.rows[index] == inlineScreen.rows[index], loopScreen.rows[index].c_str());
+    }
+}
+
+// The flood pipeline stops a bite at an image too, and the bytes the ring
+// already holds behind it are parsed after it, every one in order.
+TEST(testAnImageInsideAFloodKeepsTheBytesBehindItInOrder)
+{
+    // Transmitted under an id, so it is stored however far the lines after it
+    // scroll; a placed image without one goes with its placement.
+    std::string stream = floodStream();
+    stream += UbiquittyTest::Kitty::apc("a=t,f=100,i=5,q=2", UbiquittyTest::Kitty::base64(UbiquittyTest::Kitty::makePNG(32, 32)));
+    constexpr int linesAfter = 3000;
+    for (int line = 0; line < linesAfter; ++line)
+        stream += "after " + std::to_string(line) + "\r\n";
+    stream += "TAIL";
+
+    SessionHandle handle;
+    TerminalSession& session = *handle.session;
+    session.start(24, 80);
+    REQUIRE(adoptPrefilledStream(session, stream));
+    REQUIRE(session.startIngest());
+    const SessionWatch watch = watchUntilExit(session, 60000);
+    REQUIRE(watch.exited);
+    CHECK_MSG(session.floodBurstCount() >= 1, "premise: the pipeline carried the flood");
+    const ScreenText screen = readScreen(session);
+    CHECK_EQ(screen.storedImages, 1);
+    // The rows above the tail are the last lines, consecutive: a byte dropped
+    // behind the image breaks the count.
+    const auto tail = std::ranges::find_if(screen.rows, [](const std::string& row) { return row.starts_with("TAIL"); });
+    REQUIRE_MSG(tail != screen.rows.end(), "the tail arrived");
+    const auto tailRow = static_cast<int>(tail - screen.rows.begin());
+    for (int above = 1; above <= tailRow; ++above) {
+        const std::string expected = "after " + std::to_string(linesAfter - above);
+        const std::string& row = screen.rows[static_cast<std::size_t>(tailRow - above)];
+        CHECK_MSG(row.starts_with(expected), row.c_str());
+    }
+}
+
+// A program that asks for the image's OK hears it before the answer to a
+// query it sent after the image.
+TEST(testAKittyOkReplyFollowsItsDecode)
+{
+    const std::string stream = kittyImage(UbiquittyTest::Kitty::makePNG(48, 48), "i=7") + "\x1b[c";
+    Ubiquitty::PAL::ReplySink replies;
+    SessionHandle handle;
+    TerminalSession& session = *handle.session;
+    session.start(24, 80);
+    REQUIRE(adoptPrefilledStream(session, stream, nullptr, &replies));
+    REQUIRE(session.startIngest());
+    REQUIRE(watchUntilExit(session, 30000).exited);
+    const std::string text = replies.text();
+    const std::size_t ok = text.find("\x1b_Gi=7;OK\x1b\\");
+    const std::size_t attributes = text.find("\x1b[?");
+    CHECK_MSG(ok != std::string::npos, "the image was answered");
+    CHECK_MSG(attributes != std::string::npos, "the query was answered");
+    CHECK_MSG(ok < attributes, "the image's answer comes first");
+}
+
+// The owner does not hold the model through a decode: a frontend that asks
+// for the lock while a large image decodes is let in, and finds the decode
+// still in flight behind the parse fence. An owner that decoded inline would
+// hold the lock from the image's last byte to its integration, so no ask
+// could find one in flight. The waits across the decode are printed.
+TEST(testAFrontendIsLetInWhileALargeImageDecodes)
+{
+    const std::string stream = "BEFORE\r\n" + kittyImage(makeNoisePNG(1536, 1536), "q=2") + "AFTER";
+    SessionHandle handle;
+    TerminalSession& session = *handle.session;
+    session.start(24, 80);
+    REQUIRE(adoptPrefilledStream(session, stream));
+    REQUIRE(session.startIngest());
+    std::vector<double> waits;
+    int asksDuringDecode = 0;
+    bool hasAfter = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while (!hasAfter && std::chrono::steady_clock::now() < deadline) {
+        const auto asked = std::chrono::steady_clock::now();
+        session.lockForRead();
+        const auto granted = std::chrono::steady_clock::now();
+        if (const Ubiquitty::Terminal* term = session.terminal()) {
+            asksDuringDecode += term->asyncDecodes.isFenced() ? 1 : 0;
+            for (int row = 0; row < term->rows && !hasAfter; ++row) {
+                const Ubiquitty::Cell* cell = term->grid->cellAt(Ubiquitty::Row(row), Ubiquitty::Column(0));
+                hasAfter = cell && cell->codePoint == 'A' && term->grid->cellAt(Ubiquitty::Row(row), Ubiquitty::Column(1))->codePoint == 'F';
+            }
+        }
+        session.unlockForRead();
+        waits.push_back(std::chrono::duration<double, std::milli>(granted - asked).count());
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+    session.stopIngest();
+    std::ranges::sort(waits);
+    std::printf("  %zu asks, %d found the decode in flight; median wait %.3f ms, longest %.3f ms\n", waits.size(), asksDuringDecode,
+        waits.empty() ? 0.0 : waits[waits.size() / 2], waits.empty() ? 0.0 : waits.back());
+    CHECK_MSG(hasAfter, "the text after the image arrived");
+    CHECK_MSG(asksDuringDecode > 0, "a frontend held the model while the image decoded");
 }
 
 UBIQUITTY_TEST_MAIN()

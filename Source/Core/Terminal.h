@@ -1674,6 +1674,18 @@ struct Terminal {
         std::unique_ptr<TaskQueue> sixel;
         std::unique_ptr<TaskQueue> kittyDecode;
         std::unique_ptr<TaskQueue> kittyInflate;
+        // A queue runs its decodes inline in the parse unless the Terminal's
+        // owner made it a worker queue, and waits out the fence below
+        // (setDecodeExecution). Decodes submitted to a worker and not yet
+        // integrated, and how many of them the owner gave up on: while one it
+        // has not given up on is in flight, the stopping parse consumes
+        // nothing more, so the bytes after an image keep their order behind it.
+        std::uint16_t inFlight = 0;
+        std::uint16_t abandoned = 0;
+        // Advanced when the owner gives up on the decodes in flight; a
+        // completion stamped with an older epoch drops its result.
+        std::uint16_t epoch = 0;
+        [[nodiscard]] bool isFenced() const { return inFlight > abandoned; }
     } asyncDecodes;
 
     // isTekModeActive lives in the hot parse-loop cluster up top.

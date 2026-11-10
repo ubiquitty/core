@@ -2379,6 +2379,7 @@ static int sixelYStretchNumber(uint8_t aspectRatioSelector)
 struct SixelDecodeJob {
     Ubiquitty::Terminal* term;
     uint32_t terminalGeneration; // snapshot at submit; checked in completion
+    uint16_t decodeEpoch; // asyncDecodes.epoch at submit; an older one was given up on
     Ubiquitty::Image::OwnedPixels accumulatorCopy; // owned; released with the job
     int accumulatorLength;
     uint16_t originRow;
@@ -2456,6 +2457,9 @@ static void sixelDecodeCompletion(void* p)
     // generation, so drop a result the Terminal no longer expects. The queue
     // belongs to that same Terminal, so `term` cannot have been freed.
     if (!j->term || j->term->generation != j->terminalGeneration)
+        return;
+    // Given up on: the bytes after it were parsed without it.
+    if (j->decodeEpoch != j->term->asyncDecodes.epoch)
         return;
     if (j->rc != Ubiquitty::Image::Sixel::DecodeStatus::OK || j->image.width == 0 || j->image.height == 0)
         return;
@@ -2625,9 +2629,12 @@ static void sixelFinalize(Ubiquitty::Terminal& t)
     job->hasPrivateColorRegisters = t.modes.hasPrivateSixelColorRegisters;
     if (!job->hasPrivateColorRegisters)
         job->initialPalette = t.sixelColorRegisters;
+    job->decodeEpoch = t.asyncDecodes.epoch;
     Ubiquitty::TaskQueue* q = sixelEnsureDecodeQueue(t);
-    if (q && q->submit(sixelDecodeWorker, job.get()))
+    if (q && q->submit(sixelDecodeWorker, job.get())) {
         job.release(); // the queue holds it until the drain's completion
+        Ubiquitty::noteDecodeSubmitted(t, *q);
+    }
     // Drain at once, as the kitty dispatch does. The worker ran inline in the
     // submit, so the pixels are ready; what a drain at the end of the read
     // added was distance between the image and the cursor that anchors it.
@@ -2645,7 +2652,7 @@ static void termDrainSixel(Ubiquitty::Terminal* t)
 {
     if (!t || !t->asyncDecodes.sixel || t->asyncDecodes.sixel->pendingCount() == 0)
         return;
-    t->asyncDecodes.sixel->drain(sixelDecodeCompletion);
+    Ubiquitty::noteDecodesDrained(*t, *t->asyncDecodes.sixel, t->asyncDecodes.sixel->drain(sixelDecodeCompletion));
 }
 
 // Free every sixel this Terminal submitted but never drained, without running a
@@ -2655,7 +2662,16 @@ void discardPendingSixelDecodes(Ubiquitty::Terminal* t)
 {
     if (!t || !t->asyncDecodes.sixel)
         return;
-    t->asyncDecodes.sixel->drain([](void* p) { delete static_cast<SixelDecodeJob*>(p); });
+    t->asyncDecodes.sixel->waitUntilIdle();
+    Ubiquitty::noteDecodesDrained(*t, *t->asyncDecodes.sixel, t->asyncDecodes.sixel->drain([](void* p) { delete static_cast<SixelDecodeJob*>(p); }));
+}
+
+// Whether the stopping parse ends right after a dispatch: its replies have
+// reached the pressure line, or it submitted a decode to a worker, and the
+// bytes after it wait until the owner has integrated the result.
+static bool shouldStopAfterDispatch(const Ubiquitty::Terminal& t)
+{
+    return t.outputLength >= Ubiquitty::Terminal::outputReplyPressureBytes || t.asyncDecodes.isFenced();
 }
 
 static bool c1StringTerminatorEnabled(const Ubiquitty::Terminal& t) { return !t.parser.parserInputIsUTF8 && !Ubiquitty::Unicode::encodingIsUTF8(t.parser.inputEncoding.enc); }
@@ -7086,7 +7102,7 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                                                 break;
                                             }
                                             wasSyncOutput = t.modes.syncOutput;
-                                            if (t.outputLength >= Ubiquitty::Terminal::outputReplyPressureBytes) {
+                                            if (VT::shouldStopAfterDispatch(t)) {
                                                 ++i;
                                                 didHitReplyPressure = true;
                                                 break;
@@ -7117,7 +7133,7 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                                         break;
                                     }
                                     wasSyncOutput = t.modes.syncOutput;
-                                    if (t.outputLength >= Ubiquitty::Terminal::outputReplyPressureBytes) {
+                                    if (VT::shouldStopAfterDispatch(t)) {
                                         ++i;
                                         didHitReplyPressure = true;
                                         break;
@@ -7213,7 +7229,7 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                     wasSyncOutput = t.modes.syncOutput;
                     // Replies grow only through a dispatch too, so this site and
                     // the CSI lanes above cover every producer.
-                    if (t.outputLength >= Ubiquitty::Terminal::outputReplyPressureBytes) {
+                    if (VT::shouldStopAfterDispatch(t)) {
                         ++i;
                         didHitReplyPressure = true;
                         break;
@@ -7255,7 +7271,7 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                     break;
                 }
                 wasSyncOutput = t.modes.syncOutput;
-                if (t.outputLength >= Ubiquitty::Terminal::outputReplyPressureBytes) {
+                if (VT::shouldStopAfterDispatch(t)) {
                     ++i;
                     break;
                 }
@@ -7291,7 +7307,7 @@ template<bool StopAtSyncClear> static int processBytesWithGraphicCapture(Ubiquit
         || (t.emulation != VT::Emulation::VT && VT::emulationIsNonANSI(t)))
         return processBytesImpl<StopAtSyncClear>(t, input, stoppedAtSyncClear);
     if constexpr (StopAtSyncClear) {
-        if (t.outputLength >= Ubiquitty::Terminal::outputReplyPressureBytes)
+        if (VT::shouldStopAfterDispatch(t))
             return processBytesImpl<StopAtSyncClear>(t, input, stoppedAtSyncClear);
     }
     const int boundary = VT::graphicCancellationBoundary(input);
@@ -7305,7 +7321,7 @@ template<bool StopAtSyncClear> static int processBytesWithGraphicCapture(Ubiquit
         *stoppedAtSyncClear = true;
     bool shouldReturn = static_cast<std::size_t>(consumed) != prefixLength || didStopAtSyncClear;
     if constexpr (StopAtSyncClear) {
-        if (t.outputLength >= Ubiquitty::Terminal::outputReplyPressureBytes)
+        if (VT::shouldStopAfterDispatch(t))
             shouldReturn = true;
     }
     if (shouldReturn) {
@@ -7390,7 +7406,7 @@ template<bool StopAtSyncClear> static int processEncodedBytesImpl(Ubiquitty::Ter
                 break;
             }
             wasSyncOutput = t.modes.syncOutput;
-            if (t.outputLength >= Ubiquitty::Terminal::outputReplyPressureBytes)
+            if (VT::shouldStopAfterDispatch(t))
                 break;
         }
     }
@@ -7453,7 +7469,7 @@ int processBytesUpToSyncClear(Ubiquitty::Terminal* t, std::string_view buffer, b
 {
     if (stoppedAtSyncClear)
         *stoppedAtSyncClear = false;
-    if (!t)
+    if (!t || t->asyncDecodes.isFenced())
         return 0;
     int consumed = processEncodedBytesImpl<true>(*t, buffer, stoppedAtSyncClear);
     if (consumed > 0) {
@@ -7489,6 +7505,59 @@ void drainAsyncDecodes(Ubiquitty::Terminal& t)
 {
     VT::termDrainSixel(&t);
     Ubiquitty::Kitty::drainAsyncDecodes(&t);
+}
+
+void noteDecodeSubmitted(Ubiquitty::Terminal& t, const TaskQueue& queue)
+{
+    if (queue.execution() == TaskQueue::Execution::Worker)
+        ++t.asyncDecodes.inFlight;
+}
+
+void noteDecodesDrained(Ubiquitty::Terminal& t, const TaskQueue& queue, int drained)
+{
+    if (queue.execution() != TaskQueue::Execution::Worker || drained <= 0)
+        return;
+    auto& decodes = t.asyncDecodes;
+    decodes.inFlight = static_cast<std::uint16_t>(std::max(0, decodes.inFlight - drained));
+    // A decode given up on drains like any other; the ones left are newer.
+    decodes.abandoned = std::min(decodes.abandoned, decodes.inFlight);
+}
+
+void abandonDecodesInFlight(Ubiquitty::Terminal& t)
+{
+    auto& decodes = t.asyncDecodes;
+    decodes.abandoned = decodes.inFlight;
+    ++decodes.epoch;
+}
+
+void waitForDecodesInFlight(Ubiquitty::Terminal& t)
+{
+    auto& decodes = t.asyncDecodes;
+    for (TaskQueue* queue : { decodes.sixel.get(), decodes.kittyDecode.get(), decodes.kittyInflate.get() }) {
+        if (queue)
+            queue->waitUntilIdle();
+    }
+    drainAsyncDecodes(t);
+}
+
+void setDecodeExecution(Ubiquitty::Terminal& t, TaskQueue::Execution execution, TaskQueue::WakeFunction wake, void* wakeContext)
+{
+    auto& decodes = t.asyncDecodes;
+    waitForDecodesInFlight(t);
+    decodes.inFlight = 0;
+    decodes.abandoned = 0;
+    // Inline queues are made at a Terminal's first decode; worker queues
+    // here, so the decode paths need not know where they run. A worker
+    // queue starts its thread at its first decode.
+    if (execution == TaskQueue::Execution::Inline) {
+        decodes.sixel.reset();
+        decodes.kittyDecode.reset();
+        decodes.kittyInflate.reset();
+        return;
+    }
+    decodes.sixel = std::make_unique<TaskQueue>(execution, wake, wakeContext);
+    decodes.kittyDecode = std::make_unique<TaskQueue>(execution, wake, wakeContext);
+    decodes.kittyInflate = std::make_unique<TaskQueue>(execution, wake, wakeContext);
 }
 
 } // namespace Ubiquitty

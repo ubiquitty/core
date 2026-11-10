@@ -18,7 +18,7 @@ budget gate-self-tests-uncovered 44
 budget census-undated 13
 budget vocabulary-span 11
 budget vocabulary-array 161
-budget model-lock-holds 189
+budget model-lock-holds 193
 budget frame-decision-holds 1
 budget per-tick-waits 4
 budget plain-model-lock-holds 21
@@ -34,3 +34,4 @@ tool check-bench-baseline.sh asks whether two named commits compare, so it needs
 tool check-binary-footprint.py reports an instruction count — a measurement, with no threshold to fail
 tool check-rename-coverage.sh run during a rename, against the rename being attempted
 tool check-rename-diff.py run during a rename, against the diff it produced
+raised model-lock-holds 190 193 the ingest thread integrates an image decode a worker finished, and parses the bytes its fence held back a bite per acquisition, as a drain pass does: the fence's turn, its bite handover, and the switches of a terminal's decodes to the worker at the loop's start and back inline at its end

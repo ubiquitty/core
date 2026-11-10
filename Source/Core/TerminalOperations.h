@@ -25,6 +25,7 @@
 #include "Core/Unicode/Encodings.h"
 #include "Core/Unicode/UTF8Decoder.h"
 #include "Forward.h"
+#include "PAL/TaskQueue.h"
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -232,9 +233,49 @@ void softReset(Ubiquitty::Terminal* t);
 /// the cursor for sixel). Cheap when none are pending. The host inline-fallback
 /// path also calls this from `processBytes` for synchronous tests.
 ///
-/// - Parameter t: The terminal whose pending decodes are integrated. The decode
-///   queues are process-global, so every terminal's work drains together.
+/// - Parameter t: The terminal whose pending decodes are integrated, on the
+///   thread that holds its model lock.
 void drainAsyncDecodes(Ubiquitty::Terminal& t);
+
+/// Sets where the terminal's decodes run, once those already submitted have
+/// run and been integrated. An owner that chooses `Worker` waits out the parse
+/// fence each decode raises (`Terminal::AsyncDecodeQueues::isFenced`), and
+/// integrates finished decodes with ``drainAsyncDecodes(_:)`` when `wake`
+/// calls.
+///
+/// - Parameters:
+///   - t: The terminal; the caller holds its model lock.
+///   - execution: Where its decodes run.
+///   - wake: Called on a worker after each decode it finishes; may be null.
+///   - wakeContext: The wake's argument, outliving the terminal's queues.
+void setDecodeExecution(Ubiquitty::Terminal& t, TaskQueue::Execution execution, TaskQueue::WakeFunction wake, void* wakeContext);
+
+/// Counts a decode just submitted to `queue` toward the parse fence.
+///
+/// - Parameters:
+///   - t: The terminal that submitted it, on its parse thread.
+///   - queue: The queue it went to.
+void noteDecodeSubmitted(Ubiquitty::Terminal& t, const TaskQueue& queue);
+
+/// Lowers the parse fence by the decodes a drain of `queue` integrated.
+///
+/// - Parameters:
+///   - t: The terminal whose queue was drained.
+///   - queue: The queue.
+///   - drained: How many jobs the drain integrated.
+void noteDecodesDrained(Ubiquitty::Terminal& t, const TaskQueue& queue, int drained);
+
+/// Waits until every decode submitted so far has run, then integrates them,
+/// which lifts the parse fence.
+///
+/// - Parameter t: The terminal; the caller holds its model lock.
+void waitForDecodesInFlight(Ubiquitty::Terminal& t);
+
+/// Gives up on the decodes in flight: the parse fence lifts, and each one's
+/// result is dropped when it finishes, a Kitty image answered as failed.
+///
+/// - Parameter t: The terminal; the caller holds its model lock.
+void abandonDecodesInFlight(Ubiquitty::Terminal& t);
 
 // Kitty graphics transports t=f (regular file) and t=t (temp file) read
 // through Terminal::fileReadClient (FileReadClient::readFile). With no client

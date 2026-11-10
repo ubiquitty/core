@@ -98,6 +98,14 @@ public:
     /// the time a read that found nothing began reads its clock here; the
     /// pass's last read is the one that ended it.
     virtual void noteReadBegin() { }
+
+    /// Keeps the rest of a read the parse stopped in front of, behind a decode
+    /// it handed to a worker (`Terminal::AsyncDecodeQueues::isFenced`). The
+    /// owner parses them, before anything it reads after them, once the decode
+    /// has been integrated. Called with the model lock released.
+    ///
+    /// - Parameter bytes: The unparsed rest of the read, in order.
+    virtual void carryFencedBytes(std::span<const char> bytes) = 0;
 };
 
 /// How a pass reads.
@@ -123,6 +131,9 @@ enum class DrainPassEnd : std::uint8_t {
     ByteBudget,
     TimeBudget,
     OwnerFence,
+    /// The parse stopped behind a decode in flight; the owner holds the rest
+    /// of the read.
+    DecodeFence,
     StreamEnd,
 };
 
