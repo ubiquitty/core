@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "Harness.h"
+#include "SoleModelThread.h"
 
 // test_ingest_loop.cpp — the portable ingest loop and the session that owns
 // it (Core/Runtime/IngestLoop.h through Core/Runtime/TerminalSession.h),
@@ -721,6 +722,7 @@ TEST(testIngestLoopDrainsALiveShell)
 
 TEST(testReportedDirectorySuppressesQuietDirectorySample)
 {
+    ownModelOnTestThread();
     TerminalRuntime runtime;
     RuntimeInitParameters parameters;
     parameters.rows = 24;
@@ -996,8 +998,8 @@ TEST(testThrottledPaneKeepsAFloodOnTheSequentialPasses)
 // not frames.
 class LockOnlyDrainHost final : public DrainHost {
 public:
-    void lockModel() override { m_lock.lock(); }
-    void unlockModel() override { m_lock.unlock(); }
+    void lockModel() override UBIQUITTY_ACQUIRES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_lock.lock(); }
+    void unlockModel() override UBIQUITTY_RELEASES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_lock.unlock(); }
     void onSyncFrameReadyLocked(SyncFrameReason) override { }
 
 private:
@@ -1076,8 +1078,8 @@ TEST(testATimedPipelinePauseReleasesAHeldFrameBeforeTheBurstEnds)
 {
     class TimedPausedDrainHost final : public DrainHost {
     public:
-        void lockModel() override { m_lock.lock(); }
-        void unlockModel() override { m_lock.unlock(); }
+        void lockModel() override UBIQUITTY_ACQUIRES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_lock.lock(); }
+        void unlockModel() override UBIQUITTY_RELEASES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_lock.unlock(); }
         void onSyncFrameReadyLocked(SyncFrameReason reason) override
         {
             if (reason == SyncFrameReason::SaturatedPass)
@@ -1160,8 +1162,8 @@ TEST(testATimedPipelinePauseReleasesAHeldFrameBeforeTheBurstEnds)
 // A model lock, and the announcements the loop made, counted.
 class AnnouncementCountingDrainHost final : public DrainHost {
 public:
-    void lockModel() override { m_lock.lock(); }
-    void unlockModel() override { m_lock.unlock(); }
+    void lockModel() override UBIQUITTY_ACQUIRES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_lock.lock(); }
+    void unlockModel() override UBIQUITTY_RELEASES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_lock.unlock(); }
     void onSyncFrameReadyLocked(SyncFrameReason) override { announcements.fetch_add(1, std::memory_order_relaxed); }
 
     std::atomic<int> announcements { 0 };
@@ -1421,13 +1423,13 @@ public:
         , m_interval(pacing == FramePacing::FromTheStart ? 8'000 : 0)
     {
     }
-    void lockModel() override
+    void lockModel() override UBIQUITTY_ACQUIRES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS
     {
         m_lock.lock();
         std::this_thread::sleep_for(modelLockHold);
         m_clockMicroseconds.fetch_add(static_cast<std::uint64_t>(std::chrono::microseconds(modelLockHold).count()), std::memory_order_relaxed);
     }
-    void unlockModel() override { m_lock.unlock(); }
+    void unlockModel() override UBIQUITTY_RELEASES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_lock.unlock(); }
     void onSyncFrameReadyLocked(SyncFrameReason reason) override
     {
         if (reason == SyncFrameReason::SaturatedPass && m_shouldPaceAfterCapacity)
@@ -1699,8 +1701,8 @@ TEST(testAStarvedWritersFloodKeepsTakingFramesAtTheInterval)
 {
     class StarvedWriterDrainHost final : public DrainHost {
     public:
-        void lockModel() override { m_lock.lock(); }
-        void unlockModel() override { m_lock.unlock(); }
+        void lockModel() override UBIQUITTY_ACQUIRES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_lock.lock(); }
+        void unlockModel() override UBIQUITTY_RELEASES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_lock.unlock(); }
         void onSyncFrameReadyLocked(SyncFrameReason reason) override
         {
             if (isCounting.load(std::memory_order_relaxed) && reason == SyncFrameReason::ContinuingPass)

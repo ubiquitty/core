@@ -305,7 +305,10 @@ constexpr int releasesPerWaiter = 1000;
 // drain's re-take was not handed it, and the case tries the next one.
 constexpr int waiterTrials = 8;
 
-WaiterHandoff handOffToOneWaiter(ModelLock& lock)
+// Drives the lock's primitives in an order no one scope holds, as the drain
+// and a waiter interleave them, which the thread-safety analysis does not
+// follow.
+WaiterHandoff handOffToOneWaiter(ModelLock& lock) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS
 {
     WaiterHandoff result;
     std::atomic<bool> isReleasing { false };

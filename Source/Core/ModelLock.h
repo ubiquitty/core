@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "Base/ThreadSafety.h"
 #include "PAL/PAL.h"
 
 #include <atomic>
@@ -40,6 +41,21 @@ struct ModelLockRelease {
     std::uint32_t waitedMicroseconds = 0;
 };
 
+/// What Clang's thread-safety analysis knows a thread holds while it holds a
+/// pane's model lock.
+///
+/// One immutable object stands for every ``ModelLock``. The lock is reached
+/// through a session's own member, the active-lock pointer an adopted session
+/// repoints, the drain host's pointer and a tmux pane's handle, and the
+/// analysis counts each spelling as a different capability. Every acquisition
+/// of any model lock grants this role instead, so "the model lock is held" is
+/// one fact wherever it is checked. The role does not tell panes apart.
+class UBIQUITTY_CAPABILITY("model lock") ModelLockRole final { };
+
+/// The capability every model-lock acquisition grants, and every model member
+/// and model-reading function names.
+inline constexpr ModelLockRole modelLockRole {};
+
 /// The lock over one terminal model.
 ///
 /// One thread drains bytes into the model, taking and releasing this lock for
@@ -68,6 +84,10 @@ struct ModelLockRelease {
 ///
 /// The uncontended cost is one try-acquire, one store and the reader entry for
 /// a waiter, and one load before and one after the release for the drain.
+///
+/// Every acquisition grants ``modelLockRole`` to the thread-safety analysis and
+/// every release revokes it. The bodies are unchecked: they hold the lock
+/// through `std::mutex`, which the analysis does not see.
 class ModelLock {
 public:
     ModelLock() = default;
@@ -76,7 +96,7 @@ public:
 
     /// Takes the lock on any thread but the drain's, counting the wait when the
     /// lock is held so the drain's next release hands the lock over.
-    void lock()
+    void lock() UBIQUITTY_ACQUIRES(modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS
     {
         if (!m_mutex.try_lock()) {
             m_waiterCount.fetch_add(1, std::memory_order_seq_cst);
@@ -93,7 +113,7 @@ public:
     /// `std::unique_lock` with `std::try_to_lock` takes this lock.
     ///
     /// - Returns: Whether the lock was taken.
-    [[nodiscard]] bool try_lock()
+    [[nodiscard]] bool try_lock() UBIQUITTY_TRY_ACQUIRES(true, modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS
     {
         if (!m_mutex.try_lock())
             return false;
@@ -118,10 +138,10 @@ public:
     }
 
     /// Releases a hold taken by ``lock()`` or ``try_lock()``.
-    void unlock() { m_mutex.unlock(); }
+    void unlock() UBIQUITTY_RELEASES(modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_mutex.unlock(); }
 
     /// Takes the lock for the draining thread, which never counts as a waiter.
-    void lockForDrain() { m_mutex.lock(); }
+    void lockForDrain() UBIQUITTY_ACQUIRES(modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_mutex.lock(); }
 
     /// Releases the drain's hold, handing the lock to a counted waiter first.
     ///
@@ -130,7 +150,7 @@ public:
     /// ``modelLockHandoffProbeMicroseconds`` and yields after that.
     ///
     /// - Returns: What the release did, and the microseconds it spent.
-    ModelLockRelease unlockForDrain()
+    ModelLockRelease unlockForDrain() UBIQUITTY_RELEASES(modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS
     {
         const std::uint32_t acquisitions = m_acquisitionCount.load(std::memory_order_relaxed);
         m_mutex.unlock();
@@ -168,6 +188,44 @@ private:
     void* m_readerEntryContext = nullptr;
     std::atomic<std::uint32_t> m_waiterCount { 0 };
     std::atomic<std::uint32_t> m_acquisitionCount { 0 };
+};
+
+/// A scope holding a model lock, taken through ``ModelLock/lock()`` and
+/// released when the scope ends.
+///
+/// The guard the thread-safety analysis credits with ``modelLockRole``. A
+/// `std::scoped_lock` over a ``ModelLock`` takes the lock but grants no role,
+/// so a function that holds one and then touches the model does not compile
+/// under Clang's analysis.
+class UBIQUITTY_SCOPED_CAPABILITY ModelLockHold final {
+public:
+    /// Takes the lock as ``ModelLock/lock()`` does, counted as a waiter when
+    /// it is held.
+    ///
+    /// - Parameter lock: The pane's model lock, outliving the scope.
+    explicit ModelLockHold(ModelLock& lock) UBIQUITTY_ACQUIRES(modelLockRole)
+        : m_lock(lock)
+    {
+        m_lock.lock();
+    }
+
+    /// Adopts a hold the caller already took, such as a successful
+    /// ``ModelLock/try_lock()``, and releases it when the scope ends.
+    ///
+    /// - Parameter lock: The pane's model lock, held by this thread.
+    ModelLockHold(ModelLock& lock, std::adopt_lock_t) UBIQUITTY_REQUIRES(modelLockRole)
+        : m_lock(lock)
+    {
+    }
+
+    /// Releases the lock the scope holds.
+    ~ModelLockHold() UBIQUITTY_RELEASES() { m_lock.unlock(); }
+
+    ModelLockHold(const ModelLockHold&) = delete;
+    ModelLockHold& operator=(const ModelLockHold&) = delete;
+
+private:
+    ModelLock& m_lock;
 };
 
 } // namespace Ubiquitty

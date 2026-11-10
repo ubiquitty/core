@@ -589,7 +589,13 @@ private:
                 if (timeoutMilliseconds < 0 || timeoutMilliseconds > static_cast<int>(*untilHandoff))
                     timeoutMilliseconds = static_cast<int>(*untilHandoff);
             }
-            const std::uint32_t directoryInterval = hasPendingDirectorySample ? m_runtime.directorySampleMilliseconds() : 0;
+            // The interval reads the model, so under the model lock.
+            std::uint32_t directoryInterval = 0;
+            if (hasPendingDirectorySample) {
+                m_host.lockModel();
+                directoryInterval = m_runtime.directorySampleMilliseconds();
+                m_host.unlockModel();
+            }
             const std::uint32_t sinceDirectoryMillis = (nowEdgeMicros - lastDirectorySampleMicros) / 1000;
             if (directoryInterval != 0) {
                 const int untilDirectory = sinceDirectoryMillis >= directoryInterval

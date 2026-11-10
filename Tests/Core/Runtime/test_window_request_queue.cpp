@@ -445,8 +445,8 @@ TEST(directFontFeedSignalsAfterUnlockingAndPublishing)
     session->setDrainSignal(&state, [](void* context) {
         auto& state = *static_cast<SignalState*>(context);
         state.wasCalled = true;
-        state.couldRead = state.session->tryLockForRead();
-        if (state.couldRead) {
+        if (state.session->tryLockForRead()) {
+            state.couldRead = true;
             state.generation = state.session->readSnapshot().fontRequestGeneration;
             state.session->unlockForRead();
             // Taking the flags polls the pane link, which reads the model

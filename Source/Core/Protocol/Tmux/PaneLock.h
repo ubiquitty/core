@@ -138,12 +138,12 @@ PaneLayoutExtent emitPaneLayout(const Ubiquitty::Panes::Tree& tree, int nodeInde
 // same lock via nativeHandle (one canonical lock per pane).
 class PaneLock {
 public:
-    void lock() { m_lock.lock(); }
-    void unlock() { m_lock.unlock(); }
+    void lock() UBIQUITTY_ACQUIRES(modelLockRole) { m_lock.lock(); }
+    void unlock() UBIQUITTY_RELEASES(modelLockRole) { m_lock.unlock(); }
     /// Takes the lock for the deliver path, which never counts as a waiter.
-    void lockForDrain() { m_lock.lockForDrain(); }
+    void lockForDrain() UBIQUITTY_ACQUIRES(modelLockRole) { m_lock.lockForDrain(); }
     /// Releases the deliver path's hold, handing the lock to a waiting reader.
-    void unlockForDrain() { static_cast<void>(m_lock.unlockForDrain()); }
+    void unlockForDrain() UBIQUITTY_RELEASES(modelLockRole) { static_cast<void>(m_lock.unlockForDrain()); }
     // The underlying lock, so a frontend's render adapter adopts the same lock
     // the deliver path takes — one canonical lock per pane.
     ModelLock* nativeHandle() { return &m_lock; }

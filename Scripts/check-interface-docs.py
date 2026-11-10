@@ -78,7 +78,14 @@ SIGNATURE = re.compile(
     r"[ \t\n\r\f\v*&~][A-Za-z_][A-Za-z0-9_]*[ \t\n\r\f\v]*\([^)]*\)")
 CONSTRUCTOR = re.compile(r"^[ \t\n\r\f\v]*~?[A-Z][A-Za-z0-9_]*[ \t\n\r\f\v]*\([^)]*\)")
 
-SWIFT_NAME = re.compile(r"UBIQUITTY_SWIFT_NAME\([^)]*\)")
+# Annotation macros a declaration carries beside its signature: the Swift name,
+# and the thread-safety and function-effect attributes of Base/ThreadSafety.h.
+# Their parentheses are not a parameter list, so they are read past; a data
+# member carrying `UBIQUITTY_GUARDED_BY(lock)` is not a function.
+ANNOTATION_MACRO = re.compile(
+    r"UBIQUITTY_(?:SWIFT_NAME|CAPABILITY|GUARDED_BY|POINTEE_GUARDED_BY|REQUIRES|ACQUIRES|TRY_ACQUIRES"
+    r"|RELEASES|EXCLUDES|ASSERTS_CAPABILITY)\([^)]*\)"
+    r"|UBIQUITTY_(?:SCOPED_CAPABILITY|NO_THREAD_SAFETY_ANALYSIS|NONBLOCKING)\b")
 LINE_COMMENT = re.compile(r"//.*$")
 TEMPLATE_HEAD = re.compile(r"^[ \t\n\r\f\v]*template[ \t\n\r\f\v]*<")
 DOC_LINE = re.compile(r"^[ \t\n\r\f\v]*///")
@@ -185,7 +192,7 @@ def examine(path, text, owned, declarations):
 
     for index, raw in enumerate(lines):
         number = index + 1
-        stripped = SWIFT_NAME.sub("", LINE_COMMENT.sub("", raw))
+        stripped = ANNOTATION_MACRO.sub("", LINE_COMMENT.sub("", raw))
         inBody = bodies > 0
         wanted = owned is None or number in owned
 
@@ -587,7 +594,7 @@ def declaredName(report):
     found = NAME_FROM_REPORT.search(report)
     if not found:
         return ""
-    stripped = SWIFT_NAME.sub("", LINE_COMMENT.sub("", found.group(1)))
+    stripped = ANNOTATION_MACRO.sub("", LINE_COMMENT.sub("", found.group(1)))
     if TYPE_OPEN.match(stripped):
         name = re.sub(r"^.*(struct|class|enum)[ \t\n\r\f\v]+", "", stripped)
         return re.sub(r"[^A-Za-z0-9_].*$", "", name)

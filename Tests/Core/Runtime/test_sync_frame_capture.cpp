@@ -1422,7 +1422,7 @@ TEST(aLiveFramePlannedBetweenBoundariesAdvancesTheSharedBaseline)
     fx.stream->toRead += "\x1b[8;1Hlive";
     (void)fx.session->drain();
     {
-        fx.session->lockForRead();
+        const ModelLockHold hold(*fx.session->modelLockPointer());
         Ubiquitty::Terminal* term = fx.session->terminal();
         REQUIRE(term != nullptr);
         // The live request names the target the boundary captures record
@@ -1435,7 +1435,6 @@ TEST(aLiveFramePlannedBetweenBoundariesAdvancesTheSharedBaseline)
         request.isTargetMatching = true;
         std::array<std::uint8_t, 24> rowDirty {};
         const Ubiquitty::Rendering::RetainedFramePlan plan = fx.session->planRetainedFrame(*term, request, Ubiquitty::Rendering::RowDirtySpan(rowDirty));
-        fx.session->unlockForRead();
         CHECK(plan.shouldLoadRetainedTarget);
         CHECK(rowDirty[7] != 0);
     }
@@ -1501,7 +1500,7 @@ TEST(aLiveFrameOverAnUntakenBoundaryPaintsItsRowsAndRetiresIt)
     fx.stream->toRead += "\x1b[8;1Hlive";
     (void)fx.session->drain();
     {
-        fx.session->lockForRead();
+        const ModelLockHold hold(*fx.session->modelLockPointer());
         Ubiquitty::Terminal* term = fx.session->terminal();
         REQUIRE(term != nullptr);
         Ubiquitty::Rendering::RetainedFrameRequest request;
@@ -1512,7 +1511,6 @@ TEST(aLiveFrameOverAnUntakenBoundaryPaintsItsRowsAndRetiresIt)
         request.isTargetMatching = true;
         std::array<std::uint8_t, 24> rowDirty {};
         const Ubiquitty::Rendering::RetainedFramePlan plan = fx.session->planRetainedFrame(*term, request, Ubiquitty::Rendering::RowDirtySpan(rowDirty));
-        fx.session->unlockForRead();
         CHECK(rowDirty[7] != 0);
         CHECK_MSG(!plan.shouldLoadRetainedTarget || rowDirty[4] != 0,
             "the untaken boundary's row is painted by the live frame that supersedes it");
@@ -2739,6 +2737,8 @@ TEST(theLiveAndBoundaryRoutesDrawOneFrameOverTheAlternateScreenUnderAHeldView)
     const TakenFrame boundary { pane.fixture.session->takeSyncFrame() };
     REQUIRE(boundary);
     REQUIRE(boundary->cursorRow() == 8);
+    const TakenFrame live { FrameCapture::make() };
+    REQUIRE(live);
     pane.fixture.session->lockForRead();
     RetainedFrameRequest request;
     request.rows = pane.terminal->rows;
@@ -2754,8 +2754,6 @@ TEST(theLiveAndBoundaryRoutesDrawOneFrameOverTheAlternateScreenUnderAHeldView)
     options.isFocused = geometry.isFocused;
     options.viewportSizeInPixels = geometry.viewportSizeInPixels;
     options.style = geometry.style;
-    const TakenFrame live { FrameCapture::make() };
-    REQUIRE(live);
     const bool didCaptureLive = live->capture(*pane.terminal, options, geometry.metrics, geometry.glyphSlot, plan.refresh, {});
     pane.fixture.session->unlockForRead();
     REQUIRE(didCaptureLive);

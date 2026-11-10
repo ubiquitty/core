@@ -185,8 +185,10 @@ public:
     // Pane's content lock). Order: m_mutex < PaneLock; never take a PaneLock
     // while holding m_mutex. Exposed so a frontend can bracket a multi-step
     // read (e.g. the layout reconcile) against concurrent deliver-path lookups.
-    void lockStructure() { m_mutex.lock(); }
-    void unlockStructure() { m_mutex.unlock(); }
+    // A PaneLock for its handoff to a waiting reader, it guards no model, so its
+    // bracket grants the thread-safety analysis no model-lock role.
+    void lockStructure() UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_mutex.lock(); }
+    void unlockStructure() UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_mutex.unlock(); }
 
     /// Disposes one retired pane, if present and unpinned.
     ///

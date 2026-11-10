@@ -179,7 +179,8 @@ function(_ubiquitty_add_test_precompiled_header)
     target_include_directories(ubiquitty-test-pch PRIVATE ${ARGN})
     target_compile_features(ubiquitty-test-pch PRIVATE cxx_std_23)
     target_compile_options(ubiquitty-test-pch PRIVATE
-        -Wall -Wextra -Werror -Wno-deprecated-declarations -Wno-multichar -Wno-comment)
+        -Wall -Wextra -Werror -Wno-deprecated-declarations -Wno-multichar -Wno-comment
+        ${UBIQUITTY_OWNERSHIP_WARNINGS})
     target_precompile_headers(ubiquitty-test-pch PRIVATE
         ${UBIQUITTY_CORE_SOURCE_DIR}/Tests/Harness.h
         ${UBIQUITTY_CORE_SOURCE_DIR}/Source/Core/TerminalOperations.h
@@ -306,7 +307,8 @@ function(ubiquitty_add_host_tests)
             target_include_directories(ubq-deferred-${_test_name} PRIVATE ${_argument_INCLUDE_DIRECTORIES})
             target_compile_features(ubq-deferred-${_test_name} PRIVATE cxx_std_23)
             target_compile_options(ubq-deferred-${_test_name} PRIVATE
-                -Wall -Wextra -Werror -Wno-deprecated-declarations -Wno-multichar -Wno-comment)
+                -Wall -Wextra -Werror -Wno-deprecated-declarations -Wno-multichar -Wno-comment
+                ${UBIQUITTY_OWNERSHIP_WARNINGS})
             continue()
         endif()
 
@@ -375,7 +377,8 @@ function(ubiquitty_add_host_tests)
         # links no Core target that could carry the language standard to it.
         target_compile_features(${_test_name} PRIVATE cxx_std_23)
         target_compile_options(${_test_name} PRIVATE
-            "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Werror;-Wno-deprecated-declarations;-Wno-multichar;-Wno-comment>")
+            "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Werror;-Wno-deprecated-declarations;-Wno-multichar;-Wno-comment>"
+            ${UBIQUITTY_OWNERSHIP_WARNINGS})
         # A sharded test registers N ctest entries over one binary, so ctest can
         # run the partitions concurrently. ctest-covered.txt still gets the BASE
         # name: that file is matched against the shell driver's stanza names,

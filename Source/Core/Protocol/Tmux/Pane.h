@@ -55,12 +55,12 @@ public:
     // The Terminal. Touch only between lock()/unlock() (or via withTermLocked).
     Ubiquitty::Terminal* term() { return m_term.get(); }
 
-    void lock() { m_lock.lock(); }
-    void unlock() { m_lock.unlock(); }
+    void lock() UBIQUITTY_ACQUIRES(modelLockRole) { m_lock.lock(); }
+    void unlock() UBIQUITTY_RELEASES(modelLockRole) { m_lock.unlock(); }
     /// Takes the pane lock for the deliver path, which is this lock's drain.
-    void lockForDrain() { m_lock.lockForDrain(); }
+    void lockForDrain() UBIQUITTY_ACQUIRES(modelLockRole) { m_lock.lockForDrain(); }
     /// Releases the deliver path's hold, handing the lock to a waiting reader.
-    void unlockForDrain() { m_lock.unlockForDrain(); }
+    void unlockForDrain() UBIQUITTY_RELEASES(modelLockRole) { m_lock.unlockForDrain(); }
     // The underlying lock, so a frontend's render adapter adopts the same lock
     // the deliver path takes — one canonical lock per pane.
     ModelLock* lockHandle() { return m_lock.nativeHandle(); }
@@ -71,11 +71,7 @@ public:
     // re-lock this pane.
     template<class F> void withTermLocked(F&& body)
     {
-        m_lock.lock();
-        struct Unlocker {
-            PaneLock& l;
-            ~Unlocker() { l.unlock(); }
-        } guard { m_lock };
+        const ModelLockHold hold(*m_lock.nativeHandle());
         if (Ubiquitty::Terminal* term = m_term.get())
             body(*term);
     }

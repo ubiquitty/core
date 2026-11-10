@@ -10,8 +10,8 @@
 #
 #   UBIQUITTY_WERROR, UBIQUITTY_QUIC, UBIQUITTY_BUILD_TESTS,
 #   UBIQUITTY_BUILD_SYNC_TRANSPORT_ACCEPTANCE, UBIQUITTY_TEST_BOUNDS_CHECKS,
-#   UBIQUITTY_COVERAGE, UBIQUITTY_SANITIZERS
-#   UBIQUITTY_NARROWING_WARNING, UBIQUITTY_BUILD_VERSION_HEADER,
+#   UBIQUITTY_COVERAGE, UBIQUITTY_SANITIZERS, UBIQUITTY_OWNERSHIP_ANALYSIS
+#   UBIQUITTY_NARROWING_WARNING, UBIQUITTY_OWNERSHIP_WARNINGS, UBIQUITTY_BUILD_VERSION_HEADER,
 #   UBIQUITTY_BUILD_ROOT, UBIQUITTY_QUIC_PREFIX
 #   ubiquitty-build-version, the step that refreshes the version header
 #   ubiquitty_ensure_quic_deps([<sdk>])
@@ -123,6 +123,25 @@ add_compile_options(
 set(UBIQUITTY_NARROWING_WARNING
     "$<$<COMPILE_LANG_AND_ID:C,Clang,AppleClang>:-Wshorten-64-to-32>"
     "$<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>:-Wshorten-64-to-32>")
+
+# Clang's thread-safety analysis proves that model state is touched only under
+# the model lock (Source/Base/ThreadSafety.h, Source/Core/ModelLock.h). It is
+# an error whatever UBIQUITTY_WERROR says: a finding is a data race or a lock
+# the analysis cannot credit, and a build that demotes it to a warning has
+# stopped checking. GCC has no such analysis, so the expression is empty there.
+# Every first-party C++ target takes UBIQUITTY_OWNERSHIP_WARNINGS beside
+# UBIQUITTY_NARROWING_WARNING, and the host tests take it too, because they are
+# the only Core targets that compile the header-only TerminalSession.h.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    set(_ubq_ownership_analysis_default ON)
+else()
+    set(_ubq_ownership_analysis_default OFF)
+endif()
+option(UBIQUITTY_OWNERSHIP_ANALYSIS
+    "Check model-lock ownership with Clang's thread-safety analysis, as errors"
+    ${_ubq_ownership_analysis_default})
+set(UBIQUITTY_OWNERSHIP_WARNINGS
+    "$<$<AND:$<BOOL:${UBIQUITTY_OWNERSHIP_ANALYSIS}>,$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>>:-Wthread-safety;-Werror=thread-safety>")
 
 # ----------------------------------------------------------------------
 # QUIC transport (ngtcp2 + AWS-LC) — the resilient always-on datagram transport

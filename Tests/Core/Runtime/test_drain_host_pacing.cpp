@@ -77,7 +77,10 @@ constexpr int releasesPerWaiter = 1000;
 // drain's re-take was not handed it, and the case tries the next one.
 constexpr int waiterTrials = 8;
 
-HostHandoff handOffToOneWaiter(ModelLock& modelLock)
+// Drives the host's release and the lock's primitives in an order no one
+// scope holds, as the drain and a waiter interleave them, which the
+// thread-safety analysis does not follow.
+HostHandoff handOffToOneWaiter(ModelLock& modelLock) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS
 {
     PacedDrainHost host(modelLock);
     HostHandoff result;

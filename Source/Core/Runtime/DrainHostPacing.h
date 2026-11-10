@@ -118,10 +118,10 @@ public:
     }
 
     /// Acquires the pane's model lock for the drain.
-    void lockModel() override { m_modelLock->lockForDrain(); }
+    void lockModel() override UBIQUITTY_ACQUIRES(modelLockRole) { m_modelLock->lockForDrain(); }
 
     /// Releases the model lock, handing it to any thread waiting on it.
-    void unlockModel() override
+    void unlockModel() override UBIQUITTY_RELEASES(modelLockRole)
     {
         const ModelLockRelease release = m_modelLock->unlockForDrain();
         if (release.handoff == ModelLockHandoff::Unwanted)
