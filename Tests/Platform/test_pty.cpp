@@ -925,8 +925,10 @@ static constexpr const char* reportArgument0Marker = "--ubiquitty-report-argumen
 // in for one whose behaviour no system program has.
 static constexpr const char* sleepsMarker = "--ubiquitty-sleeps";
 static constexpr const char* mainThreadExitsMarker = "--ubiquitty-main-thread-exits";
+#if defined(__APPLE__)
 // Opens a login pane, waits, and kills itself: the host dying with a pane open.
 static constexpr const char* hostDiesWithAPaneMarker = "--ubiquitty-host-dies-with-a-pane";
+#endif
 // Opens a login pane, hands its master to an adopter in this process, and kills itself: the
 // receiver of a handover dying while the pane is still in its start window.
 static constexpr const char* adopterDiesWithAPaneMarker = "--ubiquitty-adopter-dies-with-a-pane";

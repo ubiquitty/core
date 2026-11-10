@@ -1311,7 +1311,7 @@ public:
     /// been reported whole. Caller holds the model lock.
     ///
     /// - Returns: True with no erase redraw pending, or without a model.
-    [[nodiscard]] bool isEraseRedrawWhole() const;
+    [[nodiscard]] bool isEraseRedrawWhole() const UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Returns how long until the transport has stayed empty for the quiet
     /// interval that reports a pending erase redraw whole, measured from the
@@ -1319,13 +1319,14 @@ public:
     ///
     /// Armed only during a live resize, so outside one the ingest loop's wait
     /// is its own: a resize step drawn outside one finds a redraw arriving by
-    /// the settle alone. Read on the ingest thread, which owns the model's
-    /// erase generation.
+    /// the settle alone. The caller holds the model lock: the erase
+    /// generation is the model's, and a writer outside a drain changes it
+    /// under that lock.
     ///
     /// - Parameter nowMicros: Now, in monotonic microseconds.
     /// - Returns: Zero once the interval has passed; none outside a live
     ///   resize or with no erase redraw pending.
-    [[nodiscard]] std::optional<std::uint32_t> eraseRedrawQuietDueInMicros(std::uint32_t nowMicros) const;
+    [[nodiscard]] std::optional<std::uint32_t> eraseRedrawQuietDueInMicros(std::uint32_t nowMicros) const UBIQUITTY_REQUIRES(modelLockRole);
 
     /// Reports the pending erase redraw whole once the transport has stayed
     /// empty for the quiet interval, and publishes the frame it completed.

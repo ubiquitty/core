@@ -467,8 +467,11 @@ private:
             // byte: a pass that ended at a would-block may have ended inside
             // the writer's refill. The wait is cut to land on that moment, and
             // bytes that arrived since the last pass are drained first.
-            if (!m_runtime.isIngestHeld()) {
-                if (const std::optional<std::uint32_t> untilQuiet = m_runtime.eraseRedrawQuietDueInMicros(PAL::monotonicMicros())) {
+            if (!m_runtime.isIngestHeld() && m_runtime.liveResize() == LiveResize::Active) {
+                m_host.lockModel();
+                const std::optional<std::uint32_t> untilQuiet = m_runtime.eraseRedrawQuietDueInMicros(PAL::monotonicMicros());
+                m_host.unlockModel();
+                if (untilQuiet) {
                     if (!*untilQuiet) {
                         if (isTransportReadableNow(transportHandle)) {
                             shouldDrain = true;
