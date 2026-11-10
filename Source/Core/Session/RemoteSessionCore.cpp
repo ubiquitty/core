@@ -562,6 +562,22 @@ Protocol::Sync::LinkCost linkCostFor(PAL::NetworkCost cost)
 
 void RemoteSessionCore::setViewOffset(int rowsAboveTail)
 {
+    // The newest offset waits in its register; one posted turn asks for
+    // however many moves land before it runs.
+    m_requestedViewOffset.store(rowsAboveTail, std::memory_order_relaxed);
+    if (m_isViewOffsetPosted.exchange(true, std::memory_order_acq_rel))
+        return;
+    m_dispatcher->post([weakThis = weakPtr()] {
+        auto* session = weakThis.get();
+        if (!session)
+            return;
+        session->m_isViewOffsetPosted.store(false, std::memory_order_release);
+        session->pullHistoryForViewOffset(session->m_requestedViewOffset.load(std::memory_order_relaxed));
+    });
+}
+
+void RemoteSessionCore::pullHistoryForViewOffset(int rowsAboveTail)
+{
     // Read on the session thread, the only writer of the replica and the
     // cache, so neither moves under the decision.
     if (m_stopped || !m_ackSeen || !m_sessionID || !m_term)
