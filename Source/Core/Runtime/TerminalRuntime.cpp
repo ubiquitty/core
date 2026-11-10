@@ -623,10 +623,6 @@ void TerminalRuntime::finishDrainPass(DrainHost& host, DrainOutcome& outcome)
         if (outcome.caughtUp) {
             m_isDrainSaturated.store(false, std::memory_order_relaxed);
             host.lockModel();
-            // The program has nothing more to give, so whatever it wrote
-            // behind its last whole-screen erase has been parsed, including
-            // a redraw whose last bytes ended a pass on its budget.
-            noteEraseRedrawParsed();
             // A prompt waits for a person, so a pause is where it is read: the
             // program has stopped, and has had the gap to turn echo off after
             // printing it. The facts are a tty ioctl, so never per bite.
@@ -742,9 +738,9 @@ void TerminalRuntime::finishDrainPass(DrainHost& host, DrainOutcome& outcome)
     // A drain that erased the whole screen arms the hold; the query on the
     // presenting thread releases it once the redraw has settled.
     armEraseHoldIfUnseen(*m_term, PAL::monotonicMicros());
-    // A pass that ended with nothing left to read has parsed every byte the
-    // program wrote behind its last erase, so that redraw is whole.
-    if (outcome.end == DrainPassEnd::WouldBlock || outcome.reachedEnd)
+    // An ended stream has parsed every byte its program wrote behind its last
+    // erase. A would-block has not: the writer may be refilling the tty.
+    if (outcome.reachedEnd)
         noteEraseRedrawParsed();
     const auto nowTicks = PAL::monotonicTicks();
     outcome.bell = resolveBellEvent(m_term.get(), nowTicks);
@@ -1453,6 +1449,27 @@ void TerminalRuntime::noteEraseRedrawParsed()
     m_redrawArrivingSinceMicros.store(0, std::memory_order_relaxed);
 }
 
+bool TerminalRuntime::isEraseRedrawWhole() const
+{
+    return !m_term || m_parsedEraseGeneration.load(std::memory_order_relaxed) == m_term->eraseDisplayGeneration;
+}
+
+std::optional<std::uint32_t> TerminalRuntime::eraseRedrawQuietDueInMicros(std::uint32_t nowMicros) const
+{
+    if (!m_isLiveResizeActive.load(std::memory_order_relaxed) || isEraseRedrawWhole())
+        return std::nullopt;
+    const std::uint32_t sinceBytes = microsSince(nowMicros, m_lastBytesMicros.load(std::memory_order_relaxed));
+    return sinceBytes >= eraseRedrawQuietMicroseconds ? 0 : eraseRedrawQuietMicroseconds - sinceBytes;
+}
+
+void TerminalRuntime::noteEraseRedrawQuiet(DrainHost& host)
+{
+    host.lockModel();
+    noteEraseRedrawParsed();
+    publishSettledFrameIfCoherent(host, SettleContext::BurstEnd);
+    host.unlockModel();
+}
+
 std::uint32_t TerminalRuntime::eraseGeneration() const
 {
     return m_term ? m_term->eraseDisplayGeneration : 0;
@@ -1476,21 +1493,22 @@ void TerminalRuntime::settlePasswordPromptAtPause()
 
 bool TerminalRuntime::isEraseRedrawArriving(const Ubiquitty::Terminal& terminal, std::uint32_t nowMicros)
 {
-    if (m_parsedEraseGeneration.load(std::memory_order_relaxed) == terminal.eraseDisplayGeneration) {
+    // A redraw reported whole, or one whose bytes have paused for the settle,
+    // is not arriving and leaves no deadline behind: the watchdog runs only
+    // from an ask that finds a redraw arriving.
+    if (m_parsedEraseGeneration.load(std::memory_order_relaxed) == terminal.eraseDisplayGeneration
+        || microsSince(nowMicros, m_lastBytesMicros.load(std::memory_order_relaxed)) >= eraseHoldSettleMicros) {
         m_redrawArrivingSinceMicros.store(0, std::memory_order_relaxed);
         return false;
     }
-    // Erases inside a redraw that has not been parsed whole keep the first
-    // ask's deadline, so a stream that never catches up is held for one
-    // watchdog and no longer.
+    // Erases inside a redraw that never pauses keep the first ask's deadline,
+    // so such a stream is held for one watchdog and no longer.
     std::uint32_t since = m_redrawArrivingSinceMicros.load(std::memory_order_relaxed);
     if (since == 0) {
         since = nowMicros | 1u;
         m_redrawArrivingSinceMicros.store(since, std::memory_order_relaxed);
     }
-    const bool isWatchdogSpent = microsSince(nowMicros, since) >= eraseHoldMaxMicros;
-    const bool hasSettled = microsSince(nowMicros, m_lastBytesMicros.load(std::memory_order_relaxed)) >= eraseHoldSettleMicros;
-    return !isWatchdogSpent && !hasSettled;
+    return microsSince(nowMicros, since) < eraseHoldMaxMicros;
 }
 
 bool TerminalRuntime::shouldWithholdPresentation(Ubiquitty::Terminal* terminal, Ticks nowTicks, std::uint32_t nowMicros)

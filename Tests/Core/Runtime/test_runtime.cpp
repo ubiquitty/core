@@ -5129,12 +5129,13 @@ TEST(aContinuousResizePresentsBetweenDisplayRefreshes)
 // behind it is still arriving, and shows it as soon as the drain has caught up,
 // where an ordinary present still waits out the settle. A pass that spent its
 // time budget has not caught up.
-TEST(aResizeCaptureHoldsAnEraseUntilTheDrainCatchesUpWithItsRedraw)
+TEST(aResizeCaptureHoldsAnEraseUntilTheTransportGoesQuietAfterItsRedraw)
 {
     TerminalRuntime rt;
     rt.init(parameters80x24());
     REQUIRE(attachPipe(rt) != nullptr);
     CountingDrainHost host;
+    rt.setLiveResize(LiveResize::Active);
     Ubiquitty::PAL::s_fakeMicroseconds = 1'000'000;
     Ubiquitty::Terminal* terminal = rt.borrowTermForRender();
     REQUIRE(terminal != nullptr);
@@ -5151,8 +5152,15 @@ TEST(aResizeCaptureHoldsAnEraseUntilTheDrainCatchesUpWithItsRedraw)
     (void)rt.feedChunkUpToSyncClear(rest);
     rt.finishExternalDrainPass(host, static_cast<int>(rest.size()), DrainPassEnd::WouldBlock);
     now = Ubiquitty::PAL::monotonicMicros();
+    CHECK_MSG(rt.isEraseRedrawArriving(*terminal, now), "a pass that ends at a would-block may have ended inside the writer's refill");
+    CHECK_MSG(rt.eraseRedrawQuietDueInMicros(now).value_or(0) > 0, "and the transport has not been quiet long enough to say otherwise");
+    Ubiquitty::PAL::s_fakeMicroseconds += 1000;
+    now = Ubiquitty::PAL::monotonicMicros();
+    REQUIRE(rt.eraseRedrawQuietDueInMicros(now) == std::optional<std::uint32_t>(0));
+    rt.noteEraseRedrawQuiet(host);
     CHECK_MSG(rt.shouldWithholdPresentationAfterErase(now + 1000), "an ordinary present still waits for the settle");
-    CHECK_MSG(!rt.isEraseRedrawArriving(*terminal, now + 1000), "the resize capture shows the redraw once the drain has caught up");
+    CHECK_MSG(!rt.isEraseRedrawArriving(*terminal, now + 1000), "the resize capture shows the redraw once the transport has gone quiet after it");
+    CHECK(!rt.eraseRedrawQuietDueInMicros(now).has_value());
 
     // The next erase is held again, until its own redraw has been parsed.
     (void)rt.feedChunkUpToSyncClear(erase);
@@ -5213,15 +5221,35 @@ TEST(aRepaintArrivingATtyAtATimeIsNotWholeAtARefillGap)
     CHECK_MSG(!outcome.isRepaintUnread, "the pass rode the writer's refill gaps to the end of the repaint");
 }
 
-// The band's span is the bound on how late a refill can land and still count
-// as part of the redraw: a writer whose refill takes longer than the band, as
-// one the machine starves can, ends the pass at the gap, and the pass calls
-// the redraw whole with the rest of it unread.
-TEST(aRefillGapLongerThanTheBandIsTakenForTheEndOfTheRedraw)
+// No pass calls a redraw whole: whether its band spanned the writer's refill
+// or a writer the machine starves outlasted it, the redraw is still arriving
+// after the pass, and only the transport staying quiet after it ends that.
+TEST(aRefillGapOfAnyLengthLeavesTheRedrawArrivingAfterAPass)
 {
-    const RepaintPass outcome = passOverARepaint(drainQuietSpinBudget + 8);
-    CHECK_MSG(outcome.isRepaintUnread, "the pass ended at the refill gap the band could not span");
-    CHECK_MSG(!outcome.isRedrawArriving, "and called the redraw whole");
+    for (const int refillGapReads : { 8, drainQuietSpinBudget + 8, 1000 }) {
+        const RepaintPass outcome = passOverARepaint(refillGapReads);
+        CHECK_MSG(outcome.isRedrawArriving, "the redraw is still arriving after the pass");
+    }
+    CHECK_MSG(passOverARepaint(drainQuietSpinBudget + 8).isRepaintUnread, "a gap longer than the band ends the pass with the repaint unread");
+}
+
+// Only a live resize arms the quiet interval: outside one an erase leaves the
+// ingest loop's wait its own, and a program that clears and repaints every
+// frame costs the loop no extra wake.
+TEST(onlyALiveResizeArmsTheQuietInterval)
+{
+    TerminalRuntime rt;
+    rt.init(parameters80x24());
+    REQUIRE(attachPipe(rt) != nullptr);
+    CountingDrainHost host;
+    Ubiquitty::PAL::s_fakeMicroseconds = 1'000'000;
+    constexpr std::string_view erase = "\x1b[H\x1b[2Jfirst row";
+    (void)rt.feedChunkUpToSyncClear(erase);
+    rt.finishExternalDrainPass(host, static_cast<int>(erase.size()), DrainPassEnd::WouldBlock);
+    CHECK_MSG(!rt.eraseRedrawQuietDueInMicros(Ubiquitty::PAL::monotonicMicros()).has_value(), "outside a live resize nothing waits for quiet");
+    rt.setLiveResize(LiveResize::Active);
+    CHECK_MSG(rt.eraseRedrawQuietDueInMicros(Ubiquitty::PAL::monotonicMicros()).has_value(), "a live resize waits for the redraw to go quiet");
+    rt.close();
 }
 
 // The resize capture's hold lifts at the settle for a redraw that stops short of
@@ -5281,6 +5309,7 @@ TEST(aResizeCaptureHoldIsBoundedByTheSettleAndItsOwnWatchdog)
         rt.init(parameters80x24());
         REQUIRE(attachPipe(rt) != nullptr);
         CountingDrainHost host;
+        rt.setLiveResize(LiveResize::Active);
         Ubiquitty::PAL::s_fakeMicroseconds = 1'000'000;
         Ubiquitty::Terminal* terminal = rt.borrowTermForRender();
         REQUIRE(terminal != nullptr);
@@ -5288,6 +5317,9 @@ TEST(aResizeCaptureHoldIsBoundedByTheSettleAndItsOwnWatchdog)
         if (wasAsked)
             CHECK(rt.isEraseRedrawArriving(*terminal, Ubiquitty::PAL::monotonicMicros()));
         rt.finishExternalDrainPass(host, static_cast<int>(erase.size()), DrainPassEnd::WouldBlock);
+        Ubiquitty::PAL::s_fakeMicroseconds += 1000;
+        REQUIRE(rt.eraseRedrawQuietDueInMicros(Ubiquitty::PAL::monotonicMicros()) == std::optional<std::uint32_t>(0));
+        rt.noteEraseRedrawQuiet(host);
         Ubiquitty::PAL::s_fakeMicroseconds += 60'000;
         constexpr std::string_view second = "\x1b[H\x1b[2Jpartial";
         (void)rt.feedChunkUpToSyncClear(second);
@@ -5298,11 +5330,46 @@ TEST(aResizeCaptureHoldIsBoundedByTheSettleAndItsOwnWatchdog)
     }
 }
 
+// A drag asks the resize capture's hold on every frame, and its first step can
+// come long after the screen's last erase settled, whether that erase was
+// drawn outside a live resize or asked about while its redraw arrived. An ask
+// that finds no redraw arriving leaves no deadline behind, so the first step's
+// own erase is held on a watchdog of its own.
+TEST(aDragsFirstStepIsHeldHoweverLongAfterTheLastEraseItComes)
+{
+    for (const bool wasAskedWhileArriving : { false, true }) {
+        TerminalRuntime rt;
+        rt.init(parameters80x24());
+        REQUIRE(attachPipe(rt) != nullptr);
+        CountingDrainHost host;
+        Ubiquitty::PAL::s_fakeMicroseconds = 1'000'000;
+        Ubiquitty::Terminal* terminal = rt.borrowTermForRender();
+        REQUIRE(terminal != nullptr);
+        if (wasAskedWhileArriving)
+            rt.setLiveResize(LiveResize::Active);
+        constexpr std::string_view earlier = "\x1b[H\x1b[2Jearlier screen";
+        (void)rt.feedChunkUpToSyncClear(earlier);
+        rt.finishExternalDrainPass(host, static_cast<int>(earlier.size()), DrainPassEnd::WouldBlock);
+        if (wasAskedWhileArriving)
+            CHECK(rt.isEraseRedrawArriving(*terminal, Ubiquitty::PAL::monotonicMicros()));
+        rt.setLiveResize(LiveResize::Active);
+        for (int frame = 0; frame < 12; ++frame) {
+            Ubiquitty::PAL::s_fakeMicroseconds += 16'667;
+            CHECK_MSG(!rt.isEraseRedrawArriving(*terminal, Ubiquitty::PAL::monotonicMicros()), "a settled screen is not held while the drag waits for its first step");
+        }
+        constexpr std::string_view firstStep = "\x1b[H\x1b[2Jfirst step's rows";
+        (void)rt.feedChunkUpToSyncClear(firstStep);
+        rt.finishExternalDrainPass(host, static_cast<int>(firstStep.size()), DrainPassEnd::WouldBlock);
+        CHECK_MSG(rt.isEraseRedrawArriving(*terminal, Ubiquitty::PAL::monotonicMicros()), "the first step's redraw is held");
+        rt.close();
+    }
+}
+
 // A redraw whose last bytes ended a pass on its time budget is whole once the
-// drain finds nothing more to read, though that read parses nothing: the
-// sequential drain's confirming empty read and the flood pipeline's empty pass
-// both say so, as the stream's end does.
-TEST(anEmptyCaughtUpPassOrTheStreamsEndFinishesARedraw)
+// transport has stayed quiet after it, or once the stream has ended. A read
+// that finds nothing, the sequential drain's confirming empty read or the
+// flood pipeline's empty pass, is no quiet: the writer may be refilling.
+TEST(theQuietIntervalOrTheStreamsEndFinishesARedraw)
 {
     for (const int path : { 0, 1, 2 }) {
         TerminalRuntime rt;
@@ -5310,6 +5377,7 @@ TEST(anEmptyCaughtUpPassOrTheStreamsEndFinishesARedraw)
         auto* pipe = attachPipe(rt);
         REQUIRE(pipe != nullptr);
         CountingDrainHost host;
+        rt.setLiveResize(LiveResize::Active);
         Ubiquitty::PAL::s_fakeMicroseconds = 1'000'000;
         Ubiquitty::Terminal* terminal = rt.borrowTermForRender();
         REQUIRE(terminal != nullptr);
@@ -5325,8 +5393,15 @@ TEST(anEmptyCaughtUpPassOrTheStreamsEndFinishesARedraw)
         } else {
             pipe->eofPending = true;
             CHECK(rt.drainAvailable(host).reachedEnd);
+            CHECK_MSG(!rt.isEraseRedrawArriving(*terminal, now + 1000), "the stream's end shows the redraw at once");
+            rt.close();
+            continue;
         }
-        CHECK_MSG(!rt.isEraseRedrawArriving(*terminal, now + 1000), "the read that finds nothing more shows the redraw at once");
+        CHECK_MSG(rt.isEraseRedrawArriving(*terminal, now + 1000), "a read that finds nothing leaves the redraw arriving");
+        Ubiquitty::PAL::s_fakeMicroseconds += 1000;
+        REQUIRE(rt.eraseRedrawQuietDueInMicros(Ubiquitty::PAL::monotonicMicros()) == std::optional<std::uint32_t>(0));
+        rt.noteEraseRedrawQuiet(host);
+        CHECK_MSG(!rt.isEraseRedrawArriving(*terminal, Ubiquitty::PAL::monotonicMicros()), "the quiet interval after it shows the redraw");
         rt.close();
     }
 }
@@ -6815,9 +6890,10 @@ TEST(aFloodBehindAWholeScreenEraseKeepsItsTimeBudgetFrames)
 }
 
 // During a live resize the drain takes no frame of a redraw still arriving
-// behind a whole-screen erase, at its budget or at ground, so the boundary
-// route cannot present what the resize's capture holds back. The frame follows
-// once the drain has caught up, and the gate ends with the resize.
+// behind a whole-screen erase, at its budget, at ground or at a would-block,
+// so the boundary route cannot present what the resize's capture holds back.
+// The frame follows once the transport has gone quiet after the redraw, and
+// the gate ends with the resize.
 TEST(aLiveResizeTakesNoDrainFrameOfARedrawStillArriving)
 {
     TerminalRuntime runtime;
@@ -6848,7 +6924,11 @@ TEST(aLiveResizeTakesNoDrainFrameOfARedrawStillArriving)
 
     parse(" last row", DrainPassEnd::WouldBlock);
     settleHeldFrame(runtime, host, clock);
-    CHECK_MSG(host.frames == framesBefore + 1, "the redraw is taken once the drain has caught up with it");
+    CHECK_MSG(host.frames == framesBefore, "nor a pass that ends at a would-block, which may be the writer refilling");
+    Ubiquitty::PAL::s_fakeMicroseconds += 1000;
+    REQUIRE(runtime.eraseRedrawQuietDueInMicros(Ubiquitty::PAL::monotonicMicros()) == std::optional<std::uint32_t>(0));
+    runtime.noteEraseRedrawQuiet(host);
+    CHECK_MSG(host.frames == framesBefore + 1, "the redraw is taken once the transport has gone quiet after it");
 
     runtime.setLiveResize(LiveResize::Idle);
     clock.nowMicroseconds += refreshIntervalMicroseconds;

@@ -462,6 +462,26 @@ private:
                 shouldDrain = true;
                 continue;
             }
+            // A whole-screen erase's redraw is reported whole only once the
+            // transport has stayed empty for the quiet interval after its last
+            // byte: a pass that ended at a would-block may have ended inside
+            // the writer's refill. The wait is cut to land on that moment, and
+            // bytes that arrived since the last pass are drained first.
+            if (!m_runtime.isIngestHeld()) {
+                if (const std::optional<std::uint32_t> untilQuiet = m_runtime.eraseRedrawQuietDueInMicros(PAL::monotonicMicros())) {
+                    if (!*untilQuiet) {
+                        if (isTransportReadableNow(transportHandle)) {
+                            shouldDrain = true;
+                            continue;
+                        }
+                        m_runtime.noteEraseRedrawQuiet(m_host);
+                    } else {
+                        const int untilQuietMilliseconds = static_cast<int>((*untilQuiet + 999) / 1000);
+                        if (timeoutMilliseconds < 0 || timeoutMilliseconds > untilQuietMilliseconds)
+                            timeoutMilliseconds = untilQuietMilliseconds;
+                    }
+                }
+            }
             // Nothing was drained this turn, so the scrollback store is not
             // being appended to: fold one cold block of it, and wake for the
             // next while any remain. A pass that drained left above.

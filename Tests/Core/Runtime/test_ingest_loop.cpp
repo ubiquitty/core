@@ -37,6 +37,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -1790,6 +1791,221 @@ TEST(testAStarvedWritersFloodKeepsTakingFramesAtTheInterval)
     // gives about 12.
     CHECK_MSG(host.capturedFrames.load(std::memory_order_relaxed) >= 20,
         "a starved writer's flood took a captured frame about every interval, not only at the rule's deadline");
+}
+
+namespace {
+
+// A sequential ingest loop over a pipe the test writes into, with a live
+// resize in progress, for the erase hold's quiet rule.
+struct ResizeRedrawLoop {
+    Ubiquitty::PAL::UnixFileDescriptor writeEnd;
+    TerminalRuntime runtime;
+    LockOnlyDrainHost host;
+    std::unique_ptr<Ubiquitty::PAL::PollableByteStream> loopEndpoint;
+    std::unique_ptr<IngestLoop> loop;
+    std::jthread ingest;
+
+    bool start()
+    {
+        int pipeDescriptors[2] = { -1, -1 };
+        if (::pipe(pipeDescriptors) != 0)
+            return false;
+        Ubiquitty::PAL::UnixFileDescriptor readEnd(pipeDescriptors[0]);
+        writeEnd = Ubiquitty::PAL::UnixFileDescriptor(pipeDescriptors[1]);
+        if (::fcntl(readEnd.get(), F_SETFL, ::fcntl(readEnd.get(), F_GETFL) | O_NONBLOCK) != 0)
+            return false;
+        RuntimeInitParameters parameters;
+        parameters.rows = 24;
+        parameters.columns = 80;
+        parameters.allowReflowOnInit = false;
+        runtime.init(parameters);
+        runtime.setLiveResize(LiveResize::Active);
+        auto stream = std::make_unique<Ubiquitty::PAL::PipeStream>(std::move(readEnd));
+        loopEndpoint = stream->duplicateAsPollableStream();
+        if (!loopEndpoint || !runtime.adoptStream(std::move(stream)).has_value())
+            return false;
+        loop = std::make_unique<IngestLoop>(runtime, host);
+        (void)loop->prepare();
+        ingest = std::jthread([this] { loop->run(loopEndpoint->handle()); });
+        return true;
+    }
+
+    void write(std::string_view bytes) const
+    {
+        std::size_t written = 0;
+        while (written < bytes.size()) {
+            const ssize_t count = ::write(writeEnd.get(), bytes.data() + written, bytes.size() - written);
+            if (count <= 0)
+                return;
+            written += static_cast<std::size_t>(count);
+        }
+    }
+
+    // The newest whole-screen erase's generation, read before a test writes one.
+    std::uint32_t eraseGeneration()
+    {
+        host.lockModel();
+        const std::uint32_t generation = runtime.eraseGeneration();
+        host.unlockModel();
+        return generation;
+    }
+
+    // Until the ingest thread parses an erase the test wrote, the model still
+    // shows the screen before it, and the redraw the runtime reports on is the
+    // previous erase's.
+    struct RedrawState {
+        bool isEraseParsed = false;
+        bool isWhole = false;
+    };
+
+    RedrawState redrawState(std::uint32_t generationBefore)
+    {
+        host.lockModel();
+        RedrawState state;
+        state.isEraseParsed = runtime.eraseGeneration() != generationBefore;
+        state.isWhole = state.isEraseParsed && runtime.isEraseRedrawWhole();
+        host.unlockModel();
+        return state;
+    }
+
+    // Microseconds until the redraw behind an erase written after
+    // `generationBefore` is reported whole, or -1 past `budget`.
+    long microsecondsUntilWhole(std::uint32_t generationBefore, std::chrono::microseconds budget)
+    {
+        const auto start = std::chrono::steady_clock::now();
+        while (std::chrono::steady_clock::now() - start < budget) {
+            if (redrawState(generationBefore).isWhole)
+                return static_cast<long>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+            ::usleep(100);
+        }
+        return -1;
+    }
+
+    void stop()
+    {
+        loop->requestStop();
+        loop->raiseWake();
+        ingest.join();
+        runtime.close();
+    }
+};
+
+std::string repaintRows(int firstRow, int rowCount, char fill)
+{
+    std::string rows;
+    for (int row = firstRow; row < firstRow + rowCount; ++row)
+        rows += "\x1b[" + std::to_string(row + 1) + ";1H" + std::string(79, fill);
+    return rows;
+}
+
+void spinFor(std::chrono::microseconds span)
+{
+    const auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < span) {
+    }
+}
+
+} // namespace
+
+// A program repaints the screen in slices a writer's refill apart. The loop
+// reports the redraw whole only once the transport has stayed empty for the
+// quiet interval after the last byte it drained, so while each slice's write
+// ends within the interval of the previous write's start, the redraw stays
+// arriving from the moment its erase is parsed. A writer the machine
+// deschedules for longer than that between two slices is the limit the stall
+// test pins, and its attempt is not counted. After the last slice the redraw
+// is whole within the hold's watchdog.
+TEST(testARedrawIsWholeOnlyOnceTheTransportStaysQuietAfterIt)
+{
+    ResizeRedrawLoop harness;
+    REQUIRE(harness.start());
+    const auto quiet = std::chrono::microseconds(TerminalRuntime::eraseRedrawQuietMicroseconds);
+    int countedChecks = 0;
+    bool wasWholeInACountedAttempt = false;
+    long slowestUntilWhole = 0;
+    for (int attempt = 0; attempt < 16; ++attempt) {
+        const std::uint32_t generationBefore = harness.eraseGeneration();
+        auto previousWriteStart = std::chrono::steady_clock::now();
+        harness.write("\x1b[H\x1b[2J" + repaintRows(0, 6, 'a'));
+        auto widestSpan = std::chrono::steady_clock::duration::zero();
+        int parsedChecks = 0;
+        bool wasWhole = false;
+        for (int slice = 1; slice < 4; ++slice) {
+            spinFor(std::chrono::microseconds(200));
+            const ResizeRedrawLoop::RedrawState state = harness.redrawState(generationBefore);
+            parsedChecks += state.isEraseParsed;
+            wasWhole = wasWhole || state.isWhole;
+            const auto writeStart = std::chrono::steady_clock::now();
+            harness.write(repaintRows(slice * 6, 6, static_cast<char>('a' + slice)));
+            widestSpan = std::max(widestSpan, std::chrono::steady_clock::now() - previousWriteStart);
+            previousWriteStart = writeStart;
+        }
+        if (widestSpan < quiet - std::chrono::microseconds(10)) {
+            countedChecks += parsedChecks;
+            wasWholeInACountedAttempt = wasWholeInACountedAttempt || wasWhole;
+        }
+        const long untilWhole = harness.microsecondsUntilWhole(generationBefore, std::chrono::milliseconds(200));
+        slowestUntilWhole = untilWhole < 0 ? -1 : std::max(slowestUntilWhole, untilWhole);
+        if (untilWhole < 0)
+            break;
+    }
+    harness.stop();
+    CHECK_MSG(countedChecks > 0, "some attempt's slices all came within the quiet interval, and its erase was parsed before a check");
+    CHECK_MSG(!wasWholeInACountedAttempt, "slices that keep coming within the quiet interval keep the redraw arriving");
+    CHECK_MSG(slowestUntilWhole >= 0, "every redraw is reported whole once the writer stops");
+    CHECK_MSG(slowestUntilWhole < 50'000, "and within the hold's watchdog");
+}
+
+// A live resize asks for a repaint on every step: each step's redraw is
+// reported whole a quiet interval and a wake-up after its last byte, so the
+// hold lifts within the step's own frame and the resize keeps presenting at the
+// display's rate. A step whose wake-up the machine delays is still whole
+// within the hold's watchdog.
+TEST(testEveryResizeStepsRedrawIsWholeWithinItsFrame)
+{
+    ResizeRedrawLoop harness;
+    REQUIRE(harness.start());
+    std::vector<long> untilWhole;
+    for (int step = 0; step < 8; ++step) {
+        const std::uint32_t generationBefore = harness.eraseGeneration();
+        const auto stepStart = std::chrono::steady_clock::now();
+        harness.write("\x1b[H\x1b[2J" + repaintRows(0, 24, static_cast<char>('a' + step)));
+        untilWhole.push_back(harness.microsecondsUntilWhole(generationBefore, std::chrono::milliseconds(50)));
+        const auto elapsed = std::chrono::steady_clock::now() - stepStart;
+        if (elapsed < std::chrono::milliseconds(16))
+            std::this_thread::sleep_for(std::chrono::milliseconds(16) - elapsed);
+    }
+    harness.stop();
+    CHECK_MSG(std::ranges::none_of(untilWhole, [](long micros) { return micros < 0; }), "every step's redraw is whole within the hold's watchdog");
+    std::ranges::sort(untilWhole);
+    CHECK_MSG(untilWhole[untilWhole.size() / 2] < 16'000, "and the median step's within its frame");
+}
+
+// The quiet interval's lower bound, pinned: a writer the machine deschedules
+// mid-redraw for longer than the interval has the redraw reported whole
+// during the stall, on every resize step, and the rest of each repaint then
+// reaches the display as it arrives.
+TEST(testAWriterStalledLongerThanTheQuietIntervalHasItsRedrawCalledWhole)
+{
+    ResizeRedrawLoop harness;
+    REQUIRE(harness.start());
+    const auto stall = std::chrono::microseconds(TerminalRuntime::eraseRedrawQuietMicroseconds) + std::chrono::milliseconds(3);
+    int stepsWholeMidRedraw = 0;
+    for (int step = 0; step < 4; ++step) {
+        const std::uint32_t generationBefore = harness.eraseGeneration();
+        const auto stepStart = std::chrono::steady_clock::now();
+        harness.write("\x1b[H\x1b[2J" + repaintRows(0, 12, static_cast<char>('a' + step)));
+        stepsWholeMidRedraw += harness.microsecondsUntilWhole(generationBefore, std::chrono::milliseconds(200)) >= 0;
+        const auto stalled = std::chrono::steady_clock::now() - stepStart;
+        if (stalled < stall)
+            std::this_thread::sleep_for(stall - stalled);
+        harness.write(repaintRows(12, 12, static_cast<char>('a' + step)));
+        const auto elapsed = std::chrono::steady_clock::now() - stepStart;
+        if (elapsed < std::chrono::milliseconds(16))
+            std::this_thread::sleep_for(std::chrono::milliseconds(16) - elapsed);
+    }
+    harness.stop();
+    CHECK_MSG(stepsWholeMidRedraw == 4, "a stall longer than the quiet interval is taken for the end of the redraw");
 }
 
 UBIQUITTY_TEST_MAIN()
