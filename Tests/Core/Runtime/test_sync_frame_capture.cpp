@@ -16,6 +16,7 @@
 #include "StrictAtlas.h"
 #include "TerminalFixture.h"
 
+#include "Core/Modes/SyncOutput.h"
 #include "Core/Rendering/CellInstanceBuilder.h"
 #include "Core/Rendering/FrameCapture.h"
 #include "Core/Rendering/FrameDamage.h"
@@ -598,6 +599,29 @@ bool isPublishedBackgroundSet(TerminalSession& session)
 }
 
 } // namespace
+
+// The drain that opens a block stamps it as it admits the pass's frame. The
+// stamp is published with the block, so the budget a frontend reads without
+// the model runs from the drain's tick, not from a later ask.
+TEST(aBlockTheDrainStampsIsPublishedWithItsStamp)
+{
+    const RestoreTestTicks restoreTicks;
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    withSessionModel(*fixture.session, [](Terminal& terminal) { terminal.modes.shouldSaveCRT = false; });
+    fixture.session->setSyncFrameCaptureGeometry(testGeometry());
+    fixture.drainSyncFrame("before");
+    static_cast<void>(fixture.session->takeSyncFrame());
+
+    Ubiquitty::PAL::s_testTicks = 100;
+    fixture.stream->toRead += "\x1b[?2026h\x1b[Hafter";
+    REQUIRE(fixture.session->drain().caughtUp);
+    const std::uint32_t stamp = withSessionModel(*fixture.session, [](Terminal& terminal) { return terminal.modes.syncOutputTouchTicks; });
+    REQUIRE(stamp == 100u);
+    CHECK(fixture.session->readSnapshot().syncHoldActive);
+    CHECK_EQ(fixture.session->readSnapshot().syncHoldTouchTicks, stamp);
+    CHECK_EQ(fixture.session->presentationHoldTicksRemaining(Ticks(130)), Ubiquitty::Modes::SyncOutput::maxHoldTicks - 30 + 1);
+}
 
 // A flood inside a block the program never closes runs the block's budget out
 // on a drain pass. That pass publishes the block closed, colours and all, so
