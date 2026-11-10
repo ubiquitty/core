@@ -82,6 +82,10 @@ public:
     std::size_t readPosition = 0;
     int readCallCount = 0; // every read() call — observes the mid-burst backoff
     std::size_t maxReadBytes = std::numeric_limits<std::size_t>::max();
+    // A writer that refills the tty only after a gap: after every this many
+    // bytes the next `refillGapReads` reads find nothing. 0 refills at once.
+    std::size_t refillEveryBytes = 0;
+    int refillGapReads = 0;
     bool eofPending = false; // set to simulate the peer closing
     int windowColumns = -1;
     int windowRows = -1;
@@ -126,6 +130,8 @@ public:
     bool notifyTreeEdge() { return m_treeNotify(m_treeContext); }
 
 private:
+    std::size_t m_bytesSinceRefill = 0;
+    int m_refillGapReadsLeft = 0;
     bool (*m_treeNotify)(void*) = nullptr;
     void* m_treeContext = nullptr;
     void (*m_releaseTreeContext)(void*) = nullptr;
@@ -139,9 +145,22 @@ public:
         const std::size_t available = toRead.size() - readPosition;
         if (available == 0)
             return static_cast<int>(eofPending ? StreamStatus::EndOfFile : StreamStatus::Again);
-        const std::size_t want = std::min({ buffer.size(), available, maxReadBytes });
+        if (m_refillGapReadsLeft > 0) {
+            --m_refillGapReadsLeft;
+            return static_cast<int>(StreamStatus::Again);
+        }
+        std::size_t want = std::min({ buffer.size(), available, maxReadBytes });
+        if (refillEveryBytes > 0)
+            want = std::min(want, refillEveryBytes - m_bytesSinceRefill);
         std::memcpy(buffer.data(), toRead.data() + readPosition, want);
         readPosition += want;
+        if (refillEveryBytes > 0) {
+            m_bytesSinceRefill += want;
+            if (m_bytesSinceRefill == refillEveryBytes) {
+                m_bytesSinceRefill = 0;
+                m_refillGapReadsLeft = refillGapReads;
+            }
+        }
         return static_cast<int>(want);
     }
     int write(std::span<const char> bytes) override
@@ -5116,6 +5135,70 @@ TEST(aResizeCaptureHoldsAnEraseUntilTheDrainCatchesUpWithItsRedraw)
     (void)rt.feedChunkUpToSyncClear(erase);
     CHECK_MSG(rt.isEraseRedrawArriving(*terminal, Ubiquitty::PAL::monotonicMicros()), "the next erase arms the hold again");
     rt.close();
+}
+
+namespace {
+
+// What a resize capture finds after one sequential pass over a 24-row erase
+// and repaint whose writer refills the tty after `refillGapReads` empty reads
+// every 1 KB, as a pty's writer does after the read that emptied it.
+struct RepaintPass {
+    bool isRepaintUnread = false;
+    bool isRedrawArriving = false;
+};
+
+RepaintPass passOverARepaint(int refillGapReads)
+{
+    RepaintPass outcome;
+    TerminalRuntime rt;
+    rt.init(parameters80x24());
+    auto* pipe = attachPipe(rt);
+    if (!pipe)
+        return outcome;
+    CountingDrainHost host;
+    Ubiquitty::PAL::s_fakeMicroseconds = 1'000'000;
+    rt.setLiveResize(LiveResize::Active);
+    std::string repaint = "\x1b[H\x1b[2J";
+    for (int row = 0; row < 24; ++row)
+        repaint += std::string(79, static_cast<char>('a' + row % 26)) + "\r\n";
+    pipe->toRead = repaint;
+    pipe->readPosition = 0;
+    pipe->refillEveryBytes = 1024;
+    pipe->refillGapReads = refillGapReads;
+    (void)rt.drainAvailable(host);
+    if (Ubiquitty::Terminal* terminal = rt.borrowTermForRender()) {
+        outcome.isRepaintUnread = pipe->readPosition < repaint.size();
+        outcome.isRedrawArriving = rt.isEraseRedrawArriving(*terminal, Ubiquitty::PAL::monotonicMicros());
+    }
+    rt.close();
+    return outcome;
+}
+
+} // namespace
+
+// A full-screen repaint reaches the drain a tty's worth at a time: the read
+// that empties the tty wakes the writer, and its next slice lands a wake-up
+// later. A pass that calls that gap the end of the writer's output tells the
+// erase hold the redraw behind the erase is whole, and a resize capture then
+// shows the screen erased or half repainted. A pass rides a refill gap its
+// band spans to the end of the repaint.
+TEST(aRepaintArrivingATtyAtATimeIsNotWholeAtARefillGap)
+{
+    const RepaintPass outcome = passOverARepaint(8);
+    CHECK_MSG(!outcome.isRepaintUnread || outcome.isRedrawArriving,
+        "a pass that left part of the repaint unread did not call the redraw whole");
+    CHECK_MSG(!outcome.isRepaintUnread, "the pass rode the writer's refill gaps to the end of the repaint");
+}
+
+// The band's span is the bound on how late a refill can land and still count
+// as part of the redraw: a writer whose refill takes longer than the band, as
+// one the machine starves can, ends the pass at the gap, and the pass calls
+// the redraw whole with the rest of it unread.
+TEST(aRefillGapLongerThanTheBandIsTakenForTheEndOfTheRedraw)
+{
+    const RepaintPass outcome = passOverARepaint(drainQuietSpinBudget + 8);
+    CHECK_MSG(outcome.isRepaintUnread, "the pass ended at the refill gap the band could not span");
+    CHECK_MSG(!outcome.isRedrawArriving, "and called the redraw whole");
 }
 
 // The resize capture's hold lifts at the settle for a redraw that stops short of
