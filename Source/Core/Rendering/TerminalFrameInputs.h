@@ -393,7 +393,7 @@ public:
     }
 
     /// Returns image geometry resolved under the same lock as the captured pixels.
-    [[nodiscard]] std::span<const Image::ImageQuad> imageQuads() const { return m_imageQuads; }
+    [[nodiscard]] std::span<const Image::ImageQuad> imageQuads() const { return std::span<const Image::ImageQuad>(m_imageQuads).first(m_imageQuadCount); }
 
     /// The rich text blocks the frame shows, in placement order.
     [[nodiscard]] std::span<const RichText::BlockQuad> richTextQuads() const { return m_richTextQuads; }
@@ -782,7 +782,10 @@ private:
     // sets it.
     GlyphSlotGeometry m_glyphSlot {};
     CellMetrics m_metrics;
+    // Sized by `imageQuadCapacity` for the largest grid captured; the
+    // frame's quads are the first `m_imageQuadCount`.
     std::vector<Image::ImageQuad> m_imageQuads;
+    std::size_t m_imageQuadCount = 0;
     std::vector<RichText::BlockQuad> m_richTextQuads;
     std::vector<std::shared_ptr<const RichText::BlockDrawing>> m_richTextDrawings;
     std::vector<RichText::HighlightQuad> m_richTextHighlights;

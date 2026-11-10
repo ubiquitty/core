@@ -14,6 +14,7 @@
 #include "Core/Rendering/BoxDrawCommands.h"
 #include "Core/Rendering/GlyphFault.h"
 #include "Core/Rendering/GlyphKey.h"
+#include "Core/Rendering/ImageQuads.h"
 #include "Core/Rendering/PaddingGeometry.h"
 #include "Core/Rendering/ShadeStyle.h"
 #include "Core/Rendering/SizedMaster.h"
@@ -2086,10 +2087,10 @@ void SoftwareRenderer::resolveImageQuads(const BuildInputs& in)
         return;
 
     const std::span<const Image::TerminalImage> images { in.images, static_cast<std::size_t>(in.imageCount) };
-    // The capacity collectImageQuads resolves a live terminal's quads into, so
-    // this arm draws a placeholder image as far as the GPU arms do. Kept across
-    // frames: a frame with images reuses the storage the last one grew.
-    m_imageQuads.resize(Image::maxTerminalImagePlacementCount);
+    // Room for every placement and every placeholder cell the grid shows.
+    // Kept across frames: a frame with images reuses the storage the last one
+    // grew.
+    m_imageQuads.resize(imageQuadCapacity({ in.columns, in.rows }));
     const std::span<Image::ImageQuad> quads { m_imageQuads };
     const FloatSize cell { static_cast<float>(m_cellWidth), static_cast<float>(m_cellHeight) };
     // The grid's top-left in the drawable, which is where the cell pass put it:

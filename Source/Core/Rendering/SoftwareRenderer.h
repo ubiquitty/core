@@ -744,8 +744,8 @@ private:
     /// backend runs, then a quad for each kitty Unicode-placeholder cell, both
     /// at this renderer's cell. Quads z-sort with the lower z first, and ties
     /// keep resolve order so a later placement at the same z draws on top. The
-    /// count is bounded by the shared image-quad limit,
-    /// `Image::maxTerminalImagePlacementCount`, as on the GPU arms.
+    /// storage holds ``imageQuadCapacity`` of the frame's grid, so every
+    /// placement and every placeholder cell it shows draws.
     ///
     /// Also retires the mip chains of images the previous frame drew and this
     /// one does not, so it runs once a frame, before either band.
