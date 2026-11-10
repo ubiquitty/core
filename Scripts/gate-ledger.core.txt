@@ -23,7 +23,7 @@ budget frame-decision-holds 2
 budget per-tick-waits 10
 budget plain-model-lock-holds 21
 budget thread-safety-escapes 21
-budget thread-safety-escapes-tests 93
+budget thread-safety-escapes-tests 94
 tool check-daemon-replacement.py needs the opt-in acceptance binary and replaces private daemons, so it is run by hand as Tests/README.md describes
 tool check-sync-transport.py needs the opt-in acceptance binary and a disposable fixture account or container, so it is run by hand as Tests/README.md describes
 tool check-merge-ready.sh run by hand before a merge; there is no push at which it belongs

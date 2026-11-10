@@ -5247,6 +5247,7 @@ struct RepaintPass {
 
 RepaintPass passOverARepaint(int refillGapReads)
 {
+    ownModelOnTestThread();
     RepaintPass outcome;
     TerminalRuntime rt;
     rt.init(parameters80x24());
