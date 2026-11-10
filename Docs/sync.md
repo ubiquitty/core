@@ -3067,6 +3067,10 @@ a sender writes its own, and a receiver keeps its own instead.
   new one can run short by at most one hold. A receiver whose own watchdog
   ended an update the sender still holds open stamps it again when a later
   copy shows it open. The sender's own watchdog bounds both.
+- **Receivers on the sender's clock.** The rule does not ask whose clock a
+  receiver keeps. A daemon successor, or a copy within one process, also
+  stamps an update it did not already hold open, so an update open across a
+  handover can hold for up to two budgets, and an await gets a fresh deadline.
 
 **At the next wire version.** The block carries the sender's count of
 synchronized-update closes (`syncOutputCloseCount`) in place of the entry

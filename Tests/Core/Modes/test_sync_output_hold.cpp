@@ -93,16 +93,29 @@ TEST(testAStuckBlockExpires)
     t.reset();
 }
 
-// The tick counter wraps. Treating a wrap as a huge elapsed time would expire
-// every block the moment it happened.
-TEST(testTickWraparoundDoesNotExpireALiveBlock)
+// The tick counter wraps. A block stamped before the wrap ages across it by
+// the ticks that actually passed: held for its budget, then expired.
+TEST(testABlockAgesAcrossTheTickWrap)
 {
     auto t = makeTerminal();
     feed(*t, "\033[?2026h");
-    CHECK(Modes::SyncOutput::shouldWithholdFrame(*t, Ticks(0xFFFFFF00u)));
-    CHECK_MSG(Modes::SyncOutput::shouldWithholdFrame(*t, Ticks(0x00000010u)), "a wrapped tick reads as fresh, not ancient");
+    const Ticks stamp(0xFFFFFFF0u);
+    CHECK(Modes::SyncOutput::shouldWithholdFrame(*t, stamp));
+    CHECK_MSG(Modes::SyncOutput::shouldWithholdFrame(*t, stamp + Modes::SyncOutput::maxHoldTicks), "held through the wrap for the budget");
+    CHECK_MSG(!Modes::SyncOutput::shouldWithholdFrame(*t, stamp + Modes::SyncOutput::maxHoldTicks + 1), "and expired one tick past it");
+    CHECK(!Modes::SyncOutput::isActive(t.get()));
+}
+
+// An asker whose clock reads a little behind the stamper's sees the block as
+// fresh, never as one outlived by the whole counter.
+TEST(testAStampAheadOfTheAskerIsFresh)
+{
+    auto t = makeTerminal();
+    feed(*t, "\033[?2026h");
+    CHECK(Modes::SyncOutput::shouldWithholdFrame(*t, Ticks(1'000)));
+    CHECK(Modes::SyncOutput::shouldWithholdFrame(*t, Ticks(990)));
+    CHECK_EQ(Modes::SyncOutput::ticksUntilHoldExpires(*t, Ticks(990)), Modes::SyncOutput::maxHoldTicks + 1);
     CHECK(Modes::SyncOutput::isActive(t.get()));
-    t.reset();
 }
 
 } // namespace
