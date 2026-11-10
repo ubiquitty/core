@@ -1877,43 +1877,45 @@ bool dragGesture(Session& session, const Rendering::CapturedGrid& grid, int visi
     return rebase != CaptureRebase::Unchanged || didDrag;
 }
 
-void configureCharacterCaretGesture(Session& session, const Terminal& terminal, const CaretResolution& press) noexcept
+namespace {
+
+// A caret gesture's press, over `rows` selection rows of `columns` columns:
+// the terminal's numbering or a captured frame's.
+void applyCaretPress(Session& session, int rows, int columns, const CaretResolution& press) noexcept
 {
-    const EndsNamedOnReturn naming(session, terminal);
-    synchronizeBufferRows(session, terminal);
-    const int rows = totalRows(terminal);
-    if (!session.gesture.isOpen || rows <= 0 || terminal.columns <= 0) {
+    if (!session.gesture.isOpen || rows <= 0 || columns <= 0) {
         return;
     }
     const int absoluteRowValue = std::clamp(press.absoluteRow, 0, rows - 1);
-    const int caret = std::clamp(press.caret, 0, terminal.columns);
-    const int caretAfter = std::clamp(press.caretAfter, caret, terminal.columns);
+    const int caret = std::clamp(press.caret, 0, columns);
+    const int caretAfter = std::clamp(press.caretAfter, caret, columns);
     session.gestureAnchorAbsoluteRow = absoluteRowValue;
     session.gestureTargetAbsoluteRow = absoluteRowValue;
     session.gestureAnchorCaret = caret;
     session.gestureAnchorSlot = press.slot;
     session.gestureTargetCaret = caret;
     // The row's end boundary has no cell to its right to stand inside.
-    session.gestureAnchorSubCaret = caret < terminal.columns ? std::max(press.subCaret, 0) : 0;
+    session.gestureAnchorSubCaret = caret < columns ? std::max(press.subCaret, 0) : 0;
     session.gestureTargetSubCaret = session.gestureAnchorSubCaret;
     session.gestureAnchorCaretAfter = caretAfter;
-    session.gestureAnchorSubCaretAfter = caretAfter < terminal.columns ? std::max(press.subCaretAfter, 0) : 0;
+    session.gestureAnchorSubCaretAfter = caretAfter < columns ? std::max(press.subCaretAfter, 0) : 0;
     session.usesCharacterCarets = true;
 }
 
-bool dragCharacterCaretGesture(Session& session, Terminal& terminal, const CaretResolution& head, int viewOffset) noexcept
+// A caret gesture's drag to `head`, over `rows` selection rows of `columns`
+// columns whose view shows `firstVisibleRow` at its top.
+//
+// - Returns: Whether the selection moved.
+bool applyCaretDrag(Session& session, int rows, int columns, int firstVisibleRow, const CaretResolution& head) noexcept
 {
-    const EndsNamedOnReturn naming(session, terminal);
-    const bool didRebase = synchronizeBufferRows(session, terminal);
-    const int rows = totalRows(terminal);
-    if (!session.gesture.isOpen || !session.usesCharacterCarets || rows <= 0 || terminal.columns <= 0) {
-        return didRebase;
+    if (!session.gesture.isOpen || !session.usesCharacterCarets || rows <= 0 || columns <= 0) {
+        return false;
     }
     const int absoluteRowValue = std::clamp(head.absoluteRow, 0, rows - 1);
-    const int caret = std::clamp(head.caret, 0, terminal.columns);
-    const int subCaret = caret < terminal.columns ? std::max(head.subCaret, 0) : 0;
-    const int caretAfter = std::clamp(head.caretAfter, caret, terminal.columns);
-    const int subCaretAfter = caretAfter < terminal.columns ? std::max(head.subCaretAfter, 0) : 0;
+    const int caret = std::clamp(head.caret, 0, columns);
+    const int subCaret = caret < columns ? std::max(head.subCaret, 0) : 0;
+    const int caretAfter = std::clamp(head.caretAfter, caret, columns);
+    const int subCaretAfter = caretAfter < columns ? std::max(head.subCaretAfter, 0) : 0;
     const bool isOnLetter = caretAfter != caret || subCaretAfter != subCaret;
     // Between boundaries nothing opens until the pointer leaves the boundary
     // it went down on: the same row and the same threshold is still the press.
@@ -1922,7 +1924,7 @@ bool dragCharacterCaretGesture(Session& session, Terminal& terminal, const Caret
         && absoluteRowValue == session.gestureAnchorAbsoluteRow
         && head.slot == session.gestureAnchorSlot
         && subCaret == session.gestureAnchorSubCaret) {
-        return didRebase;
+        return false;
     }
 
     // The letters between the press and the pointer, both included: from the
@@ -1930,26 +1932,63 @@ bool dragCharacterCaretGesture(Session& session, Terminal& terminal, const Caret
     // pointer. Where either is a boundary rather than a letter its two edges
     // are one, and this is the half-open span between two boundaries.
     const auto ordinal = [&](int row, int cell, int offset) {
-        return (static_cast<long>(row) * (terminal.columns + 1) + cell) * static_cast<long>(Ubiquitty::runTextMaximumCodePoints + 1) + offset;
+        return (static_cast<long>(row) * (columns + 1) + cell) * static_cast<long>(Ubiquitty::runTextMaximumCodePoints + 1) + offset;
     };
     const bool isHeadAtOrAfterAnchor
         = ordinal(absoluteRowValue, caret, subCaret) >= ordinal(session.gestureAnchorAbsoluteRow, session.gestureAnchorCaret, session.gestureAnchorSubCaret);
     if (isHeadAtOrAfterAnchor) {
-        charDragLinear(&session.state, rows, terminal.columns,
+        charDragLinear(&session.state, rows, columns,
             session.gestureAnchorAbsoluteRow, session.gestureAnchorCaret, session.gestureAnchorSubCaret,
             absoluteRowValue, caretAfter, subCaretAfter);
     } else {
-        charDragLinear(&session.state, rows, terminal.columns,
+        charDragLinear(&session.state, rows, columns,
             session.gestureAnchorAbsoluteRow, session.gestureAnchorCaretAfter, session.gestureAnchorSubCaretAfter,
             absoluteRowValue, caret, subCaret);
     }
     session.gesture.dragBegan = true;
-    session.gesture.targetRow = absoluteRowValue - firstVisibleAbsoluteRow(terminal, viewOffset);
-    session.gesture.targetColumn = caret < terminal.columns ? caret : terminal.columns - 1;
+    session.gesture.targetRow = absoluteRowValue - firstVisibleRow;
+    session.gesture.targetColumn = caret < columns ? caret : columns - 1;
     session.gestureTargetAbsoluteRow = absoluteRowValue;
     session.gestureTargetCaret = caret;
     session.gestureTargetSubCaret = subCaret;
     return true;
+}
+
+} // namespace
+
+void configureCharacterCaretGesture(Session& session, const Terminal& terminal, const CaretResolution& press) noexcept
+{
+    const EndsNamedOnReturn naming(session, terminal);
+    synchronizeBufferRows(session, terminal);
+    applyCaretPress(session, totalRows(terminal), terminal.columns, press);
+}
+
+bool dragCharacterCaretGesture(Session& session, Terminal& terminal, const CaretResolution& head, int viewOffset) noexcept
+{
+    const EndsNamedOnReturn naming(session, terminal);
+    const bool didRebase = synchronizeBufferRows(session, terminal);
+    const bool didDrag = applyCaretDrag(session, totalRows(terminal), terminal.columns, firstVisibleAbsoluteRow(terminal, viewOffset), head);
+    return didDrag || didRebase;
+}
+
+void configureCharacterCaretGesture(Session& session, const Rendering::CapturedGrid& grid, const CaretResolution& press) noexcept
+{
+    if (!grid.canExpandGestures() || rebaseOverCapture(session, grid) == CaptureRebase::NeedsOwner)
+        return;
+    applyCaretPress(session, grid.totalRows(), grid.columns(), press);
+    session.areEndsInObservedNumbering = true;
+}
+
+bool dragCharacterCaretGesture(Session& session, const Rendering::CapturedGrid& grid, const CaretResolution& head) noexcept
+{
+    if (!grid.canExpandGestures())
+        return false;
+    const CaptureRebase rebase = rebaseOverCapture(session, grid);
+    if (rebase == CaptureRebase::NeedsOwner)
+        return false;
+    const bool didDrag = applyCaretDrag(session, grid.totalRows(), grid.columns(), grid.firstRow(), head);
+    session.areEndsInObservedNumbering = true;
+    return didDrag || rebase != CaptureRebase::Unchanged;
 }
 
 bool endGesture(Session& session) noexcept
@@ -2886,6 +2925,50 @@ bool isCellInTextVoid(
     return column / scale > Selection::lastPrintedColumn(row, terminal.columns, cellAt, &bound, attributesAt, &bound);
 }
 
+namespace {
+
+// The caret and the point arrive in screen cells. On a doubled row a logical
+// column spans two of them, so both halve, the point before it is rounded: the
+// boundary nearest the pointer is the one between logical columns, not
+// between screen cells. `xInCells` comes back halved with the caret.
+[[nodiscard]] int caretOnLogicalColumns(int scale, int columns, int caret, double& xInCells) noexcept
+{
+    if (scale <= 1)
+        return caret;
+    const int lastBoundary = std::max(0, columns / scale);
+    if (std::isfinite(xInCells)) {
+        xInCells /= scale;
+        caret = static_cast<int>(std::floor(xInCells + 0.5));
+    } else {
+        caret = (caret + scale / 2) / scale;
+    }
+    return std::clamp(caret, 0, lastBoundary);
+}
+
+} // namespace
+
+CaretResolution resolveSelectionCaret(const Rendering::CapturedGrid& grid, int visibleRow, int caret, double xInCells) noexcept
+{
+    BoundContext bound { .session = nullptr, .terminal = nullptr, .viewOffset = grid.viewOffset(), .style = {}, .captured = &grid };
+    // Either half of a double-height pair the frame shows whole is the pair's
+    // top, as `selectionRowOf` maps it on the terminal.
+    int row = grid.firstRow() + visibleRow;
+    if (row > 0 && grid.lineAttribute(row) == lineAttributeDoubleHeightBottom && grid.lineAttribute(row - 1) == lineAttributeDoubleHeightTop)
+        --row;
+    caret = caretOnLogicalColumns(textScaleForLineAttribute(grid.lineAttribute(row)).widthScale, grid.columns(), caret, xInCells);
+    // A readable frame holds no proportional run, so the boundary handed in
+    // stands, as off a run on the terminal.
+    const int lastPrinted = Selection::lastPrintedColumn(row, grid.columns(), cellAt, &bound, attributesAt, &bound);
+    return CaretResolution {
+        .absoluteRow = row,
+        .caret = caret,
+        .slot = Selection::caretSlot(caret, lastPrinted),
+        .subCaret = 0,
+        .caretAfter = caret,
+        .subCaretAfter = 0,
+    };
+}
+
 CaretResolution resolveSelectionCaret(const Terminal& terminal, int viewOffset, int visibleRow, int caret) noexcept
 {
     return resolveSelectionCaret(terminal, viewOffset, visibleRow, caret, std::numeric_limits<double>::quiet_NaN());
@@ -2927,21 +3010,7 @@ CaretResolution resolveSelectionCaret(
 {
     BoundContext bound { .session = nullptr, .terminal = const_cast<Terminal*>(&terminal), .viewOffset = viewOffset, .style = {} };
     const int row = selectionRowOf(terminal, absoluteRow(terminal, visibleRow, viewOffset));
-    // The caret and the point arrive in screen cells. On a doubled row a
-    // logical column spans two of them, so both halve, the point before it is
-    // rounded: the boundary nearest the pointer is the one between logical
-    // columns, not between screen cells.
-    const int scale = screenRowWidthScale(terminal, row);
-    if (scale > 1) {
-        const int lastBoundary = std::max(0, terminal.columns / scale);
-        if (std::isfinite(xInCells)) {
-            xInCells /= scale;
-            caret = static_cast<int>(std::floor(xInCells + 0.5));
-        } else {
-            caret = (caret + scale / 2) / scale;
-        }
-        caret = std::clamp(caret, 0, lastBoundary);
-    }
+    caret = caretOnLogicalColumns(screenRowWidthScale(terminal, row), terminal.columns, caret, xInCells);
     // A point inside a proportional run names a letter rather than a boundary,
     // and the run's own layout is what says which. Off a run — and for a
     // frontend that measured no point at all — the boundary handed in stands.
