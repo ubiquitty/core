@@ -357,6 +357,33 @@ public:
     /// - Parameter target: The capture claimed, from ``claimTarget``.
     void cancel(const Target& target) noexcept { m_slot.cancelCapture(target.index); }
 
+    /// Asks the owner for a frame: one more demand than the last.
+    ///
+    /// The view's side.
+    ///
+    /// - Returns: The demand's sequence.
+    std::uint64_t raiseDemand() noexcept UBIQUITTY_NONBLOCKING { return m_demanded.fetch_add(1, std::memory_order_release) + 1; }
+
+    /// Whether a demand waits that no published capture has served.
+    ///
+    /// - Returns: Whether one does.
+    [[nodiscard]] bool isDemandOutstanding() const noexcept UBIQUITTY_NONBLOCKING
+    {
+        return m_demanded.load(std::memory_order_acquire) != m_supplied.load(std::memory_order_relaxed);
+    }
+
+    /// Returns the newest demand, read by the owner before a capture so the
+    /// capture serves it.
+    ///
+    /// - Returns: The demand's sequence.
+    [[nodiscard]] std::uint64_t demandSequence() const noexcept { return m_demanded.load(std::memory_order_acquire); }
+
+    /// Records that a published capture served every demand through
+    /// `sequence`.
+    ///
+    /// - Parameter sequence: The demand read before the capture.
+    void markSupplied(std::uint64_t sequence) noexcept { m_supplied.store(sequence, std::memory_order_release); }
+
     /// Published captures retired before a view took them.
     ///
     /// - Returns: The count.
@@ -375,6 +402,9 @@ private:
     // Each capture's selection, written with it under the model lock and read
     // by the view only while it holds that capture, which no write reuses.
     std::array<Selection::CapturedSelection, SyncFrameSlot::slotCount> m_selections {};
+    // The view's demands, and the newest one a published capture served.
+    std::atomic<std::uint64_t> m_demanded { 0 };
+    std::atomic<std::uint64_t> m_supplied { 0 };
 };
 
 } // namespace Ubiquitty::Runtime

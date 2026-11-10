@@ -173,6 +173,16 @@ public:
     ///
     /// - Returns: Microseconds; zero disables elapsed-time pass boundaries.
     [[nodiscard]] virtual std::uint32_t drainPassIntervalMicroseconds() const { return frameIntervalMicroseconds(); }
+
+    /// Returns whether the frontend left work for the owner's next turn, such
+    /// as a demand for a frame. Read without the model lock, on the owner's
+    /// thread; it waits on nothing.
+    ///
+    /// - Returns: Whether ``serviceFrontendLocked()`` has work.
+    [[nodiscard]] virtual bool hasFrontendWork() const { return false; }
+
+    /// Does the frontend's work at the owner's turn, under the model lock.
+    virtual void serviceFrontendLocked() UBIQUITTY_REQUIRES(modelLockRole) { }
 };
 
 /// The pane's presentation state as the drain gate consumes it.
@@ -1505,7 +1515,17 @@ public:
     // this each iteration; no-op + no lock when both are empty. Returns true
     // when a queued command was consumed or the input woke the display, giving
     // the platform a cheap gate for reply/snapshot flush work.
-    bool applyPendingCommands(DrainHost&);
+    /// Does the frontend's work at the owner's turn: posted input and
+    /// commands applied, and the work the host's frontend left
+    /// (``DrainHost::serviceFrontendLocked()``), under one hold of the model
+    /// lock taken only when there is any.
+    ///
+    /// The ingest loop calls it at the top of each turn and at each pass end;
+    /// a frontend that owns its drain loop calls it beside its drain.
+    ///
+    /// - Parameter host: The drain host whose lock the work takes.
+    /// - Returns: Whether input or a command touched the model.
+    bool serviceFrontend(DrainHost& host);
 
     /// Applies the user input a frontend posted to `link().userInput`, if any:
     /// the cursor's activity freeze and the CRT saver's idle clock, published

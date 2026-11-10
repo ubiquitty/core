@@ -3107,8 +3107,8 @@ TEST(aHeldTickSaysWhenTheUpdatesBudgetRunsOut)
 }
 
 // A saturated drain's tick that finds the slot empty inside the publish window
-// awaits the next capture; past the window, or for a view drawing search
-// matches, it reads the model.
+// awaits the next capture, and so does one past the window, whose demand the
+// owner serves; a view drawing search matches reads the model.
 TEST(aSaturatedTickInsideThePublishWindowAwaitsTheNextCapture)
 {
     FloodedPane pane(6, 20);
@@ -3124,8 +3124,34 @@ TEST(aSaturatedTickInsideThePublishWindowAwaitsTheNextCapture)
 
     PAL::s_testMicroseconds += publishWindowMicroseconds;
     const FrameAsk late = askForFrame(*pane.fixture.session, {});
-    CHECK(late.supply.route == Runtime::FrameRoute::LiveRead);
-    CHECK(late.supply.decline == Runtime::FrameDecline::None);
+    CHECK(late.supply.route == Runtime::FrameRoute::Declined);
+    CHECK(late.supply.decline == Runtime::FrameDecline::AwaitingCapture);
+}
+
+// A view that asks for a frame over a screen nothing changes, as one whose
+// selection or hover moved does, is served at the owner's next turn: no frame
+// the rule admits will come to carry it, so the turn captures the model as the
+// rule last admitted it, and only then.
+TEST(anOwnersTurnServesADemandNoAdmittedFrameWillCarry)
+{
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    fixture.session->setSyncFrameCaptureGeometry(testGeometry());
+    fixture.drainSyncFrame("shown");
+    REQUIRE(TakenFrame(fixture.session->takeSyncFrame()));
+    REQUIRE(!fixture.session->isFrameHeld());
+    CHECK_MSG(!fixture.session->serviceFrontend(), "a turn with nothing asked takes no work");
+    CHECK(!TakenFrame(fixture.session->takeSyncFrame()));
+
+    const FrameAsk asked = askForFrame(*fixture.session, {});
+    CHECK(asked.supply.route == Runtime::FrameRoute::Declined);
+    CHECK(asked.supply.decline == Runtime::FrameDecline::AwaitingCapture);
+    CHECK(asked.frame == nullptr);
+
+    static_cast<void>(fixture.session->serviceFrontend());
+    const FrameAsk served = askForFrame(*fixture.session, {});
+    CHECK(served.supply.route == Runtime::FrameRoute::Captured);
+    CHECK(served.frame != nullptr);
 }
 
 // Every answer short of an open block's is reached while the drain holds the

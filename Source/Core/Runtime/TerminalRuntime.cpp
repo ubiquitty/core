@@ -2221,10 +2221,10 @@ void TerminalRuntime::applyCommand(const Command& command)
     }
 }
 
-bool TerminalRuntime::applyPendingCommands(DrainHost& host)
+bool TerminalRuntime::serviceFrontend(DrainHost& host)
 {
-    if (m_link.commands.empty() && !m_link.userInput.isPosted())
-        return false; // no lock taken when nothing is queued (the idle-tick common case)
+    if (m_link.commands.empty() && !m_link.userInput.isPosted() && !host.hasFrontendWork())
+        return false; // no lock taken when the frontend left nothing (the idle-tick common case)
     host.lockModel();
     // A display the input woke is delivered by the pass this asks for; an
     // activity tick alone republished the presentation and needs no pass.
@@ -2234,6 +2234,7 @@ bool TerminalRuntime::applyPendingCommands(DrainHost& host)
         applyCommand(command);
         didApply = true;
     }
+    host.serviceFrontendLocked();
     host.unlockModel();
     if (didApply)
         m_didCommandsTouchModel = true;

@@ -6277,6 +6277,15 @@ public:
     /// - Returns: The pass's summary.
     DrainOutcome drain() { return m_runtime->drainAvailable(m_host); }
 
+    /// Does the frontend's work an ingest loop does at its turn, for a
+    /// frontend that owns its drain loop: posted input and commands applied,
+    /// and a view's demand for a frame served.
+    ///
+    /// Call on the same thread as ``drain()``.
+    ///
+    /// - Returns: Whether input or a command touched the model.
+    bool serviceFrontend() { return m_runtime->serviceFrontend(m_host); }
+
     /// Refreshes the cached process facts for a frontend that owns its drain loop.
     ///
     /// Call on the same thread as ``drain()``. The background ingest loop
@@ -6773,7 +6782,12 @@ public:
     /// 4. A view that does not keep search live is declined while a saturated
     ///    drain's next capture is due inside the publish window
     ///    (``shouldSkipLiveReadForSaturation``).
-    /// 5. Otherwise the view reads the model: ``FrameRoute::LiveRead``.
+    /// 5. With none waiting, a presented view whose captures are armed has
+    ///    asked the owner for one (``FrameLane::raiseDemand``), served at the
+    ///    next frame the rule admits or the owner's next turn, and waits for
+    ///    it: ``FrameDecline::AwaitingCapture``, woken by its publication.
+    /// 6. Otherwise the view reads the model: ``FrameRoute::LiveRead``. A view
+    ///    being resized or keeping search live still does.
     ///
     /// Reads published state only, with one exception kept from the withhold
     /// it ports: while a synchronized update is open, or for a terminal another
@@ -6796,6 +6810,13 @@ public:
                 return capture;
             }
         }
+        // No capture waits: the owner is asked for one, at its next turn or
+        // the next frame the rule admits, whichever comes first.
+        const bool isLaneServed = m_isSyncCaptureArmed.load(std::memory_order_acquire) && m_isSyncFramePresented.load(std::memory_order_relaxed);
+        if (isLaneServed) {
+            static_cast<void>(m_frameLane.raiseDemand());
+            m_loop.raiseWake();
+        }
         if (!demand.isResizing) {
             const FrameHold hold = frameHold(demand.nowTicks);
             supply.decline = hold.decline;
@@ -6804,7 +6825,7 @@ public:
             if (supply.decline != FrameDecline::None)
                 return nullptr;
         }
-        if (!demand.keepsSearchLive && shouldSkipLiveReadForSaturation()) {
+        if (!demand.keepsSearchLive && (shouldSkipLiveReadForSaturation() || (isLaneServed && !demand.isResizing))) {
             supply.decline = FrameDecline::AwaitingCapture;
             return nullptr;
         }
@@ -9471,9 +9492,22 @@ private:
                     && session->hasGridWorkSinceLastPaint();
                 if (isStandingCaptureStale)
                     session->m_staleCaptureReplacedCount.fetch_add(1, std::memory_order_relaxed);
-                if (isCopyReason || isStandingCaptureStale)
+                // A view's outstanding demand is served at any frame the rule
+                // admits.
+                if (isCopyReason || isStandingCaptureStale || session->m_frameLane.isDemandOutstanding())
                     session->captureSyncFrame();
                 session->m_frameReady.store(true, std::memory_order_release);
+            },
+            this);
+        // A demand at an owner's turn with no frame to admit, such as an idle
+        // screen the view changed its selection, hover or geometry over, is
+        // served there.
+        m_host.setFrontendService(
+            [](const void* context) { return static_cast<const TerminalSession*>(context)->m_frameLane.isDemandOutstanding(); },
+            [](void* context) {
+                auto* session = static_cast<TerminalSession*>(context);
+                session->m_host.assertModelLockHeld();
+                session->serveFrameDemand();
             },
             this);
         // The publish above raises a flag and wakes nobody, which is enough
@@ -9725,6 +9759,9 @@ private:
     {
         if (!m_isSyncCaptureArmed.load(std::memory_order_acquire) || !m_isSyncFramePresented.load(std::memory_order_relaxed))
             return;
+        // Read before the model is: every demand raised before this capture
+        // sees the model it shows.
+        const std::uint64_t servedDemand = m_frameLane.demandSequence();
         foldCaptureRegistrations();
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
@@ -9883,6 +9920,26 @@ private:
         m_lastSyncFramePublicationMicroseconds.store(PAL::monotonicMicros(), std::memory_order_relaxed);
         m_syncFramePublicationCount.fetch_add(1, std::memory_order_release);
         m_frameLane.publish(*target);
+        m_frameLane.markSupplied(servedDemand);
+    }
+
+    /// Serves the view's outstanding demand at the owner's turn, under the
+    /// model lock: a capture of the model as the coherence rule last admitted
+    /// it, unless something holds the frame, whose release captures instead.
+    /// An open update is stamped or expired here, as the view's check would.
+    void serveFrameDemand() UBIQUITTY_REQUIRES(modelLockRole)
+    {
+        if (!m_frameLane.isDemandOutstanding() || m_runtime->isFrameHeld())
+            return;
+        Ubiquitty::Terminal* terminal = modelTerm();
+        if (!terminal || shouldWithholdCapture(*terminal, PAL::monotonicTicks()))
+            return;
+        captureSyncFrame();
+        if (m_frameLane.isDemandOutstanding())
+            return;
+        m_frameReady.store(true, std::memory_order_release);
+        m_events.pending.fetch_or(1u << static_cast<unsigned>(EventKind::ScreenDirty), std::memory_order_release);
+        signalDrain();
     }
 
     /// Resolves the latest hand-off of the view's selection for the frame
