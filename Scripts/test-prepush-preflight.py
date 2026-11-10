@@ -44,6 +44,14 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(preflight.classify(["README.md", "Scripts/pre-push-gates-lib.sh"]), "code")
         self.assertEqual(preflight.classify(["Docs/a.md", "CMakeLists.txt"]), "code")
 
+    def testAMarkedNonRegularPathMakesTheDiffCode(self):
+        self.assertEqual(preflight.classify(["README.md", "!Docs/link.md"]), "code")
+        self.assertEqual(preflight.classify(["Docs/link.md"]), "docs")
+
+    def testMarkdownUnderTestsIsNotDocumentation(self):
+        self.assertFalse(preflight.is_documentation("Tests/Core/fixture.md"))
+        self.assertTrue(preflight.is_documentation("Docs/fixture.md"))
+
     def testAnEmptyOrUnreadableDiffIsCode(self):
         self.assertEqual(preflight.classify([]), "code")
         self.assertEqual(preflight.classify(["", "  "]), "code")

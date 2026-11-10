@@ -168,6 +168,24 @@ class PushGateTests(unittest.TestCase):
         self.commit()
         self.assertEqual(self.push()[:2], (self.EVERYTHING, 0))
 
+    def testASymlinkAtADocumentationPathIsACodeChange(self):
+        os.symlink("../Tests/test_x.cpp", self.repository / "Docs/link.md")
+        self.commit()
+        self.assertEqual(self.push()[:2], (self.EVERYTHING, 0))
+
+    def testAnExecutableBitOnADocumentationPathIsACodeChange(self):
+        (self.repository / "README.md").write_text("changed\n")
+        (self.repository / "README.md").chmod(0o755)
+        self.git("add", "README.md")
+        self.git("update-index", "--chmod=+x", "README.md")
+        self.commit()
+        self.assertEqual(self.push()[:2], (self.EVERYTHING, 0))
+
+    def testMarkdownUnderTestsIsAFixtureAndACodeChange(self):
+        (self.repository / "Tests/fixture.md").write_text("input a test reads\n")
+        self.commit()
+        self.assertEqual(self.push()[:2], (self.EVERYTHING, 0))
+
     def pin_bump(self):
         """README plus a library pin that moves, with the mount left unexpandable."""
         for number, sha in enumerate(("1" * 40, "2" * 40)):
