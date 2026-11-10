@@ -10,8 +10,11 @@
 
 #include "Core/Screen/Addressing.h"
 #include "Core/Screen/HistoryLines.h"
+#include "Core/Screen/LogicalPosition.h"
 #include "Core/Screen/Resize.h"
+#include "Core/Screen/ScrollSearch.h"
 #include "Core/Screen/Scrollback.h"
+#include "Core/Session/SessionShare.h"
 #include "Harness.h"
 #include "TerminalFixture.h"
 
@@ -319,6 +322,137 @@ TEST(evictionBetweenSlicesKeepsTheBoundAndTheNewestLines)
             REQUIRE(want);
             CHECK(got->length == want->length);
             CHECK(got->wrapped == want->wrapped);
+        }
+    }
+}
+
+// A share taken while the job is open is refused, and once the job finishes the share is the one the one
+// pass's terminal gives.
+TEST(aShareIsRefusedWhileTheRewrapIsOpenAndMatchesTheOnePassAfter)
+{
+    Ubiquitty::Terminal reference;
+    buildDragged(reference, 4, 1000, { 41 });
+    settleInOnePass(reference);
+    const auto expected = Ubiquitty::Session::captureShareTerminal(reference, std::size_t { 1 } << 28, {});
+
+    Ubiquitty::Terminal subject;
+    buildDragged(subject, 4, 1000, { 41 });
+    REQUIRE(Ubiquitty::advanceHistoryRewrap(&subject, 1) == Ubiquitty::HistoryRewrapProgress::Pending);
+    const auto during = Ubiquitty::Session::captureShareTerminal(subject, std::size_t { 1 } << 28, {});
+    CHECK(!during.has_value());
+    CHECK(settleInSlices(subject, 1) > 0);
+    const auto after = Ubiquitty::Session::captureShareTerminal(subject, std::size_t { 1 } << 28, {});
+    REQUIRE(after.has_value());
+    REQUIRE(expected.has_value());
+    CHECK(fingerprint(subject) == fingerprint(reference));
+}
+
+// History with folded blocks: slices end where the one pass ends, whether the job declines the fold or
+// rewraps through it.
+TEST(aPartlyFoldedHistoryEndsWhereTheOnePassEnds)
+{
+    for (std::uint32_t seed = 1; seed <= 4; ++seed) {
+        const auto build = [seed](Ubiquitty::Terminal& t) {
+            buildDragged(t, seed, 1000, { 45 });
+            for (int blocks = 0; blocks < 2; ++blocks) {
+                if (!Ubiquitty::Screen::foldColdScrollback(t, 1))
+                    break;
+            }
+        };
+        Ubiquitty::Terminal reference;
+        build(reference);
+        REQUIRE(reference.pendingHistoryRewrapColumns != 0);
+        settleInOnePass(reference);
+        Ubiquitty::Terminal subject;
+        build(subject);
+        CHECK(settleInSlices(subject, 1) != 0);
+        CHECK(subject.pendingHistoryRewrapColumns == 0);
+        CHECK(fingerprint(subject) == fingerprint(reference));
+    }
+}
+
+// The job's staged copy is bounded by the scrollback limit at the new width, not by the stale history.
+TEST(theStagedCopyStaysWithinTheScrollbackLimitAtTheNewWidth)
+{
+#if UBIQUITTY_ENABLE_TEST_HOOKS
+    const int limit = 300;
+    Ubiquitty::Terminal subject;
+    buildDragged(subject, 2, limit, { 30 });
+    std::size_t largest = 0;
+    for (;;) {
+        const auto progress = Ubiquitty::advanceHistoryRewrap(&subject, 1);
+        largest = std::max(largest, Ubiquitty::Screen::historyRewrapStagedBytesForTest(subject));
+        if (progress != Ubiquitty::HistoryRewrapProgress::Pending)
+            break;
+    }
+    const std::size_t bound = static_cast<std::size_t>(limit + subject.rows) * 30 * sizeof(Ubiquitty::Cell);
+    CHECK(largest <= bound * 2 + 65536);
+#endif
+}
+
+// A position captured on a history row before the finish resolves to the same place the one pass gives,
+// and a search over disjoint line ranges finds the same matches.
+TEST(pinsAndSearchAgreeWithTheOnePassAcrossTheFinish)
+{
+    for (std::uint32_t seed = 1; seed <= 4; ++seed) {
+        Ubiquitty::Terminal reference;
+        buildDragged(reference, seed, 1000, { 37 });
+        Ubiquitty::Terminal subject;
+        buildDragged(subject, seed, 1000, { 37 });
+        const int stale = Ubiquitty::Screen::scrollbackCount(&reference);
+        REQUIRE(stale > 20);
+        std::vector<Ubiquitty::Screen::LogicalPosition> pinsReference;
+        std::vector<Ubiquitty::Screen::LogicalPosition> pinsSubject;
+        for (const int row : { 0, stale / 3, stale / 2, stale - 2 }) {
+            const auto a = Ubiquitty::Screen::capturePosition(reference, row, 3);
+            const auto b = Ubiquitty::Screen::capturePosition(subject, row, 3);
+            REQUIRE(a.has_value());
+            REQUIRE(b.has_value());
+            pinsReference.push_back(*a);
+            pinsSubject.push_back(*b);
+        }
+        settleInOnePass(reference);
+        REQUIRE(Ubiquitty::advanceHistoryRewrap(&subject, 1) == Ubiquitty::HistoryRewrapProgress::Pending);
+        CHECK(settleInSlices(subject, 1) > 0);
+        for (std::size_t index = 0; index < pinsReference.size(); ++index) {
+            const auto a = Ubiquitty::Screen::resolvePosition(reference, pinsReference[index], Ubiquitty::Screen::RevisionCheck::Exact);
+            const auto b = Ubiquitty::Screen::resolvePosition(subject, pinsSubject[index], Ubiquitty::Screen::RevisionCheck::Exact);
+            CHECK(a.has_value() == b.has_value());
+            if (a && b)
+                CHECK(*a == *b);
+        }
+        const auto address = Ubiquitty::Screen::historyAddress(subject);
+        const std::uint64_t middle = address.oldest + (address.head - address.oldest) / 2;
+        for (const auto range : { Ubiquitty::Screen::HistoryLineRange { address.oldest, middle }, Ubiquitty::Screen::HistoryLineRange { middle, address.head } }) {
+            const auto a = Ubiquitty::Screen::ScrollSearch::searchHistory(reference, "ab", range, Ubiquitty::CaseSensitivity::Sensitive, Ubiquitty::Unicode::NormalizationForm::None, 256);
+            const auto b = Ubiquitty::Screen::ScrollSearch::searchHistory(subject, "ab", range, Ubiquitty::CaseSensitivity::Sensitive, Ubiquitty::Unicode::NormalizationForm::None, 256);
+            REQUIRE(a.has_value());
+            REQUIRE(b.has_value());
+            CHECK(a->matches == b->matches);
+        }
+    }
+}
+
+// Both common geometries with a scrollback limit small enough that the rewrapped rows are evicted.
+TEST(aSlicedRewrapEqualsTheOnePassAtBothGeometriesWithASmallLimit)
+{
+    for (const auto geometry : { std::pair { 24, 80 }, std::pair { 50, 200 } }) {
+        for (const int limit : { 60, 150 }) {
+            const auto build = [&](Ubiquitty::Terminal& t) {
+                Ubiquitty::hardReset(t);
+                Ubiquitty::setScrollbackLimit(&t, limit);
+                Ubiquitty::resize(t, geometry.first, geometry.second);
+                feed(t, makeHistoryText(9, 200).c_str());
+                Ubiquitty::resize(t, geometry.first, geometry.second / 2 + 3, Ubiquitty::Modes::ReflowMode::Reflow, Ubiquitty::Modes::AnchorMode::Top, Ubiquitty::Modes::ResizeUrgency::Interactive);
+            };
+            Ubiquitty::Terminal reference;
+            build(reference);
+            settleInOnePass(reference);
+            Ubiquitty::Terminal subject;
+            build(subject);
+            CHECK(settleInSlices(subject, 1) != 0);
+            CHECK(Ubiquitty::Screen::scrollbackCount(&subject) <= limit);
+            CHECK(fingerprint(subject) == fingerprint(reference));
         }
     }
 }

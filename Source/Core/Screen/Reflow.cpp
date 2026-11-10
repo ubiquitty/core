@@ -2376,6 +2376,13 @@ void HistoryRewrapJobDeleter::operator()(HistoryRewrapJob* job) const noexcept
     delete job;
 }
 
+#if UBIQUITTY_ENABLE_TEST_HOOKS
+std::size_t historyRewrapStagedBytesForTest(const Ubiquitty::Terminal& t)
+{
+    return t.historyRewrap && t.historyRewrap->staged ? t.historyRewrap->staged->arenaBytes() : 0;
+}
+#endif
+
 namespace {
 
 /// Whether this terminal's history cannot be rewrapped in slices.

@@ -948,6 +948,10 @@ bool LineStore::spliceFront(LineStore& older, FrontLine front)
     older.m_frontEvicted = 0;
     const bool didInstall = installFront({ prepared.get(), static_cast<std::size_t>(added) }, { blocks.get(), blockCount }, 0, front);
     assert(didInstall);
+    // The spliced rows are lines this store has now appended, as a rebuild by append counts them; a
+    // restored store's continuation requires at least as many appended as it holds.
+    if (didInstall)
+        m_totalAppended = added > std::numeric_limits<long long>::max() - m_totalAppended ? std::numeric_limits<long long>::max() : m_totalAppended + added;
     return didInstall;
 }
 
