@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "Harness.h"
+#include "HostedPaneFixture.h"
 #include "SoleModelThread.h"
 
 // test_workspace_clients.cpp — the workspace model's terminal-client seam
@@ -308,14 +309,14 @@ TEST(testAPostedClipboardResolveDrivesTheCompletionOnTheModelThread)
 
 TEST(testAdoptedSessionClientsResolveAndDetachFromTheirOwnModel)
 {
-    auto* owner = TerminalSession::make();
+    UbiquittyTest::HostedPaneFixture pane;
     auto* adapter = TerminalSession::make();
-    CHECK(owner && adapter);
-    owner->start(24, 80);
+    CHECK(adapter);
     adapter->start(24, 80);
     auto* anchor = withSessionModel(*adapter, [](Ubiquitty::Terminal& model) { return &model; });
-    auto* external = withSessionModel(*owner, [](Ubiquitty::Terminal& model) { return &model; });
-    adapter->adoptExternalTerminal(external, owner->modelLockAddressForAdoption());
+    auto* external = pane.paneTerminal();
+    REQUIRE(external != nullptr);
+    REQUIRE(adapter->adoptHostedPane(pane.sourceAddress(), UbiquittyTest::HostedPaneFixture::paneID));
     WorkspaceSession::setDefaultTerminalClientInstaller([](void*, TerminalSession& session) {
         auto client = std::make_unique<StubClipboard>();
         // The installer runs under the model lock the workspace takes for it.
@@ -341,30 +342,26 @@ TEST(testAdoptedSessionClientsResolveAndDetachFromTheirOwnModel)
     CHECK(!external->clipboardClient);
     CHECK(withSessionModel(*adapter, [](Ubiquitty::Terminal& model) { return &model; }) == anchor);
     releaseTerminalSession(adapter);
-    releaseTerminalSession(owner);
 }
 
 TEST(anAdoptedTmuxPaneQueuesItsOwnWindowRequestsAndBanners)
 {
-    // Two panes of one tmux window, each Terminal minted by the Session and
+    // Two panes of one tmux window, each Terminal minted by the host and
     // born with no clients at all — the shape a hosted pane has.
-    Ubiquitty::Protocol::Tmux::Session tmux;
-    tmux.applyLayout(0, "abcd,80x24,0,0{40x24,0,0,1,39x24,41,0,2}");
-    Ubiquitty::Protocol::Tmux::Pane* leftPane = tmux.pane(1);
-    Ubiquitty::Protocol::Tmux::Pane* rightPane = tmux.pane(2);
-    CHECK(leftPane && rightPane && leftPane->term() && rightPane->term());
-    if (!leftPane || !rightPane || !leftPane->term() || !rightPane->term())
-        return;
-    CHECK(!leftPane->term()->windowClient.installed());
-    CHECK(!leftPane->term()->shellClient);
+    UbiquittyTest::HostedPaneFixture panes(24, 80, "abcd,80x24,0,0{40x24,0,0,1,39x24,41,0,2}");
+    Ubiquitty::Terminal* leftTerminal = panes.paneTerminal(1);
+    Ubiquitty::Terminal* rightTerminal = panes.paneTerminal(2);
+    REQUIRE(leftTerminal != nullptr && rightTerminal != nullptr);
+    CHECK(!leftTerminal->windowClient.installed());
+    CHECK(!leftTerminal->shellClient);
 
     auto* left = TerminalSession::make();
     auto* right = TerminalSession::make();
     CHECK(left && right);
     left->start(24, 40);
     right->start(24, 39);
-    left->adoptExternalTerminal(leftPane->term(), reinterpret_cast<std::uintptr_t>(leftPane->lockHandle()));
-    right->adoptExternalTerminal(rightPane->term(), reinterpret_cast<std::uintptr_t>(rightPane->lockHandle()));
+    REQUIRE(left->adoptHostedPane(panes.sourceAddress(), 1));
+    REQUIRE(right->adoptHostedPane(panes.sourceAddress(), 2));
     CHECK(left->hasAdoptedTerminalClients());
     CHECK(right->hasAdoptedTerminalClients());
     (void)left->takeEventFlags();
@@ -372,8 +369,7 @@ TEST(anAdoptedTmuxPaneQueuesItsOwnWindowRequestsAndBanners)
 
     // The left pane's program asks for a banner and raises the window; the
     // right pane's asks for nothing. Delivered the way %output lands.
-    const std::string_view asks = "\033]9;left pane done\007\033[5t";
-    tmux.deliverOutput(1, { reinterpret_cast<const std::uint8_t*>(asks.data()), asks.size() });
+    panes.sendToPane("\\033]9;left pane done\\007\\033[5t", 1);
 
     const std::uint32_t leftEvents = left->takeEventFlags();
     CHECK((leftEvents & (1u << static_cast<unsigned>(EventKind::NotificationPosted))) != 0);
@@ -391,37 +387,72 @@ TEST(anAdoptedTmuxPaneQueuesItsOwnWindowRequestsAndBanners)
     // is the CheckedPtr abort at its release.
     left->endExternalAdoption();
     CHECK(!left->hasAdoptedTerminalClients());
-    CHECK(!leftPane->term()->windowClient.installed());
-    CHECK(!leftPane->term()->shellClient);
-    CHECK(!leftPane->term()->triggerClient);
+    CHECK(!leftTerminal->windowClient.installed());
+    CHECK(!leftTerminal->shellClient);
+    CHECK(!leftTerminal->triggerClient);
     CHECK(right->hasAdoptedTerminalClients());
     releaseTerminalSession(left);
     releaseTerminalSession(right);
-    CHECK(!rightPane->term()->shellClient);
+    CHECK(!rightTerminal->shellClient);
+}
+
+// A pane tmux drops from its window and lists again is a new model: the view
+// that adopted the first lets go of it, and a view that adopts the pane anew
+// reads only what tmux sent the second. The new model may reuse the old one's
+// address; what tells them apart is what each holds.
+TEST(aPaneListedAgainIsANewModelAViewAdoptsAnew)
+{
+    UbiquittyTest::HostedPaneFixture panes;
+    panes.sendToPane("first-model");
+    REQUIRE(panes.paneTerminal(1) != nullptr);
+    auto* before = TerminalSession::make();
+    REQUIRE(before != nullptr);
+    before->start(24, 80);
+    REQUIRE(before->adoptHostedPane(panes.sourceAddress(), 1));
+
+    // tmux drops the pane; its view lets go and releases it, as a window
+    // does for a pane a layout leaves; and tmux lists the pane again.
+    panes.sendControlLine("%layout-change @1 ef02,80x24,0,0,2 ef02,80x24,0,0,2 *");
+    before->endExternalAdoption();
+    panes.host().releasePane(1);
+    panes.sendControlLine("%layout-change @1 ef01,80x24,0,0,1 ef01,80x24,0,0,1 *");
+    panes.sendToPane("second-model");
+    Ubiquitty::Terminal* second = panes.paneTerminal(1);
+    REQUIRE(second != nullptr);
+
+    auto* after = TerminalSession::make();
+    REQUIRE(after != nullptr);
+    after->start(24, 80);
+    REQUIRE(after->adoptHostedPane(panes.sourceAddress(), 1));
+    after->lockForRead();
+    CHECK(after->terminal() == second);
+    after->unlockForRead();
+    CHECK_EQ(after->searchScrollbackAndWait({ .pattern = "second-model" }).foundCount, 1);
+    CHECK_EQ(after->searchScrollbackAndWait({ .pattern = "first-model" }).foundCount, 0);
+    after->endExternalAdoption();
+    releaseTerminalSession(after);
+    releaseTerminalSession(before);
 }
 
 TEST(anAdoptionLeavesAClientAnotherOwnerInstalled)
 {
-    Ubiquitty::Protocol::Tmux::Session tmux;
-    tmux.applyLayout(0, "ef01,80x24,0,0,7");
-    Ubiquitty::Protocol::Tmux::Pane* pane = tmux.pane(7);
-    CHECK(pane && pane->term());
-    if (!pane || !pane->term())
-        return;
+    UbiquittyTest::HostedPaneFixture pane;
+    Ubiquitty::Terminal* terminal = pane.paneTerminal();
+    REQUIRE(terminal != nullptr);
     Ubiquitty::ShellClient ownersClient;
-    pane->term()->shellClient = &ownersClient;
+    terminal->shellClient = &ownersClient;
 
     auto* adapter = TerminalSession::make();
     CHECK(adapter);
     adapter->start(24, 80);
-    adapter->adoptExternalTerminal(pane->term(), reinterpret_cast<std::uintptr_t>(pane->lockHandle()));
-    CHECK(pane->term()->shellClient.get() == &ownersClient);
-    CHECK(pane->term()->windowClient.installed());
+    REQUIRE(adapter->adoptHostedPane(pane.sourceAddress(), UbiquittyTest::HostedPaneFixture::paneID));
+    CHECK(terminal->shellClient.get() == &ownersClient);
+    CHECK(terminal->windowClient.installed());
     CHECK(!adapter->hasAdoptedTerminalClients());
     adapter->endExternalAdoption();
-    CHECK(pane->term()->shellClient.get() == &ownersClient);
-    CHECK(!pane->term()->windowClient.installed());
-    pane->term()->shellClient = nullptr;
+    CHECK(terminal->shellClient.get() == &ownersClient);
+    CHECK(!terminal->windowClient.installed());
+    terminal->shellClient = nullptr;
     releaseTerminalSession(adapter);
 }
 
@@ -464,9 +495,8 @@ TEST(aHostedPaneResizesThroughItsSourceAheadOfTheServer)
     auto* adapter = TerminalSession::make();
     CHECK(adapter);
     adapter->start(24, 80);
-    adapter->adoptExternalTerminal(paneTerminal, facts.lockAddress);
+    REQUIRE(adapter->adoptHostedPane(reinterpret_cast<std::uintptr_t>(&host), 1));
     adapter->routeInputViaTmuxAddresses(facts.inputClientAddress, facts.inputStreamAddress, 1);
-    adapter->routeResizeThroughHostedSource(reinterpret_cast<std::uintptr_t>(&host), 1);
     stream.written.clear();
 
     // The view's grid moves: the pane's model follows now, before any
@@ -505,7 +535,6 @@ public:
     HostedWindowEvent takeEvent() override { return m_host.takeEvent(); }
     std::vector<int> takeRepaintedPanes() override { return m_host.takeRepaintedPanes(); }
     HostedPaneFacts paneFacts(int paneID) override { return m_host.paneFacts(paneID); }
-    bool hasPanePublications() const override { return m_host.hasPanePublications(); }
     std::shared_ptr<const HostedPanePublication> panePublicationHandle(int paneID, const Ubiquitty::Terminal& terminal) override
     {
         return m_host.panePublicationHandle(paneID, terminal);
@@ -564,7 +593,7 @@ TEST(aHostedPanesSearchReportsWithoutTouchingItsSourceOffTheFrontendThread)
     host.attach();
     Ubiquitty::processBytes(primary.get(), "%begin 1 1 0\n%end 1 1 0\n");
     Ubiquitty::processBytes(primary.get(), "%begin 2 2 1\n@1 %1 80 24 1 ef01,80x24,0,0,1 work editor\n%end 2 2 1\n");
-    // Output first, so the pane has the publication the route binds.
+    // The line the search finds.
     Ubiquitty::processBytes(primary.get(), "%output %1 hosted-search-text\n");
     const HostedPaneFacts facts = host.paneFacts(1);
     auto* paneTerminal = reinterpret_cast<Ubiquitty::Terminal*>(facts.terminalAddress);
@@ -574,8 +603,7 @@ TEST(aHostedPanesSearchReportsWithoutTouchingItsSourceOffTheFrontendThread)
     auto* adapter = TerminalSession::make();
     REQUIRE(adapter != nullptr);
     adapter->start(24, 80);
-    adapter->adoptExternalTerminal(paneTerminal, facts.lockAddress);
-    adapter->routeResizeThroughHostedSource(reinterpret_cast<std::uintptr_t>(&source), 1);
+    adapter->adoptHostedPane(reinterpret_cast<std::uintptr_t>(&source), 1);
     CHECK_EQ(adapter->searchScrollbackAndWait({ .pattern = "hosted-search-text" }).foundCount, 1);
 
     Ubiquitty::processBytes(primary.get(), "%output %1 \\015\\012hosted-search-text\n");

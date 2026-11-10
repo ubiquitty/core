@@ -195,14 +195,19 @@ std::shared_ptr<HostedPanePublication> TmuxControlHost::publicationFor(PaneID pa
 
 std::shared_ptr<const HostedPanePublication> TmuxControlHost::panePublicationHandle(int paneID, const Ubiquitty::Terminal& terminal)
 {
-    std::shared_ptr<HostedPanePublication> publication;
-    {
-        const std::scoped_lock hold(m_publicationLock);
-        const auto found = m_publications.find(paneID);
-        if (found != m_publications.end())
-            publication = found->second.publication;
-    }
-    return publication && publication->isFor(terminal) ? publication : nullptr;
+    // A pane that has written nothing yet has no record; the view binding it
+    // makes one, which its first output then advances. The caller holds the
+    // pane's lock, so the model is that pane's.
+    TmuxPane* pane = m_session.pinPane(paneID);
+    if (!pane)
+        return nullptr;
+    const bool isPaneModel = pane->term() == &terminal;
+    pane->unpin();
+    if (!isPaneModel)
+        return nullptr;
+    auto publication = publicationFor(paneID, terminal);
+    publication->publishModelState(terminal);
+    return publication;
 }
 
 void TmuxControlHost::refreshPanePublication(int paneID, const Ubiquitty::Terminal& terminal)

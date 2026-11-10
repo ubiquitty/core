@@ -669,11 +669,15 @@ tick without borrowing the model. Pane event polling reads scalar facts and
 admitted-frame generations; full `PaneView` facts remain borrowed under the
 canonical model lock.
 
-A hosted tmux pane retains a handle to its actual owner's publication. Facts
-can change inside synchronized output without admitting a completed frame.
-The owner retires the publication after writers stop and before disposing its
-model; a retained handle then reads empty state. Raw adopted models without a
-writer publication protocol retain their explicit model-lock read contract.
+A view adopts only a pane a hosting session's source owns, a tmux pane, and
+binds the pane's model, lock and publication in one call
+(`adoptHostedPane`). Its per-tick reads (the frame clock, the frames, the
+facts generation, the open synchronized update and its budget) come from that
+publication and never borrow the model. Facts can change inside synchronized
+output without admitting a completed frame, and the owner's coherence stamps
+and expires the pane's update as it advances. The owner retires the
+publication after writers stop and before disposing its model; a retained
+handle then reads empty state.
 
 Pointer geometry belongs to the submitted frame. Each Apple surface retains
 its grid dimensions, drawn cell size, origin, clip, backing scale, and pixel
