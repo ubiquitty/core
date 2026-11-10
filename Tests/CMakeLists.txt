@@ -311,6 +311,8 @@ set(test_session_exit_lifetime_EXTRA_SOURCES Source/Platform/POSIX/PTYStream.cpp
                                        Source/Platform/POSIX/SystemPAL.cpp
                                        Source/Platform/Host/HostPAL.cpp
                                        Source/Core/Session/ProcessSubtree.cpp)
+# A pane the app builds starts and publishes its model over the same stack.
+set(test_workspace_session_start_EXTRA_SOURCES ${test_session_exit_lifetime_EXTRA_SOURCES})
 # A launched pane's child reports the context it was given, over the same
 # PTY-backed stack; PTYStream.cpp is where an inherited context is dropped.
 set(test_launch_context_EXTRA_SOURCES Source/Platform/POSIX/PTYStream.cpp
