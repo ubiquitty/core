@@ -70,6 +70,10 @@ class Stage:
     toolchain: str = "native"
     repositories: tuple[str, ...] = ("core", "kit", "app")
     working_directory: Optional[Path] = None
+    # The stages whose build this one reads, each where it applies to the
+    # sources: a subset that selects this stage selects them too, since a group
+    # runs on a runner of its own.
+    requires: tuple[str, ...] = ()
 
 
 STYLE_SETUP = r'''
@@ -189,16 +193,20 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
                   "UBIQUITTY_PGO=REQUIRE python3 ./Scripts/check-pgo-applies.py --recorded-budget",
                   "code", "clang"),
             Stage("portable-build", "Portable snapshot build", "./Scripts/build-core-snapshot.sh"),
-            Stage("portable-snapshots", "Portable reference catalog", "python3 Tests/Snapshots/run.py --backend portable --quiet"),
+            Stage("portable-snapshots", "Portable reference catalog", "python3 Tests/Snapshots/run.py --backend portable --quiet",
+                  requires=("portable-build",)),
             Stage("host-glibc", "Linux host glibc-x86_64", "./Scripts/build-host.sh --release", "code"),
             Stage("agent-smokes", "Agent CLI, authentication, MCP, and completions",
                   './Scripts/build-agent.sh\nUBQ_REQUIRED_TOOLS="${UBQ_REQUIRED_TOOLS:-} ubiquitty-host ubq" ./Scripts/run-tests.sh agent_smoke agent_auth_smoke agent_mcp_smoke agent_completions_smoke ubq_smoke ubq_smoke_cleanup', "code"),
             Stage("host-musl", "Linux host static-musl-x86_64", "./Scripts/build-host-linux.sh x86_64", "code"),
             Stage("sanitizers", "Clang ASan and UBSan suite", "./Scripts/run-sanitized-tests.sh", "code", "clang"),
             Stage("linux-build", "Linux frontend Release", "./Scripts/build-linux-gtk.sh Release", repositories=("app",)),
-            Stage("linux-smokes", "Linux headless smoke battery", "xvfb-run -a ./Scripts/run-linux-smokes.sh", "xvfb", repositories=("app",)),
-            Stage("linux-snapshots", "Linux-native snapshots", "xvfb-run -a python3 Tests/Snapshots/run.py --backend linux --quiet", "xvfb", repositories=("app",)),
-            Stage("linux-determinism", "Linux-native snapshot determinism", "xvfb-run -a python3 Tests/Snapshots/run.py --backend linux --twice linux_native_text", "xvfb", repositories=("app",)),
+            Stage("linux-smokes", "Linux headless smoke battery", "xvfb-run -a ./Scripts/run-linux-smokes.sh", "xvfb", repositories=("app",),
+                  requires=("linux-build",)),
+            Stage("linux-snapshots", "Linux-native snapshots", "xvfb-run -a python3 Tests/Snapshots/run.py --backend linux --quiet", "xvfb", repositories=("app",),
+                  requires=("linux-build",)),
+            Stage("linux-determinism", "Linux-native snapshot determinism", "xvfb-run -a python3 Tests/Snapshots/run.py --backend linux --twice linux_native_text", "xvfb", repositories=("app",),
+                  requires=("linux-build",)),
             Stage("wasm-tools", "Emscripten 6.0.9", WASM_SETUP, toolchain="wasm"),
             Stage("wasm-smoke", "WASM Core smoke", 'source "$EMSDK_ENV"\n./Scripts/wasm-smoke.sh', toolchain="wasm"),
             Stage("web-build", "Web frontend build", 'source "$EMSDK_ENV"\n./Scripts/build-web.sh', toolchain="wasm", repositories=("app",)),
@@ -222,41 +230,61 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
             # dispatch modes. They drive a real shell through the ingest
             # thread, the drain signal's hop back to main, and the sync-frame
             # boundary — the pipeline legs a direct-feed test never crosses.
-            Stage("macos-smokes", "macOS headless smokes", "python3 Scripts/check-macos-smokes.py", repositories=("app",)),
+            Stage("macos-smokes", "macOS headless smokes", "python3 Scripts/check-macos-smokes.py", repositories=("app",),
+                  requires=("macos-build",)),
             # A hosted runner is a virtual Mac whose window server, display
             # timing and GPU differ from the machines the scenarios assert
             # about; the maintainers' Macs run them for every batch.
-            Stage("ui-scenarios", "macOS UI scenarios", "python3 Scripts/check-ui-scenarios.py", "ui", repositories=("app",)),
+            Stage("ui-scenarios", "macOS UI scenarios", "python3 Scripts/check-ui-scenarios.py", "ui", repositories=("app",),
+                  requires=("macos-build",)),
             Stage("pgo", "Portable PGO profile",
                   "python3 ./Scripts/check-profile-orphans.py --profile Support/pgo/portable-core.profdata\n"
                   "UBIQUITTY_PGO=REQUIRE python3 ./Scripts/check-pgo-applies.py --profile Support/pgo/portable-core.profdata"),
-            Stage("core-frames", "Core builder frames", "./Scripts/check-core-builder-frames.sh", repositories=("app",)),
+            Stage("core-frames", "Core builder frames", "./Scripts/check-core-builder-frames.sh", repositories=("app",),
+                  requires=("macos-build",)),
             # Swift renderer drivers link the stamped portable Core archive.
             Stage("portable-build", "Portable snapshot build", "./Scripts/build-core-snapshot.sh"),
-            Stage("swift-renderer", "Swift renderer drivers", "./Scripts/check-swift-renderer.sh", repositories=("kit", "app")),
-            Stage("forks", "Built symbol forks", './Scripts/check-forks.sh "$UBQ_BUILD_ROOT/macos"', repositories=("app",)),
+            # The encoder and renderer drivers load the shader library, which the
+            # app's own build makes; a Kit checkout builds it alone.
+            Stage("metallib", "Kit shader library", "./Scripts/build-metallib.sh", repositories=("kit",)),
+            Stage("swift-renderer", "Swift renderer drivers", "./Scripts/check-swift-renderer.sh", repositories=("kit", "app"),
+                  requires=("portable-build", "metallib", "macos-build")),
+            Stage("forks", "Built symbol forks", './Scripts/check-forks.sh "$UBQ_BUILD_ROOT/macos"', repositories=("app",),
+                  requires=("macos-build",)),
             Stage("snapshots", "Portable and Apple snapshot regressions", "./Scripts/run-tests.sh snapshots"),
             Stage("host-tests", "Apple test suite", "SNAPSHOT=skip ./Scripts/run-tests.sh", "code"),
             Stage("ios-build", "iOS simulator app and UI bundle", "./Scripts/build-ios.sh --sdk iphonesimulator --ui-tests", "code", repositories=("app",)),
-            Stage("ios-smokes", "iOS smokes", "./Scripts/run-ios-smokes.sh", "code", repositories=("app",)),
+            Stage("ios-smokes", "iOS smokes", "./Scripts/run-ios-smokes.sh", "code", repositories=("app",),
+                  requires=("ios-build",)),
             Stage("ios-sync", "iOS Sync conformance", "./Scripts/run-ios-sync-conformance.sh", "code", repositories=("app",)),
             Stage("ios-protected-file", "iOS protected file", "./Scripts/run-ios-protected-file-tests.sh", "code", repositories=("kit", "app")),
-            Stage("ios-ui", "iOS UI tests", "./Scripts/run-ios-ui-tests.sh", "code", repositories=("app",)),
+            Stage("ios-ui", "iOS UI tests", "./Scripts/run-ios-ui-tests.sh", "code", repositories=("app",),
+                  requires=("ios-build",)),
         )
     raise ValueError(f"unknown battery: {platform}")
 
 
-def select_stages(manifest, keys):
+def select_stages(manifest, keys, repositories=None):
     """The manifest's stages named by keys, in manifest order.
 
     An unknown key is an error rather than an empty selection: a stage renamed
     in the manifest would otherwise leave a caller running nothing and passing.
+    So is a selected stage without a stage it requires that applies to
+    `repositories` (every repository when None): the group would fail that
+    stage for want of a build it never made.
     """
     known = {stage.key for stage in manifest}
     unknown = [key for key in keys if key not in known]
     if unknown:
         raise ValueError(f"unknown stage: {', '.join(unknown)} (have: {', '.join(sorted(known))})")
-    return tuple(stage for stage in manifest if stage.key in keys)
+    selected = tuple(stage for stage in manifest if stage.key in keys)
+    applies = {stage.key for stage in manifest
+               if repositories is None or set(stage.repositories).intersection(repositories)}
+    unmet = [f"{stage.key} reads what {required} builds" for stage in selected
+             for required in stage.requires if required in applies and required not in keys]
+    if unmet:
+        raise ValueError(f"a stage selected without the stage it reads: {'; '.join(unmet)}")
+    return selected
 
 
 def condition_reason(stage, environment, which=shutil.which):
@@ -549,7 +577,7 @@ def source_stages(platform, context, only=()):
     """Selects the subject's declared capabilities; explicit unknown capabilities refuse."""
     manifest = stages(platform)
     if only:
-        manifest = select_stages(manifest, only)
+        manifest = select_stages(manifest, only, context.repositories)
     else:
         manifest = tuple(stage for stage in manifest if set(stage.repositories).intersection(context.repositories))
     return tuple(route_stage(stage, context) for stage in manifest)
