@@ -9,6 +9,9 @@
 #                    files and each file has one owner.
 # tool <gate> <why>  a gate nothing invokes because a person runs it, and what
 #                    invokes it instead.
+# raised <name> <from> <to> <why>
+#                    a budget that rose past the merge base's number, and why;
+#                    Scripts/check-ledger-ratchet.py fails a rise without one.
 canary check-empty-array-expansion.py
 canary check-pgo-commit-shape.py
 budget gate-self-tests-uncovered 44
