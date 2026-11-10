@@ -1,0 +1,711 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+
+name: CI
+
+# The full matrix, on every pull request and every push to main: the batteries
+# Scripts/ci_batteries.py defines, the push gates Scripts/pre-push-gates.sh runs
+# (the same families, through the same runner, with every diff-chosen gate
+# selected and every stand-down a failure), and the Kit and the app built against
+# this Core. The pre-push hook runs the part of this a push can afford; a pull
+# request merges only with this green.
+#
+# One required check, `CI`, needs every other job, so the list of jobs can
+# change without a change to the repository's branch protection.
+#
+# A newer push to a pull request supersedes its run. main is exempt: every merge
+# there is a commit that nothing else will re-verify, and a cancelled run would
+# leave it without a verdict, which is what bisecting a regression across three
+# repositories needs. Scheduled sweeps have a group of their own.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'sweep' || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ui_scenarios:
+        description: "Also run the app's macOS UI scenarios in the app job"
+        type: boolean
+        default: false
+  # Once a day: a sweep stands down when main's tip already has a verdict.
+  schedule:
+    - cron: "43 5 * * *"
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+
+# GitHub-hosted runners only. Repository settings must keep self-hosted runners
+# unregistered: a pull request can supply its own workflow file.
+env:
+  UBQ_CI_ANNOTATE: "1"
+
+# Every job reads the checkout and nothing else. Preflight adds the two reads
+# ci_reach.py needs, and the jobs that build another repository add none: the
+# Kit and the app are public, and the pairing is read through the same token.
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    # Draft events still enter workflow concurrency to cancel prior ready runs.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: CI preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    outputs:
+      builds: ${{ steps.reach.outputs.builds }}
+      linux: ${{ steps.reach.outputs.linux }}
+      apple: ${{ steps.reach.outputs.apple }}
+      cmake: ${{ steps.reach.outputs.cmake }}
+      code: ${{ steps.reach.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Determine change reach and completed checkpoints
+        id: reach
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 Scripts/ci_reach.py
+      # A sweep that stands down runs no gate, so it concludes as the run that
+      # judged this tip did: a failed tip stays red, and the next sweep reads
+      # this run's failure as the same verdict rather than its skips as a pass.
+      - name: Keep this tip's failed verdict
+        if: steps.reach.outputs.standing == 'failure'
+        run: |
+          echo "::error title=CI reach::An earlier run of this commit failed a gate; this sweep did not run it again"
+          exit 1
+      # A hosted runner starts with no images, and this one takes minutes to
+      # build. It is kept in the Actions cache under its recipe's digest, so a
+      # run builds it only when the recipe changed.
+      - name: Name the CI image
+        id: image
+        if: runner.environment == 'github-hosted' && steps.reach.outputs.preflight != 'false'
+        run: echo "digest=$(./Scripts/ci-linux-image.sh --recipe-digest)" >> "$GITHUB_OUTPUT"
+      - name: Restore the CI image
+        id: restore-image
+        if: steps.image.outputs.digest != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: ${{ runner.temp }}/ubq-ci-linux-image.tar
+          key: ci-linux-image-${{ steps.image.outputs.digest }}
+      - name: Run the fail-fast preflight
+        if: steps.reach.outputs.preflight != 'false'
+        env:
+          UBQ_CI_IMAGE_ARCHIVE: ${{ runner.temp }}/ubq-ci-linux-image.tar
+          UBQ_CI_LINUX_IMAGE: ${{ runner.environment == 'github-hosted' }}
+        run: ./Scripts/ci-linux-image.sh python3 Scripts/ci_batteries.py run preflight
+      # The commit rules the push hook runs and the preflight battery does not,
+      # through the hook's own runner. Strict: a gate that stands down fails.
+      - name: Push gates (commit rules)
+        if: steps.reach.outputs.preflight != 'false'
+        env:
+          UBQ_CI_LINUX_IMAGE: ${{ runner.environment == 'github-hosted' }}
+          UBIQUITTY_PREPUSH: families
+          UBQ_PREPUSH_FAMILIES: core_gate_commit_rules
+          UBQ_PREPUSH_SELECT: all
+          UBQ_PREPUSH_STRICT: "1"
+          UBIQUITTY_PREPUSH_CACHE: "off"
+        run: ./Scripts/ci-linux-image.sh ./Scripts/pre-push-gates.sh
+      # Saved whether or not a gate failed: the image was built either way.
+      - name: Save the CI image
+        if: always() && steps.image.outputs.digest != '' && steps.restore-image.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: ${{ runner.temp }}/ubq-ci-linux-image.tar
+          key: ci-linux-image-${{ steps.image.outputs.digest }}
+      - name: Report completed, failed, and unexecuted preflight stages
+        if: always() && steps.reach.outputs.preflight != 'false'
+        run: python3 Scripts/ci_batteries.py report preflight
+      # A failed stage's log, in full, in the job log. CI uploads no artifacts: the
+      # job log is where a failure is read.
+      - name: Print the failed stage logs
+        if: failure()
+        run: |
+          for log in "$RUNNER_TEMP/ubiquitty-ci/preflight"/*.log; do
+            [ -f "$log" ] || continue
+            echo "::group::${log##*/}"
+            cat "$log"
+            echo "::endgroup::"
+          done
+
+  linux:
+    # Three groups of the Linux battery on three runners, so the battery's wall
+    # time is its longest group rather than their sum. ci_reach.py reads the
+    # battery as complete only when every group is.
+    name: Linux battery (${{ matrix.group }})
+    needs: preflight
+    if: needs.preflight.outputs.linux == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      # A failure in one group does not stop the others: the author reads every
+      # group's verdict from one push.
+      fail-fast: false
+      matrix:
+        include:
+          - group: gcc
+            stages: --only setup --only quic --only host-tests --only portable-build --only portable-snapshots --only host-glibc --only agent-smokes --only host-musl
+            families: ""
+          - group: clang
+            stages: --only setup --only quic --only fuzz --only pgo --only sanitizers
+            families: core_gate_ownership
+          - group: wasm
+            stages: --only setup --only wasm-tools --only wasm-smoke
+            families: core_gate_wasm
+    env:
+      UBQ_CI_CODE: ${{ needs.preflight.outputs.code }}
+      UBQ_CI_CMAKE: ${{ needs.preflight.outputs.cmake }}
+      UBQ_CI_PREFLIGHT_COMPLETE: "1"
+      STAGES: ${{ matrix.stages }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # The Docker image, compiler cache, and test executables share the
+      # hosted runner's disk. These preinstalled SDKs are not dependencies of
+      # any battery; free their space before restoring the build caches.
+      - name: Free unused hosted SDK space
+        if: runner.environment == 'github-hosted' && runner.os == 'Linux'
+        run: |
+          df -h /
+          sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup
+          df -h /
+      - name: Cache QUIC dependencies
+        if: needs.preflight.outputs.code == 'true' && matrix.group != 'wasm'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: |
+            ${{ runner.workspace }}/build-gcc/quic-deps/lib
+            ${{ runner.workspace }}/build-gcc/quic-deps/include
+          key: quic-deps-${{ runner.os }}-${{ hashFiles('Scripts/fetch-quic-deps.sh') }}
+      # One compiler cache per group: the groups compile with different
+      # compilers and flags, and a shared one would evict across them. The
+      # image's CCACHE_MAXSIZE bounds each to 2G.
+      - name: Restore the compiler cache
+        if: runner.environment == 'github-hosted'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: ${{ runner.workspace }}/ccache
+          key: ccache-linux-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-linux-${{ matrix.group }}-
+      - name: Name the CI image
+        id: image
+        if: runner.environment == 'github-hosted'
+        run: echo "digest=$(./Scripts/ci-linux-image.sh --recipe-digest)" >> "$GITHUB_OUTPUT"
+      - name: Restore the CI image
+        id: restore-image
+        if: steps.image.outputs.digest != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: ${{ runner.temp }}/ubq-ci-linux-image.tar
+          key: ci-linux-image-${{ steps.image.outputs.digest }}
+      - name: Run the fail-fast Linux battery
+        id: battery
+        env:
+          UBQ_CI_IMAGE_ARCHIVE: ${{ runner.temp }}/ubq-ci-linux-image.tar
+          UBQ_CI_LINUX_IMAGE: ${{ runner.environment == 'github-hosted' }}
+        run: |
+          # STAGES is this group's list of `--only <stage>` words, split on purpose.
+          # shellcheck disable=SC2086
+          ./Scripts/ci-linux-image.sh python3 Scripts/ci_batteries.py run linux $STAGES
+      # The hook's families that only this group's toolchain runs: the wasm arm
+      # and its oracle with the emscripten the battery installed, and the
+      # ownership analyses with the image's clang.
+      - name: Push gates (${{ matrix.group }})
+        if: matrix.families != ''
+        env:
+          UBQ_CI_IMAGE_ARCHIVE: ${{ runner.temp }}/ubq-ci-linux-image.tar
+          UBQ_CI_LINUX_IMAGE: ${{ runner.environment == 'github-hosted' }}
+          UBIQUITTY_PREPUSH: families
+          UBQ_PREPUSH_FAMILIES: ${{ matrix.families }}
+          UBQ_PREPUSH_SELECT: all
+          UBQ_PREPUSH_STRICT: "1"
+          UBIQUITTY_PREPUSH_CACHE: "off"
+          UBQ_BUILD_ROOT: ${{ runner.workspace }}/build-gates
+          CC: clang
+          CXX: clang++
+        run: |
+          ./Scripts/ci-linux-image.sh bash -c '
+            emsdk="$RUNNER_TOOL_CACHE/emsdk-6.0.9/emsdk_env.sh"
+            if [ -f "$emsdk" ]; then . "$emsdk" >/dev/null; fi
+            exec ./Scripts/pre-push-gates.sh'
+      - name: Save the CI image
+        if: always() && steps.image.outputs.digest != '' && steps.restore-image.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: ${{ runner.temp }}/ubq-ci-linux-image.tar
+          key: ci-linux-image-${{ steps.image.outputs.digest }}
+      # The history reader requires every group's marker. A goldens-only
+      # battery, or a failed/cancelled partial run, is not a full checkpoint.
+      - name: Full Linux battery completed
+        if: steps.battery.outputs.full_code == 'true'
+        run: echo "Every enabled Linux code stage of this group reached its verdict"
+      - name: Report completed, failed, and unexecuted Linux stages
+        if: always()
+        run: |
+          # shellcheck disable=SC2086
+          python3 Scripts/ci_batteries.py report linux $STAGES
+      - name: Print the failed stage logs
+        if: failure()
+        run: |
+          for log in "$RUNNER_TEMP/ubiquitty-ci/linux"/*.log; do
+            [ -f "$log" ] || continue
+            echo "::group::${log##*/}"
+            cat "$log"
+            echo "::endgroup::"
+          done
+      - name: Save the compiler cache
+        if: always() && runner.environment == 'github-hosted'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: ${{ runner.workspace }}/ccache
+          key: ccache-linux-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  apple:
+    name: Apple battery
+    needs: preflight
+    if: needs.preflight.outputs.apple == 'true'
+    # GitHub's image with the Xcode this tree builds with (27.1, as the
+    # maintainers' Macs have it); see .github/actionlint.yml.
+    runs-on: xcode-27
+    timeout-minutes: 180
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+      UBQ_CI_CODE: ${{ needs.preflight.outputs.code }}
+      UBQ_CI_CMAKE: ${{ needs.preflight.outputs.cmake }}
+      UBQ_CI_PREFLIGHT_COMPLETE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Selected Apple toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+      # A job's env cannot read the runner context, so this step sets the cache
+      # beside the checkout and the build root's quic-deps from the runner's own
+      # variables; every later step reads them.
+      - name: Compiler cache and build root
+        id: roots
+        run: |
+          command -v ccache >/dev/null 2>&1 || brew install ccache
+          {
+            echo "CCACHE_DIR=$RUNNER_WORKSPACE/ccache"
+            echo "CCACHE_MAXSIZE=2G"
+          } >> "$GITHUB_ENV"
+          echo "build=$(python3 Scripts/build_root.py .)" >> "$GITHUB_OUTPUT"
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: ${{ runner.workspace }}/ccache
+          key: ccache-apple-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-apple-
+      - name: Cache QUIC dependencies
+        if: needs.preflight.outputs.code == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: |
+            ${{ steps.roots.outputs.build }}/quic-deps/lib
+            ${{ steps.roots.outputs.build }}/quic-deps/include
+          key: quic-deps-${{ runner.os }}-${{ hashFiles('Scripts/fetch-quic-deps.sh') }}
+      - name: Run the fail-fast Apple battery
+        id: battery
+        run: python3 Scripts/ci_batteries.py run apple
+      # What the push hook runs on a Mac and the battery does not: the host
+      # and ubq builds, the PGO bounds against the portable profile, the
+      # symbol-fork check over what was built, the benchmarks, and the style
+      # checks whose self-tests read the built test objects. The whole suite
+      # ran above, so the subset the hook selects by diff is not run again.
+      - name: Push gates (macOS)
+        env:
+          UBIQUITTY_PREPUSH: families
+          UBQ_PREPUSH_FAMILIES: core_gate_host_builds core_gate_test_hygiene core_gate_forks core_gate_pgo_drift core_gate_style_checks core_gate_bench_compiles
+          UBQ_PREPUSH_SELECT: all
+          UBQ_PREPUSH_STRICT: "1"
+          UBIQUITTY_PREPUSH_CACHE: "off"
+        run: ./Scripts/pre-push-gates.sh
+      - name: Full Apple battery completed
+        if: steps.battery.outputs.full_code == 'true'
+        run: echo "Every enabled Apple code stage reached its verdict"
+      - name: Report completed, failed, and unexecuted Apple stages
+        if: always()
+        run: python3 Scripts/ci_batteries.py report apple
+      - name: Print the failed stage logs
+        if: failure()
+        run: |
+          for log in "$RUNNER_TEMP/ubiquitty-ci/apple"/*.log; do
+            [ -f "$log" ] || continue
+            echo "::group::${log##*/}"
+            cat "$log"
+            echo "::endgroup::"
+          done
+      - name: Save the compiler cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: ${{ runner.workspace }}/ccache
+          key: ccache-apple-${{ github.run_id }}-${{ github.run_attempt }}
+
+  # The Kit's main, or the Kit pull request this one pairs with (a
+  # `Pairs-With: ubiquitty/kit#<n>` line in its description, read by
+  # Scripts/ci_pairing.py), built with this Core in place of the one it pins:
+  # what the Kit's next pin bump will meet. Its own commands, not a copy.
+  kit-apple:
+    name: Kit against this Core (macOS)
+    needs: preflight
+    if: needs.preflight.outputs.builds == 'true'
+    runs-on: xcode-27
+    timeout-minutes: 150
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: core
+      - name: Choose the Kit
+        id: kit
+        working-directory: core
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+        run: python3 Scripts/ci_pairing.py --want ubiquitty/kit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: ${{ steps.kit.outputs.repository }}
+          ref: ${{ steps.kit.outputs.ref }}
+          path: kit
+      - name: Put this Core where the Kit pins its own
+        run: |
+          rm -rf kit/Libraries/ubiquitty-core
+          mv core kit/Libraries/ubiquitty-core
+          {
+            echo "KIT_CHECKOUT=$GITHUB_WORKSPACE/kit"
+            echo "CORE_CHECKOUT=$GITHUB_WORKSPACE/kit/Libraries/ubiquitty-core"
+            echo "CCACHE_DIR=$RUNNER_WORKSPACE/ccache"
+            echo "CCACHE_MAXSIZE=2G"
+          } >> "$GITHUB_ENV"
+          command -v ccache >/dev/null 2>&1 || brew install ccache
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: ${{ runner.workspace }}/ccache
+          key: ccache-kit-apple-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-kit-apple-
+      # The battery's tool setup and QUIC stack, the Swift renderer's drivers
+      # and the iOS simulator arm, as the Kit's own CI runs them.
+      - name: Kit's Apple stages
+        working-directory: kit
+        run: python3 "$CORE_CHECKOUT/Scripts/ci_batteries.py" run apple --source-root "$KIT_CHECKOUT" --only setup --only quic --only swift-renderer --only ios-protected-file
+      - name: Swift renderer from clean
+        working-directory: kit
+        run: '"$KIT_CHECKOUT/Scripts/check-swift-module-compiles.sh"'
+      # An external app links the built UbiquittyKit.framework, opens windows
+      # and draws through it, on the runner's own window server.
+      - name: UbiquittyKit consumer
+        working-directory: kit
+        run: '"$KIT_CHECKOUT/Scripts/check-ubiquittykit.sh"'
+      - name: Kit's own suite
+        working-directory: kit
+        env:
+          SNAPSHOT: skip
+        run: '"$KIT_CHECKOUT/Scripts/run-tests.sh"'
+      - name: Report the Kit's Apple stages
+        if: always()
+        working-directory: kit
+        run: python3 "$CORE_CHECKOUT/Scripts/ci_batteries.py" report apple --source-root "$KIT_CHECKOUT" --only setup --only quic --only swift-renderer --only ios-protected-file
+      - name: Save the compiler cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: ${{ runner.workspace }}/ccache
+          key: ccache-kit-apple-${{ github.run_id }}-${{ github.run_attempt }}
+
+  kit-linux:
+    name: Kit against this Core (Linux)
+    needs: preflight
+    if: needs.preflight.outputs.builds == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: core
+      - name: Choose the Kit
+        id: kit
+        working-directory: core
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+        run: python3 Scripts/ci_pairing.py --want ubiquitty/kit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: ${{ steps.kit.outputs.repository }}
+          ref: ${{ steps.kit.outputs.ref }}
+          path: kit
+      - name: Put this Core where the Kit pins its own
+        run: |
+          rm -rf kit/Libraries/ubiquitty-core
+          mv core kit/Libraries/ubiquitty-core
+          echo "KIT_CHECKOUT=$GITHUB_WORKSPACE/kit" >> "$GITHUB_ENV"
+          echo "CORE_CHECKOUT=$GITHUB_WORKSPACE/kit/Libraries/ubiquitty-core" >> "$GITHUB_ENV"
+      - name: Name the CI image
+        id: image
+        run: echo "digest=$("$CORE_CHECKOUT/Scripts/ci-linux-image.sh" --source-root "$KIT_CHECKOUT" --recipe-digest)" >> "$GITHUB_OUTPUT"
+      - name: Restore the CI image
+        id: restore-image
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: ${{ runner.temp }}/ubq-ci-linux-image.tar
+          key: ci-linux-image-${{ steps.image.outputs.digest }}
+      # The Raster and Vulkan libraries, their shaders and the Kit's host tests,
+      # in the image the Linux batteries use.
+      - name: Kit's Linux libraries and tests
+        env:
+          UBQ_CI_IMAGE_ARCHIVE: ${{ runner.temp }}/ubq-ci-linux-image.tar
+          UBQ_CI_LINUX_IMAGE: "true"
+          UBQ_BUILD_ROOT: ${{ runner.workspace }}/build-kit
+        run: '"$CORE_CHECKOUT/Scripts/ci-linux-image.sh" --source-root "$KIT_CHECKOUT" "$KIT_CHECKOUT/Scripts/build-linux.sh" --test'
+      - name: Save the CI image
+        if: always() && steps.restore-image.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: ${{ runner.temp }}/ubq-ci-linux-image.tar
+          key: ci-linux-image-${{ steps.image.outputs.digest }}
+
+  # The app's main, or the app pull request this one pairs with, with the Kit it
+  # pins (or the paired Kit pull request) and this Core under it. The largest
+  # part of the app's Apple battery a hosted runner runs: the macOS app and its
+  # headless smokes, the Core builder frames, the snapshot regressions over the
+  # portable, macOS and Swift arms, and the iOS simulator app with its smokes,
+  # Sync conformance and UI tests. The macOS UI scenarios run when a run
+  # by hand asks for them; until they are proven on this image they stay a gate
+  # of the app's pre-push hook on the maintainers' Macs.
+  app-apple:
+    name: App against this Core (macOS)
+    needs: preflight
+    if: needs.preflight.outputs.builds == 'true'
+    runs-on: xcode-27
+    timeout-minutes: 180
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+      UBQ_CI_UI_SCENARIOS: ${{ github.event_name == 'workflow_dispatch' && inputs.ui_scenarios && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: core
+      - name: Choose the app
+        id: app
+        working-directory: core
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+        run: python3 Scripts/ci_pairing.py --want ubiquitty/ubiquitty
+      - name: Choose the Kit
+        id: kit
+        working-directory: core
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+        run: python3 Scripts/ci_pairing.py --want ubiquitty/kit --default-ref ""
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: ${{ steps.app.outputs.repository }}
+          ref: ${{ steps.app.outputs.ref }}
+          path: app
+          submodules: true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.kit.outputs.ref != ''
+        with:
+          persist-credentials: false
+          repository: ${{ steps.kit.outputs.repository }}
+          ref: ${{ steps.kit.outputs.ref }}
+          path: paired-kit
+      - name: Put this Core under the app's Kit
+        run: |
+          if [ -d paired-kit ]; then
+            rm -rf app/Libraries/ubiquitty-kit
+            mv paired-kit app/Libraries/ubiquitty-kit
+          fi
+          rm -rf app/Libraries/ubiquitty-kit/Libraries/ubiquitty-core
+          mv core app/Libraries/ubiquitty-kit/Libraries/ubiquitty-core
+          {
+            echo "APP_CHECKOUT=$GITHUB_WORKSPACE/app"
+            echo "CORE_CHECKOUT=$GITHUB_WORKSPACE/app/Libraries/ubiquitty-kit/Libraries/ubiquitty-core"
+            echo "CCACHE_DIR=$RUNNER_WORKSPACE/ccache"
+            echo "CCACHE_MAXSIZE=2G"
+          } >> "$GITHUB_ENV"
+          command -v ccache >/dev/null 2>&1 || brew install ccache
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: ${{ runner.workspace }}/ccache
+          key: ccache-app-apple-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-app-apple-
+      - name: App's Apple stages
+        working-directory: app
+        run: python3 "$CORE_CHECKOUT/Scripts/ci_batteries.py" run apple --source-root "$APP_CHECKOUT" --only setup --only quic --only macos-build --only macos-smokes --only ui-scenarios --only core-frames --only portable-build --only snapshots --only ios-build --only ios-smokes --only ios-sync --only ios-ui
+      - name: Report the app's Apple stages
+        if: always()
+        working-directory: app
+        run: python3 "$CORE_CHECKOUT/Scripts/ci_batteries.py" report apple --source-root "$APP_CHECKOUT" --only setup --only quic --only macos-build --only macos-smokes --only ui-scenarios --only core-frames --only portable-build --only snapshots --only ios-build --only ios-smokes --only ios-sync --only ios-ui
+      - name: Print the failed stage logs
+        if: failure()
+        run: |
+          for log in "$RUNNER_TEMP/ubiquitty-ci/apple"/*.log; do
+            [ -f "$log" ] || continue
+            echo "::group::${log##*/}"
+            cat "$log"
+            echo "::endgroup::"
+          done
+      - name: Save the compiler cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: ${{ runner.workspace }}/ccache
+          key: ccache-app-apple-${{ github.run_id }}-${{ github.run_attempt }}
+
+  app-linux:
+    name: App against this Core (Linux)
+    needs: preflight
+    if: needs.preflight.outputs.builds == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: core
+      - name: Choose the app
+        id: app
+        working-directory: core
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+        run: python3 Scripts/ci_pairing.py --want ubiquitty/ubiquitty
+      - name: Choose the Kit
+        id: kit
+        working-directory: core
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+        run: python3 Scripts/ci_pairing.py --want ubiquitty/kit --default-ref ""
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: ${{ steps.app.outputs.repository }}
+          ref: ${{ steps.app.outputs.ref }}
+          path: app
+          submodules: true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.kit.outputs.ref != ''
+        with:
+          persist-credentials: false
+          repository: ${{ steps.kit.outputs.repository }}
+          ref: ${{ steps.kit.outputs.ref }}
+          path: paired-kit
+      - name: Put this Core under the app's Kit
+        run: |
+          if [ -d paired-kit ]; then
+            rm -rf app/Libraries/ubiquitty-kit
+            mv paired-kit app/Libraries/ubiquitty-kit
+          fi
+          rm -rf app/Libraries/ubiquitty-kit/Libraries/ubiquitty-core
+          mv core app/Libraries/ubiquitty-kit/Libraries/ubiquitty-core
+          echo "APP_CHECKOUT=$GITHUB_WORKSPACE/app" >> "$GITHUB_ENV"
+          echo "CORE_CHECKOUT=$GITHUB_WORKSPACE/app/Libraries/ubiquitty-kit/Libraries/ubiquitty-core" >> "$GITHUB_ENV"
+      - name: Free unused hosted SDK space
+        run: sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup
+      - name: Name the CI image
+        id: image
+        run: echo "digest=$("$CORE_CHECKOUT/Scripts/ci-linux-image.sh" --source-root "$APP_CHECKOUT" --recipe-digest)" >> "$GITHUB_OUTPUT"
+      - name: Restore the CI image
+        id: restore-image
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: ${{ runner.temp }}/ubq-ci-linux-image.tar
+          key: ci-linux-image-${{ steps.image.outputs.digest }}
+      # The GTK frontend built against this Core and driven by its headless
+      # smoke battery and native snapshots under Xvfb, as the app's Linux
+      # battery runs them.
+      - name: App's Linux stages
+        working-directory: app
+        env:
+          UBQ_CI_IMAGE_ARCHIVE: ${{ runner.temp }}/ubq-ci-linux-image.tar
+          UBQ_CI_LINUX_IMAGE: "true"
+        run: '"$CORE_CHECKOUT/Scripts/ci-linux-image.sh" --source-root "$APP_CHECKOUT" python3 "$CORE_CHECKOUT/Scripts/ci_batteries.py" run linux --source-root "$APP_CHECKOUT" --only setup --only frontend-tools --only quic --only linux-build --only linux-smokes --only linux-snapshots'
+      - name: Report the app's Linux stages
+        if: always()
+        working-directory: app
+        run: python3 "$CORE_CHECKOUT/Scripts/ci_batteries.py" report linux --source-root "$APP_CHECKOUT" --only setup --only frontend-tools --only quic --only linux-build --only linux-smokes --only linux-snapshots
+      - name: Print the failed stage logs
+        if: failure()
+        run: |
+          for log in "$RUNNER_TEMP/ubiquitty-ci/linux"/*.log; do
+            [ -f "$log" ] || continue
+            echo "::group::${log##*/}"
+            cat "$log"
+            echo "::endgroup::"
+          done
+      - name: Save the CI image
+        if: always() && steps.restore-image.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: ${{ runner.temp }}/ubq-ci-linux-image.tar
+          key: ci-linux-image-${{ steps.image.outputs.digest }}
+
+  # The one check branch protection names. It passes when every job that had
+  # to run passed: preflight always, and the rest unless change reach left
+  # them out. A job that failed, was cancelled, or never started because one
+  # it needs failed is a failure here.
+  ci:
+    name: CI
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    needs: [preflight, linux, apple, kit-apple, kit-linux, app-apple, app-linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every job that had to run passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS"])
+          failed = []
+          for job, result in sorted(needs.items()):
+              conclusion = result["result"]
+              print(f"{job}: {conclusion}")
+              if job == "preflight" and conclusion != "success":
+                  failed.append(job)
+              elif conclusion not in ("success", "skipped"):
+                  failed.append(job)
+          if failed:
+              print(f"::error title=CI::did not pass: {', '.join(failed)}")
+              sys.exit(1)
+          EOF

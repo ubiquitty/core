@@ -74,9 +74,27 @@ Build outputs live outside the checkout. Resolve their root with
 `python3 Scripts/build_root.py .`, or set `UBQ_BUILD_ROOT` explicitly.
 
 A change is ready when the test suite and `check-style.py` both pass and the
-affected builds are clean. Hosted CI runs the preflight checks and the secret
-scan. The maintainers run the test batteries on their own Linux and macOS
-machines before every landing.
+affected builds are clean.
+
+### Continuous integration
+
+Every pull request runs the full matrix on GitHub-hosted runners
+([`.github/workflows/ci.yml`](workflows/ci.yml)): the style and commit-rule
+gates, the macOS and Linux batteries (the whole suite under GCC and Clang, the
+sanitized suite, fuzzing, the wasm arm, the PGO drift bounds), the push gates of
+the pre-push hook run in full, and the Kit and the app built with your Core in
+place of the one they pin. The check that has to pass is `CI`; it needs every
+other job.
+
+If your change needs a matching change in the Kit or the app, open that pull
+request first and name it in this one's description, one line per repository:
+
+```text
+Pairs-With: ubiquitty/kit#123
+```
+
+The cross-repository jobs then build that pull request instead of the Kit's or
+the app's main. Edit the line and re-run the failed jobs to pair them anew.
 
 ## Coding standards
 
