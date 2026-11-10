@@ -92,7 +92,9 @@ private:
     // the end has offered every divergent cell, so only then may the shadow be
     // called valid and only then is a captured full-redraw request discharged.
     bool m_hasWalkedToEnd;
-#ifndef NDEBUG
+    // The walk's bookkeeping for assertions, counted only where they are
+    // compiled in. Declared in every build: the Swift importer and the C++
+    // build must lay this class out alike whatever NDEBUG each was handed.
     int m_yieldedRuns;
     int m_ackedRuns;
     // Which walk this session has begun. The two share a cursor, so a session
@@ -107,7 +109,6 @@ private:
         Rows,
     };
     WalkKind m_walkKind { WalkKind::None };
-#endif
     friend class CellGrid;
 };
 

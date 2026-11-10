@@ -909,6 +909,16 @@ SECTIONS = (
         "fail": None,
     },
     {
+        "title": 'no header Swift imports changes with NDEBUG (Scripts/check-imported-headers-ndebug.py)',
+        "in": EVERYWHERE,
+        "kind": "gate",
+        "gate": 'check-imported-headers-ndebug.py',
+        "command": ['python3', './Scripts/check-imported-headers-ndebug.py'],
+        "ok": 'all',
+        "bad": 'all',
+        "fail": None,
+    },
+    {
         "title": 'tools with their own runner still parse (Scripts/check-standalone-tools-compile.py)',
         "in": EVERYWHERE,
         "kind": "gate",

@@ -25,17 +25,15 @@
 // entry point the file uses.
 //
 
-// The assertions are the thing under test, and NDEBUG deletes every one of them.
-// It also changes sizeof(CellGrid) — CellGrid declares `m_paintInvariantBroken`
-// inside #ifndef NDEBUG — so a test TU built with it disagrees with Core about the layout
-// of the type it is checking. That is not a slower or weaker run; it is a
-// different program, and it links.
+// The assertions are the thing under test, and NDEBUG deletes every one of them,
+// along with the paint bookkeeping the tests read back. A test TU built with it is
+// not a slower or weaker run; it is a different program, and it links.
 //
 // Here rather than in Harness.h because the twelve tests that own their main
 // include this directly, and the other 235 reach it through Harness.h, which
 // includes it.
 #ifdef NDEBUG
-#error "the test suite must not be built with NDEBUG: it deletes assert() and changes sizeof(CellGrid)"
+#error "the test suite must not be built with NDEBUG: it deletes assert() and the paint bookkeeping the tests check"
 #endif
 
 #include <csignal>

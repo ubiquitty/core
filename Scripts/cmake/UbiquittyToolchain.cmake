@@ -59,11 +59,10 @@ endif()
 # which is how benchmarks and bisects get configured, and where the mistake
 # costs the most.
 #
-# A test tree defaults to Debug instead: Release carries NDEBUG, NDEBUG changes
-# sizeof(CellGrid), and the gate below rejects that combination outright. It also
-# compiles out the assertions the suite exists to trip -- a Release test tree
-# reports every case passing while a checked-pointer violation goes unnoticed,
-# which is this same trap wearing the other face.
+# A test tree defaults to Debug instead: Release carries NDEBUG, and the gate
+# below rejects that combination outright. NDEBUG compiles out the assertions the
+# suite exists to trip -- a Release test tree reports every case passing while a
+# checked-pointer violation goes unnoticed.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     if(UBIQUITTY_BUILD_TESTS)
         set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
@@ -145,12 +144,11 @@ if(UBIQUITTY_BUILD_SYNC_TRANSPORT_ACCEPTANCE AND
         "Sync transport acceptance requires UBIQUITTY_FRONTEND=Host and UBIQUITTY_QUIC=ON")
 endif()
 
-# NDEBUG does not merely delete assert() here. CellGrid declares
-# `m_paintInvariantBroken` inside #ifndef NDEBUG, and `assertInvariants` the same
-# way, so sizeof(CellGrid) differs between a TU that defines it and one that does
-# not. A tree where some
-# translation units have it is not a weaker test run — it is an ODR violation that
-# links, runs, and prints its pass line.
+# NDEBUG deletes the assertions the suite exists to trip, and with them the paint
+# bookkeeping CellGrid and PaintSession keep for the tests (the paint-leak flag,
+# the walk counters). A tree where some translation units have it is not a weaker
+# test run either: an inline function with an assert() is a different definition
+# on each side, an ODR violation that links, runs, and prints its pass line.
 #
 # Fatal rather than a warning for that reason: there is no runtime signal to notice
 # later. The FLAGS are read rather than the build type, so NDEBUG arriving through
@@ -164,8 +162,8 @@ if((UBIQUITTY_BUILD_TESTS OR UBIQUITTY_BUILD_SYNC_TRANSPORT_ACCEPTANCE) AND
     message(FATAL_ERROR
         "UBIQUITTY_BUILD_TESTS=ON with NDEBUG in the compile flags "
         "(CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}).\n"
-        "  NDEBUG changes sizeof(CellGrid), so the tests and the code under them "
-        "would disagree about the layout of the type they share.\n"
+        "  NDEBUG deletes the assertions and the paint bookkeeping the tests check, "
+        "so every case would pass without checking them.\n"
         "  Configure the test tree with -DCMAKE_BUILD_TYPE=Debug.")
 endif()
 

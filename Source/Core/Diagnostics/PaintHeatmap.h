@@ -7,8 +7,8 @@
 // heatmap reads this rather than deciding either half itself.
 //
 // Declared and defined in every build. A frontend's importer need not share the
-// C++ build's UBIQUITTY_PERF_DIAG — the Swift importer sees none of its NDEBUG —
-// so nothing here changes shape with the gate: under UBIQUITTY_PERF_DIAG=0 every
+// C++ build's UBIQUITTY_PERF_DIAG, which PerfDiag.h derives from NDEBUG, so
+// nothing here changes shape with the gate: under UBIQUITTY_PERF_DIAG=0 every
 // entry is inert, `isPerfDiagnosticsBuild()` says so, and the capture carries no
 // heat pass at all.
 

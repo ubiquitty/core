@@ -88,18 +88,13 @@ enum class HostBuildFlag : uint8_t {
 };
 using HostBuildFlags = OptionSet<HostBuildFlag>;
 
-/// This build's own flags, resolved where the code was compiled.
-constexpr HostBuildFlags localHostBuildFlags()
-{
-    HostBuildFlags flags;
-#ifdef __OPTIMIZE__
-    flags.add(HostBuildFlag::Optimised);
-#endif
-#ifndef NDEBUG
-    flags.add(HostBuildFlag::AssertionsEnabled);
-#endif
-    return flags;
-}
+/// This build's own flags.
+///
+/// Defined in Core's own translation unit, so the answer is the flags Core was
+/// compiled with rather than those of whichever importer reads this header.
+///
+/// - Returns: Whether Core was optimised and whether its assertions are live.
+[[nodiscard]] HostBuildFlags localHostBuildFlags();
 
 /// Native file-read result status.
 using FileDataStatus = Control::FileReadStatus;

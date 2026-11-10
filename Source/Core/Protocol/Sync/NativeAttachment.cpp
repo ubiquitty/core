@@ -7,6 +7,18 @@
 
 namespace Ubiquitty::Protocol::Sync {
 
+HostBuildFlags localHostBuildFlags()
+{
+    HostBuildFlags flags;
+#ifdef __OPTIMIZE__
+    flags.add(HostBuildFlag::Optimised);
+#endif
+#ifndef NDEBUG
+    flags.add(HostBuildFlag::AssertionsEnabled);
+#endif
+    return flags;
+}
+
 ClipboardDataMessage makeClipboardData(
     uint32_t requestID, ClipboardServeStatus status, std::vector<ClipboardServeItem> items)
 {

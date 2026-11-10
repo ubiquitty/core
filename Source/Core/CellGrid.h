@@ -706,13 +706,12 @@ public:
         m_blinkHintGeneration = 0;
     }
 
-#ifndef NDEBUG
     // Tests: confirm the "row clean" hint matches the grid — any row with m_anyDirtyInRow[r] false must match
     // m_bbShadow byte-for-byte and have no selection-dirty bits. False if drift detected.
     [[nodiscard]] bool assertInvariants() const;
     // True if the most recently destroyed PaintSession yielded runs the PAL never AckRun'd (paint leak).
+    // Tracked where assertions are compiled in; a build without them never sets it.
     [[nodiscard]] bool paintInvariantBroken() const { return m_paintInvariantBroken; }
-#endif
 
 private:
     void shadowShiftRows(Row top, Row bot, int n);
@@ -1155,9 +1154,9 @@ private:
     /// on either side: a blink cell off screen animates nothing, while a sized cell off screen is flattened
     /// by a pass that reads both grids.
     void noteSizedWrite() { m_hasSizedCellHint = true; }
-#ifndef NDEBUG
-    bool m_paintInvariantBroken; // last destroyed PaintSession had unacked runs
-#endif
+    // Last destroyed PaintSession had unacked runs. Declared in every build: the Swift importer and the
+    // C++ build must lay this class out alike whatever NDEBUG each was handed.
+    bool m_paintInvariantBroken;
 
     // Per-cell selection-dirty bitset, flat m_rowCapacity × m_selectionStride ((m_columnCapacity+7)/8).
     /* owned */ unsigned char* m_selectionDirty;

@@ -741,9 +741,9 @@ verify_source_paths
 #
 # The build type is named because an unnamed one is not neutral:
 # Scripts/cmake/UbiquittyToolchain.cmake FORCEs an empty CMAKE_BUILD_TYPE to
-# Release, and Release defines NDEBUG, which changes sizeof(CellGrid) (CellGrid
-# declares `m_paintInvariantBroken` inside #ifndef NDEBUG). Unnamed, whichever
-# driver reaches a wiped directory first decides whether the suite asserts.
+# Release, and Release defines NDEBUG, which compiles out the assertions the
+# suite exists to trip. Unnamed, whichever driver reaches a wiped directory first
+# decides whether the suite asserts.
 ubq_configure_ctest_tree() {
     cmake -S "$ROOT" -B "$1" -G Ninja \
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
