@@ -82,7 +82,10 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         return 0;
     const auto encoded = encodeHandoverMessage(*decoded);
     assert(std::ranges::equal(input, encoded));
-    assert(encoded.size() <= 25);
+    // The largest message is PaneFollows: its kind, index, pane ID, record size,
+    // session leader and the leader's parent.
+    constexpr std::size_t maxMessageBytes = 1 + sizeof(std::uint16_t) + sizeof(ID128) + 3 * sizeof(std::uint32_t);
+    assert(encoded.size() <= maxMessageBytes);
     const auto repeated = decodeHandoverMessage(encoded, limits);
     assert(repeated && *repeated == *decoded);
     for (std::size_t length = 0; length < encoded.size(); ++length)
