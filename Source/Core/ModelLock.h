@@ -185,6 +185,14 @@ public:
         return { ModelLockHandoff::Taken, waited };
     }
 
+#ifdef UBIQUITTY_ENABLE_TEST_HOOKS
+    /// The acquisitions by threads other than the drain's so far, for a test
+    /// that requires a call to take the lock not once.
+    ///
+    /// - Returns: The count, which only grows, wrapping at 2^32.
+    [[nodiscard]] std::uint32_t acquisitionCountForTest() const noexcept { return m_acquisitionCount.load(std::memory_order_acquire); }
+#endif
+
     /// Returns on the thread that holds this lock; where Core is built with
     /// assertions, stops any other.
     ///
