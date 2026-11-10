@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "Harness.h"
+#include "HostedPaneFixture.h"
 #include "Platform/StreamDouble.h"
 #include "ScreenPlaneFixture.h"
 #include "SoleModelThread.h"
@@ -834,10 +835,8 @@ TEST(aLocalPanePublishesCanonicalFactsOutsideItsModelLock)
 
 TEST(anAdoptedPanePublishesOnlyItsActualModelsFacts)
 {
-    Ubiquitty::Terminal external;
-    Ubiquitty::resize(external, 12, 40);
-    Ubiquitty::processBytes(&external, "\x1b]2;adopted tests\x1b\\\x1b]7;file://remote/owned\x1b\\");
-    Ubiquitty::ModelLock externalLock;
+    UbiquittyTest::HostedPaneFixture pane(12, 40);
+    pane.sendToPane("\\033]2;adopted tests\\007\\033]7;file://remote/owned\\007");
     const auto release = [](TerminalSession* value) { releaseTerminalSession(value); };
     std::unique_ptr<TerminalSession, decltype(release)> session(makeStartedSession(), release);
     REQUIRE(session);
@@ -848,7 +847,7 @@ TEST(anAdoptedPanePublishesOnlyItsActualModelsFacts)
     auto adoption = session->adoptStream(std::move(stream));
     REQUIRE(adoption.has_value());
     (void)session->drain();
-    session->adoptExternalTerminal(&external, reinterpret_cast<std::uintptr_t>(&externalLock));
+    REQUIRE(session->adoptHostedPane(pane.sourceAddress(), UbiquittyTest::HostedPaneFixture::paneID));
     (void)session->takeEventFlags();
     session->lockForRead();
     const auto* facts = session->paneView().facts;
@@ -864,13 +863,10 @@ TEST(anAdoptedPanePublishesOnlyItsActualModelsFacts)
         CHECK(facts->isAdopted);
     }
     session->unlockForRead();
-    {
-        const std::scoped_lock hold(externalLock);
-        Ubiquitty::processBytes(&external, "\x1b]2;raw owner changed\x1b\\");
-    }
+    pane.sendToPane("\\033]2;owner changed\\007");
     (void)session->takeEventFlags();
     session->lockForRead();
-    CHECK_STR_EQ(session->paneView().facts->programTitle, "raw owner changed");
+    CHECK_STR_EQ(session->paneView().facts->programTitle, "owner changed");
     session->unlockForRead();
     session->endExternalAdoption();
     (void)session->takeEventFlags();
@@ -1156,11 +1152,11 @@ TEST(aDormantLocalPaneLinkPublishesOnlyTheNewestPictureOnReveal)
     CHECK(observer.frames.front().generation >= 2);
 }
 
+// An adopted pane's frames are its owner's, and the adapter's own runtime,
+// which drained a frame before the adoption, is not where they come from.
 TEST(anAdoptedPaneLinkDoesNotBorrowTheUnusedRuntimePublication)
 {
-    Ubiquitty::Terminal external;
-    Ubiquitty::resize(external, 24, 80);
-    Ubiquitty::ModelLock externalLock;
+    UbiquittyTest::HostedPaneFixture pane;
     const auto release = [](TerminalSession* value) { releaseTerminalSession(value); };
     std::unique_ptr<TerminalSession, decltype(release)> session(makeStartedSession(), release);
     REQUIRE(session);
@@ -1170,20 +1166,30 @@ TEST(anAdoptedPaneLinkDoesNotBorrowTheUnusedRuntimePublication)
     REQUIRE(adoption.has_value());
     (void)session->drain();
     struct Observer final : Ubiquitty::Session::PaneLinkObserver {
-        unsigned frames = 0;
-        void frameReady(const Ubiquitty::Session::FrameReady&) override { ++frames; }
+        std::vector<Ubiquitty::Session::FrameReady> frames;
+        void frameReady(const Ubiquitty::Session::FrameReady& frame) override { frames.push_back(frame); }
     } observer;
-    session->adoptExternalTerminal(&external, reinterpret_cast<std::uintptr_t>(&externalLock));
+    REQUIRE(session->adoptHostedPane(pane.sourceAddress(), UbiquittyTest::HostedPaneFixture::paneID));
     session->observePaneLink(observer);
     (void)session->takeEventFlags();
     session->lockForRead();
-    CHECK(session->paneView().terminal == &external);
-    CHECK(!session->paneView().hasFrameNotifications);
+    CHECK(session->paneView().terminal == pane.paneTerminal());
+    CHECK(session->paneView().hasFrameNotifications);
     session->unlockForRead();
-    CHECK_EQ(observer.frames, 0u);
+    std::optional<Ubiquitty::Session::FrameReady> ownersFrame;
+    {
+        const Ubiquitty::ModelLockHold hold(*pane.paneLock());
+        ownersFrame = pane.host().panePublicationHandle(UbiquittyTest::HostedPaneFixture::paneID, *pane.paneTerminal())->lastFrame();
+    }
+    REQUIRE(observer.frames.size() == (ownersFrame ? 1u : 0u));
+    if (ownersFrame) {
+        CHECK_EQ(observer.frames.front().generation, ownersFrame->generation);
+        CHECK_EQ(observer.frames.front().lagMicroseconds, ownersFrame->lagMicroseconds);
+    }
+    const std::size_t whileAdopted = observer.frames.size();
     session->endExternalAdoption();
     (void)session->takeEventFlags();
-    CHECK_EQ(observer.frames, 1u);
+    CHECK_EQ(observer.frames.size(), whileAdopted + 1);
 }
 
 TEST(anAdoptedHostedPaneLinkUsesItsRealOwnersPublicationAndClock)
@@ -1211,8 +1217,7 @@ TEST(anAdoptedHostedPaneLinkUsesItsRealOwnersPublicationAndClock)
     const auto release = [](TerminalSession* value) { releaseTerminalSession(value); };
     std::unique_ptr<TerminalSession, decltype(release)> session(makeStartedSession(), release);
     REQUIRE(session);
-    session->adoptExternalTerminal(reinterpret_cast<Ubiquitty::Terminal*>(facts.terminalAddress), facts.lockAddress);
-    session->routeResizeThroughHostedSource(reinterpret_cast<std::uintptr_t>(&host), 1);
+    REQUIRE(session->adoptHostedPane(reinterpret_cast<std::uintptr_t>(&host), 1));
     struct Observer final : Ubiquitty::Session::PaneLinkObserver {
         TerminalSession* session = nullptr;
         std::vector<Ubiquitty::Session::FrameReady> frames;
@@ -1336,8 +1341,7 @@ TEST(anAdoptedHostedPaneFocusReachesItsRealOwnerAndProgram)
     const auto release = [](TerminalSession* value) { releaseTerminalSession(value); };
     std::unique_ptr<TerminalSession, decltype(release)> session(makeStartedSession(), release);
     REQUIRE(session);
-    session->adoptExternalTerminal(reinterpret_cast<Ubiquitty::Terminal*>(facts.terminalAddress), facts.lockAddress);
-    session->routeResizeThroughHostedSource(reinterpret_cast<std::uintptr_t>(&host), 1);
+    REQUIRE(session->adoptHostedPane(reinterpret_cast<std::uintptr_t>(&host), 1));
     stream.written.clear();
     session->setDesiredFocus(Ubiquitty::Modes::FocusState::Unfocused);
     session->lockForRead();

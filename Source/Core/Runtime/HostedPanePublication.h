@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "Core/Modes/SyncOutput.h"
 #include "Core/Runtime/FrameCoherence.h"
 #include "Core/Runtime/PaneFactsCapture.h"
 #include "Core/Runtime/RuntimeLink.h"
@@ -32,6 +33,10 @@ public:
         std::uint64_t factsGeneration = 0;
         Session::FrameReady frame;
         bool hasFrame = false;
+        /// The pane's open synchronized update, and the tick its budget runs
+        /// from. The owner's coherence stamps and expires it as it advances,
+        /// so a view holds its frame from here and never writes the model.
+        Modes::SyncOutput::BlockMark block;
     };
 
     [[nodiscard]] State read() const { return m_state.read(); }
@@ -53,7 +58,8 @@ public:
         m_state.publish({ .presentation = captureFramePresentationState(&terminal),
             .factsGeneration = m_facts.generation(),
             .frame = m_lastFrame.value_or(Session::FrameReady {}),
-            .hasFrame = m_lastFrame.has_value() });
+            .hasFrame = m_lastFrame.has_value(),
+            .block = Modes::SyncOutput::blockMark(terminal) });
     }
 
     /// Each model reports the first focus fact, then only its actual edges.

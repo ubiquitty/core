@@ -1635,9 +1635,9 @@ std::uint32_t TerminalRuntime::presentationHoldTicksRemaining(const Ubiquitty::T
     return soonerHoldTicks(Modes::SyncOutput::ticksUntilHoldExpires(terminal, nowTicks), presentationHoldTicksRemaining(nowMicros));
 }
 
-std::uint32_t TerminalRuntime::presentationHoldTicksRemaining(const RuntimeSnapshot& published, Ticks nowTicks, std::uint32_t nowMicros) const noexcept UBIQUITTY_NONBLOCKING
+std::uint32_t TerminalRuntime::presentationHoldTicksRemaining(Modes::SyncOutput::BlockMark block, Ticks nowTicks, std::uint32_t nowMicros) const noexcept UBIQUITTY_NONBLOCKING
 {
-    const std::uint32_t blockTicks = published.syncHoldActive ? Modes::SyncOutput::ticksUntilHoldExpires(published.syncHoldTouchTicks, nowTicks) : 0;
+    const std::uint32_t blockTicks = block.isOpen ? Modes::SyncOutput::ticksUntilHoldExpires(block.touchTicks, nowTicks) : 0;
     return soonerHoldTicks(blockTicks, presentationHoldTicksRemaining(nowMicros));
 }
 

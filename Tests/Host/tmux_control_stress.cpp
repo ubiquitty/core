@@ -508,9 +508,11 @@ private:
         if (!view)
             return false;
         auto* terminal = reinterpret_cast<Ubiquitty::Terminal*>(facts.terminalAddress);
-        view->adoptExternalTerminal(terminal, facts.lockAddress);
+        if (!view->adoptHostedPane(m_primary->hostedWindowSourceAddress(), paneID)) {
+            releaseTerminalSession(view);
+            return false;
+        }
         view->routeInputViaTmuxAddresses(facts.inputClientAddress, facts.inputStreamAddress, paneID);
-        view->routeResizeThroughHostedSource(m_primary->hostedWindowSourceAddress(), paneID);
         m_panes[paneID] = { .session = view, .terminal = terminal, .lock = reinterpret_cast<Ubiquitty::ModelLock*>(facts.lockAddress) };
         return true;
     }
