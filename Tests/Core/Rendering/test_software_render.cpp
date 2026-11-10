@@ -18,9 +18,11 @@
 #include "Core/Rendering/UnifontRasterizer.h"
 
 #include "Core/Image/TerminalImage.h"
+#include "Core/Kitty/UnicodePlaceholders.h"
 #include "Core/TermPalette.h"
 #include "Core/TerminalOperations.h"
 #include "Core/VT/SoftFont.h"
+#include "KittyGraphicsFixture.h"
 
 #include <algorithm>
 #include <array>
@@ -29,6 +31,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 using namespace Ubiquitty;
@@ -678,10 +682,10 @@ TEST(testPlaceholderCellsDrawTheTilesTheyName)
     }
 }
 
-// The placeholder quads share the frame's image-quad storage, which holds
-// `Image::maxTerminalImagePlacementCount`: a block of more cells than that
-// draws its first cells and stops there, rather than writing past it.
-TEST(testPlaceholderQuadsStopAtTheSharedImageLimit)
+// The placeholder quads share the frame's image-quad storage with the grid
+// placements, and the storage holds a quad for every visible cell: a block of
+// more cells than the placement table holds draws every one of them.
+TEST(testPlaceholderBlockLargerThanThePlacementTableDrawsEveryCell)
 {
     constexpr int columns = 100;
     auto t = std::make_unique<Ubiquitty::Terminal>();
@@ -729,8 +733,122 @@ TEST(testPlaceholderQuadsStopAtTheSharedImageLimit)
     for (int row = 0; row < 2; ++row)
         for (int column = 0; column < columns; ++column)
             drawn += isSamePixel(at(rgba, width, column * renderCellWidth + 3, row * renderCellHeight + 3), red) ? 1 : 0;
-    CHECK_MSG(isSamePixel(at(rgba, width, 3, 3), red), "the block's first cell shows its tile");
-    CHECK_MSG(drawn > 0 && drawn <= Ubiquitty::Image::maxTerminalImagePlacementCount, "no more cells draw than the frame has quads for");
+    REQUIRE(columns * 2 > Ubiquitty::Image::maxTerminalImagePlacementCount);
+    CHECK_MSG(drawn == columns * 2, "every placeholder cell shows its tile");
+}
+
+// The shape of what jotter, through ratatui-image's kitty arm, sends for a
+// notebook figure, recorded at 160x48 with a 16x34 published cell: the cursor
+// parked on the figure's first row with image id 1 in a truecolor foreground,
+// a 568x413 RGBA picture in chunks of 4096 base64 characters as one virtual
+// placement with neither c nor r, then each placeholder row naming its row,
+// column 0 and the id's high byte on its first cell and leaving the other 35
+// to inherit. Each frame ends hiding the cursor, and a later frame rewrites
+// the first cell alone. The box is 36 by 13 published cells; the picture
+// fills its width and is centred down it, so every box cell holds part of it.
+//
+// A frame captured through TerminalFrameInputs carries a quad for each of the
+// 468 cells, and the renderer draws the last row as it draws the first.
+TEST(testCapturedNotebookFigureDrawsEveryPlaceholderCell)
+{
+    constexpr int figureColumns = 36;
+    constexpr int figureRows = 13;
+    constexpr int firstRow = 10;
+    // The kitty row and column diacritics for indices 0 to 12.
+    constexpr std::array<std::uint32_t, figureRows> diacritics { 0x0305, 0x030D, 0x030E, 0x0310, 0x0312, 0x033D, 0x033E,
+        0x033F, 0x0346, 0x034A, 0x034B, 0x034C, 0x0350 };
+    const auto utf8 = [](std::uint32_t codePoint) {
+        std::string out;
+        if (codePoint < 0x800) {
+            out += static_cast<char>(0xC0 | (codePoint >> 6));
+            out += static_cast<char>(0x80 | (codePoint & 0x3F));
+        } else {
+            out += static_cast<char>(0xF0 | (codePoint >> 18));
+            out += static_cast<char>(0x80 | ((codePoint >> 12) & 0x3F));
+            out += static_cast<char>(0x80 | ((codePoint >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (codePoint & 0x3F));
+        }
+        return out;
+    };
+    const std::string placeholder = utf8(Ubiquitty::Kitty::placeholderCodePoint);
+
+    auto t = std::make_unique<Ubiquitty::Terminal>();
+    Ubiquitty::resize(*t, 48, 160);
+    REQUIRE(t->rows == 48 && t->columns == 160);
+    Ubiquitty::publishPixelGeometry(*t, { { 16, 34 }, { 2560, 1632 }, { 2560, 1632 } });
+    REQUIRE(t->cellPixelWidth == 16 && t->cellPixelHeight == 34);
+
+    // An opaque red picture, so each tile's pixels are known wherever it lands.
+    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(568) * 413 * 4);
+    for (std::size_t offset = 0; offset < pixels.size(); offset += 4) {
+        pixels[offset] = 255;
+        pixels[offset + 3] = 255;
+    }
+    const std::string payload = UbiquittyTest::Kitty::base64(pixels);
+    std::string stream = "\x1b[11;1H\x1b[38;2;0;0;1;49m";
+    constexpr std::size_t chunk = 4096;
+    for (std::size_t offset = 0; offset < payload.size(); offset += chunk) {
+        stream += "\x1b_Gq=2,";
+        if (offset == 0)
+            stream += "i=1,a=T,U=1,f=32,t=d,s=568,v=413,";
+        stream += offset + chunk < payload.size() ? "m=1;" : "m=0;";
+        stream += payload.substr(offset, chunk);
+        stream += "\x1b\\";
+    }
+    for (int row = 0; row < figureRows; ++row) {
+        if (row > 0)
+            stream += "\x1b[" + std::to_string(firstRow + row + 1) + ";1H";
+        stream += placeholder + utf8(diacritics[static_cast<std::size_t>(row)]) + utf8(diacritics[0]) + utf8(diacritics[0]);
+        for (int column = 1; column < figureColumns; ++column)
+            stream += placeholder;
+    }
+    stream += "\x1b[39m\x1b[49m\x1b[59m\x1b[0m\x1b[?25l";
+    stream += "\x1b[11;1H\x1b[38;2;0;0;1;49m" + placeholder + utf8(diacritics[0]) + utf8(diacritics[0]) + utf8(diacritics[0]);
+    stream += "\x1b[39m\x1b[49m\x1b[59m\x1b[0m\x1b[?25l";
+    Ubiquitty::processBytes(t.get(), stream);
+    REQUIRE(Ubiquitty::Image::placementCount(t.get()) == 0);
+
+    UnifontRasterizer rasterizer(1, 0);
+    TerminalFrameInputs frame;
+    REQUIRE(frame.capture(*t, TerminalSnapshotOptions {}, rasterizer.cellMetrics(), GlyphSlotGeometry {}));
+    const BuildInputs& inputs = frame.inputs();
+    const std::span<const Ubiquitty::Image::ImageQuad> quads = frame.imageQuads();
+    REQUIRE(figureColumns * figureRows > Ubiquitty::Image::maxTerminalImagePlacementCount);
+    CHECK_EQ(quads.size(), static_cast<std::size_t>(figureColumns * figureRows));
+    std::vector<int> tiles(static_cast<std::size_t>(figureColumns * figureRows), 0);
+    int strayTiles = 0;
+    for (const Ubiquitty::Image::ImageQuad& quad : quads) {
+        const int column = static_cast<int>(std::floor((quad.minXInPixels - inputs.originInPixels.x) / inputs.metrics.cellWidth));
+        const int row = static_cast<int>(std::floor((quad.minYInPixels - inputs.originInPixels.y) / inputs.metrics.cellHeight)) - firstRow;
+        if (column < 0 || column >= figureColumns || row < 0 || row >= figureRows) {
+            ++strayTiles;
+            continue;
+        }
+        ++tiles[static_cast<std::size_t>(row * figureColumns + column)];
+    }
+    CHECK_MSG(strayTiles == 0, "every tile lands inside the figure's cells");
+    CHECK_MSG(std::ranges::all_of(tiles, [](int count) { return count == 1; }), "each figure cell carries exactly one tile");
+
+    SoftwareRenderer renderer(renderCellWidth, renderCellHeight);
+    std::vector<std::uint8_t> rgba;
+    int width = 0;
+    int height = 0;
+    REQUIRE(renderer.render(inputs, rgba, width, height));
+    REQUIRE(width == 160 * renderCellWidth && height == 48 * renderCellHeight);
+    const Pixel red { 255, 0, 0, 255 };
+    // The picture starts a third of a row down the first row and ends a third
+    // of a row above the bottom of the last; each sample sits clear of both.
+    int redCells = 0;
+    for (int row = 0; row < figureRows; ++row) {
+        const int insideRow = row == 0 ? renderCellHeight * 3 / 4 : row == figureRows - 1 ? renderCellHeight / 4
+                                                                                          : renderCellHeight / 2;
+        const int y = (firstRow + row) * renderCellHeight + insideRow;
+        for (int column = 0; column < figureColumns; ++column)
+            redCells += isSamePixel(at(rgba, width, column * renderCellWidth + renderCellWidth / 2, y), red) ? 1 : 0;
+    }
+    CHECK_EQ(redCells, figureColumns * figureRows);
+    CHECK_MSG(!isSamePixel(at(rgba, width, renderCellWidth / 2, (firstRow + figureRows) * renderCellHeight + renderCellHeight / 2), red),
+        "the row under the figure shows no tile");
 }
 
 // A frame captured through TerminalFrameInputs carries the terminal's published

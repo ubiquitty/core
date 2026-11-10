@@ -138,7 +138,7 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
 {
     m_inputs = BuildInputs {};
     m_cursorPresentationFrame = CursorPresentation::Frame {};
-    m_imageQuads.clear();
+    m_imageQuadCount = 0;
     m_richTextQuads.clear();
     m_richTextDrawings.clear();
     m_richTextHighlights.clear();
@@ -370,13 +370,17 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
         notePaintHeat();
 #endif
     if (didCapture && source.images) {
-        m_imageQuads.resize(Image::maxTerminalImagePlacementCount);
+        // The storage only grows, so a frame resolving into it zeroes nothing;
+        // the frame's quads are its first `m_imageQuadCount`.
+        const std::size_t capacity = imageQuadCapacity({ terminal.columns, terminal.rows });
+        if (m_imageQuads.size() < capacity)
+            m_imageQuads.resize(capacity);
         const int count = collectImageQuadsOrdered(&terminal,
             { m_metrics.cellWidth, m_metrics.cellHeight },
             { m_inputs.originInPixels.x, m_inputs.originInPixels.y },
             m_metrics.deviceScale, viewOffset, m_imageQuads,
             options.viewportSizeInPixels, m_metrics.presentationScale);
-        m_imageQuads.resize(static_cast<std::size_t>(count));
+        m_imageQuadCount = static_cast<std::size_t>(std::max(count, 0));
     }
     if (didCapture && !terminal.richTextBlocks.isEmpty())
         collectRichTextQuads(terminal, captureOptions);
@@ -731,7 +735,7 @@ bool TerminalFrameInputs::captureSource(const FrameSource& source, const Termina
 {
     m_inputs = BuildInputs {};
     m_cursorPresentationFrame = CursorPresentation::Frame {};
-    m_imageQuads.clear();
+    m_imageQuadCount = 0;
     m_richTextQuads.clear();
     m_richTextDrawings.clear();
     m_richTextHighlights.clear();

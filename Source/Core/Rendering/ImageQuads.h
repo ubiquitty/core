@@ -5,7 +5,9 @@
 
 #include "Base/Geometry.h"
 #include "Core/Image/ImagePlacement.h"
+#include "Core/Image/TerminalImage.h"
 #include "Forward.h"
+#include <cstddef>
 #include <span>
 
 // Every image quad a frame draws, from both sources that produce them: the
@@ -40,6 +42,23 @@ namespace Ubiquitty::Rendering {
 ///   - presentationScale: Uniform local scaling of cells and intrinsic image pixels.
 /// - Returns: The number of quads written to `out`.
 int collectImageQuads(const Ubiquitty::Terminal* terminal, FloatSize cellSizeInPixels, FloatPoint origin, float scale, int viewOffset, std::span<Image::ImageQuad> out, FloatSize drawableSizeInPixels = {}, float presentationScale = 1.0f);
+
+/// The most image quads one frame of a grid resolves.
+///
+/// A grid placement resolves to one quad and a Unicode placeholder cell to
+/// one quad, and every visible cell may hold a placeholder. A destination of
+/// this many quads receives every quad ``collectImageQuads`` and
+/// ``Kitty::resolvePlaceholders`` write for the grid.
+///
+/// - Parameter grid: The visible grid.
+/// - Returns: The placement table's size plus the grid's cell count. A
+///   non-positive extent holds no cells.
+constexpr std::size_t imageQuadCapacity(GridSize grid)
+{
+    const std::size_t columns = grid.columns > 0 ? static_cast<std::size_t>(grid.columns) : 0;
+    const std::size_t rows = grid.rows > 0 ? static_cast<std::size_t>(grid.rows) : 0;
+    return static_cast<std::size_t>(Image::maxTerminalImagePlacementCount) + columns * rows;
+}
 
 /// The destination span, named for the language seam: Swift imports a span
 /// only through an alias.
