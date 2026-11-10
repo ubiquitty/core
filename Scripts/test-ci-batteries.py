@@ -406,6 +406,18 @@ class BatteryTests(unittest.TestCase):
                         self.assertIn(required, order)
                         self.assertLess(order.index(required), order.index(stage.key))
 
+    def test_lavapipe_manifest_is_the_one_mesa_installed(self):
+        with tempfile.TemporaryDirectory(prefix="ubq-icd-") as scratch:
+            directory = Path(scratch)
+            self.assertEqual(batteries.lavapipe_manifest(directory), str(directory / "lvp_icd.json"))
+            for name in ("lvp_icd.json", "lvp_icd.x86_64.json"):
+                with self.subTest(name=name):
+                    for stale in directory.iterdir():
+                        stale.unlink()
+                    (directory / "intel_icd.json").write_text("{}")
+                    (directory / name).write_text("{}")
+                    self.assertEqual(batteries.lavapipe_manifest(directory), str(directory / name))
+
     def test_first_failure_stops_and_records_remaining_stages(self):
         manifest = tuple(batteries.Stage(str(index), f"stage {index}", "true") for index in range(4))
         executed = []
