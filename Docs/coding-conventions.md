@@ -434,18 +434,38 @@ explicit sharing of writable data"]. Allowed:
   model do not assume a UI thread or dispatcher. Runtime and frontend adapters
   coordinate threads and hold the required lock before model access.
 - **The model lock is held through `ModelLockHold`, and a frontend's per-tick
-  calls do not take it.** Clang's thread-safety analysis
-  (`UBIQUITTY_OWNERSHIP_ANALYSIS`, `-Werror=thread-safety`) proves model state
-  is touched only under the lock: the model and the members it guards carry
-  `UBIQUITTY_GUARDED_BY(modelLockRole)`, and functions that read it
-  `UBIQUITTY_REQUIRES(modelLockRole)`. A `std::scoped_lock` over a `ModelLock`
-  grants the analysis nothing, so a function holding one cannot read the model.
-  A per-tick call a frontend makes is `UBIQUITTY_NONBLOCKING`, which Clang's
-  `-Wfunction-effects` proves takes no lock and waits on nothing, or is listed
-  in `Scripts/frame-path-blocking.txt` with the wait it still makes.
-  `Scripts/check-model-lock-holds.py` holds the frontend acquisitions, that
-  list, the plain std locks and the analysis escapes to ledger budgets that only
-  fall, and refuses a frame decision that branches on a selection.
+  calls do not take it.** Clang's thread-safety analysis and function-effect
+  analysis (`UBIQUITTY_OWNERSHIP_ANALYSIS`, `-Werror=thread-safety`,
+  `-Werror=function-effects`; configure refuses one without the other) check
+  the routes to the model, not the model itself:
+  - `Terminal` carries no annotation. The runtime's model is
+    `UBIQUITTY_POINTEE_GUARDED_BY(modelLockRole)` and is handed out only by
+    accessors that `UBIQUITTY_REQUIRES(modelLockRole)`, and by one counted
+    lend, `TerminalRuntime::lendModelTerminal()`, that reads nothing.
+  - Session state the lock protects is `UBIQUITTY_GUARDED_BY(modelLockRole)`.
+    A function handed a borrowed `Terminal&` is checked only where it declares
+    `UBIQUITTY_REQUIRES(modelLockRole)`; one that does not reads its model
+    unchecked, so a runtime or session function that reads a borrowed model
+    under the caller's lock declares it.
+  - A callback the parser makes through a PAL interface, which cannot name the
+    role, asserts the lock at its entry (`assertModelLockHeld()`), and a build
+    with assertions checks the holding thread.
+  - A public `TerminalSession` member that takes the lock declares
+    `UBIQUITTY_EXCLUDES(modelLockRole)`, so a caller that already holds it,
+    which would deadlock, does not compile.
+  - The role is one for every pane: holding one pane's lock satisfies a
+    requirement on another's.
+
+  A `std::scoped_lock` over a `ModelLock` grants the analysis nothing, so a
+  function holding one cannot read the model. A per-tick call a frontend
+  makes is `UBIQUITTY_NONBLOCKING`, which `-Wfunction-effects` proves takes no
+  lock and waits on nothing, or is listed in `Scripts/frame-path-blocking.txt`
+  with what it still does. `Scripts/check-model-lock-holds.py` holds every
+  acquisition in `TerminalSession.h` and `WorkspaceSession.h` and every tmux
+  locked run, the per-tick calls that wait, the plain std locks and every
+  analysis escape (unchecked functions, asserted capabilities, lambdas that
+  declare a requirement, a test's claim to own the model) to ledger budgets
+  that only fall, and refuses a frame decision that branches on a selection.
 - **Encapsulation must not add a lock or atomic-RMW to a per-cell / per-frame /
   per-byte hot path** without a measured justification. Prefer thread-local or
   per-instance ownership over a shared-and-locked singleton. When a lock is

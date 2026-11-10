@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "Harness.h"
+#include "SoleModelThread.h"
 
 // test_notification_sink.cpp — the session's own ShellClient, for a frontend
 // that installs none.
@@ -190,9 +191,7 @@ TEST(theNotificationQueueObeysTheDesktopNotificationCapability)
         REQUIRE(session != nullptr);
         session->start(24, 80);
         CHECK(session->installNotificationQueue());
-        Ubiquitty::Terminal* terminal = session->terminal();
-        REQUIRE(terminal != nullptr);
-        terminal->capabilityPolicy = &policy;
+        withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.capabilityPolicy = &policy; });
 
         // Each dialect, so none of the three reaches the desktop on a route
         // the other two are refused on.
@@ -202,7 +201,7 @@ TEST(theNotificationQueueObeysTheDesktopNotificationCapability)
 
         CHECK_EQ(policy.checks(), 3);
         CHECK(!session->hasPendingNotification());
-        terminal->capabilityPolicy = nullptr;
+        withSessionModel(*session, [](Ubiquitty::Terminal& model) { model.capabilityPolicy = nullptr; });
     }
 
     // And the other direction, which is what keeps the case above from passing
@@ -212,13 +211,11 @@ TEST(theNotificationQueueObeysTheDesktopNotificationCapability)
     REQUIRE(session != nullptr);
     session->start(24, 80);
     CHECK(session->installNotificationQueue());
-    Ubiquitty::Terminal* terminal = session->terminal();
-    REQUIRE(terminal != nullptr);
-    terminal->capabilityPolicy = &allowing;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.capabilityPolicy = &allowing; });
     feed(session.get(), "\x1b]9;Build finished\x07");
     CHECK_EQ(allowing.checks(), 1);
     CHECK_EQ(drain(session.get()).size(), std::size_t { 1 });
-    terminal->capabilityPolicy = nullptr;
+    withSessionModel(*session, [](Ubiquitty::Terminal& model) { model.capabilityPolicy = nullptr; });
 }
 
 /// The drain raises the event, and only when a banner arrived.
@@ -296,9 +293,7 @@ TEST(theNotificationQueueYieldsToAFrontendThatInstalledItsOwnClient)
     session->start(24, 80);
 
     RecordingShellClient client;
-    Ubiquitty::Terminal* terminal = session->terminal();
-    REQUIRE(terminal != nullptr);
-    terminal->shellClient = &client;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.shellClient = &client; });
     CHECK(!session->installNotificationQueue());
 
     feed(session.get(), "\x1b]777;notify;Title here;Body here\x1b\\");
@@ -309,7 +304,7 @@ TEST(theNotificationQueueYieldsToAFrontendThatInstalledItsOwnClient)
     CHECK(client.body == "Body here");
     CHECK(!session->hasPendingNotification());
 
-    terminal->shellClient = nullptr;
+    withSessionModel(*session, [](Ubiquitty::Terminal& model) { model.shellClient = nullptr; });
 }
 
 UBIQUITTY_TEST_MAIN()

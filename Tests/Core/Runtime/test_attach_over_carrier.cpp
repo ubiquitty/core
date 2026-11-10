@@ -4,6 +4,7 @@
 #include "Harness.h"
 #include "Platform/StreamDouble.h"
 #include "ScreenPlaneFixture.h"
+#include "SoleModelThread.h"
 #include "WorkspaceStructureFixture.h"
 
 // test_attach_over_carrier.cpp — the attach door an embedder supplies the carrier through.
@@ -540,7 +541,7 @@ TEST(aWorkspacePresentationMovesAndReordersWithoutReplacingItsPanes)
     REQUIRE(pane);
     Ubiquitty::Terminal* terminal = nullptr;
     {
-        const std::scoped_lock hold(*pane->modelLockPointer());
+        const Ubiquitty::ModelLockHold hold(*pane->modelLockPointer());
         terminal = pane->paneView().terminal;
     }
     auto moved = std::move(workspace.windows[0].tabs[0]);
@@ -561,7 +562,7 @@ TEST(aWorkspacePresentationMovesAndReordersWithoutReplacingItsPanes)
     CHECK(presentation.windows()[1].tabs[1].id == Layout::TabID { 3 });
     CHECK(presentation.session(Layout::PaneID { 2 }) == pane);
     {
-        const std::scoped_lock hold(*pane->modelLockPointer());
+        const Ubiquitty::ModelLockHold hold(*pane->modelLockPointer());
         CHECK(pane->paneView().terminal == terminal);
     }
     CHECK(made.made == 5);
@@ -1232,8 +1233,8 @@ TEST(anAdoptedHostedPaneLinkUsesItsRealOwnersPublicationAndClock)
     REQUIRE(observer.frames.size() == 1);
     CHECK(observer.frames.front().frameClass == Ubiquitty::Protocol::Sync::FrameClass::Structural);
     CHECK(observer.heard == now);
-    CHECK(session->paneView().hasFrameNotifications);
     session->lockForRead();
+    CHECK(session->paneView().hasFrameNotifications);
     const auto publication = host.panePublicationHandle(1, *session->paneView().terminal);
     session->unlockForRead();
     REQUIRE(publication);
@@ -2894,7 +2895,10 @@ TEST(aDetachedSessionAttachesAgainOnTheSameTerminal)
     CHECK(!session->isRemoteAttached());
     CHECK_MSG(session->attachRemoteOverCarrier(address, 12, queueingLoop()),
         "a session whose remote half was detached refused the next attach");
-    CHECK(session->terminal() != nullptr);
+    {
+        const Ubiquitty::ModelLockHold hold(*session->modelLockPointer());
+        CHECK(session->terminal() != nullptr);
+    }
     session->close();
     pumpPostedWork();
     releaseTerminalSession(session);
@@ -3302,8 +3306,11 @@ TEST(aScrollPastTheBackfillWantsTheGapOnceAndFillsIt)
     std::unique_ptr<TerminalSession, decltype(&releaseTerminalSession)> session(TerminalSession::make(configuration), releaseTerminalSession);
     REQUIRE(session);
     session->start(24, 80);
-    REQUIRE(session->terminal());
-    (void)Runtime::seedTerminalConfiguration(*session->terminal(), configuration);
+    {
+        const Ubiquitty::ModelLockHold hold(*session->modelLockPointer());
+        REQUIRE(session->terminal());
+        (void)Runtime::seedTerminalConfiguration(*session->terminal(), configuration);
+    }
     CountingFactory factory;
     UbiquittyTest::HostScreen host(7, 17);
     setScrollbackLimit(&host.terminal(), 10'000);
@@ -4436,15 +4443,18 @@ TEST(aThinClientHoldsTheImagesItsHostPlaced)
     pumpPostedWork();
     CHECK(connection.counters().imageTransfersSent == 1);
 
-    Ubiquitty::Terminal* mirror = session->terminal();
-    REQUIRE(mirror != nullptr);
     bool isPlaced = false;
-    for (int index = 0; index < Ubiquitty::Image::maxTerminalImageCount; ++index) {
-        const Ubiquitty::Image::TerminalImage* image = Ubiquitty::Image::stored(mirror, index);
-        if (!image || image->width != 24 || image->height != 24)
-            continue;
-        for (const Ubiquitty::Image::TerminalImagePlacement& placement : mirror->images.placements)
-            isPlaced = isPlaced || (placement.used && placement.imageID == image->imageID);
+    {
+        const Ubiquitty::ModelLockHold hold(*session->modelLockPointer());
+        Ubiquitty::Terminal* mirror = session->terminal();
+        REQUIRE(mirror != nullptr);
+        for (int index = 0; index < Ubiquitty::Image::maxTerminalImageCount; ++index) {
+            const Ubiquitty::Image::TerminalImage* image = Ubiquitty::Image::stored(mirror, index);
+            if (!image || image->width != 24 || image->height != 24)
+                continue;
+            for (const Ubiquitty::Image::TerminalImagePlacement& placement : mirror->images.placements)
+                isPlaced = isPlaced || (placement.used && placement.imageID == image->imageID);
+        }
     }
     CHECK_MSG(isPlaced, "the client's terminal holds no placed copy of the image the host decoded");
     const std::uint32_t screenDirty = 1u << static_cast<unsigned>(Ubiquitty::Runtime::EventKind::ScreenDirty);
@@ -4623,6 +4633,8 @@ TEST(aHostPaneTitlesItsProcessExactlyAsALocalPaneDoes)
     stream->records = { login, shell };
     stream->scriptedForegroundName = "zsh"; // the executable's file name, as proc_pidpath reads it
     stream->foregroundGroup = 4101;
+    // A runtime this thread drives alone, with no lock of its own.
+    ownModelOnTestThread();
     auto adoption = runtime.adoptStream(std::move(stream));
     REQUIRE(adoption.has_value());
     ModelLockHost drainHost;

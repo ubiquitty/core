@@ -160,6 +160,7 @@ TEST(sessionStartDeclaresBothRendererCapabilitiesIndependently)
         std::unique_ptr<TerminalSession, decltype(&releaseTerminalSession)> session(TerminalSession::make(), releaseTerminalSession);
         REQUIRE(session);
         session->start(4, 20, declaration.drawnText);
+        const Ubiquitty::ModelLockHold hold(*session->modelLockPointer());
         const auto* terminal = session->terminal();
         REQUIRE(terminal);
         CHECK(terminal->drawsSizedText == declaration.drawsSized);

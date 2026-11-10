@@ -653,7 +653,13 @@ public:
     ///   raw input with no bytes.
     bool send(const PaneInput& input) override;
 
-    [[nodiscard]] PaneView view() override;
+    [[nodiscard]] PaneView view() override UBIQUITTY_REQUIRES(modelLockRole);
+
+    /// The replica this link presents, as an identity only: to test for a
+    /// model or hand it to an owner. Nothing reads the model through it.
+    ///
+    /// - Returns: The replica, the terminal ``view()`` lends.
+    [[nodiscard]] Ubiquitty::Terminal* terminalIdentity() const { return m_term; }
     [[nodiscard]] std::optional<std::uint8_t> lineEraseCharacter() const override;
     [[nodiscard]] bool wantHistory(Protocol::Sync::HistoryPriority, std::span<const Protocol::Sync::LineRange>) override;
     void setViewOffset(int rowsAboveTail) override;
@@ -1220,6 +1226,12 @@ public:
     bool queryTransportStats(Ubiquitty::Transport::TransportStats& out) const;
 
 private:
+    /// ``view()`` for the session thread, the only writer of the replica and
+    /// its history cache, which reads them with no lock.
+    ///
+    /// - Returns: The replica, its history and its facts.
+    [[nodiscard]] PaneView viewOnSessionThread();
+
     friend struct RemoteSessionDatagramIngressAccess;
     friend struct RemoteSessionWindowCloseAccess;
     friend struct RemoteSessionCarrierPictureAccess;

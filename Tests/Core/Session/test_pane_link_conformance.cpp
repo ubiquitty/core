@@ -22,6 +22,7 @@
 #include "Harness.h"
 #include "LoopbackPaneLink.h"
 #include "Platform/StreamDouble.h"
+#include "SoleModelThread.h"
 
 #include "Core/Protocol/Sync/Attachment.h"
 #include "Core/Protocol/Sync/Connection.h"
@@ -372,7 +373,11 @@ public:
     /// Reads the view; the core's terminal is written only on this thread.
     ///
     /// - Parameter reader: Reads the view.
-    void readView(const std::function<void(const Session::PaneView&)>& reader) { reader(m_core->view()); }
+    void readView(const std::function<void(const Session::PaneView&)>& reader)
+    {
+        ownModelOnTestThread();
+        reader(m_core->view());
+    }
 
 private:
     /// The session and daemon instance the host names: the pane is
@@ -467,7 +472,11 @@ public:
     /// Reads the view; the loopback has no lock to take.
     ///
     /// - Parameter reader: Reads the view.
-    void readView(const std::function<void(const Session::PaneView&)>& reader) { reader(m_link.view()); }
+    void readView(const std::function<void(const Session::PaneView&)>& reader)
+    {
+        ownModelOnTestThread();
+        reader(m_link.view());
+    }
 
 private:
     /// Feeds the host terminal what its program was written since the last

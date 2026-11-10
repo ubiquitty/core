@@ -825,7 +825,7 @@ public:
     /// Lends the client's replica of the pane, its history and its facts.
     ///
     /// - Returns: The view; its pointers expire at the next carry.
-    [[nodiscard]] Ubiquitty::Session::PaneView view() override
+    [[nodiscard]] Ubiquitty::Session::PaneView view() override UBIQUITTY_REQUIRES(Ubiquitty::modelLockRole)
     {
         return { .terminal = m_clientEnd.paneTerminal(m_handle), .history = m_clientEnd.historyCache(m_handle), .facts = m_clientEnd.paneFacts(m_handle) };
     }

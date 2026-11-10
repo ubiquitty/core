@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "Harness.h"
+#include "SoleModelThread.h"
 
 // test_trigger_effects.cpp — what a matched trigger asks a frontend to do, and
 // the session's queue that carries it to a frontend installing no client.
@@ -371,12 +372,10 @@ TEST(theTriggerQueueYieldsToAFrontendThatInstalledItsOwnClient)
     REQUIRE(session != nullptr);
     session->start(24, 80);
 
-    Ubiquitty::Terminal* terminal = session->terminal();
-    REQUIRE(terminal != nullptr);
     // The session installed its queue at start; a frontend with its own client
     // replaces it by assignment, and asking again must not take it back.
     RecordingTriggerClient client;
-    terminal->triggerClient = &client;
+    withSessionModel(*session, [&](Ubiquitty::Terminal& model) { model.triggerClient = &client; });
     CHECK(!session->installTriggerQueue());
 
     Cfg::Values configuration;
@@ -386,7 +385,7 @@ TEST(theTriggerQueueYieldsToAFrontendThatInstalledItsOwnClient)
     CHECK_EQ(client.calls, 1);
     CHECK(!session->hasPendingTriggerMatch());
 
-    terminal->triggerClient = nullptr;
+    withSessionModel(*session, [](Ubiquitty::Terminal& model) { model.triggerClient = nullptr; });
 }
 
 UBIQUITTY_TEST_MAIN()

@@ -1234,8 +1234,11 @@ private:
         parameters.drawsSizedText = drawsSizedText(m_drawnText);
         parameters.drawsProportionalText = drawsProportionalText(m_drawnText);
         session->start(parameters);
-        if (Ubiquitty::Terminal* term = session->terminal())
-            m_lastLaunchReport = seedTerminalConfiguration(*term, config);
+        {
+            const ModelLockHold hold(*session->modelLockPointer());
+            if (Ubiquitty::Terminal* term = session->terminal())
+                m_lastLaunchReport = seedTerminalConfiguration(*term, config);
+        }
         if (m_clientInstaller != nullptr)
             m_clientInstaller(m_clientInstallerContext, *session);
         return session;
@@ -1274,8 +1277,11 @@ private:
         parameters.drawsSizedText = drawsSizedText(m_drawnText);
         parameters.drawsProportionalText = drawsProportionalText(m_drawnText);
         session->start(parameters);
-        if (Ubiquitty::Terminal* term = session->terminal())
-            m_lastLaunchReport = seedTerminalConfiguration(*term, config);
+        {
+            const ModelLockHold hold(*session->modelLockPointer());
+            if (Ubiquitty::Terminal* term = session->terminal())
+                m_lastLaunchReport = seedTerminalConfiguration(*term, config);
+        }
         if (!session->launch(command)) {
             session->close();
             releaseTerminalSession(session);

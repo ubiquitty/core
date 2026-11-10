@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "Harness.h"
+#include "SoleModelThread.h"
 
 // test_workspace_clients.cpp — the workspace model's terminal-client seam
 // (Core/Runtime/WorkspaceSession.h): every session the model makes goes
@@ -86,7 +87,11 @@ void installClients(void* context, TerminalSession& session)
 {
     auto* log = static_cast<InstallLog*>(context);
     ++log->installedCount;
-    Ubiquitty::Terminal* term = session.terminal();
+    Ubiquitty::Terminal* term = nullptr;
+    {
+        const Ubiquitty::ModelLockHold hold(*session.modelLockPointer());
+        term = session.terminal();
+    }
     if (term == nullptr) {
         log->sawNullTerminal = true;
         return;
@@ -98,7 +103,10 @@ void installClients(void* context, TerminalSession& session)
     else
         log->didSeeIngestRunning = true;
     auto client = std::make_unique<StubClipboard>();
-    term->clipboardClient = client.get();
+    {
+        const Ubiquitty::ModelLockHold hold(*session.modelLockPointer());
+        term->clipboardClient = client.get();
+    }
     log->lastAttached = client.get();
     session.adoptClientOwnership(std::move(client), [](Ubiquitty::Terminal& terminal, Ubiquitty::ClipboardClient& owned) {
         if (terminal.clipboardClient.get() == &owned) {
@@ -144,9 +152,13 @@ TEST(testEverySessionTheModelMakesGoesThroughTheInstaller)
     // out — the seam delivered a live attachment, not a callback for show —
     // and it is the session-owned one the installer minted last.
     TerminalSession* session = model.session(split.createdPane);
-    CHECK(session != nullptr && session->terminal() != nullptr);
+    CHECK(session != nullptr);
+    if (session) {
+        const Ubiquitty::ModelLockHold hold(*session->modelLockPointer());
+        CHECK(session->terminal() != nullptr);
+    }
     CHECK(log.lastAttached != nullptr);
-    CHECK(session->terminal()->clipboardClient.get() == log.lastAttached);
+    CHECK(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.clipboardClient.get(); }) == log.lastAttached);
 }
 
 TEST(testTheInstallerRunsBeforeIngestStarts)
@@ -173,8 +185,12 @@ TEST(testAModelWithNoInstallerMakesClientlessSessions)
     const auto surface = model.addWindowSurface();
     CHECK(surface != Ubiquitty::Session::Layout::invalidSurface);
     TerminalSession* session = model.session(model.focusedPane(surface));
-    CHECK(session != nullptr && session->terminal() != nullptr);
-    CHECK(session->terminal()->clipboardClient.get() == nullptr);
+    CHECK(session != nullptr);
+    if (session) {
+        const Ubiquitty::ModelLockHold hold(*session->modelLockPointer());
+        CHECK(session->terminal() != nullptr);
+    }
+    CHECK(withSessionModel(*session, [&](Ubiquitty::Terminal& model) { return model.clipboardClient.get(); }) == nullptr);
 }
 
 TEST(testTheProcessDefaultSeedsAModelMadeAfterIt)
@@ -201,7 +217,7 @@ TEST(testAPostedClipboardResolveDrivesTheCompletionOnTheModelThread)
     parameters.rows = 24;
     parameters.columns = 80;
     session->start(parameters);
-    Ubiquitty::Terminal* term = session->terminal();
+    Ubiquitty::Terminal* term = withSessionModel(*session, [](Ubiquitty::Terminal& model) { return &model; });
     CHECK(term != nullptr);
     // Attached before ingest starts, the way the installer seam does it, and
     // the read policy prompts so the read defers to the frontend.
@@ -234,11 +250,13 @@ TEST(testAdoptedSessionClientsResolveAndDetachFromTheirOwnModel)
     CHECK(owner && adapter);
     owner->start(24, 80);
     adapter->start(24, 80);
-    auto* anchor = adapter->terminal();
-    auto* external = owner->terminal();
+    auto* anchor = withSessionModel(*adapter, [](Ubiquitty::Terminal& model) { return &model; });
+    auto* external = withSessionModel(*owner, [](Ubiquitty::Terminal& model) { return &model; });
     adapter->adoptExternalTerminal(external, owner->modelLockAddressForAdoption());
     WorkspaceSession::setDefaultTerminalClientInstaller([](void*, TerminalSession& session) {
         auto client = std::make_unique<StubClipboard>();
+        // The installer runs under the model lock the workspace takes for it.
+        session.modelLockPointer()->assertHeld();
         session.terminal()->clipboardClient = client.get();
         session.adoptClientOwnership(std::move(client), [](Ubiquitty::Terminal& terminal, Ubiquitty::ClipboardClient& owned) {
             if (terminal.clipboardClient.get() == &owned) {
@@ -258,7 +276,7 @@ TEST(testAdoptedSessionClientsResolveAndDetachFromTheirOwnModel)
     CHECK(anchor->outputLength == 0);
     adapter->endExternalAdoption();
     CHECK(!external->clipboardClient);
-    CHECK(adapter->terminal() == anchor);
+    CHECK(withSessionModel(*adapter, [](Ubiquitty::Terminal& model) { return &model; }) == anchor);
     releaseTerminalSession(adapter);
     releaseTerminalSession(owner);
 }
@@ -530,7 +548,7 @@ TEST(testTmuxPaneRepliesDrainBulkBytesAndKeepTheOrigin)
     auto* session = TerminalSession::make();
     CHECK(session);
     session->start(24, 80);
-    auto* terminal = session->terminal();
+    auto* terminal = withSessionModel(*session, [](Ubiquitty::Terminal& model) { return &model; });
     std::string payload;
     for (int index = 0; index < 4096; ++index) {
         payload.push_back(static_cast<char>(index % 256));
