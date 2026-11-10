@@ -464,9 +464,9 @@ public:
     /// by several bites, so it never picks the bytes a key sends. A pane whose
     /// ingest loop drains its own model encodes from the modes the drain
     /// published at its last release of the model lock, which no model a
-    /// locked encode could read is newer than. A programmed DECUDK table has
-    /// no such publication, and an adopted, remote or fed model no such
-    /// drain, so those encode from the locked model.
+    /// locked encode could read is newer than, and from the DECUDK table the
+    /// drain published before them. An adopted, remote or fed model has no
+    /// such drain, so it encodes from the locked model.
     ///
     /// - Parameters:
     ///   - press: What the frontend knows; see ``KeyPress``.
@@ -474,11 +474,8 @@ public:
     /// - Returns: How many bytes, whether to echo, and the resolved transition.
     [[nodiscard]] KeyEncoding encodeKey(const KeyPress& press, Keys::Keymap::EncodedKeyBytes output) UBIQUITTY_EXCLUDES(modelLockRole)
     {
-        if (isModelDrainedByIngestLoop()) {
-            const ModeSnapshot modes = m_runtime->link().keyModes.read();
-            if (modes.userDefinedKeyCount == 0)
-                return Runtime::encodeKey(modes, press, output, nullptr);
-        }
+        if (isModelDrainedByIngestLoop())
+            return Runtime::encodeKey(m_runtime->link().keyModes.read(), m_runtime->link(), press, output);
         const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)

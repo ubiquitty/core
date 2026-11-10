@@ -135,6 +135,7 @@ inline constexpr auto terminalHandoverLedger = std::to_array<HandoverLedgerEntry
     { "printerControlPrefix", HandoverCarriage::AtGround, HandoverBlocker::ParserMidSequence },
     { "printerControlPrefixLength", HandoverCarriage::AtGround, HandoverBlocker::ParserMidSequence },
     { "sessionLogFile", HandoverCarriage::AtGround, HandoverBlocker::ExternalSinkOpen },
+    { "userDefinedKeysGeneration", HandoverCarriage::Recomputed, HandoverBlocker::None },
     { "sessionLogCaptureEnabled", HandoverCarriage::Carried, HandoverBlocker::None },
     { "replyAuthority", HandoverCarriage::Carried, HandoverBlocker::None },
     { "allowTitleOperations", HandoverCarriage::Carried, HandoverBlocker::None },

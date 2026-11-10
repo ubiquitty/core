@@ -602,6 +602,7 @@ void initializeTerminal(Ubiquitty::Terminal& t, TerminalInitialization initializ
     // DECSLPP page memory: one page, page 0 current.
     // DECUDK: no programmed keys, unlocked (RIS clears + unlocks).
     t.udk.reset();
+    ++t.userDefinedKeysGeneration;
     t.modes.insertMode = false;
     t.modes.reverseVideo = false;
     // Permissive allow-* defaults, so ordinary apps work unconfigured. Hosts gate as needed.

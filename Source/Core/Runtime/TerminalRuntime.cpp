@@ -1257,8 +1257,15 @@ bool TerminalRuntime::applyPostedUserInput(DrainHost& host)
 
 void TerminalRuntime::publishKeyModes()
 {
-    if (const Ubiquitty::Terminal* term = modelTerminal())
-        publishKeyModes(sampleModes(*term));
+    const Ubiquitty::Terminal* term = modelTerminal();
+    if (!term)
+        return;
+    // The table goes out before the modes that count it, so an encode that
+    // reads the modes and then the table never meets an older table than the
+    // count asked for.
+    if (term->udk && term->userDefinedKeysGeneration != m_publishedUserDefinedKeysGeneration)
+        publishUserDefinedKeys(*term);
+    publishKeyModes(sampleModes(*term));
 }
 
 void TerminalRuntime::publishKeyModes(const ModeSnapshot& modes)
@@ -1273,8 +1280,10 @@ void TerminalRuntime::publishUserDefinedKeys(const Ubiquitty::Terminal& term)
 {
     // Only a terminal that has taken a DECUDK carries a table, so the common
     // session publishes nothing here.
-    if (term.udk)
-        m_link.userDefinedKeys.publish(*term.udk);
+    if (!term.udk)
+        return;
+    m_link.userDefinedKeys.publish(*term.udk);
+    m_publishedUserDefinedKeysGeneration = term.userDefinedKeysGeneration;
 }
 
 void TerminalRuntime::publishReads(const RuntimeSnapshot& snap, Ubiquitty::Terminal* term)

@@ -19,7 +19,7 @@ liveReadDecline nowait reads the model inside the live read's hold
 lockForRead waits the live read waits for the model lock
 nextAnimationDelay nowait reads the writer's publication, its own or an adopted pane's, behind a thread assertion and the fake-tick environment
 presentationHoldTicksRemaining nowait reads the writer's publication, its own or an adopted pane's, and the monotonic clock
-sendKey waits encodes the key and notes the activity under the model lock where no ingest loop drains the pane's own model (adopted, remote, fed) or a DECUDK table is programmed
+sendKey waits encodes the key and notes the activity under the model lock where no ingest loop drains the pane's own model (adopted, remote, fed)
 setPresentedViewOffset nowait stores the offset; a remote link keeps the newest in a register and posts one session turn, which asks its host for history
 setSyncFrameCaptureGeometry nowait publishes the registration, which whoever next holds the model lock folds in
 shouldWithholdCapture nowait reads the model inside the live read's hold
