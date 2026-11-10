@@ -6776,23 +6776,26 @@ public:
     ///    ``FrameRoute::Captured``.
     /// 3. With none waiting, a view that is not being resized is declined
     ///    while the coherence rule, an open synchronized update or an erase's
-    ///    arriving redraw holds the frame (``shouldWithholdFrame``). An update
-    ///    or an erase holds it for a budget, which the supply carries
-    ///    (``presentationHoldTicksRemaining``); the rule's release wakes the
-    ///    view.
+    ///    hold holds the frame (``shouldWithholdFrame``). A view being resized
+    ///    whose captures are armed is declined only while an update is open or
+    ///    the redraw behind a whole-screen erase is still arriving
+    ///    (``resizeFrameHold``). An update or an erase holds the frame for a
+    ///    budget, which the supply carries; the rule's release wakes the view.
     /// 4. A view that does not keep search live is declined while a saturated
     ///    drain's next capture is due inside the publish window
     ///    (``shouldSkipLiveReadForSaturation``).
     /// 5. With none waiting, a presented view whose captures are armed has
-    ///    asked the owner for one (``FrameLane::raiseDemand``), served at the
-    ///    next frame the rule admits or the owner's next turn, and waits for
-    ///    it: ``FrameDecline::AwaitingCapture``, woken by its publication.
+    ///    asked the owner for one (``FrameLane::raiseDemand``), served by the
+    ///    rule step 3 judged it by at the next frame the coherence rule admits
+    ///    or the owner's next turn, and waits for it:
+    ///    ``FrameDecline::AwaitingCapture``, woken by its publication.
     /// 6. Otherwise the view reads the model: ``FrameRoute::LiveRead``. A view
-    ///    being resized or keeping search live still does.
+    ///    keeping search live, and one whose captures are not armed, still
+    ///    does.
     ///
     /// Reads published state only, with one exception kept from the withhold
-    /// it ports: while a synchronized update is open, or for a terminal another
-    /// session parses, step 3 judges the block under the model lock.
+    /// it ports: while a synchronized update is open in a remote replica or a
+    /// fed pane, step 3 judges the block under the model lock.
     ///
     /// - Parameters:
     ///   - demand: The view's facts at this tick.
@@ -6815,18 +6818,21 @@ public:
         // the next frame the rule admits, whichever comes first.
         const bool isLaneServed = m_isSyncCaptureArmed.load(std::memory_order_acquire) && m_isSyncFramePresented.load(std::memory_order_relaxed);
         if (isLaneServed) {
-            static_cast<void>(m_frameLane.raiseDemand(PAL::monotonicMicros()));
+            const FrameLane::DemandRule rule = demand.isResizing ? FrameLane::DemandRule::Resize : FrameLane::DemandRule::Coherence;
+            static_cast<void>(m_frameLane.raiseDemand(PAL::monotonicMicros(), rule));
             m_loop.raiseWake();
         }
-        if (!demand.isResizing) {
-            const FrameHold hold = frameHold(demand.nowTicks);
+        // A resize whose captures are not armed is judged by the live read,
+        // under its lock.
+        if (!demand.isResizing || isLaneServed) {
+            const FrameHold hold = demand.isResizing ? resizeFrameHold(demand.nowTicks) : frameHold(demand.nowTicks);
             supply.decline = hold.decline;
-            if (supply.decline == FrameDecline::HeldByPresentation)
+            if (supply.decline == FrameDecline::HeldByPresentation || supply.decline == FrameDecline::RedrawArriving)
                 supply.askAgainTicks = std::max<std::uint32_t>(1, hold.askAgainTicks);
             if (supply.decline != FrameDecline::None)
                 return nullptr;
         }
-        if (!demand.keepsSearchLive && (shouldSkipLiveReadForSaturation() || (isLaneServed && !demand.isResizing))) {
+        if (!demand.keepsSearchLive && (shouldSkipLiveReadForSaturation() || isLaneServed)) {
             supply.decline = isOwnerStalled() ? FrameDecline::OwnerStalled : FrameDecline::AwaitingCapture;
             return nullptr;
         }
@@ -6851,19 +6857,15 @@ public:
     ///   and when to ask again.
     [[nodiscard]] LiveReadAnswer liveReadDecline(Ubiquitty::Terminal& terminal, const FrameDemand& demand) UBIQUITTY_REQUIRES(modelLockRole)
     {
-        const Modes::SyncOutput::BlockMark block = Modes::SyncOutput::blockMark(terminal);
-        const bool isHeld = demand.isResizing ? Modes::SyncOutput::shouldWithholdFrame(terminal, demand.nowTicks)
-                                              : shouldWithholdCapture(terminal, demand.nowTicks);
-        // The resize check stamps and expires the block as the capture check
-        // does, and publishes what it wrote the same way.
-        if (demand.isResizing && Modes::SyncOutput::blockMark(terminal) != block)
-            republishModel();
-        if (isHeld) {
+        if (demand.isResizing) {
+            const FrameHold hold = resizeHoldUnderLock(terminal, demand.nowTicks);
+            const bool isBlockHeld = hold.decline == FrameDecline::HeldByPresentation;
+            return { .decline = isBlockHeld ? FrameDecline::BlockOpenUnderLock : hold.decline, .askAgainTicks = hold.askAgainTicks };
+        }
+        if (shouldWithholdCapture(terminal, demand.nowTicks)) {
             const std::uint32_t budget = m_runtime->presentationHoldTicksRemaining(terminal, demand.nowTicks, PAL::monotonicMicros());
             return { .decline = FrameDecline::BlockOpenUnderLock, .askAgainTicks = std::max<std::uint32_t>(1, budget) };
         }
-        if (demand.isResizing && isEraseRedrawArriving(terminal))
-            return { .decline = FrameDecline::RedrawArriving, .askAgainTicks = std::max<std::uint32_t>(1, m_runtime->eraseRedrawTicksRemaining(PAL::monotonicMicros())) };
         return {};
     }
 
@@ -9675,7 +9677,7 @@ private:
         }
         if (isModelDrainedByIngestLoop())
             return ownerJudgedFrameHold(nowTicks, nowMicros);
-        return modelFrameHold(nowTicks, nowMicros);
+        return modelFrameHold(nowTicks, nowMicros, FrameLane::DemandRule::Coherence);
     }
 
     /// The hold of an update open in a model this session's ingest loop
@@ -9694,10 +9696,69 @@ private:
     /// - Returns: The presentation hold and its budget.
     [[nodiscard]] FrameHold ownerJudgedFrameHold(Ticks nowTicks, std::uint32_t nowMicros)
     {
-        static_cast<void>(m_frameLane.raiseDemand(PAL::monotonicMicros()));
+        static_cast<void>(m_frameLane.raiseDemand(PAL::monotonicMicros(), FrameLane::DemandRule::Coherence));
         m_loop.raiseWake();
         const std::uint32_t budget = m_runtime->presentationHoldTicksRemaining(publishedBlock(), nowTicks, nowMicros);
         return { .decline = FrameDecline::HeldByPresentation, .askAgainTicks = std::max<std::uint32_t>(1, budget) };
+    }
+
+    /// What holds the frame of a view being resized, whose captures are
+    /// armed: an open synchronized update, and the redraw behind a
+    /// whole-screen erase while it is still arriving. Neither the coherence
+    /// rule nor an erase's own hold holds a resize, each step of which asks
+    /// the program for a repaint.
+    ///
+    /// An update open in a model this session's ingest loop drains, or in an
+    /// adopted pane's, is judged from its published mark, as
+    /// ``ownerJudgedFrameHold`` judges it; in a remote replica or a fed pane,
+    /// under the model lock (``modelFrameHold``). The redraw is arriving while
+    /// the last check under the lock found it so
+    /// (``TerminalRuntime/eraseRedrawTicksRemaining(_:)``); the owner checks
+    /// again when it serves the view's demand.
+    ///
+    /// - Parameter nowTicks: Now, on the 60 Hz monotonic clock.
+    /// - Returns: The hold, or ``FrameDecline::None``, and the hold's budget.
+    [[nodiscard]] FrameHold resizeFrameHold(Ticks nowTicks) UBIQUITTY_EXCLUDES(modelLockRole)
+    {
+        const std::uint32_t nowMicros = PAL::monotonicMicros();
+        const Modes::SyncOutput::BlockMark block = publishedBlock();
+        if (block.isOpen) {
+            if (!m_externalTerminal && !isModelDrainedByIngestLoop())
+                return modelFrameHold(nowTicks, nowMicros, FrameLane::DemandRule::Resize);
+            const std::uint32_t budget = Modes::SyncOutput::ticksUntilHoldExpires(block.touchTicks, nowTicks);
+            return { .decline = FrameDecline::HeldByPresentation, .askAgainTicks = std::max<std::uint32_t>(1, budget) };
+        }
+        if (const std::uint32_t ticks = m_runtime->eraseRedrawTicksRemaining(nowMicros))
+            return { .decline = FrameDecline::RedrawArriving, .askAgainTicks = ticks };
+        return {};
+    }
+
+    /// The live resize's hold, judged under the model lock the caller holds:
+    /// an open synchronized update, which the check stamps on first sight and
+    /// expires as the capture's check does and publishes the same way, and
+    /// the redraw behind a whole-screen erase while it is still arriving
+    /// (``isEraseRedrawArriving(_:)``).
+    ///
+    /// - Parameters:
+    ///   - terminal: The model, borrowed under the caller's lock.
+    ///   - nowTicks: Now, on the 60 Hz monotonic clock.
+    /// - Returns: ``FrameDecline::HeldByPresentation`` for the update,
+    ///   ``FrameDecline::RedrawArriving`` for the redraw, or
+    ///   ``FrameDecline::None``, and the hold's budget.
+    [[nodiscard]] FrameHold resizeHoldUnderLock(Ubiquitty::Terminal& terminal, Ticks nowTicks) UBIQUITTY_REQUIRES(modelLockRole)
+    {
+        const std::uint32_t nowMicros = PAL::monotonicMicros();
+        const Modes::SyncOutput::BlockMark block = Modes::SyncOutput::blockMark(terminal);
+        const bool isBlockHeld = Modes::SyncOutput::shouldWithholdFrame(terminal, nowTicks);
+        if (Modes::SyncOutput::blockMark(terminal) != block)
+            republishModel();
+        if (isBlockHeld) {
+            const std::uint32_t budget = m_runtime->presentationHoldTicksRemaining(terminal, nowTicks, nowMicros);
+            return { .decline = FrameDecline::HeldByPresentation, .askAgainTicks = std::max<std::uint32_t>(1, budget) };
+        }
+        if (isEraseRedrawArriving(terminal))
+            return { .decline = FrameDecline::RedrawArriving, .askAgainTicks = std::max<std::uint32_t>(1, m_runtime->eraseRedrawTicksRemaining(nowMicros)) };
+        return {};
     }
 
     /// The hold the published facts decide alone, which waits on nothing: the
@@ -9743,19 +9804,25 @@ private:
 
     /// The hold the model decides, under its lock: the decision stamps a
     /// block on first sight and expires it, so it writes the model. An expiry
-    /// wakes the drain once the lock is released.
+    /// the coherence rule's check makes wakes the drain once the lock is
+    /// released.
     ///
     /// - Parameters:
     ///   - nowTicks: Now, on the 60 Hz monotonic clock.
     ///   - nowMicros: Now, in monotonic microseconds.
+    ///   - rule: Whether the view is being resized (``resizeHoldUnderLock``).
     /// - Returns: The hold, or ``FrameDecline::None``, and its budget, read
     ///   under the same hold of the lock.
-    [[nodiscard]] FrameHold modelFrameHold(Ticks nowTicks, std::uint32_t nowMicros) UBIQUITTY_EXCLUDES(modelLockRole)
+    [[nodiscard]] FrameHold modelFrameHold(Ticks nowTicks, std::uint32_t nowMicros, FrameLane::DemandRule rule) UBIQUITTY_EXCLUDES(modelLockRole)
     {
         CaptureWithhold withhold;
         std::uint32_t budget = 0;
         {
             const ModelLockHold hold(*m_activeLock);
+            if (rule == FrameLane::DemandRule::Resize) {
+                Ubiquitty::Terminal* terminal = modelTerm();
+                return terminal ? resizeHoldUnderLock(*terminal, nowTicks) : FrameHold {};
+            }
             if (auto* terminal = modelTerm()) {
                 withhold = withholdCapture(*terminal, nowTicks);
                 if (withhold.isHeld)
@@ -9951,7 +10018,9 @@ private:
     /// Serves the view's outstanding demand at the owner's turn, under the
     /// model lock: a capture of the model as the coherence rule last admitted
     /// it, unless something holds the frame, whose release captures instead.
-    /// An open update is stamped or expired here, as the view's check would.
+    /// A resizing view's demand is held only by what holds a resize
+    /// (``resizeHoldUnderLock``), and captures the model as it stands. An
+    /// open update is stamped or expired here, as the view's check would.
     void serveFrameDemand() UBIQUITTY_REQUIRES(modelLockRole)
     {
         m_ownerHeartbeatMicros.store(PAL::monotonicMicros() | 1u, std::memory_order_relaxed);
@@ -9959,7 +10028,13 @@ private:
             return;
         const std::uint64_t demanded = m_frameLane.demandSequence();
         Ubiquitty::Terminal* terminal = modelTerm();
-        if (!terminal || shouldWithholdCapture(*terminal, PAL::monotonicTicks()) || m_runtime->isFrameHeld())
+        if (!terminal)
+            return;
+        const Ticks nowTicks = PAL::monotonicTicks();
+        const bool isHeld = m_frameLane.demandRule() == FrameLane::DemandRule::Resize
+            ? resizeHoldUnderLock(*terminal, nowTicks).decline != FrameDecline::None
+            : shouldWithholdCapture(*terminal, nowTicks) || m_runtime->isFrameHeld();
+        if (isHeld)
             return;
         // A view with no armed, presented captures asked only for the update
         // to be judged, which it now is.

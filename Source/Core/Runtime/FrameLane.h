@@ -240,6 +240,16 @@ public:
     /// The most views one pane presents at once, each through a lane of its own.
     static constexpr int maxViewsPerPane = 4;
 
+    /// What the owner holds a demand's frame for before it serves it.
+    enum class DemandRule : std::uint8_t {
+        /// The coherence rule, an open synchronized update, and an erase's
+        /// hold.
+        Coherence,
+        /// A live resize's: an open synchronized update, and the redraw behind
+        /// a whole-screen erase while it is still arriving.
+        Resize,
+    };
+
     /// A capture the owner writes, with the selection resolved for it.
     struct Target {
         /// The slot claimed.
@@ -365,11 +375,15 @@ public:
     ///
     /// The view's side.
     ///
-    /// - Parameter nowMicros: Now, in monotonic microseconds; the start of
-    ///   the wait when no demand was outstanding.
+    /// - Parameters:
+    ///   - nowMicros: Now, in monotonic microseconds; the start of the wait
+    ///     when no demand was outstanding.
+    ///   - rule: What the owner holds the frame for; it replaces the rule of
+    ///     any demand still outstanding.
     /// - Returns: The demand's sequence.
-    std::uint64_t raiseDemand(std::uint32_t nowMicros) noexcept UBIQUITTY_NONBLOCKING
+    std::uint64_t raiseDemand(std::uint32_t nowMicros, DemandRule rule) noexcept UBIQUITTY_NONBLOCKING
     {
+        m_demandRule.store(rule, std::memory_order_relaxed);
         if (!isDemandOutstanding())
             m_demandSinceMicros.store(nowMicros | 1u, std::memory_order_relaxed);
         return m_demanded.fetch_add(1, std::memory_order_release) + 1;
@@ -396,6 +410,12 @@ public:
     ///
     /// - Returns: The demand's sequence.
     [[nodiscard]] std::uint64_t demandSequence() const noexcept { return m_demanded.load(std::memory_order_acquire); }
+
+    /// Returns the rule of the newest demand, read by the owner after it saw
+    /// that demand outstanding.
+    ///
+    /// - Returns: The rule.
+    [[nodiscard]] DemandRule demandRule() const noexcept { return m_demandRule.load(std::memory_order_relaxed); }
 
     /// Records that a published capture served every demand through
     /// `sequence`.
@@ -426,6 +446,8 @@ private:
     std::atomic<std::uint64_t> m_supplied { 0 };
     // When the outstanding demand was first raised; the view's to write.
     std::atomic<std::uint32_t> m_demandSinceMicros { 0 };
+    // The newest demand's rule, written before the demand is released.
+    std::atomic<DemandRule> m_demandRule { DemandRule::Coherence };
 };
 
 } // namespace Ubiquitty::Runtime
