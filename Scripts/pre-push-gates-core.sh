@@ -357,7 +357,8 @@ core_gate_ownership() {
         cmake -S . -B "$build" -G Ninja -DUBIQUITTY_FRONTEND=Core -DUBIQUITTY_BUILD_TESTS=ON \
         -DCMAKE_BUILD_TYPE=Debug -DUBIQUITTY_OWNERSHIP_ANALYSIS=ON
     [ -f "$build/CMakeCache.txt" ] || return 0
-    run_for "core" "ownership analysis build" cmake --build "$build" --parallel "$JOBS"
+    # As many compilers as the machine's memory and cores allow (Scripts/build_jobs.py).
+    run_for "core" "ownership analysis build" cmake --build "$build" --parallel "$(python3 "$UBQ_CORE_ROOT/Scripts/build_jobs.py")"
 }
 
 # The tiers of a checkout that holds ubiquitty-core and nothing above it. The

@@ -140,7 +140,7 @@ jobs:
           done
 
   linux:
-    # Three groups of the Linux battery on three runners, so the battery's wall
+    # Four groups of the Linux battery on four runners, so the battery's wall
     # time is its longest group rather than their sum. ci_reach.py reads the
     # battery as complete only when every group is.
     name: Linux battery (${{ matrix.group }})
@@ -159,6 +159,12 @@ jobs:
             families: ""
           - group: clang
             stages: --only setup --only quic --only fuzz --only pgo --only sanitizers
+            families: ""
+          # The ownership analyses compile the test tree once more, with Clang's
+          # thread-safety and function-effect checks forced on; a group of its
+          # own keeps that build off the clang group's sanitizer build.
+          - group: analysis
+            stages: --only setup
             families: core_gate_ownership
           - group: wasm
             stages: --only setup --only wasm-tools --only wasm-smoke
