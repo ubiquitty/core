@@ -260,11 +260,12 @@ image_id="$(docker image inspect --format '{{.Id}}' "$image")"
 
 # The runner's own variables go in by name: GITHUB_OUTPUT and
 # GITHUB_STEP_SUMMARY are files under RUNNER_TEMP that the battery appends to
-# and the runner reads after the step.
+# and the runner reads after the step. So do the compilers a step names: a job
+# that builds with the image's Clang (the ownership analyses) sets CC and CXX.
 passed=()
 while IFS= read -r name; do
     passed+=(-e "$name")
-done < <(compgen -e | grep -E '^(GITHUB_|RUNNER_|ACTIONS_|UBQ_|UBIQUITTY_|CCACHE_|CI$|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)$)')
+done < <(compgen -e | grep -E '^(GITHUB_|RUNNER_|ACTIONS_|UBQ_|UBIQUITTY_|CCACHE_|CI$|CC$|CXX$|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)$)')
 
 # The compiler cache lives beside the checkout, where the CI workflow restores
 # and saves it between runs; under root's home in the container it would start
