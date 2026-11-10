@@ -124,9 +124,10 @@ struct CaptureSpans {
     /// Whether the view's session took the frame's resolved one back.
     bool didAdopt = false;
     /// Whether the view's selection moved after the hand-off the frame
-    /// resolved: the spans are the frame's, and
-    /// ``TerminalSession::viewSelectionOverCapture`` resolves the view's own
-    /// over the frame.
+    /// resolved. From ``takeCapturedSelection`` the spans are then the frame's;
+    /// ``TerminalSession::takeFrame`` and
+    /// ``TerminalSession::viewSelectionOverCapture`` answer the view's own over
+    /// the frame instead.
     bool isViewAhead = false;
 };
 

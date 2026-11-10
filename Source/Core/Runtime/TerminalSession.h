@@ -6810,7 +6810,7 @@ public:
         if (!demand.keepsSearchLive) {
             if (Rendering::FrameCapture* capture = takeSyncFrame()) {
                 supply.route = FrameRoute::Captured;
-                supply.selection = selectionOverCapture(demand.selection, *capture, demand.selectionSpans, supply.selectionEnds);
+                supply.selection = selectionForTakenFrame(demand.selection, *capture, demand.selectionSpans, supply.selectionEnds);
                 return capture;
             }
         }
@@ -8531,7 +8531,9 @@ public:
     ///
     /// For a frame whose ``Selection::CaptureSpans/isViewAhead`` is set: the
     /// view moved its selection after the hand-off the frame resolved, so the
-    /// frame's spans show where it was. This resolves the selection as the
+    /// frame's spans show where it was. ``takeFrame`` answers these spans
+    /// itself; a view refilling a buffer that had no room for them all calls
+    /// this rather than ``selectionOverCapture``. This resolves the selection as the
     /// view holds it over the frame's grid (``Selection::viewSpansOverCapture``),
     /// leaving the view's session as it is; a frame only the owner can resolve
     /// it over answers the frame's own spans, as ``selectionOverCapture`` does.
@@ -8557,6 +8559,25 @@ public:
         if (const std::optional<Ubiquitty::Selection::CaptureSpans> own = Ubiquitty::Selection::viewSpansOverCapture(*selection, capture, out, ends))
             return *own;
         return selectionOverCapture(selection, capture, out, ends);
+    }
+
+    /// The selection a frame ``takeFrame`` hands a view draws: the frame's
+    /// resolution, or, for a view that moved its selection past it, the
+    /// view's own over the frame. Which spans are drawn depends on the
+    /// selection; whether and which frame is presented never does, which is
+    /// why this is apart from the frame decision.
+    ///
+    /// - Parameters:
+    ///   - selection: The caller-owned selection session.
+    ///   - capture: The frame being handed over, still held.
+    ///   - out: Receives the spans.
+    ///   - ends: Receives where the selection begins and ends on the frame.
+    /// - Returns: How many spans were written and how many the buffer needs.
+    [[nodiscard]] Ubiquitty::Selection::CaptureSpans selectionForTakenFrame(Ubiquitty::Selection::Session* selection,
+        const Rendering::FrameCapture& capture, Ubiquitty::Selection::ViewportSpans out, Ubiquitty::Selection::ViewportEnds& ends) noexcept
+    {
+        const Ubiquitty::Selection::CaptureSpans frames = selectionOverCapture(selection, capture, out, ends);
+        return frames.isViewAhead ? viewSelectionOverCapture(selection, capture, out, ends) : frames;
     }
 
     /// Selects the whole buffer, under the model lock.
