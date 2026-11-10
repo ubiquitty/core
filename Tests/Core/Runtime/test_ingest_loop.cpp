@@ -31,6 +31,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -39,6 +40,13 @@
 
 #include <fcntl.h>
 #include <unistd.h>
+
+#if defined(__APPLE__)
+#include <pthread/qos.h>
+#elif defined(__linux__)
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#endif
 
 using namespace Ubiquitty::Runtime;
 
@@ -53,6 +61,33 @@ namespace Ubiquitty::PAL {
 // every read with at most 1024 bytes however long the reader waits, where a
 // Linux pty read taken too soon catches the line discipline mid-copy and a
 // read taken once the slab has landed takes all of it.
+// The scheduling band the calling thread runs in, as the platform names it:
+// the QoS class on Darwin, the nice value on Linux.
+int currentThreadBand()
+{
+#if defined(__APPLE__)
+    return static_cast<int>(qos_class_self());
+#elif defined(__linux__)
+    return ::getpriority(PRIO_PROCESS, static_cast<id_t>(::syscall(SYS_gettid)));
+#else
+    return 0;
+#endif
+}
+
+// The threads that read a transport, and the bands they read in.
+struct ReadBands {
+    std::mutex lock;
+    std::set<std::thread::id> threads;
+    std::set<int> bands;
+
+    void noteRead()
+    {
+        std::lock_guard guard(lock);
+        threads.insert(std::this_thread::get_id());
+        bands.insert(currentThreadBand());
+    }
+};
+
 struct ReadShape {
     // Most bytes a read returns while the slab is still landing; 0 for no cap.
     int quantumBytes = 0;
@@ -65,9 +100,10 @@ struct ReadShape {
 
 class PrefilledEndpoint final : public PollableByteStream {
 public:
-    explicit PrefilledEndpoint(UnixFileDescriptor descriptor, ReadShape shape = {})
+    explicit PrefilledEndpoint(UnixFileDescriptor descriptor, ReadShape shape = {}, ReadBands* readBands = nullptr)
         : m_descriptor(std::move(descriptor))
         , m_shape(shape)
+        , m_readBands(readBands)
     {
     }
 
@@ -83,6 +119,8 @@ public:
         }
         const ssize_t count = ::read(m_descriptor.get(), buffer.data(), length);
         m_lastReturn = std::chrono::steady_clock::now();
+        if (count > 0 && m_readBands)
+            m_readBands->noteRead();
         if (count > 0)
             return static_cast<int>(count);
         if (count == 0)
@@ -103,21 +141,22 @@ public:
         UnixFileDescriptor duplicate(::dup(m_descriptor.get()));
         if (!duplicate)
             return nullptr;
-        return std::make_unique<PrefilledEndpoint>(std::move(duplicate), m_shape);
+        return std::make_unique<PrefilledEndpoint>(std::move(duplicate), m_shape, m_readBands);
     }
 
 private:
     UnixFileDescriptor m_descriptor;
     ReadShape m_shape;
+    ReadBands* m_readBands;
     std::chrono::steady_clock::time_point m_lastReturn {};
 };
 
 // A session transport whose whole stream is on disk before ingest starts.
 class PrefilledStream final : public Stream, private ProcessFacts {
 public:
-    explicit PrefilledStream(UnixFileDescriptor descriptor, ReadShape shape = {})
+    explicit PrefilledStream(UnixFileDescriptor descriptor, ReadShape shape = {}, ReadBands* readBands = nullptr)
         : m_rawDescriptor(descriptor.get())
-        , m_endpoint(std::move(descriptor), shape)
+        , m_endpoint(std::move(descriptor), shape, readBands)
     {
     }
 
@@ -351,8 +390,9 @@ private:
 namespace {
 
 // Writes `bytes` to an unlinked temporary file and hands the session a
-// transport positioned at its start.
-bool adoptPrefilledStream(TerminalSession& session, std::string_view bytes)
+// transport positioned at its start, whose reads note their threads' bands in
+// `readBands` when one is given.
+bool adoptPrefilledStream(TerminalSession& session, std::string_view bytes, Ubiquitty::PAL::ReadBands* readBands = nullptr)
 {
     const char* directory = std::getenv("TMPDIR");
     std::string path = std::string(directory && *directory ? directory : "/tmp") + "/ubiquitty-flood-XXXXXX";
@@ -373,7 +413,7 @@ bool adoptPrefilledStream(TerminalSession& session, std::string_view bytes)
         ::close(descriptor);
         return false;
     }
-    auto adoption = session.adoptStream(std::make_unique<Ubiquitty::PAL::PrefilledStream>(Ubiquitty::PAL::UnixFileDescriptor(descriptor)));
+    auto adoption = session.adoptStream(std::make_unique<Ubiquitty::PAL::PrefilledStream>(Ubiquitty::PAL::UnixFileDescriptor(descriptor), Ubiquitty::PAL::ReadShape {}, readBands));
     return adoption.has_value();
 }
 
@@ -781,6 +821,29 @@ TEST(testIngestFloodPipelineCarriesABurst)
     CHECK_MSG(watch.drainedBytes >= 6000000, "every burst byte was drained through the loop");
     CHECK_MSG(session.floodBurstCount() >= 1, "the pipelined reader carried the burst, not the sequential fallback");
     CHECK(gridContains(session, "FLOOD-END"));
+}
+
+// The flood reader hands every refill on to the parser, so a reader ranked
+// below the loop holds the writer back on a loaded machine by its own
+// scheduling delay: one ranked with a machine's busy loops cut a flood to a
+// tenth. Every thread that reads the transport, the loop's and the reader's,
+// reads in one band.
+TEST(testEveryThreadThatReadsAFloodReadsInOneBand)
+{
+    SessionHandle handle;
+    TerminalSession& session = *handle.session;
+    session.start(24, 80);
+    Ubiquitty::PAL::ReadBands readBands;
+    REQUIRE(adoptPrefilledStream(session, floodStream(), &readBands));
+    REQUIRE(session.startIngest());
+
+    const SessionWatch watch = watchUntilExit(session, 30000);
+    session.stopIngest();
+    CHECK_MSG(watch.exited, "the flood ends and the end reaches the flags");
+    CHECK_MSG(session.floodBurstCount() >= 1, "the burst rode the pipeline, so its reader read the transport");
+    std::lock_guard guard(readBands.lock);
+    CHECK_MSG(readBands.threads.size() >= 2, "the loop's thread and the flood reader both read");
+    CHECK_EQ(readBands.bands.size(), 1u);
 }
 
 TEST(testFloodPipelineFeedsTheRawByteTap)
