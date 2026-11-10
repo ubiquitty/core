@@ -7,6 +7,11 @@
 
 <!-- What does this change, and why? Link the issue it closes, if there is one. -->
 
+<!-- A change that needs a matching Kit or app change: name that pull request on
+a line of its own, and CI builds it instead of that repository's main.
+Pairs-With: ubiquitty/kit#<number>
+-->
+
 ## Checklist
 
 - [ ] I accept the [contribution terms](https://github.com/yaglo/ubiquitty/blob/main/.github/contributing.md#contribution-terms) for my original work in this pull request, including the Apache-2.0 grant. I have the authority to grant these rights and have identified any third-party material and its terms.

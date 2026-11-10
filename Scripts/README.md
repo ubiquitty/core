@@ -121,6 +121,7 @@ Running the test suites and the harnesses they use. See [Tests](../Tests/README.
 | [`test-build-version.sh`](test-build-version.sh) | The version rule, against throwaway repositories. |
 | [`test-build-wrappers.py`](test-build-wrappers.py) | Tests build wrappers with stand-in tools. |
 | [`test-ci-batteries.py`](test-ci-batteries.py) | Exercises CI's command map, fail-fast accounting, and safe reach baselines. |
+| [`test-ci-pairing.py`](test-ci-pairing.py) | Tests the reading of a pull request's `Pairs-With:` line for the cross-repository CI jobs. |
 | [`test-compare-bench-direction.py`](test-compare-bench-direction.py) | Which way each benchmark unit points, and that the merge of several rounds agrees with the gate about it. |
 | [`test-compare-bench-staleness.py`](test-compare-bench-staleness.py) | Tests compare-bench.py's baseline-staleness warnings. |
 | [`test-coverage-changed-lines.sh`](test-coverage-changed-lines.sh) | Tests the changed-line coverage gate against a throwaway repository. |
@@ -308,6 +309,7 @@ The checks the commit hook, the pre-push gate, and CI run. `check-style.py` runs
 | [`ci-linux-image.sh`](ci-linux-image.sh) | Run a CI battery in the pinned Linux image on a GitHub-hosted runner, or directly on a self-hosted one. |
 | [`ci-toolchain.sh`](ci-toolchain.sh) | Decide whether a CI job needs to install anything. |
 | [`ci_batteries.py`](ci_batteries.py) | Runs CI's ordered, fail-fast batteries and reports every stage. |
+| [`ci_pairing.py`](ci_pairing.py) | Names the Kit or app revision a cross-repository CI job builds, from a `Pairs-With:` line. |
 | [`ci_reach.py`](ci_reach.py) | Computes CI reach against a fully successful platform-battery checkpoint. |
 | [`clang-format-pin`](clang-format-pin) | The clang-format major every C-family formatting check requires. |
 | [`core_namespaces.py`](core_namespaces.py) | Which namespace a header declares, by reading the header. |

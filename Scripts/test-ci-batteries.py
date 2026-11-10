@@ -2781,6 +2781,34 @@ class ReachTests(unittest.TestCase):
         self.assertFalse(reach.is_full_checkpoint(full_jobs() + [full_jobs()[0]]))
         self.assertFalse(reach.is_full_checkpoint([{"name": "Host tests", "conclusion": "success"}]))
 
+    def test_a_battery_split_into_groups_is_complete_only_when_every_group_is(self):
+        def split():
+            jobs = [job for job in full_jobs() if job["name"] != "Linux battery"]
+            for group in ("gcc", "clang", "wasm"):
+                jobs.append({"name": f"Linux battery ({group})", "conclusion": "success", "steps": [
+                    {"name": reach.FULL_MARKERS["Linux battery"], "conclusion": "success"}]})
+            return jobs
+        self.assertTrue(reach.is_full_checkpoint(split()))
+        self.assertEqual(reach.tip_verdict(split()), reach.PASSED)
+        for conclusion in ("failure", "cancelled", "skipped", None):
+            jobs = split()
+            jobs[-1]["conclusion"] = conclusion
+            with self.subTest(conclusion=conclusion):
+                self.assertFalse(reach.is_full_checkpoint(jobs))
+        markerless = split()
+        markerless[-2]["steps"] = []
+        self.assertFalse(reach.is_full_checkpoint(markerless))
+        failed = split()
+        failed[-1]["conclusion"] = "failure"
+        self.assertEqual(reach.tip_verdict(failed), reach.FAILED)
+        # A group named twice is ambiguous, and a preflight cannot be a group.
+        self.assertFalse(reach.is_full_checkpoint(split() + [split()[-1]]))
+        renamed = split()
+        renamed[0]["name"] = "CI preflight (extra)"
+        self.assertFalse(reach.is_full_checkpoint(renamed))
+        for name in ("Linux battery ()", "Linux battery (gcc", "Linux batteries (gcc)"):
+            self.assertIsNone(reach.battery_of(name))
+
     def test_last_checkpoint_walks_past_partial_or_cancelled_runs(self):
         runs = [{"id": 1, "head_sha": "cancelled", "conclusion": "cancelled"},
                 {"id": 2, "head_sha": "goldens", "conclusion": "success"},
@@ -3099,13 +3127,10 @@ class WorkflowTests(unittest.TestCase):
             self.assertTrue(fork_runners(drafts.expression, literal), literal)
 
     @unittest.skipUnless(WORKFLOW, "pass --workflow to validate the live workflow contract")
-    def test_workflow_wires_every_battery_and_preserves_optional_jobs(self):
+    def test_workflow_runs_every_battery_and_preserves_optional_jobs(self):
         text = Path(WORKFLOW).read_text()
-        body = text.split("\njobs:\n", 1)[1]
-        starts = list(re.finditer(r"^  ([a-z][a-z0-9-]*):\n", body, re.M))
-        jobs = {match.group(1): body[match.end():starts[index + 1].start() if index + 1 < len(starts) else len(body)]
-                for index, match in enumerate(starts)}
-        self.assertEqual(set(jobs), {"preflight", "linux", "apple", "host-linux-arm64", "coverage"})
+        jobs = workflow_jobs(text)
+        self.assertEqual(set(jobs), {"preflight", "linux", "apple", "host-linux-arm64", "coverage", "ci"})
         prefix = "Libraries/ubiquitty-kit/Libraries/ubiquitty-core/" if TEST_SOURCES.repositories == ("app",) else ""
         source = ' --source-root "$GITHUB_WORKSPACE"' if prefix else ""
         for platform in ("preflight", "linux", "apple"):
@@ -3114,11 +3139,15 @@ class WorkflowTests(unittest.TestCase):
             battery = f"python3 {prefix}Scripts/ci_batteries.py run {platform}{source}"
             if platform != "apple":
                 battery = f"./{prefix}Scripts/ci-linux-image.sh{source} {battery}"
-            self.assertIn(f"run: {battery}\n", job)
+            # A battery split into matrix groups runs, and reports, the stages
+            # its group names.
+            stages = "" if platform == "preflight" else " $STAGES"
+            self.assertIn(f"{battery}{stages}\n", job)
             # Preflight's battery stands down with a sweep that has this tip's
             # verdict, and so does its report, which would find no stages.
             reported = "always() && steps.reach.outputs.preflight != 'false'" if platform == "preflight" else "always()"
-            self.assertIn(f"if: {reported}\n        run: python3 {prefix}Scripts/ci_batteries.py report {platform}{source}", job)
+            report = f"python3 {prefix}Scripts/ci_batteries.py report {platform}{source}{stages}"
+            self.assertRegex(job, rf"        if: {re.escape(reported)}\n        run: (\|\n(?:          #.*\n)*          )?{re.escape(report)}\n")
             if platform != "apple":
                 # The image comes from the Actions cache under its recipe's
                 # digest, and is saved back whether or not a gate failed.
@@ -3145,16 +3174,22 @@ class WorkflowTests(unittest.TestCase):
         # The workflow's own grant is read-only, so a job that declares none
         # cannot inherit a broader repository default.
         self.assertRegex(text, r"(?m)^permissions:\n  contents: read\n(?!  )")
-        # The batteries stay wired behind the preflight but do not run on
-        # hosted runners; the maintainers run them before every landing.
+        # The batteries run on hosted runners behind the preflight, each where
+        # change reach says it is needed, and every group carries the marker
+        # the history reader requires of a full checkpoint.
         for platform in ("linux", "apple"):
             job = jobs[platform]
             self.assertIn("needs: preflight", job)
-            self.assertIn("if: ${{ false }}", job)
+            self.assertIn(f"if: needs.preflight.outputs.{platform} == 'true'", job)
+            self.assertNotIn("if: ${{ false }}", job)
+            self.assertIn(f"name: {platform.title()} battery (${{{{ matrix.group }}}})", job)
             self.assertIn('UBQ_CI_PREFLIGHT_COMPLETE: "1"', job)
             marker = reach.FULL_MARKERS[f"{platform.title()} battery"]
             self.assertIn(f"name: {marker}\n        if: steps.battery.outputs.full_code == 'true'", job)
             self.assertNotIn("continue-on-error: true\n        run:", job)
+        # The UI scenarios run on a hosted runner only when a run by hand asks.
+        self.assertIn("UBQ_CI_UI_SCENARIOS: ${{ github.event_name == 'workflow_dispatch' && inputs.ui_scenarios && 'true' || 'false' }}",
+                      jobs["apple"])
         hosted = jobs["host-linux-arm64"]
         self.assertIn("if: ${{ false }}", hosted)
         self.assertIn("continue-on-error: true", hosted)
@@ -3162,6 +3197,67 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn(f"./{prefix}Scripts/build-host.sh --release", hosted)
         self.assertIn("if: ${{ false }}", jobs["coverage"])
 
+
+def workflow_jobs(text):
+    """Each job's name and the text of its body."""
+    body = text.split("\njobs:\n", 1)[1]
+    starts = list(re.finditer(r"^  ([a-z][a-z0-9-]*):\n", body, re.M))
+    return {match.group(1): body[match.end():starts[index + 1].start() if index + 1 < len(starts) else len(body)]
+            for index, match in enumerate(starts)}
+
+
+class EveryWorkflowTests(unittest.TestCase):
+    """What every repository's ci.yml holds to, whichever repository it is."""
+
+    def jobs(self):
+        return workflow_jobs(Path(WORKFLOW).read_text())
+
+    @unittest.skipUnless(WORKFLOW, "pass --workflow to validate the live workflow contract")
+    def test_the_one_required_check_needs_every_other_job(self):
+        jobs = self.jobs()
+        self.assertIn("ci", jobs)
+        aggregate = jobs["ci"]
+        self.assertIn("    name: CI\n", aggregate)
+        # always(): a job that failed or was cancelled leaves its dependents
+        # skipped, and a skipped required check reads as a pass.
+        self.assertIn("    if: ${{ always() &&", aggregate)
+        needs = re.search(r"(?m)^    needs: \[(.*)\]$", aggregate)
+        self.assertIsNotNone(needs)
+        self.assertEqual(sorted(name.strip() for name in needs.group(1).split(",")),
+                         sorted(name for name in jobs if name != "ci"))
+        self.assertIn('if job == "preflight" and conclusion != "success":', aggregate)
+        self.assertIn('elif conclusion not in ("success", "skipped"):', aggregate)
+
+    @unittest.skipUnless(WORKFLOW, "pass --workflow to validate the live workflow contract")
+    def test_push_gate_steps_run_strict_and_select_every_gate(self):
+        text = Path(WORKFLOW).read_text()
+        steps = re.findall(r"(?ms)^      - name: Push gates.*?(?=^      - |\Z)", text)
+        self.assertTrue(steps, "no step runs the push gates")
+        for step in steps:
+            with self.subTest(step=step.splitlines()[0]):
+                for setting in ("UBIQUITTY_PREPUSH: families", "UBQ_PREPUSH_SELECT: all",
+                                'UBQ_PREPUSH_STRICT: "1"', 'UBIQUITTY_PREPUSH_CACHE: "off"'):
+                    self.assertIn(f"          {setting}\n", step)
+                self.assertRegex(step, r"          UBQ_PREPUSH_FAMILIES: \S")
+                self.assertIn("Scripts/pre-push-gates.sh", step)
+
+    @unittest.skipUnless(WORKFLOW, "pass --workflow to validate the live workflow contract")
+    def test_a_battery_split_into_groups_runs_every_stage_of_its_manifest(self):
+        for name, job in self.jobs().items():
+            for platform in ("linux", "apple"):
+                if f"name: {platform.title()} battery (" not in job:
+                    continue
+                with self.subTest(job=name):
+                    groups = re.findall(r"(?m)^            stages: (.*)$", job)
+                    self.assertTrue(groups, "a battery named by group lists no group's stages")
+                    covered = set()
+                    for group in groups:
+                        words = group.split()
+                        self.assertEqual(words[::2], ["--only"] * (len(words) // 2))
+                        self.assertIn("setup", words[1::2])
+                        covered.update(words[1::2])
+                    expected = {stage.key for stage in batteries.source_stages(platform, TEST_SOURCES)}
+                    self.assertEqual(covered, expected)
 
 def run_suite(run_tests):
     """Runs the tests under an artifact root no other run has; returns their status.

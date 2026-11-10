@@ -9,6 +9,8 @@ become the diff baseline for a later push. An absent baseline or API failure
 runs the full batteries; the immediate parent is not a safe substitute.
 Scheduled sweeps stand down for a completed verdict on this exact tip,
 including a known failure, without calling that failure complete coverage.
+A battery runs as one job of its own name or as a matrix of jobs named
+`<battery> (<group>)`; it is complete only when every one of its jobs is.
 A sweep that stands down also skips preflight's own battery, and the CI image
 it would build first: the run that gave this tip its verdict ran them. It
 concludes as that run did, so a tip that failed a gate stays red, and the next
@@ -60,21 +62,47 @@ def changed_reach(paths):
             "code": not all(path.startswith("Tests/Snapshots/golden/") for path in reaching)}
 
 
+def battery_of(name):
+    """The battery a job belongs to: its own name, or the one before a matrix group's suffix.
+
+    Only a battery may be split, so a preflight job named with a group suffix
+    belongs to nothing and cannot stand in for the preflight.
+    """
+    if name in JOBS:
+        return name
+    battery, separator, group = name.partition(" (")
+    if separator and group.endswith(")") and len(group) > 1 and battery in FULL_MARKERS:
+        return battery
+    return None
+
+
 def indexed_jobs(jobs):
-    # An ambiguous duplicate job name is not evidence of a complete battery.
-    selected = [job for job in jobs if job.get("name") in JOBS]
+    """Each battery's jobs, or nothing when two jobs share a name.
+
+    An ambiguous duplicate job name is not evidence of a complete battery.
+    """
+    selected = [job for job in jobs if battery_of(job.get("name") or "")]
     if len({job["name"] for job in selected}) != len(selected):
         return {}
-    return {job["name"]: job for job in selected}
+    indexed = {}
+    for job in selected:
+        indexed.setdefault(battery_of(job["name"]), []).append(job)
+    return indexed
+
+
+def concluded(indexed, name, conclusions):
+    """Whether the battery ran at least one job and every one concluded as allowed."""
+    group = indexed.get(name, [])
+    return bool(group) and all(job.get("conclusion") in conclusions for job in group)
 
 
 def is_full_checkpoint(jobs):
     indexed = indexed_jobs(jobs)
-    if any(indexed.get(name, {}).get("conclusion") != "success" for name in JOBS):
+    if not all(concluded(indexed, name, ("success",)) for name in JOBS):
         return False
     return all(any(step.get("name") == marker and step.get("conclusion") == "success"
-                   for step in indexed[name].get("steps", []))
-               for name, marker in FULL_MARKERS.items())
+                   for step in job.get("steps", []))
+               for name, marker in FULL_MARKERS.items() for job in indexed[name])
 
 
 FAILED = "failed gate; later stages may be unexecuted"
@@ -83,11 +111,10 @@ PASSED = "all required batteries succeeded or were outside change reach"
 
 def tip_verdict(jobs):
     indexed = indexed_jobs(jobs)
-    if any(indexed.get(name, {}).get("conclusion") == "failure" for name in JOBS):
+    if any(job.get("conclusion") == "failure" for group in indexed.values() for job in group):
         return FAILED
-    if (indexed.get("CI preflight", {}).get("conclusion") == "success"
-            and all(indexed.get(name, {}).get("conclusion") in ("success", "skipped")
-                    for name in FULL_MARKERS)):
+    if (concluded(indexed, "CI preflight", ("success",))
+            and all(concluded(indexed, name, ("success", "skipped")) for name in FULL_MARKERS)):
         return PASSED
     return ""
 
