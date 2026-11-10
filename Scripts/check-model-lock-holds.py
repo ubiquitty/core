@@ -21,9 +21,9 @@ one removed must lower the budget in the same commit.
 - `model-lock-holds`: every acquisition of a model lock in a function body of
   every file under Source/ that names the lock, private members and the
   members of nested types included, and every call of a tmux pane's
-  `withTermLocked`. An acquisition is a `ModelLockHold`, however it is
-  spelled or held (`= ModelLockHold(`, `ModelLockHold const`, a
-  `std::optional` of one), `lockForRead`, `tryLockForRead`, a
+  `withTermLocked`. An acquisition is a `ModelLockHold` or a `ModelWrite`,
+  however it is spelled or held (`= ModelLockHold(`, `ModelWrite const`, a
+  `std::optional` of one), `lockForRead`, `lockForWrite`, `tryLockForRead`, a
   `ModelReadScope`, a drain host's `lockModel`, a `lockForDrain`, a plain std
   lock, or a `lock()`/`try_lock()` on a model lock however it is reached.
 - `frame-decision-holds`: those acquisitions in the frame decision's own
@@ -120,10 +120,11 @@ MODEL_LOCK_OPERAND = (r"(?:m_activeLock|m_modelLock|modelLockPointer\s*\(\s*\)|m
                       r"|nativeHandle\s*\(\s*\)|\bmodelLock\b)")
 
 HOLD = re.compile(
-    r"\bModelLockHold\s+(?:const\s+)?\w+\s*[({]"
-    r"|\bModelLockHold\s*[({]"
-    r"|\boptional\s*<\s*(?:const\s+)?ModelLockHold\s*>"
+    r"\b(?:ModelLockHold|ModelWrite)\s+(?:const\s+)?\w+\s*[({]"
+    r"|\b(?:ModelLockHold|ModelWrite)\s*[({]"
+    r"|\boptional\s*<\s*(?:const\s+)?(?:ModelLockHold|ModelWrite)\s*>"
     r"|\blockForRead\s*\(\s*\)"
+    r"|\blockForWrite\s*\(\s*\)"
     r"|\btryLockForRead\s*\(\s*\)"
     r"|\bModelReadScope\s+(?:const\s+)?\w+\s*[({]"
     r"|\bmodelReadScope\s*\(\s*\)"
@@ -744,6 +745,23 @@ PLANTS = (
      "lambda(s) declaring a requirement"),
     ("an ownership analysis that stands without function effects", plant_toolchain_without_effects, "-Wfunction-effects"),
     ("a hold in the frame decision paid for by one removed elsewhere", plant_decision_swap, "in the frame decision"),
+    ("a write scope",
+     plant_in_session("            m_events.deliver();\n", "            const ModelWrite write(m_owner);\n            m_events.deliver();\n"),
+     "model-lock acquisition(s)"),
+    ("a write scope spelt const after its type",
+     plant_in_session("            m_events.deliver();\n", "            ModelWrite const write(m_owner);\n            m_events.deliver();\n"),
+     "model-lock acquisition(s)"),
+    ("a write scope assigned from a temporary",
+     plant_in_session("            m_events.deliver();\n", "            auto write = ModelWrite(m_owner);\n            m_events.deliver();\n"),
+     "model-lock acquisition(s)"),
+    ("a write scope emplaced into an optional",
+     plant_in_session("            m_events.deliver();\n",
+                      "            std::optional<ModelWrite> write;\n            write.emplace(m_owner);\n            m_events.deliver();\n"),
+     "model-lock acquisition(s)"),
+    ("a write bracketed by hand",
+     plant_in_session("            m_events.deliver();\n",
+                      "            m_owner.lockForWrite();\n            m_events.deliver();\n            m_owner.unlockAfterWrite();\n"),
+     "model-lock acquisition(s)"),
     ("a lock handed to a helper in another file", plant_helper_elsewhere, "model-lock acquisition(s) under Source/"),
     ("a call of an asserting function",
      plant_in_session("        const ModelLockHold hold(*m_activeLock);\n        return 0;\n",
