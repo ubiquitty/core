@@ -11833,7 +11833,7 @@ private:
             && result.attempt->rejection() == Session::AdoptRejection::InvalidPayload) {
             std::expected<Protocol::Sync::HandoverBytes, Session::ShareEncoding> earlierBody = std::unexpected(Session::ShareEncoding::NothingToShare);
             {
-                const std::scoped_lock hold(*m_activeLock);
+                const ModelLockHold hold(*m_activeLock);
                 if (Ubiquitty::Terminal* term = modelTerm())
                     earlierBody = Session::captureShareTerminal(*term, Protocol::Local::maxAdoptBodyBytes, PAL::monotonicTicks(), Protocol::Sync::HandoverTickCarriage::Instants);
             }
