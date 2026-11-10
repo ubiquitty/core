@@ -26,6 +26,7 @@
 #include "Core/Screen/Scrollback.h"
 #include "Core/Selection/SelectionOverCapture.h"
 #include "Core/Selection/TerminalSelection.h"
+#include "Core/Tek/Colors.h"
 #include "Core/Terminal.h"
 #include "Core/TerminalOperations.h"
 #include "Core/VT/ParseState.h"
@@ -3198,6 +3199,107 @@ TEST(aRevealedLaneThatNeverCapturedIsServedAtTheAsk)
     const FrameAsk served = askForFrame(*fixture.session, {});
     CHECK(served.supply.route == Runtime::FrameRoute::Captured);
     CHECK(served.frame != nullptr);
+}
+
+namespace {
+
+// Lets the rule release a frame it holds for quiet, as the loop's watchdog
+// does once the output has paused.
+void releaseFrameHeldForQuiet(TerminalSession& session)
+{
+    if (const std::optional<std::uint64_t> due = session.publishHeldFrameIfDue())
+        PAL::s_testMicroseconds += static_cast<std::uint32_t>(*due);
+    static_cast<void>(session.publishHeldFrameIfDue());
+}
+
+} // namespace
+
+// Tek mode on, then GS, a dark move to (2000,1000) and a vector to (100,200).
+constexpr std::string_view tekEnterAndDraw = "\x1b[?38h\x1d\x27\x7a\x2f\x54\x21\x72\x20\x59";
+// GS, a dark move to (100,200), and a vector back to (2000,1000).
+constexpr std::string_view tekSecondVector = "\x1d\x21\x72\x20\x59\x27\x7a\x2f\x54";
+
+// A Tek frame's capture carries what the tube displays and the host's colour
+// requests, so a view draws the tube without the model; a capture of the grid
+// carries no tube.
+TEST(aTekFramesCaptureCarriesTheTube)
+{
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    fixture.session->setSyncFrameCaptureGeometry(testGeometry());
+    fixture.drainSyncFrame("grid");
+    {
+        const TakenFrame grid { fixture.session->takeSyncFrame() };
+        REQUIRE(grid != nullptr);
+        CHECK(!grid->isTekFrame());
+        CHECK(grid->tekPrimitives().empty());
+    }
+
+    fixture.stream->toRead += "\x1b]16;#161616\x1b\\";
+    fixture.stream->toRead += tekEnterAndDraw;
+    static_cast<void>(fixture.session->drain());
+    releaseFrameHeldForQuiet(*fixture.session);
+    REQUIRE(!fixture.session->isFrameHeld());
+    static_cast<void>(TakenFrame(fixture.session->takeSyncFrame()));
+    const FrameAsk asked = askForFrame(*fixture.session, {});
+    REQUIRE(asked.supply.route == Runtime::FrameRoute::Captured);
+    REQUIRE(asked.frame != nullptr);
+    CHECK(asked.frame->isTekFrame());
+    const Tek::PrimitiveSpan primitives = asked.frame->tekPrimitives();
+    REQUIRE(primitives.size() == 1u);
+    CHECK(primitives[0].kind == Tek::PrimitiveKind::Line);
+    CHECK(primitives[0].x0 == 2000 && primitives[0].y0 == 1000);
+    CHECK(primitives[0].x1 == 100 && primitives[0].y1 == 200);
+    CHECK_EQ(asked.frame->tekScreenWidth(), Tek::tekGridWidth);
+    const Tek::HostColorRequests requests = asked.frame->tekHostColorRequests();
+    CHECK(requests.isBackgroundSet);
+    const Tek::TekColor background = Tek::tekBackground(requests, Tek::TekColor { 0, 0, 0 }, Tek::ColorPreference {});
+    CHECK_EQ(background.red, 0x1616);
+}
+
+// The frontend's ingest-idle commit is the owner's work: asked without the
+// model lock, it retires the capture of the uncommitted tube, and the frame
+// the view takes next shows the committed one. Before the commit, the tube
+// displays the frame committed last, not the strokes drawn since.
+TEST(aTekCommitIsAppliedByTheOwnerBeforeTheViewsNextFrame)
+{
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    TerminalSession& session = *fixture.session;
+    session.setSyncFrameCaptureGeometry(testGeometry());
+    fixture.stream->toRead += tekEnterAndDraw;
+    static_cast<void>(session.drain());
+    releaseFrameHeldForQuiet(session);
+    REQUIRE(!session.isFrameHeld());
+    static_cast<void>(TakenFrame(session.takeSyncFrame()));
+    session.requestTekFrameCommit();
+    {
+        const FrameAsk committed = askForFrame(session, {});
+        REQUIRE(committed.frame != nullptr);
+        CHECK_EQ(committed.frame->tekPrimitives().size(), 1u);
+    }
+
+    fixture.stream->toRead += tekSecondVector;
+    static_cast<void>(session.drain());
+    releaseFrameHeldForQuiet(session);
+    REQUIRE(!session.isFrameHeld());
+    static_cast<void>(TakenFrame(session.takeSyncFrame()));
+    {
+        const FrameAsk before = askForFrame(session, {});
+        REQUIRE(before.frame != nullptr);
+        CHECK_MSG(before.frame->tekPrimitives().size() == 1u, "the tube displays the frame committed last");
+    }
+
+    session.lockForRead();
+    auto request = std::async(std::launch::async, [&session] { session.requestTekFrameCommit(); });
+    const bool didFinish = request.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    session.unlockForRead();
+    request.get();
+    CHECK_MSG(didFinish, "the request returned while the drain held the model lock");
+    const FrameAsk after = askForFrame(session, {});
+    REQUIRE(after.supply.route == Runtime::FrameRoute::Captured);
+    REQUIRE(after.frame != nullptr);
+    CHECK_EQ(after.frame->tekPrimitives().size(), 2u);
 }
 
 // A resizing view's demand is held while the redraw behind a whole-screen

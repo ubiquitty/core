@@ -5,6 +5,7 @@
 
 #include "Core/Color.h"
 #include "Core/Tek/ColorPreference.h"
+#include "Core/Tek/TubeFrame.h"
 #include "Core/Terminal.h"
 
 // Source/Core/Tek/Colors.h — which colour a storage-tube frame draws with.
@@ -89,6 +90,24 @@ namespace Ubiquitty::Tek {
     return fraction > 1.0f ? 1.0f : fraction;
 }
 
+/// Returns what the host asked a Tek frame to draw with: `OSC 15`, `16` and
+/// `18`, and `DECSET 7400`.
+///
+/// - Parameter terminal: The terminal whose requests are read.
+/// - Returns: The requests.
+[[nodiscard]] inline HostColorRequests hostColorRequests(const Terminal& terminal)
+{
+    return {
+        .beam = { terminal.tektronixForegroundRed, terminal.tektronixForegroundGreen, terminal.tektronixForegroundBlue },
+        .background = { terminal.tektronixBackgroundRed, terminal.tektronixBackgroundGreen, terminal.tektronixBackgroundBlue },
+        .cursor = { terminal.tektronixCursorRed, terminal.tektronixCursorGreen, terminal.tektronixCursorBlue },
+        .isBeamSet = terminal.tektronixForegroundSet,
+        .isBackgroundSet = terminal.tektronixBackgroundSet,
+        .isCursorSet = terminal.tektronixCursorSet,
+        .brightPenOverride = terminal.tekBrightPenOverride,
+    };
+}
+
 /// The colour the storage tube clears to.
 ///
 /// `OSC 16` wins wherever the host set it: naming the tube colour is an
@@ -97,22 +116,32 @@ namespace Ubiquitty::Tek {
 /// otherwise the theme's background.
 ///
 /// - Parameters:
-///   - terminal: The terminal whose `OSC 16` state decides whether the host asked.
+///   - requests: The host's requests, whose `OSC 16` decides whether it asked.
 ///   - themeBackground: The terminal's own default background.
 ///   - preference: The user's mode and custom colours.
 /// - Returns: The clear colour, 16-bit channels.
-[[nodiscard]] inline TekColor tekBackground(const Terminal& terminal, TekColor themeBackground, const ColorPreference& preference)
+[[nodiscard]] inline TekColor tekBackground(const HostColorRequests& requests, TekColor themeBackground, const ColorPreference& preference)
 {
-    if (terminal.tektronixBackgroundSet)
-        return { terminal.tektronixBackgroundRed, terminal.tektronixBackgroundGreen, terminal.tektronixBackgroundBlue };
+    if (requests.isBackgroundSet)
+        return requests.background;
     if (preference.mode == ColorMode::Custom)
         return preference.background;
     return themeBackground;
 }
 
+[[nodiscard]] inline TekColor tekBackground(const HostColorRequests& requests, ColorRGBA themeBackground, const ColorPreference& preference)
+{
+    return tekBackground(requests, widenColor(themeBackground), preference);
+}
+
+[[nodiscard]] inline TekColor tekBackground(const Terminal& terminal, TekColor themeBackground, const ColorPreference& preference)
+{
+    return tekBackground(hostColorRequests(terminal), themeBackground, preference);
+}
+
 [[nodiscard]] inline TekColor tekBackground(const Terminal& terminal, ColorRGBA themeBackground, const ColorPreference& preference)
 {
-    return tekBackground(terminal, widenColor(themeBackground), preference);
+    return tekBackground(hostColorRequests(terminal), widenColor(themeBackground), preference);
 }
 
 /// The colour the beam writes with.
@@ -120,22 +149,32 @@ namespace Ubiquitty::Tek {
 /// Same order as ``tekBackground`` and for the same reason, through `OSC 15`.
 ///
 /// - Parameters:
-///   - terminal: The terminal whose `OSC 15` state decides whether the host asked.
+///   - requests: The host's requests, whose `OSC 15` decides whether it asked.
 ///   - themeForeground: The terminal's own default foreground.
 ///   - preference: The user's mode and custom colours.
 /// - Returns: The beam colour, 16-bit channels.
-[[nodiscard]] inline TekColor tekBeam(const Terminal& terminal, TekColor themeForeground, const ColorPreference& preference)
+[[nodiscard]] inline TekColor tekBeam(const HostColorRequests& requests, TekColor themeForeground, const ColorPreference& preference)
 {
-    if (terminal.tektronixForegroundSet)
-        return { terminal.tektronixForegroundRed, terminal.tektronixForegroundGreen, terminal.tektronixForegroundBlue };
+    if (requests.isBeamSet)
+        return requests.beam;
     if (preference.mode == ColorMode::Custom)
         return preference.beam;
     return themeForeground;
 }
 
+[[nodiscard]] inline TekColor tekBeam(const HostColorRequests& requests, ColorRGBA themeForeground, const ColorPreference& preference)
+{
+    return tekBeam(requests, widenColor(themeForeground), preference);
+}
+
+[[nodiscard]] inline TekColor tekBeam(const Terminal& terminal, TekColor themeForeground, const ColorPreference& preference)
+{
+    return tekBeam(hostColorRequests(terminal), themeForeground, preference);
+}
+
 [[nodiscard]] inline TekColor tekBeam(const Terminal& terminal, ColorRGBA themeForeground, const ColorPreference& preference)
 {
-    return tekBeam(terminal, widenColor(themeForeground), preference);
+    return tekBeam(hostColorRequests(terminal), widenColor(themeForeground), preference);
 }
 
 /// The user's setting for the storage tube's writing spot.
@@ -163,17 +202,22 @@ enum class WritingSpotSetting : std::uint8_t {
 /// have to be told when it changed.
 ///
 /// - Parameters:
-///   - terminal: The terminal whose `DECSET 7400` state decides whether the
-///     host asked; 1 forces the spot on, 2 forces it off, 0 defers.
+///   - requests: The host's requests, whose `DECSET 7400` decides whether it
+///     asked; 1 forces the spot on, 2 forces it off, 0 defers.
 ///   - configured: The user's resolved `[tek] bright_pen` setting.
 /// - Returns: Whether to draw the spot.
-[[nodiscard]] inline bool isWritingSpotDrawn(const Terminal& terminal, WritingSpotSetting configured)
+[[nodiscard]] inline bool isWritingSpotDrawn(const HostColorRequests& requests, WritingSpotSetting configured)
 {
-    if (terminal.tekBrightPenOverride == 1)
+    if (requests.brightPenOverride == 1)
         return true;
-    if (terminal.tekBrightPenOverride == 2)
+    if (requests.brightPenOverride == 2)
         return false;
     return configured == WritingSpotSetting::Drawn;
+}
+
+[[nodiscard]] inline bool isWritingSpotDrawn(const Terminal& terminal, WritingSpotSetting configured)
+{
+    return isWritingSpotDrawn(hostColorRequests(terminal), configured);
 }
 
 /// The colour the GIN crosshair and the writing spot draw with.
@@ -183,14 +227,19 @@ enum class WritingSpotSetting : std::uint8_t {
 /// second, unrelated mark. Only `OSC 18` separates them.
 ///
 /// - Parameters:
-///   - terminal: The terminal whose `OSC 18` state decides whether the host asked.
+///   - requests: The host's requests, whose `OSC 18` decides whether it asked.
 ///   - beam: The resolved beam colour, from ``tekBeam``.
 /// - Returns: The cursor colour, 16-bit channels.
+[[nodiscard]] inline TekColor tekCursor(const HostColorRequests& requests, TekColor beam)
+{
+    if (requests.isCursorSet)
+        return requests.cursor;
+    return beam;
+}
+
 [[nodiscard]] inline TekColor tekCursor(const Terminal& terminal, TekColor beam)
 {
-    if (terminal.tektronixCursorSet)
-        return { terminal.tektronixCursorRed, terminal.tektronixCursorGreen, terminal.tektronixCursorBlue };
-    return beam;
+    return tekCursor(hostColorRequests(terminal), beam);
 }
 
 } // namespace Ubiquitty::Tek

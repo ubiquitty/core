@@ -6768,6 +6768,27 @@ public:
     /// - Parameter hover: The run under the pointer, or an inactive one.
     void setSyncFrameHoverLink(const Rendering::FrameHoverLink& hover) UBIQUITTY_EXCLUDES(modelLockRole) { m_hoverRegister.publish(hover); }
 
+    /// Asks the owner to commit the storage tube's frame in progress, without
+    /// the model lock: the frontend's ingest-idle commit, so a stopped
+    /// animation shows its last strokes (`PAGE` commits the rest).
+    ///
+    /// The owner commits at its next turn and then serves the view a frame of
+    /// the committed tube; the capture waiting, which shows the tube before
+    /// the commit, is retired. A pane no ingest loop drains is committed here,
+    /// under a model lock the caller finds free, or at the next ask that finds
+    /// it free. Outside Tek mode the request does nothing.
+    void requestTekFrameCommit() UBIQUITTY_EXCLUDES(modelLockRole)
+    {
+        if (!readSnapshot().isTekModeActive)
+            return;
+        m_isTekFrameCommitRequested.store(true, std::memory_order_release);
+        (void)m_frameLane.retireReady();
+        if (m_ingestThread.joinable())
+            m_loop.raiseWake();
+        else
+            static_cast<void>(serveFrameDemandHere());
+    }
+
     /// Returns the newest boundary capture, retained, or null when none waits.
     ///
     /// Coalesced like ``takeSyncFrameReady``: boundaries that completed between
@@ -9640,13 +9661,16 @@ private:
             this);
         // A demand at an owner's turn with no frame to admit, such as an idle
         // screen the view changed its selection, hover or geometry over, is
-        // served there.
+        // served there, after a storage-tube commit the view asked for.
         m_host.setFrontendService(
-            [](const void* context) { return static_cast<const TerminalSession*>(context)->m_frameLane.isDemandOutstanding(); },
+            [](const void* context) {
+                const auto* session = static_cast<const TerminalSession*>(context);
+                return session->m_frameLane.isDemandOutstanding() || session->m_isTekFrameCommitRequested.load(std::memory_order_acquire);
+            },
             [](void* context) {
                 auto* session = static_cast<TerminalSession*>(context);
                 session->m_host.assertModelLockHeld();
-                session->serveFrameDemand();
+                session->serveViewLocked();
             },
             this);
         // The publish above raises a flag and wakes nobody, which is enough
@@ -10141,6 +10165,7 @@ private:
             m_frameLane.cancel(*target);
             return;
         }
+        target->capture->captureTube(*term);
         m_lastSyncFrameSequence = header.sequence;
         m_nextSyncFrameSequence = m_nextSyncFrameSequence == std::numeric_limits<std::uint64_t>::max()
             ? 1
@@ -10164,9 +10189,26 @@ private:
     {
         if (!tryLockForRead())
             return false;
-        serveFrameDemand();
+        serveViewLocked();
         unlockForRead();
         return true;
+    }
+
+    /// The view's work at the owner's turn, under the model lock: a
+    /// storage-tube commit it asked for (``requestTekFrameCommit``), then its
+    /// demand for a frame. A commit asks for a frame of its own, so the view
+    /// sees the committed tube even when a frame the rule admitted served its
+    /// demand before the commit.
+    void serveViewLocked() UBIQUITTY_REQUIRES(modelLockRole)
+    {
+        if (m_isTekFrameCommitRequested.exchange(false, std::memory_order_acq_rel)) {
+            Ubiquitty::Terminal* terminal = modelTerm();
+            if (terminal && terminal->isTekModeActive) {
+                Ubiquitty::tekCommitFrame(*terminal);
+                static_cast<void>(m_frameLane.raiseDemand(PAL::monotonicMicros(), FrameLane::DemandRule::Coherence));
+            }
+        }
+        serveFrameDemand();
     }
 
     /// Serves the view's outstanding demand at the owner's turn, under the
@@ -10244,6 +10286,10 @@ private:
 
     // The owner's last turn that found frontend work, stamped there.
     std::atomic<std::uint32_t> m_ownerHeartbeatMicros { 0 };
+
+    // A storage-tube commit the view asked for, which the owner's turn
+    // applies before it serves the view's demand.
+    std::atomic<bool> m_isTekFrameCommitRequested { false };
 
     /// A geometry registration and the generation it was made under.
     struct GeometryRegistration {
