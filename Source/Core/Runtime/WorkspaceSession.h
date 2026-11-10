@@ -174,6 +174,10 @@ public:
         return new (std::nothrow) WorkspaceSession(ingestPolicy, drawnText, configuration);
     }
 
+    /// Refuses a temporary configuration: the model borrows the one it is
+    /// given, and a temporary is gone before the first launch reads it.
+    static WorkspaceSession* make(IngestPolicy, DrawnText, const Preferences::Values&&) = delete;
+
     /// Allocates a model reading the process-wide preferences.
     ///
     /// The frontends' form: one process, one configuration, and a configure
