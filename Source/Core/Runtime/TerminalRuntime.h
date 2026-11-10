@@ -559,7 +559,7 @@ public:
     /// A render that samples the live grid on its own clock samples it here
     /// only when this is false, and otherwise presents the last frame the rule
     /// admitted; any thread.
-    [[nodiscard]] bool isFrameHeld() const { return m_isFrameHeld.load(std::memory_order_acquire); }
+    [[nodiscard]] bool isFrameHeld() const noexcept UBIQUITTY_NONBLOCKING { return m_isFrameHeld.load(std::memory_order_acquire); }
 
     /// The clock the coherence rule reads: monotonic microseconds.
     using CoherenceClock = std::uint64_t (*)(void* context);
@@ -1464,7 +1464,7 @@ public:
     /// nothing to gain from the model but a wait on the lock the parser holds.
     /// Falls with the first pass that closes short, and with the end of the
     /// stream.
-    [[nodiscard]] bool isDrainSaturated() const { return m_isDrainSaturated.load(std::memory_order_relaxed); }
+    [[nodiscard]] bool isDrainSaturated() const noexcept UBIQUITTY_NONBLOCKING { return m_isDrainSaturated.load(std::memory_order_relaxed); }
     /// Pushes the pane's presentation state into the drain gate.
     ///
     /// One of the two platform facts behind the ride/park decision, pushed by

@@ -9692,37 +9692,63 @@ private:
     FlagSink m_events;
     std::atomic<bool> m_frameReady { false };
 
-    /// What holds a view's frame off the glass, by the published check
+    /// What holds a view's frame off the glass, by the check
     /// ``shouldWithholdFrame`` and ``takeFrame`` share.
     ///
-    /// A saturated drain is not held for the rule: its frames are the
-    /// captures each full pass publishes. The block's stamp is taken under the
-    /// model lock only while a block is open or the terminal is adopted.
+    /// The published facts decide it (``publishedFrameHold(_:)``), and the
+    /// model only while a block is open or the terminal is adopted
+    /// (``modelFrameHold(_:_:)``).
     ///
     /// - Parameter nowTicks: Now, on the 60 Hz monotonic clock.
     /// - Returns: The hold, or ``FrameDecline::None``.
-    [[nodiscard]] FrameDecline frameHold(Ticks nowTicks)
+    [[nodiscard]] FrameDecline frameHold(Ticks nowTicks) UBIQUITTY_EXCLUDES(modelLockRole)
+    {
+        const std::uint32_t nowMicros = PAL::monotonicMicros();
+        if (const std::optional<FrameDecline> published = publishedFrameHold(nowMicros))
+            return *published;
+        return modelFrameHold(nowTicks, nowMicros);
+    }
+
+    /// The hold the published facts decide alone, which waits on nothing: the
+    /// check a frame drawn with no block open asks once per frame, on the
+    /// thread the parser contends with.
+    ///
+    /// A saturated drain is not held for the rule: its frames are the
+    /// captures each full pass publishes. Whether a block is open is
+    /// published: the writer raises `syncHoldActive` on the drain that opened
+    /// one, and the frame that would show it runs after that delivery. An
+    /// adopted terminal is parsed by its owner, whose drain does not publish
+    /// this session's snapshot, so only its model can say.
+    ///
+    /// - Parameter nowMicros: Now, in monotonic microseconds.
+    /// - Returns: The hold, or nothing while a block is open or the terminal
+    ///   is adopted.
+    [[nodiscard]] std::optional<FrameDecline> publishedFrameHold(std::uint32_t nowMicros) noexcept UBIQUITTY_NONBLOCKING
     {
         if (m_runtime->isFrameHeld() && !m_runtime->isDrainSaturated())
             return FrameDecline::HeldByCoherence;
-        // The decision stamps the block on first sight and expires it, so it
-        // writes the model and must hold the lock to do it. Whether there is a
-        // block at all is published: the writer raises `syncHoldActive` on the
-        // drain that opened one, and the frame that would show it runs after
-        // that delivery. A frame drawn with no block open therefore owes the
-        // parser no handoff to be told so -- and this is asked once per frame,
-        // on the thread the parser is contending with. An adopted terminal is
-        // parsed by its owner, whose drain does not publish this session's
-        // snapshot, so only the model can say.
-        if (!m_externalTerminal && !readSnapshot().syncHoldActive)
-            return m_runtime->shouldWithholdPresentation(PAL::monotonicMicros()) ? FrameDecline::HeldByPresentation : FrameDecline::None;
+        if (m_externalTerminal || readSnapshot().syncHoldActive)
+            return std::nullopt;
+        return m_runtime->shouldWithholdPresentation(nowMicros) ? FrameDecline::HeldByPresentation : FrameDecline::None;
+    }
+
+    /// The hold the model decides, under its lock: the decision stamps a
+    /// block on first sight and expires it, so it writes the model. An expiry
+    /// wakes the drain once the lock is released.
+    ///
+    /// - Parameters:
+    ///   - nowTicks: Now, on the 60 Hz monotonic clock.
+    ///   - nowMicros: Now, in monotonic microseconds.
+    /// - Returns: The hold, or ``FrameDecline::None``.
+    [[nodiscard]] FrameDecline modelFrameHold(Ticks nowTicks, std::uint32_t nowMicros) UBIQUITTY_EXCLUDES(modelLockRole)
+    {
         CaptureWithhold withhold;
         {
             const ModelLockHold hold(*m_activeLock);
             if (auto* terminal = modelTerm())
                 withhold = withholdCapture(*terminal, nowTicks);
             else
-                withhold.isHeld = m_runtime->shouldWithholdPresentation(PAL::monotonicMicros());
+                withhold.isHeld = m_runtime->shouldWithholdPresentation(nowMicros);
         }
         if (withhold.didExpireBlock)
             signalDrain();
