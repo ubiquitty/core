@@ -1220,13 +1220,14 @@ public:
     /// yet caught up with the bytes the program wrote after it.
     ///
     /// The live-resize capture's hold. A resize asks a full-screen program for
-    /// a repaint on every step, so it waits for no quiet output: the hold
-    /// lifts as soon as the redraw has been parsed whole, and the settle and
-    /// the watchdog bound it for bytes that never catch up. Its watchdog runs
-    /// from the first ask that finds a redraw arriving, and a redraw parsed
-    /// whole ends it, so a later erase is not held against an earlier one's
-    /// deadline. The ordinary erase hold is left as it is. The caller holds
-    /// the model lock.
+    /// a repaint on every step, so it waits only for the redraw itself: the
+    /// hold lifts as soon as the redraw is reported whole
+    /// (``noteEraseRedrawParsed()``), and the settle and the watchdog bound it
+    /// for bytes that never pause. Its watchdog runs
+    /// from the first ask that finds a redraw arriving, and a redraw reported
+    /// whole or a pause as long as the settle ends it, so a later erase is not
+    /// held against an earlier one's deadline. The ordinary erase hold is left
+    /// as it is. The caller holds the model lock.
     ///
     /// - Parameters:
     ///   - terminal: The model the capture reads.
@@ -1235,9 +1236,55 @@ public:
     [[nodiscard]] bool isEraseRedrawArriving(const Ubiquitty::Terminal& terminal, std::uint32_t nowMicros);
 
     /// Records the redraw behind the newest whole-screen erase as parsed
-    /// whole: the drain has caught up with its program, or the stream has
-    /// ended. Caller holds the model lock.
+    /// whole: the transport stayed empty for the quiet interval after its
+    /// last byte (``noteEraseRedrawQuiet(_:)``), a burst ended, or the stream
+    /// ended. A pass that ends at a would-block is none of these: a full-screen
+    /// repaint reaches the drain a tty's worth at a time, and a pass can end
+    /// inside the writer's refill. Caller holds the model lock.
     void noteEraseRedrawParsed();
+
+    /// How long the transport stays empty after an erase's last redraw byte
+    /// before the redraw is reported whole.
+    ///
+    /// Bounded from below by the writer's stalls inside one redraw: a
+    /// writer refills the tty a wake-up after the read that emptied it,
+    /// microseconds on an idle core, and a writer the machine deschedules
+    /// longer than this between slices has its redraw reported whole with
+    /// the rest unread. Bounded from above by a live-resize step: the
+    /// repaint's own duration plus this must fit inside one frame at the
+    /// fastest display, 8.3 ms at 120 Hz, or a step's redraw never goes
+    /// quiet before the following erase and the resize presents only at the
+    /// hold's watchdog.
+    static constexpr std::uint32_t eraseRedrawQuietMicroseconds = 1000;
+
+    /// Returns whether the redraw behind the newest whole-screen erase has
+    /// been reported whole. Caller holds the model lock.
+    ///
+    /// - Returns: True with no erase redraw pending, or without a model.
+    [[nodiscard]] bool isEraseRedrawWhole() const;
+
+    /// Returns how long until the transport has stayed empty for the quiet
+    /// interval that reports a pending erase redraw whole, measured from the
+    /// last byte drained.
+    ///
+    /// Armed only during a live resize, so outside one the ingest loop's wait
+    /// is its own: a resize step drawn outside one finds a redraw arriving by
+    /// the settle alone. Read on the ingest thread, which owns the model's
+    /// erase generation.
+    ///
+    /// - Parameter nowMicros: Now, in monotonic microseconds.
+    /// - Returns: Zero once the interval has passed; none outside a live
+    ///   resize or with no erase redraw pending.
+    [[nodiscard]] std::optional<std::uint32_t> eraseRedrawQuietDueInMicros(std::uint32_t nowMicros) const;
+
+    /// Reports the pending erase redraw whole once the transport has stayed
+    /// empty for the quiet interval, and publishes the frame it completed.
+    ///
+    /// Called by the ingest loop when ``eraseRedrawQuietDueInMicros(_:)`` is
+    /// zero and the transport is still empty. Takes the model lock.
+    ///
+    /// - Parameter host: The drain host whose lock the publish takes.
+    void noteEraseRedrawQuiet(DrainHost& host);
 
     /// Returns the newest whole-screen erase's generation, which a feed reads
     /// before it parses so that ``noteFeedParsed(_:)`` can tell whether it
