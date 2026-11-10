@@ -270,6 +270,30 @@ TEST(testTruecolorID)
     t.reset();
 }
 
+// The underline colour names the placement: a placeholder whose underline
+// colour is the virtual placement's id draws, one naming another placement of
+// the image draws nothing, and one with no underline colour takes whichever
+// virtual placement the image has.
+TEST(testUnderlineColourSelectsThePlacement)
+{
+    auto t = makeTerm(24, 80);
+    feedz(*t, "\033_Ga=T,U=1,i=31,p=2,f=24,s=2,v=2,c=1,r=1;AAAAAAAAAAAAAAAA\033\\");
+    const Ubiquitty::Image::TerminalImage* img = Ubiquitty::Image::stored(t.get(), 0);
+    REQUIRE(img && img->virtualPlacement && img->virtualPlacementID == 2u);
+    const std::string cell = placeholderCell({ 0x0305, 0x0305 });
+    const auto quadsWith = [&](const char* pen) {
+        feedz(*t, "\033[H\033[0m");
+        feedz(*t, pen);
+        feed(*t, cell.c_str(), static_cast<int>(cell.size()));
+        Ubiquitty::Image::ImageQuad q[8];
+        return Ubiquitty::Rendering::collectImageQuads(t.get(), { 10.0f, 20.0f }, { 0.0f, 0.0f }, 1.0f, 0, { q, static_cast<std::size_t>(8) });
+    };
+    CHECK_MSG(quadsWith("\033[38;5;31;58;5;2m") == 1, "the placement the underline colour names draws");
+    CHECK_MSG(quadsWith("\033[38;5;31;58;5;3m") == 0, "a placement the image does not have draws nothing");
+    CHECK_MSG(quadsWith("\033[38;5;31;58;2;0;0;2m") == 1, "a truecolor underline names the placement by its 24-bit value");
+    CHECK_MSG(quadsWith("\033[38;5;31m") == 1, "no underline colour takes the image's virtual placement");
+}
+
 // ---- 7. no virtual image → no quad (placeholder cells ignored) ----
 TEST(testNoVirtualImage)
 {
