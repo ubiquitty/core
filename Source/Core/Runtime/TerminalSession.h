@@ -1119,6 +1119,7 @@ public:
             return false;
         // A pane of a source this process hosts: the source sends the report
         // and sizes the session's other windows to it ahead of the server.
+        assertOnHostedPaneThread();
         if (m_hostedPaneSource)
             return m_hostedPaneSource->reportClientSize(m_hostedPaneID, columns, rows);
         sendTmuxCommandLine(Ubiquitty::Protocol::Tmux::refreshClientSize(columns, rows));
@@ -1238,6 +1239,8 @@ public:
     {
         if (hasUnresolvedLocalAdoption())
             return;
+        assertOnHostedPaneThread();
+        m_hostedPaneThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
         m_hostedPaneSource = reinterpret_cast<HostedWindowSource*>(sourceAddress);
         m_hostedPaneID = paneID;
         const ModelLockHold hold(*m_activeLock);
@@ -7794,6 +7797,7 @@ public:
                 return;
             }
         }
+        assertOnHostedPaneThread();
         if (m_externalTerminal && m_hostedPaneSource && m_hostedPanePublication)
             m_hostedPaneSource->refreshPanePublication(m_hostedPaneID, *m_externalTerminal);
         m_runtime->republishPresentationForTerm(modelTerm());
@@ -8984,6 +8988,7 @@ public:
                 m_externalTerminal->typography.shaper = {};
             detachSessionClients(*m_externalTerminal);
         }
+        assertOnHostedPaneThread();
         if (m_externalTerminal != terminal) {
             m_hostedPanePublication.reset();
             m_localPaneLink.modelDidChange();
@@ -8993,6 +8998,7 @@ public:
         if (!terminal) {
             m_hostedPaneSource = nullptr;
             m_hostedPaneID = -1;
+            m_hostedPaneThread.store(std::thread::id {}, std::memory_order_relaxed);
         }
         {
             // Another terminal's palette epoch counts from its own start, so a
@@ -9191,6 +9197,7 @@ private:
             // Their actual owner can mutate without the adapter runtime running.
             if (terminal && m_owner.m_externalTerminal && !m_owner.m_preparedRemote)
                 refreshFacts(*terminal);
+            m_owner.assertOnHostedPaneThread();
             return { .terminal = terminal,
                 .facts = m_owner.m_preparedRemote ? nullptr : m_facts.factsFor(terminal),
                 .hasFrameNotifications = !m_owner.m_externalTerminal || !!m_owner.m_hostedPanePublication };
@@ -9203,6 +9210,7 @@ private:
             if (!m_owner.m_runtime->isLocalStreamEnabled())
                 return;
             // A hosted model's source remains its geometry authority.
+            m_owner.assertOnHostedPaneThread();
             if (m_owner.m_externalTerminal && m_owner.m_hostedPaneSource) {
                 m_owner.m_hostedPaneSource->resizePane(m_owner.m_hostedPaneID, viewport.columns, viewport.rows);
                 const ModelLockHold hold(*m_owner.m_activeLock);
@@ -9299,6 +9307,7 @@ private:
                 return;
             auto publication = m_publication.read();
             if (m_owner.m_externalTerminal) {
+                m_owner.assertOnHostedPaneThread();
                 if (const auto& owner = m_owner.m_hostedPanePublication) {
                     const auto state = owner->read();
                     publication = { .factsGeneration = state.factsGeneration, .frame = state.frame, .hasFrame = state.hasFrame };
@@ -9328,6 +9337,7 @@ private:
         void setFocus(Ubiquitty::Modes::FocusState focus) override
         {
             if (m_owner.m_externalTerminal) {
+                m_owner.assertOnHostedPaneThread();
                 if (m_owner.m_hostedPaneSource)
                     (void)m_owner.m_hostedPaneSource->setPaneFocus(m_owner.m_hostedPaneID, *m_owner.m_externalTerminal, focus);
                 const ModelLockHold hold(*m_owner.m_activeLock);
@@ -9373,6 +9383,7 @@ private:
 
         std::uint64_t clockMicroseconds() const override
         {
+            m_owner.assertOnHostedPaneThread();
             if (m_owner.m_externalTerminal && m_owner.m_hostedPaneSource && m_owner.m_hostedPaneSource->hasPanePublications())
                 return m_owner.m_hostedPaneSource->publicationClockMicroseconds();
             return m_owner.m_preparedRemote ? m_owner.m_preparedRemote->screenClockMicroseconds() : m_owner.m_runtime->frameClockMicroseconds();
@@ -10379,6 +10390,18 @@ private:
     HostedWindowSource* m_hostedPaneSource = nullptr;
     int m_hostedPaneID = -1;
     std::shared_ptr<const HostedPanePublication> m_hostedPanePublication;
+    /// The thread that routed the hosting source, the frontend's. The source,
+    /// its pane and its publication handle are set and read there alone,
+    /// without a lock; no thread while no source is routed.
+    std::atomic<std::thread::id> m_hostedPaneThread {};
+
+    /// Returns on the thread that routed the hosting source, or on any thread
+    /// while none is routed; in a build with assertions, stops any other.
+    void assertOnHostedPaneThread() const
+    {
+        [[maybe_unused]] const std::thread::id owner = m_hostedPaneThread.load(std::memory_order_relaxed);
+        assert(owner == std::thread::id {} || owner == std::this_thread::get_id());
+    }
 
     Ubiquitty::PAL::Stream* m_tmuxPrimaryStream = nullptr;
     int m_tmuxRoutingPaneID = 0;
@@ -13648,6 +13671,7 @@ private:
     [[nodiscard]] FramePresentationState framePresentationState()
     {
         if (m_externalTerminal) {
+            assertOnHostedPaneThread();
             if (m_hostedPanePublication)
                 return m_hostedPanePublication->read().presentation;
             // Unknown adopted writers have no publish protocol to read.
@@ -13665,6 +13689,7 @@ private:
     void republishModel() UBIQUITTY_REQUIRES(modelLockRole)
     {
         if (m_externalTerminal) {
+            assertOnHostedPaneThread();
             if (m_hostedPaneSource && m_hostedPanePublication)
                 m_hostedPaneSource->refreshPanePublication(m_hostedPaneID, *m_externalTerminal);
             m_runtime->republishSnapshotForTerm(m_externalTerminal);
