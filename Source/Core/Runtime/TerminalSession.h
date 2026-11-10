@@ -8235,6 +8235,12 @@ public:
 
     /// Publishes a worker's results before waking the frontend. The worker
     /// holds its job mutex, so detach waits for this callback to return.
+    ///
+    /// Runs on the search's thread. The status rides this session's snapshot
+    /// alone, so an adopted pane's publication, which its source refreshes on
+    /// the frontend's thread, is left to it. An adoption changes only after
+    /// detaching the search, which waits this callback out, so the adopted
+    /// terminal read here is the one the search was made for.
     void searchDidChange()
     {
         {
@@ -8242,7 +8248,10 @@ public:
             if (m_search.controller->status().generation != m_search.controller->requestedGeneration())
                 return;
             m_runtime->setSearchStatus(m_search.controller->status());
-            republishModel();
+            if (m_externalTerminal)
+                m_runtime->republishSnapshotForTerm(m_externalTerminal);
+            else
+                m_runtime->republishSnapshot();
         }
         noteRemoteEvent(EventKind::SearchChanged);
     }

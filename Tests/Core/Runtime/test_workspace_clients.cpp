@@ -19,9 +19,11 @@
 #include <charconv>
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <span>
+#include <thread>
 #include <unistd.h>
 
 using namespace Ubiquitty::Runtime;
@@ -398,6 +400,113 @@ TEST(aHostedPaneResizesThroughItsSourceAheadOfTheServer)
     adapter->endExternalAdoption();
     adapter->resize(20, 60, TerminalSession::ResizeGesture::Settled, Ubiquitty::Modes::AnchorMode::Top);
     CHECK(paneTerminal->columns == 100);
+    releaseTerminalSession(adapter);
+    host.releasePane(1);
+    host.detach();
+}
+
+namespace {
+
+// A hosting source that hands every call to a real host and counts the
+// refreshes of a pane's publication made off the thread that built it. The
+// source's state is that thread's, the frontend's, so a refresh from any
+// other thread races the frontend that routes and rebinds it.
+class ThreadRecordingSource final : public HostedWindowSource {
+public:
+    explicit ThreadRecordingSource(HostedWindowSource& host)
+        : m_host(host)
+    {
+    }
+
+    void attach() override { m_host.attach(); }
+    void detach() override { m_host.detach(); }
+    HostedSessionReference sessionReference() override { return m_host.sessionReference(); }
+    HostedWindowEvent takeEvent() override { return m_host.takeEvent(); }
+    std::vector<int> takeRepaintedPanes() override { return m_host.takeRepaintedPanes(); }
+    HostedPaneFacts paneFacts(int paneID) override { return m_host.paneFacts(paneID); }
+    bool hasPanePublications() const override { return m_host.hasPanePublications(); }
+    std::shared_ptr<const HostedPanePublication> panePublicationHandle(int paneID, const Ubiquitty::Terminal& terminal) override
+    {
+        return m_host.panePublicationHandle(paneID, terminal);
+    }
+
+    void refreshPanePublication(int paneID, const Ubiquitty::Terminal& terminal) override
+    {
+        if (std::this_thread::get_id() != m_frontendThread)
+            m_offThreadRefreshes.fetch_add(1, std::memory_order_relaxed);
+        m_host.refreshPanePublication(paneID, terminal);
+    }
+
+    std::uint64_t publicationClockMicroseconds() const override { return m_host.publicationClockMicroseconds(); }
+    bool setPaneFocus(int paneID, const Ubiquitty::Terminal& terminal, Ubiquitty::Modes::FocusState focus) override
+    {
+        return m_host.setPaneFocus(paneID, terminal, focus);
+    }
+
+    void releasePane(int paneID) override { m_host.releasePane(paneID); }
+    void releaseWindow(int windowID) override { m_host.releaseWindow(windowID); }
+    void resizePane(int paneID, int columns, int rows) override { m_host.resizePane(paneID, columns, rows); }
+    bool reportClientSize(int paneID, int columns, int rows) override { return m_host.reportClientSize(paneID, columns, rows); }
+
+    [[nodiscard]] int offThreadRefreshes() const { return m_offThreadRefreshes.load(std::memory_order_relaxed); }
+
+private:
+    HostedWindowSource& m_host;
+    const std::thread::id m_frontendThread = std::this_thread::get_id();
+    std::atomic<int> m_offThreadRefreshes { 0 };
+};
+
+} // namespace
+
+// A search of a hosted pane runs again on the search's thread when the pane
+// changes, and reports its progress there. The report publishes this
+// session's snapshot, where the search status lives, and leaves the source's
+// publication to the frontend's thread.
+TEST(aHostedPanesSearchReportsWithoutTouchingItsSourceOffTheFrontendThread)
+{
+    struct DiscardingStream final : Ubiquitty::PAL::ByteStream {
+        int read(std::span<char>) override { return 0; }
+        int write(std::span<const char> bytes) override { return static_cast<int>(bytes.size()); }
+        int writeAll(std::span<const char> bytes) override { return static_cast<int>(bytes.size()); }
+        bool drainPendingWrite() override { return false; }
+        bool hasPendingWrite() const override { return false; }
+        int lastError() const override { return 0; }
+    } stream;
+    auto primary = std::make_unique<Ubiquitty::Terminal>();
+    Ubiquitty::resize(*primary, 24, 80);
+    Ubiquitty::ModelLock primaryLock;
+    HostedWindowSeams seams;
+    seams.primary = primary.get();
+    seams.primaryLock = &primaryLock;
+    seams.stream = &stream;
+    TmuxControlHost host(seams);
+    host.attach();
+    Ubiquitty::processBytes(primary.get(), "%begin 1 1 0\n%end 1 1 0\n");
+    Ubiquitty::processBytes(primary.get(), "%begin 2 2 1\n@1 %1 80 24 1 ef01,80x24,0,0,1 work editor\n%end 2 2 1\n");
+    // Output first, so the pane has the publication the route binds.
+    Ubiquitty::processBytes(primary.get(), "%output %1 hosted-search-text\n");
+    const HostedPaneFacts facts = host.paneFacts(1);
+    auto* paneTerminal = reinterpret_cast<Ubiquitty::Terminal*>(facts.terminalAddress);
+    REQUIRE(paneTerminal != nullptr);
+
+    ThreadRecordingSource source(host);
+    auto* adapter = TerminalSession::make();
+    REQUIRE(adapter != nullptr);
+    adapter->start(24, 80);
+    adapter->adoptExternalTerminal(paneTerminal, facts.lockAddress);
+    adapter->routeResizeThroughHostedSource(reinterpret_cast<std::uintptr_t>(&source), 1);
+    CHECK_EQ(adapter->searchScrollbackAndWait({ .pattern = "hosted-search-text" }).foundCount, 1);
+
+    Ubiquitty::processBytes(primary.get(), "%output %1 \\015\\012hosted-search-text\n");
+    adapter->republishSnapshot();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (adapter->readSnapshot().search.foundCount != 2 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    CHECK_EQ(adapter->readSnapshot().search.foundCount, 2);
+    CHECK_EQ(source.offThreadRefreshes(), 0);
+
+    adapter->clearScrollbackSearch();
+    adapter->endExternalAdoption();
     releaseTerminalSession(adapter);
     host.releasePane(1);
     host.detach();
