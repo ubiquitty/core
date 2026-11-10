@@ -59,12 +59,17 @@
 #define UBIQUITTY_EXCLUDES(...) UBIQUITTY_THREAD_ANNOTATION(locks_excluded(__VA_ARGS__))
 
 /// Marks a function that returns only when the calling thread holds the
-/// capability, so the analysis takes it as held after the call.
+/// capability, so the analysis takes it as held after the call. The analysis
+/// takes the function's word for it; Scripts/check-model-lock-holds.py counts
+/// every one outside the files that implement the model lock.
 #define UBIQUITTY_ASSERTS_CAPABILITY(x) UBIQUITTY_THREAD_ANNOTATION(assert_capability(x))
 
-/// Marks a function the thread-safety analysis does not check. Reserved for
-/// the bodies of the primitives that implement a capability, which hold it by
-/// means the analysis cannot see.
+/// Marks a function the thread-safety analysis does not check: the body of a
+/// primitive that implements a capability, or a function that holds one by
+/// means the analysis cannot follow, such as a lock held from one call to the
+/// next. Each use states its reason at the declaration, and
+/// Scripts/check-model-lock-holds.py counts every use outside the files that
+/// implement the model lock.
 #define UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS UBIQUITTY_THREAD_ANNOTATION(no_thread_safety_analysis)
 
 /// Marks a function Clang's function-effect analysis proves cannot block: it

@@ -8,44 +8,54 @@ The model lock is taken by the drain at every parse bite and by a frontend
 thread whenever it reads or writes the model. Each frontend acquisition is a
 wait on the parser, and the regressions that froze the screen under output were
 each one new acquisition on a path a frontend runs per keypress, per delivery
-or per display tick: a plain `std::scoped_lock` in `encodeKey` (7167274cb) and
-`noteUserActivity` (039a29b39), one per delivery in the selection's update after
-output (e0840e52f), and a tick that declined its frame because a selection
-stood (07ac11054, 48d144718). Clang's thread-safety analysis proves that the
-model is touched only under the lock; it cannot say that a frontend should not
-take it. This gate holds the number of places that do.
+or per display tick: a plain `std::scoped_lock` in `encodeKey` and in
+`noteUserActivity`, one per delivery in the selection's update after output,
+and a tick that declined its frame because a selection stood. Clang's
+thread-safety analysis proves that the model is touched only under the lock;
+it cannot say that a frontend should not take it. This gate holds the number of
+places that do.
 
-It counts, in Source/Core/Runtime/TerminalSession.h:
+It counts, each against its own ledger budget, two-sided: a new one fails, and
+one removed must lower the budget in the same commit.
 
-- every acquisition of the model lock in the body of a public member of
-  `TerminalSession`, the members a frontend calls (`ModelLockHold`,
-  `lockForRead`, `tryLockForRead`, `ModelReadScope`, a plain std lock or a
-  `lock()`/`try_lock()` on the session's lock);
-- every entry of Scripts/frame-path-blocking.txt, the per-tick calls that still
-  wait on the lock and so carry no `UBIQUITTY_NONBLOCKING`.
-
-Their sum is held to the ledger's `budget model-lock-holds`, two-sided: a new
-acquisition fails, and one removed must lower the budget in the same commit.
+- `model-lock-holds`: every acquisition of a model lock in a function body of
+  Source/Core/Runtime/TerminalSession.h and Source/Core/Runtime/WorkspaceSession.h,
+  private members and the members of nested types included, and every call of
+  a tmux pane's `withTermLocked` under Source/. An acquisition is a
+  `ModelLockHold`, however it is spelled or held (`= ModelLockHold(`,
+  `ModelLockHold const`, a `std::optional` of one), `lockForRead`,
+  `tryLockForRead`, a `ModelReadScope`, a drain host's `lockModel`, a
+  `lockForDrain`, a plain std lock, or a `lock()`/`try_lock()` on a model lock
+  however it is reached.
+- `per-tick-waits`: the entries of Scripts/frame-path-blocking.txt marked
+  `waits`, the per-tick calls that still wait on the lock and so carry no
+  `UBIQUITTY_NONBLOCKING`.
+- `plain-model-lock-holds`: a std lock (`std::scoped_lock`, `std::unique_lock`,
+  `std::lock_guard`) over a model lock in a first-party header or source. It
+  takes the lock and grants the analysis nothing, which is the spelling a
+  regression reaches for first.
+- `thread-safety-escapes`: every place the analysis is told rather than shown:
+  `UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS`, `UBIQUITTY_ASSERTS_CAPABILITY`, a
+  lambda that declares `UBIQUITTY_REQUIRES` (it is reached through a pointer
+  the analysis cannot follow), and a test's `ownModelOnTestThread()`, under
+  Source/ and Tests/, outside the files that implement the lock.
 
 It refuses outright:
 
-- a std lock (`std::scoped_lock`, `std::unique_lock`, `std::lock_guard`) over a
-  model lock in a first-party header or source, beyond the ledger's
-  `budget plain-model-lock-holds`: it takes the lock and grants the analysis
-  nothing, which is the spelling a regression reaches for first;
 - a per-tick call, one the display-free cadence test's frontend makes
   (Tests/Core/Runtime/test_frame_cadence.cpp), that is neither declared
   `UBIQUITTY_NONBLOCKING` nor listed in Scripts/frame-path-blocking.txt, and an
-  entry there that names no per-tick call or names a marked one;
+  entry there that names no per-tick call, names a marked one, or names no kind
+  or no reason;
 - a branch in the frame decision (`takeFrame` and the declines it asks:
   `frameHold`, `shouldSkipLiveReadForSaturation`) whose condition reads a
   selection: the frame a view presents never depends on what it selects;
-- a `UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS` beyond the ledger's
-  `budget thread-safety-escapes`.
+- a toolchain rule that lets `UBIQUITTY_OWNERSHIP_ANALYSIS` stand without the
+  function-effect analysis: the `UBIQUITTY_NONBLOCKING` this gate takes as
+  proof is proof only where Clang's -Wfunction-effects checked it.
 
-What it cannot see: an acquisition made in a private helper that a public
-member calls (the analysis and the cadence test hold that), a lock reached
-through an alias it does not name, and Swift. It reads text, not types.
+What it cannot see: a lock reached through an alias it does not name, and
+Swift. It reads text, not types.
 
     ./Scripts/check-model-lock-holds.py
     ./Scripts/check-model-lock-holds.py --self-test
@@ -58,45 +68,73 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gate_framework import Gate
+from gate_framework import Gate, Level
 import ubq_roots
 
 SESSION = pathlib.Path("Source/Core/Runtime/TerminalSession.h")
+WORKSPACE = pathlib.Path("Source/Core/Runtime/WorkspaceSession.h")
 CADENCE = pathlib.Path("Tests/Core/Runtime/test_frame_cadence.cpp")
 ALLOWLIST = pathlib.Path("Scripts/frame-path-blocking.txt")
+TOOLCHAIN = pathlib.Path("Scripts/cmake/UbiquittyToolchain.cmake")
 SOURCE_ROOTS = ("Source",)
+ESCAPE_ROOTS = ("Source", "Tests")
 SOURCE_SUFFIXES = (".h", ".cpp", ".mm")
+
+#: The files that hold model-lock acquisitions a frontend reaches.
+HOLD_FILES = (SESSION, WORKSPACE)
 
 #: The files that implement the lock and its escape, which name it without
 #: holding it as a frontend does.
 LOCK_DEFINITIONS = {"Source/Core/ModelLock.h", "Source/Base/ThreadSafety.h"}
 
 #: The ledger budgets this gate holds the tree to.
-BUDGETS = ("model-lock-holds", "plain-model-lock-holds", "thread-safety-escapes")
+BUDGETS = ("model-lock-holds", "per-tick-waits", "plain-model-lock-holds", "thread-safety-escapes")
 
 #: The frame decision: the per-tick answer and the declines it asks.
 FRAME_DECISION = ("takeFrame", "frameHold", "shouldSkipLiveReadForSaturation")
 
+#: The kinds an allowlist entry names.
+WAITS = "waits"
+NO_WAIT = "nowait"
+
 #: Names a model lock is reached by in first-party code.
-MODEL_LOCK_OPERAND = r"(?:m_activeLock|m_modelLock|modelLockPointer\s*\(\s*\)|m_search\.lock|primaryLock|lockHandle\s*\(\s*\)|nativeHandle\s*\(\s*\)|\bmodelLock\b)"
+MODEL_LOCK_OPERAND = (r"(?:m_activeLock|m_modelLock|modelLockPointer\s*\(\s*\)|m_search\.lock|primaryLock|lockHandle\s*\(\s*\)"
+                      r"|nativeHandle\s*\(\s*\)|\bmodelLock\b)")
 
 HOLD = re.compile(
-    r"\bModelLockHold\s+\w+\s*[({]"
+    r"\bModelLockHold\s+(?:const\s+)?\w+\s*[({]"
+    r"|\bModelLockHold\s*[({]"
+    r"|\boptional\s*<\s*(?:const\s+)?ModelLockHold\s*>"
     r"|\blockForRead\s*\(\s*\)"
     r"|\btryLockForRead\s*\(\s*\)"
-    r"|\bModelReadScope\s+\w+\s*[({]"
+    r"|\bModelReadScope\s+(?:const\s+)?\w+\s*[({]"
     r"|\bmodelReadScope\s*\(\s*\)"
+    r"|\blockModel\s*\(\s*\)"
+    r"|\blockForDrain\s*\(\s*\)"
     r"|\bstd::(?:scoped_lock|unique_lock|lock_guard)\b[^;]*" + MODEL_LOCK_OPERAND +
-    r"|(?:m_activeLock|m_modelLock)\s*(?:->|\.)\s*(?:lock|try_lock)\s*\(")
+    r"|" + MODEL_LOCK_OPERAND + r"\s*(?:->|\.)\s*(?:lock|try_lock)\s*\("
+    r"|\(\s*\*\s*" + MODEL_LOCK_OPERAND + r"\s*\)\s*\.\s*(?:lock|try_lock)\s*\(")
+
+#: A tmux pane's locked run, which takes the pane's model lock.
+TERM_LOCKED_RUN = re.compile(r"(?:->|\.)\s*withTermLocked\s*\(")
 
 PLAIN_HOLD = re.compile(r"\bstd::(?:scoped_lock|unique_lock|lock_guard)\b[^;]*" + MODEL_LOCK_OPERAND)
 
-ESCAPE = re.compile(r"\bUBIQUITTY_NO_THREAD_SAFETY_ANALYSIS\b")
+ESCAPES = (
+    ("analysis escape(s)", re.compile(r"\bUBIQUITTY_NO_THREAD_SAFETY_ANALYSIS\b")),
+    ("asserted capabilit(ies)", re.compile(r"\bUBIQUITTY_ASSERTS_CAPABILITY\b")),
+    ("lambda(s) declaring a requirement", re.compile(r"\]\s*\([^()]*\)\s*(?:mutable\s+)?(?:noexcept\s+)?UBIQUITTY_REQUIRES\b")),
+    ("test model-ownership claim(s)", re.compile(r"\bownModelOnTestThread\s*\(\s*\)\s*;")),
+)
 
 NONBLOCKING = "UBIQUITTY_NONBLOCKING"
 
 #: A frontend call in the cadence test's tick: `m_session.name(`.
 CADENCE_CALL = re.compile(r"\bm_session\s*\.\s*(\w+)\s*\(")
+
+#: The toolchain's refusal of the ownership analysis without function effects.
+FUNCTION_EFFECTS_REQUIRED = re.compile(r"UBIQUITTY_OWNERSHIP_ANALYSIS[^\n]*\n(?:[^\n]*\n){0,6}?[^\n]*FATAL_ERROR[^\n]*function-effects",
+                                       re.IGNORECASE)
 
 
 # ---- a small reader of C++ text ----------------------------------------------
@@ -169,33 +207,31 @@ ACCESS = re.compile(r"\b(public|private|protected)\s*:(?!:)")
 NAME_BEFORE_PARAMETERS = re.compile(r"(~?[A-Za-z_]\w*)\s*\(")
 NOT_A_NAME = {"if", "for", "while", "switch", "return", "sizeof", "alignof", "decltype", "static_assert",
               "noexcept", "requires", "alignas", "explicit"}
+CONTAINER = re.compile(r"\s*(?:template\s*<[^{;]*>\s*)?(?:(class|struct|union)\b|(namespace)\b|(enum)\b|(extern)\b[^{]*$)")
+PREPROCESSOR_LINE = re.compile(r"^[ \t]*#.*$", re.MULTILINE)
 
 
 class Member:
-    """A member function defined in a class body: its name, access, head and body."""
+    """A function defined in a class, namespace or file: its name, the types it is
+    nested in, its access, its head and its body."""
 
-    def __init__(self, name, access, head, body_start, body_end):
+    def __init__(self, name, scope, access, head, body_start, body_end):
         self.name = name
+        self.scope = scope
         self.access = access
         self.head = head
         self.body_start = body_start
         self.body_end = body_end
 
+    @property
+    def qualified_name(self):
+        return "::".join(self.scope + [self.name])
 
-def members(code, class_name):
-    """Every member function defined inside `class <class_name> { ... }`.
 
-    Nested types are stepped over whole, so a member of a nested class is not
-    taken for one of this class.
-    """
-    match = re.search(r"\bclass\s+(?:\[\[[^\]]*\]\]\s*)?(?:\w+\s+)*%s\b[^;{]*\{" % re.escape(class_name), code)
-    if not match:
-        return []
-    begin = match.end() - 1
-    end = closing(code, begin)
-    access = "private"
-    found = []
-    index = begin + 1
+def walk(code, begin, end, scope, access, found):
+    """Collects every function defined between `begin` and `end`, descending into
+    the classes, structs, unions and namespaces defined there."""
+    index = begin
     statement = index
     while index < end:
         character = code[index]
@@ -211,12 +247,18 @@ def members(code, class_name):
             continue
         if character == "{":
             body_end = closing(code, index)
-            head = code[statement:index]
-            is_type = re.match(r"\s*(?:template\s*<[^>]*>\s*)?(?:class|struct|union|enum)\b", head) is not None
-            names = [name for name in NAME_BEFORE_PARAMETERS.finditer(head)
-                     if name.group(1) not in NOT_A_NAME and not name.group(1).startswith("UBIQUITTY_")]
-            if names and not is_type and "=" not in head[:names[0].start()]:
-                found.append(Member(names[0].group(1), access, head, index, body_end))
+            head = PREPROCESSOR_LINE.sub("", code[statement:index])
+            container = CONTAINER.match(head)
+            if container and (container.group(1) or container.group(2) or container.group(4)):
+                name = re.search(r"(\w+)\s*(?:final\s*)?(?::[^:{][^{]*)?$", head.strip())
+                kind = container.group(1)
+                walk(code, index + 1, body_end, scope + [name.group(1) if name and kind else ""],
+                     "private" if kind == "class" else "public", found)
+            elif not container:
+                names = [name for name in NAME_BEFORE_PARAMETERS.finditer(head)
+                         if name.group(1) not in NOT_A_NAME and not name.group(1).startswith("UBIQUITTY_")]
+                if names and "=" not in head[:names[0].start()]:
+                    found.append(Member(names[0].group(1), [part for part in scope if part], access, head, index, body_end))
             index = body_end + 1
             statement = index
             continue
@@ -224,13 +266,19 @@ def members(code, class_name):
     return found
 
 
+def functions(code):
+    """Every function defined in `code`, members of nested types included."""
+    return walk(code, 0, len(code), [], "public", [])
+
+
+def members(code, class_name):
+    """The functions defined directly in `class <class_name> { ... }`."""
+    return [member for member in functions(code) if member.scope and member.scope[-1] == class_name]
+
+
 def declared_nonblocking(code, class_name):
     """The names of the class's members whose declaration carries UBIQUITTY_NONBLOCKING."""
-    names = set()
-    for member in members(code, class_name):
-        if NONBLOCKING in member.head:
-            names.add(member.name)
-    return names
+    return {member.name for member in members(code, class_name) if NONBLOCKING in member.head}
 
 
 def conditions(body):
@@ -246,25 +294,23 @@ def conditions(body):
 
 # ---- the counts -----------------------------------------------------------------
 
-def frontend_holds(session_code):
-    """[(member, count)] for each public TerminalSession member that takes the lock."""
+def holds_in(code):
+    """[(function, count)] for each function in `code` that takes a model lock."""
     result = []
-    for member in members(session_code, "TerminalSession"):
-        if member.access != "public":
-            continue
-        count = len(HOLD.findall(session_code[member.body_start:member.body_end]))
+    for member in functions(code):
+        count = len(HOLD.findall(code[member.body_start:member.body_end]))
         if count:
-            result.append((member.name, count))
+            result.append((member.qualified_name, count))
     return result
 
 
 def allowlist_entries(text):
-    """{name: reason} from the allowlist's `<member> <reason>` lines."""
+    """{name: (kind, reason)} from the allowlist's `<member> <kind> <reason>` lines."""
     entries = {}
     for line in text.split("\n"):
-        words = line.split("#", 1)[0].split(None, 1)
+        words = line.split("#", 1)[0].split(None, 2)
         if words:
-            entries[words[0]] = words[1].strip() if len(words) > 1 else ""
+            entries[words[0]] = (words[1] if len(words) > 1 else "", words[2].strip() if len(words) > 2 else "")
     return entries
 
 
@@ -273,8 +319,15 @@ def per_tick_calls(cadence_code):
     return {match.group(1) for match in CADENCE_CALL.finditer(cadence_code)}
 
 
+def source_files(root, directories):
+    for directory in directories:
+        for path in sorted((root / directory).rglob("*")):
+            if path.suffix in SOURCE_SUFFIXES and path.is_file():
+                yield path, path.relative_to(root).as_posix()
+
+
 def judge(root, budgets):
-    """[(location, message)] for every finding over the tree at `root`."""
+    """([(location, message)], counts) for the tree at `root`."""
     findings = []
     session_path = root / SESSION
     if not session_path.is_file():
@@ -284,18 +337,31 @@ def judge(root, budgets):
     allowlist = allowlist_entries(allowlist_path.read_text(encoding="utf-8")) if allowlist_path.is_file() else {}
     cadence_path = root / CADENCE
     ticks = per_tick_calls(blanked(cadence_path.read_text(encoding="utf-8", errors="replace"))) if cadence_path.is_file() else set()
+    counts = {}
 
-    holds = frontend_holds(session_code)
-    hold_count = sum(count for _, count in holds)
-    counts = {"holds": hold_count, "allowlisted": len(allowlist)}
+    # Every acquisition a frontend's calls reach, wherever in the files it sits.
+    holds = []
+    for relative in HOLD_FILES:
+        path = root / relative
+        if path.is_file():
+            code = session_code if relative == SESSION else blanked(path.read_text(encoding="utf-8", errors="replace"))
+            holds += [(f"{relative.name}: {name}", count) for name, count in holds_in(code)]
+    for path, relative in source_files(root, SOURCE_ROOTS):
+        code = blanked(path.read_text(encoding="utf-8", errors="replace"))
+        runs = len(TERM_LOCKED_RUN.findall(code))
+        if runs:
+            holds.append((f"{relative}: withTermLocked", runs))
+    counts["holds-by-function"] = holds
+    counts["model-lock-holds"] = sum(count for _, count in holds)
+    findings += against(str(SESSION), counts["model-lock-holds"], budgets.get("model-lock-holds"),
+        "model-lock acquisition(s) a frontend's calls reach")
 
-    # The ceiling: frontend acquisitions plus the per-tick calls still waiting.
-    total = hold_count + len(allowlist)
-    counts["model-lock-holds"] = total
-    findings += against(str(SESSION), total, budgets.get("model-lock-holds"),
-        "model-lock acquisition(s) in frontend members plus per-tick call(s) still blocking")
-
-    # Per-tick calls: marked, or listed with a reason.
+    # Per-tick calls: marked, or listed with a kind and a reason.
+    waiting = sorted(name for name, (kind, _) in allowlist.items() if kind == WAITS)
+    counts["per-tick-waits"] = len(waiting)
+    counts["per-tick-nowait"] = len(allowlist) - len(waiting)
+    findings += against(str(ALLOWLIST), counts["per-tick-waits"], budgets.get("per-tick-waits"),
+        "per-tick call(s) that still wait on the model lock")
     session_members = {member.name for member in members(session_code, "TerminalSession")}
     marked = declared_nonblocking(session_code, "TerminalSession")
     tick_members = {name for name in ticks if name in session_members}
@@ -305,8 +371,10 @@ def judge(root, budgets):
         findings.append((str(ALLOWLIST), f"`{name}` is not a call the cadence test's frontend makes; delete the entry"))
     for name in sorted(set(allowlist) & marked):
         findings.append((str(ALLOWLIST), f"`{name}` is {NONBLOCKING}; delete the entry"))
-    for name, reason in sorted(allowlist.items()):
-        if not reason:
+    for name, (kind, reason) in sorted(allowlist.items()):
+        if kind not in (WAITS, NO_WAIT):
+            findings.append((str(ALLOWLIST), f"`{name}` names no kind; say `{WAITS}` or `{NO_WAIT}`"))
+        elif not reason:
             findings.append((str(ALLOWLIST), f"`{name}` names no reason"))
 
     # The frame decision never branches on a selection.
@@ -317,25 +385,33 @@ def judge(root, budgets):
             if re.search(r"selection", condition, re.IGNORECASE):
                 findings.append((str(SESSION), f"`{member.name}` branches on a selection: {' '.join(condition.split())[:120]}"))
 
-    # Plain std locks over a model lock, and analysis escapes, across the tree.
+    # Plain std locks over a model lock, across the sources.
     plain = 0
-    escapes = 0
-    for directory in SOURCE_ROOTS:
-        for path in sorted((root / directory).rglob("*")):
-            if path.suffix not in SOURCE_SUFFIXES or not path.is_file():
-                continue
-            relative = path.relative_to(root).as_posix()
-            if relative in LOCK_DEFINITIONS:
-                continue
-            code = blanked(path.read_text(encoding="utf-8", errors="replace"))
-            plain += len(PLAIN_HOLD.findall(code))
-            escapes += len(ESCAPE.findall(code))
+    for path, relative in source_files(root, SOURCE_ROOTS):
+        if relative not in LOCK_DEFINITIONS:
+            plain += len(PLAIN_HOLD.findall(blanked(path.read_text(encoding="utf-8", errors="replace"))))
     counts["plain-model-lock-holds"] = plain
-    counts["thread-safety-escapes"] = escapes
     findings += against("Source", plain, budgets.get("plain-model-lock-holds"),
         "std lock(s) over a model lock, which grant the thread-safety analysis nothing")
-    findings += against("Source", escapes, budgets.get("thread-safety-escapes"),
-        "UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS escape(s)")
+
+    # Every place the analysis is told rather than shown.
+    escapes = {label: 0 for label, _ in ESCAPES}
+    for path, relative in source_files(root, ESCAPE_ROOTS):
+        if relative in LOCK_DEFINITIONS:
+            continue
+        code = blanked(path.read_text(encoding="utf-8", errors="replace"))
+        for label, pattern in ESCAPES:
+            escapes[label] += len(pattern.findall(code))
+    counts["escapes-by-kind"] = escapes
+    counts["thread-safety-escapes"] = sum(escapes.values())
+    findings += against("Source", counts["thread-safety-escapes"], budgets.get("thread-safety-escapes"),
+        "thread-safety escape(s) (" + ", ".join(f"{count} {label}" for label, count in escapes.items()) + ")")
+
+    # The nonblocking mark is proof only where the analysis that checks it runs.
+    toolchain = root / TOOLCHAIN
+    if toolchain.is_file() and not FUNCTION_EFFECTS_REQUIRED.search(toolchain.read_text(encoding="utf-8", errors="replace")):
+        findings.append((str(TOOLCHAIN), f"UBIQUITTY_OWNERSHIP_ANALYSIS can stand without -Wfunction-effects, so {NONBLOCKING} proves nothing"
+                                         " there; configure must refuse that"))
     return findings, counts
 
 
@@ -352,23 +428,25 @@ def against(location, count, budget, what):
 
 class ModelLockHolds(Gate):
     name = "check-model-lock-holds"
-    subject = "TerminalSession.h, the per-tick allowlist and the sources this reads"
+    subject = "the model-lock acquisitions a frontend reaches, the per-tick allowlist and the analysis escapes"
 
     def examine(self):
         root = pathlib.Path(self.root)
         ledger = ubq_roots.ledger(str(root))[0]
         budgets = {name: ledger.get(name) for name in BUDGETS}
         findings, counts = judge(root, budgets)
+        for name, count in counts.get("holds-by-function", []):
+            self.detail(f"{count} model-lock acquisition(s) in {name}", Level.DEBUG)
         if findings:
             for location, message in findings:
                 self.finding(location, message)
             return self.failed("model-lock finding(s)", [message for _, message in findings])
-        return self.ok(f"{counts['holds']} frontend acquisition(s) and {counts['allowlisted']} blocking per-tick call(s)"
-                       f" at budget {counts['model-lock-holds']}, {counts['plain-model-lock-holds']} plain std lock(s),"
-                       f" {counts['thread-safety-escapes']} analysis escape(s)")
+        return self.ok(f"{counts['model-lock-holds']} model-lock acquisition(s), {counts['per-tick-waits']} per-tick call(s)"
+                       f" that wait and {counts['per-tick-nowait']} that do not, {counts['plain-model-lock-holds']} plain std"
+                       f" lock(s), {counts['thread-safety-escapes']} analysis escape(s)")
 
     def selfTest(self):
-        """Each historical shape, planted into a tree the gate passes, fails it."""
+        """Each shape, planted into a tree the gate passes, fails it."""
         failures = []
         for name, plant, expected in PLANTS:
             with tempfile.TemporaryDirectory() as directory:
@@ -419,8 +497,37 @@ public:
     }
 
 private:
+    FrameHold frameHold(Ticks nowTicks)
+    {
+        return FrameHold::None;
+    }
+
+    struct LocalPaneLink final : Session::PaneLink {
+        void pollEvents(std::uint64_t now) override
+        {
+            m_events.deliver();
+        }
+    };
+
     ModelLock* m_activeLock = &m_modelLock;
 };
+"""
+
+FIXTURE_WORKSPACE = """
+class WorkspaceSession {
+public:
+    void describe(TerminalSession& session)
+    {
+        const ModelLockHold hold(*session.modelLockPointer());
+    }
+};
+"""
+
+FIXTURE_TMUX_HOST = """
+void TmuxControlHost::deliver(Pane* pane)
+{
+    pane->withTermLocked([&](Ubiquitty::Terminal& terminal) { });
+}
 """
 
 FIXTURE_CADENCE = """
@@ -434,21 +541,26 @@ void tick()
 }
 """
 
-FIXTURE_ALLOWLIST = """# member reason
-takeEventFlags polls the pane link under the model lock
-updateSelectionAfterOutput try-locks the model to judge the selection after output
+FIXTURE_ALLOWLIST = """# member kind reason
+takeEventFlags waits polls the pane link under the model lock
+updateSelectionAfterOutput nowait try-locks the model to judge the selection after output
 """
 
-FIXTURE_BUDGETS = {"model-lock-holds": 3, "plain-model-lock-holds": 0, "thread-safety-escapes": 0}
+FIXTURE_TOOLCHAIN = """
+if(UBIQUITTY_OWNERSHIP_ANALYSIS AND NOT UBIQUITTY_HAS_FUNCTION_EFFECTS)
+    message(FATAL_ERROR "UBIQUITTY_OWNERSHIP_ANALYSIS needs -Wfunction-effects")
+endif()
+"""
+
+FIXTURE_BUDGETS = {"model-lock-holds": 3, "per-tick-waits": 1, "plain-model-lock-holds": 0, "thread-safety-escapes": 0}
 
 
 def write_fixture(root):
-    (root / SESSION).parent.mkdir(parents=True, exist_ok=True)
-    (root / SESSION).write_text(FIXTURE_SESSION, encoding="utf-8")
-    (root / CADENCE).parent.mkdir(parents=True, exist_ok=True)
-    (root / CADENCE).write_text(FIXTURE_CADENCE, encoding="utf-8")
-    (root / ALLOWLIST).parent.mkdir(parents=True, exist_ok=True)
-    (root / ALLOWLIST).write_text(FIXTURE_ALLOWLIST, encoding="utf-8")
+    for relative, text in ((SESSION, FIXTURE_SESSION), (WORKSPACE, FIXTURE_WORKSPACE),
+                           (pathlib.Path("Source/Core/Runtime/TmuxControlHost.cpp"), FIXTURE_TMUX_HOST),
+                           (CADENCE, FIXTURE_CADENCE), (ALLOWLIST, FIXTURE_ALLOWLIST), (TOOLCHAIN, FIXTURE_TOOLCHAIN)):
+        (root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative).write_text(text, encoding="utf-8")
 
 
 def replace_in(path, old, new):
@@ -457,15 +569,19 @@ def replace_in(path, old, new):
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
+def plant_in_session(old, new):
+    return lambda root: replace_in(root / SESSION, old, new)
+
+
 def plant_selection_hold(root):
-    """e0840e52f: the per-delivery selection update takes a plain hold."""
+    """The per-delivery selection update takes a plain hold."""
     replace_in(root / SESSION, "        return Selection::updateAfterOutput(*selection, viewOffset);",
                "        const std::scoped_lock hold(*m_activeLock);\n"
                "        return Selection::updateAfterOutput(*selection, viewOffset);")
 
 
 def plant_selection_decline(root):
-    """07ac11054, 48d144718: the tick declines its frame while a selection stands."""
+    """The tick declines its frame while a selection stands."""
     replace_in(root / SESSION, "        supply = {};\n",
                "        supply = {};\n"
                "        if (demand.selection && Selection::hasSelection(*demand.selection)) {\n"
@@ -475,9 +591,18 @@ def plant_selection_decline(root):
 
 
 def plant_keypress_hold(root):
-    """7167274cb, 039a29b39: the keypress path waits for the model lock."""
+    """The keypress path waits for the model lock."""
     replace_in(root / SESSION, "    KeyEncoding sendKey(const KeyPress& press) UBIQUITTY_NONBLOCKING\n    {\n",
                "    KeyEncoding sendKey(const KeyPress& press)\n    {\n        const ModelLockHold hold(*m_activeLock);\n")
+
+
+def plant_offset(root):
+    """One per-tick call marked nonblocking while a keypress takes the lock: the two
+    budgets are separate, so the one does not pay for the other."""
+    replace_in(root / SESSION, "    std::uint32_t takeEventFlags()\n", "    std::uint32_t takeEventFlags() UBIQUITTY_NONBLOCKING\n")
+    replace_in(root / ALLOWLIST, "takeEventFlags waits polls the pane link under the model lock\n", "")
+    replace_in(root / SESSION, "    {\n        return postKey(press);\n",
+               "    {\n        const ModelLockHold hold(*m_activeLock);\n        return postKey(press);\n")
 
 
 def plant_analysis_escape(root):
@@ -486,12 +611,60 @@ def plant_analysis_escape(root):
                "    std::uint32_t takeEventFlags() UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS\n")
 
 
+def plant_toolchain_without_effects(root):
+    """The ownership analysis allowed to stand without function effects."""
+    (root / TOOLCHAIN).write_text("option(UBIQUITTY_OWNERSHIP_ANALYSIS \"check\" ON)\n", encoding="utf-8")
+
+
 PLANTS = (
     ("a plain scoped_lock in the per-delivery selection update", plant_selection_hold, "std lock(s) over a model lock"),
     ("a per-tick frame decline that depends on a selection", plant_selection_decline, "branches on a selection"),
     ("a blocking lock in a keypress path", plant_keypress_hold, "model-lock acquisition(s)"),
     ("the keypress path's per-tick call unmarked", plant_keypress_hold, "neither UBIQUITTY_NONBLOCKING"),
-    ("an analysis escape", plant_analysis_escape, "UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS escape(s)"),
+    ("a hold in a private member",
+     plant_in_session("        return FrameHold::None;\n", "        const ModelLockHold hold(*m_activeLock);\n        return FrameHold::None;\n"),
+     "model-lock acquisition(s)"),
+    ("a hold in a nested type's member",
+     plant_in_session("            m_events.deliver();\n", "            const ModelLockHold hold(*m_owner.m_activeLock);\n            m_events.deliver();\n"),
+     "model-lock acquisition(s)"),
+    ("a hold assigned from a temporary",
+     plant_in_session("        return FrameHold::None;\n", "        auto hold = ModelLockHold(*m_activeLock);\n        return FrameHold::None;\n"),
+     "model-lock acquisition(s)"),
+    ("a hold spelt const after its type",
+     plant_in_session("        return FrameHold::None;\n", "        ModelLockHold const hold(*m_activeLock);\n        return FrameHold::None;\n"),
+     "model-lock acquisition(s)"),
+    ("a hold emplaced into an optional",
+     plant_in_session("        return FrameHold::None;\n",
+                      "        std::optional<ModelLockHold> hold;\n        hold.emplace(*m_activeLock);\n        return FrameHold::None;\n"),
+     "model-lock acquisition(s)"),
+    ("a drain host's lock taken by a frontend call",
+     plant_in_session("        return FrameHold::None;\n", "        m_host.lockModel();\n        m_host.unlockModel();\n        return FrameHold::None;\n"),
+     "model-lock acquisition(s)"),
+    ("a drain's lock taken directly",
+     plant_in_session("        return FrameHold::None;\n", "        m_modelLock.lockForDrain();\n        return FrameHold::None;\n"),
+     "model-lock acquisition(s)"),
+    ("a lock taken through a dereference",
+     plant_in_session("        return FrameHold::None;\n", "        (*m_activeLock).lock();\n        return FrameHold::None;\n"),
+     "model-lock acquisition(s)"),
+    ("a lock taken through the lock pointer accessor",
+     plant_in_session("        return FrameHold::None;\n", "        modelLockPointer()->lock();\n        return FrameHold::None;\n"),
+     "model-lock acquisition(s)"),
+    ("a hold in WorkspaceSession",
+     lambda root: replace_in(root / WORKSPACE, "    }\n};", "        const ModelLockHold again(*session.modelLockPointer());\n    }\n};"),
+     "model-lock acquisition(s)"),
+    ("a tmux pane's locked run",
+     lambda root: replace_in(root / "Source/Core/Runtime/TmuxControlHost.cpp", "{ });\n", "{ });\n    pane->withTermLocked([&](Ubiquitty::Terminal&) { });\n"),
+     "model-lock acquisition(s)"),
+    ("a per-tick wait removed while a keypress lock is added", plant_offset, "model-lock acquisition(s)"),
+    ("an analysis escape", plant_analysis_escape, "analysis escape(s)"),
+    ("an asserted capability",
+     plant_in_session("private:\n", "private:\n    void assertHeld() const UBIQUITTY_ASSERTS_CAPABILITY(modelLockRole) { }\n"),
+     "asserted capabilit(ies)"),
+    ("a lambda declaring a requirement",
+     plant_in_session("        return FrameHold::None;\n",
+                      "        auto hook = [](void* context) UBIQUITTY_REQUIRES(modelLockRole) { };\n        return FrameHold::None;\n"),
+     "lambda(s) declaring a requirement"),
+    ("an ownership analysis that stands without function effects", plant_toolchain_without_effects, "-Wfunction-effects"),
 )
 
 
