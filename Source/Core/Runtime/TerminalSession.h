@@ -7912,6 +7912,7 @@ public:
     /// - Returns: What remains for the frontend.
     PointerOutcome pointerFact(const PointerFact& fact, Ubiquitty::Selection::Session* selection) UBIQUITTY_EXCLUDES(modelLockRole)
     {
+        assertOnPointerLadderThread();
         PointerOutcome outcome;
         Ubiquitty::Input::PointerRoute route;
         {
@@ -7981,9 +7982,9 @@ public:
     /// that names the way out for as long as the trap lasts.
     ///
     /// - Parameter grab: Whether the grab is held.
-    void notePointerLockGrab(Ubiquitty::Input::PointerLockGrab grab) UBIQUITTY_EXCLUDES(modelLockRole)
+    void notePointerLockGrab(Ubiquitty::Input::PointerLockGrab grab)
     {
-        const ModelLockHold hold(*m_activeLock); // per event or delivery from the frontend's thread
+        assertOnPointerLadderThread();
         Ubiquitty::Input::notePointerLockGrab(m_pointerLadder, grab);
     }
 
@@ -8007,9 +8008,9 @@ public:
     /// Records the modifier state the frontend saw, for the break-out chord.
     ///
     /// - Parameter keys: The modifiers and whether any other key is down.
-    void notePointerLockChord(const Ubiquitty::Input::PointerLockKeyState& keys) UBIQUITTY_EXCLUDES(modelLockRole)
+    void notePointerLockChord(const Ubiquitty::Input::PointerLockKeyState& keys)
     {
-        const ModelLockHold hold(*m_activeLock); // per event or delivery from the frontend's thread
+        assertOnPointerLadderThread();
         Ubiquitty::Input::notePointerLockChord(m_pointerLadder, keys, frameTicksNow());
     }
 
@@ -8021,11 +8022,8 @@ public:
     /// - Returns: Whether the frontend releases its grab.
     [[nodiscard]] Ubiquitty::Input::PointerLockChordVerdict tickPointerLockChord(const Ubiquitty::Input::PointerLockKeyState& keysNow) UBIQUITTY_EXCLUDES(modelLockRole)
     {
-        Ubiquitty::Input::PointerLockChordVerdict verdict = Ubiquitty::Input::PointerLockChordVerdict::Keep;
-        {
-            const ModelLockHold hold(*m_activeLock); // per event or delivery from the frontend's thread
-            verdict = Ubiquitty::Input::tickPointerLockChord(m_pointerLadder, keysNow, frameTicksNow());
-        }
+        assertOnPointerLadderThread();
+        const Ubiquitty::Input::PointerLockChordVerdict verdict = Ubiquitty::Input::tickPointerLockChord(m_pointerLadder, keysNow, frameTicksNow());
         if (verdict == Ubiquitty::Input::PointerLockChordVerdict::BreakOut)
             breakOutOfPointerLock();
         return verdict;
@@ -8035,9 +8033,9 @@ public:
     /// armed: the one wake-up a shell books for the chord.
     ///
     /// - Returns: Ticks until the deadline, or 0.
-    [[nodiscard]] std::uint32_t pointerLockChordTicksUntilDeadline() const UBIQUITTY_EXCLUDES(modelLockRole)
+    [[nodiscard]] std::uint32_t pointerLockChordTicksUntilDeadline() const
     {
-        const ModelLockHold hold(*m_activeLock);
+        assertOnPointerLadderThread();
         return Ubiquitty::Input::pointerLockChordTicksUntilDeadline(m_pointerLadder, frameTicksNow());
     }
 
@@ -8059,6 +8057,7 @@ public:
     /// update, which is when a shell is told to ask.
     [[nodiscard]] Ubiquitty::Input::Hint hintShowing() const
     {
+        assertOnPointerLadderThread();
         return Ubiquitty::Input::hintShowing(m_pointerLadder, frameTicksNow());
     }
 
@@ -8075,6 +8074,7 @@ public:
     /// - Returns: Ticks until the transient lesson fades, or 0.
     [[nodiscard]] std::uint32_t hintTicksUntilExpiry() const
     {
+        assertOnPointerLadderThread();
         const std::uint32_t expiry = Ubiquitty::Input::hintExpiryTicks(m_pointerLadder);
         if (expiry == 0)
             return 0;
@@ -8086,7 +8086,11 @@ public:
     /// pipeline keeps so a frontend needs no bookkeeping of its own.
     ///
     /// - Returns: Whether the next drag extends and the next release ends.
-    [[nodiscard]] bool isSelectionGestureOpen() const { return m_pointerLadder.isSelectionGestureOpen; }
+    [[nodiscard]] bool isSelectionGestureOpen() const
+    {
+        assertOnPointerLadderThread();
+        return m_pointerLadder.isSelectionGestureOpen;
+    }
 
     /// How a search pattern is read: verbatim text, or the search grammar.
     enum class SearchPatternForm : std::uint8_t {
@@ -8648,6 +8652,7 @@ public:
     ///   gesture was consumed.
     ScrollOutcome scrollFact(const ScrollFact& fact, const Ubiquitty::Screen::ScrollTuning::Policy& tuning) UBIQUITTY_EXCLUDES(modelLockRole)
     {
+        assertOnPointerLadderThread();
         ScrollOutcome outcome;
         Ubiquitty::Input::ScrollRoute route;
         {
@@ -9990,8 +9995,22 @@ private:
 
     // The pointer ladder's state -- the open selection gesture, the mode-1001
     // gesture, the motion-report dedup -- held here so a frontend needs no
-    // bookkeeping of its own. Main-thread state.
+    // bookkeeping of its own. The pointer path's own: every call that reads or
+    // writes it arrives on one thread, the frontend's, and ingest never
+    // touches it, so it needs no lock.
     Ubiquitty::Input::PointerLadder m_pointerLadder;
+    // The thread that first reached the pointer ladder, recorded in every
+    // build, as ModelLock records its holder: whichever copy of the check runs.
+    mutable std::atomic<std::thread::id> m_pointerLadderThread {};
+
+    /// Returns on the thread that first reached the pointer ladder; in a
+    /// build with assertions, stops any other.
+    void assertOnPointerLadderThread() const
+    {
+        std::thread::id owner {};
+        [[maybe_unused]] const bool isFirst = m_pointerLadderThread.compare_exchange_strong(owner, std::this_thread::get_id(), std::memory_order_relaxed);
+        assert(isFirst || owner == std::this_thread::get_id());
+    }
 
     /// Frames one tmux command line onto the route's control channel; the
     /// server's echo is the reply.
