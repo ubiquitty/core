@@ -299,6 +299,37 @@ TEST(hiddenRendererSkipsBoundaryCaptures)
     CHECK(TakenFrame(fixture.session->takeSyncFrame()));
 }
 
+// A view registers its geometry, a presentation edge and the hovered run while
+// a drain holds the model lock, and none of them waits for it: each is
+// published, and the next capture takes it in under the lock it holds.
+TEST(aViewRegistersWithoutWaitingForTheDrain)
+{
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    fixture.session->setSyncFrameCaptureGeometry(testGeometry());
+    fixture.drainSyncFrame("first");
+    const TakenFrame first(fixture.session->takeSyncFrame());
+    REQUIRE(first);
+    const std::uint64_t firstGeneration = first->viewGeneration();
+
+    fixture.session->lockForRead();
+    auto registering = std::async(std::launch::async, [&fixture] {
+        fixture.session->setSyncFrameCaptureGeometry(testGeometry());
+        fixture.session->setSyncFramePresentation(Ubiquitty::Runtime::PanePresentation::Hidden);
+        fixture.session->setSyncFramePresentation(Ubiquitty::Runtime::PanePresentation::Presented);
+        fixture.session->setSyncFrameHoverLink({});
+    });
+    const bool didReturnWhileHeld = registering.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    fixture.session->unlockForRead();
+    registering.get();
+    CHECK_MSG(didReturnWhileHeld, "the registrations returned while the drain held the model");
+
+    fixture.drainSyncFrame("second");
+    const TakenFrame second(fixture.session->takeSyncFrame());
+    REQUIRE(second);
+    CHECK_EQ(second->viewGeneration(), firstGeneration + 1);
+}
+
 TEST(timedDrainsRequireAnArmedPresentedCapture)
 {
     SessionFixture fixture(24, 80);
