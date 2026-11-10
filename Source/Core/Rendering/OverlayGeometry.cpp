@@ -142,7 +142,7 @@ bool triggerHighlightQuad(int absoluteRow, int column0, int column1, int history
     return triggerHighlightQuadAtVisibleRow(vrow, column0, column1, cellSizeInPixels, origin, out);
 }
 
-int hiliteRegionRowSpans(int startColumn, int startRow, int firstRow, int lastRow, int rows, int columns, int viewOffset, SelectionRowSpan* out, int maxOut) noexcept
+int hiliteRegionRowSpans(int startColumn, int startRow, int firstRow, int lastRow, int rows, int columns, int viewOffset, SelectionRowSpan* out, int maxOut) noexcept UBIQUITTY_NONBLOCKING
 {
     if (!out || maxOut <= 0 || rows <= 0 || columns <= 0)
         return 0;
