@@ -12,6 +12,7 @@
 #include "Core/Mouse/Locator.h"
 #include "Core/Rendering/GlyphBackendTypes.h"
 #include "Core/RichText/Blocks.h"
+#include "Core/Screen/Scrollback.h"
 #include "Core/Selection/TerminalSelection.h"
 #include "Core/Terminal.h"
 #include "Core/TerminalOperations.h"
@@ -44,6 +45,17 @@ struct Bench {
     PointerRoute route(const PointerFact& fact)
     {
         return routePointer(ladder, terminal, &session, fact, policy, /*nowTicks=*/0);
+    }
+
+    // History behind the screen, which stays as the bench drew it, so a view
+    // can stand scrolled back over it. Returns the absolute row the screen's
+    // first row now has.
+    int keepHistoryBehindTheScreen()
+    {
+        for (int line = 0; line < 10; ++line)
+            feed(terminal, "history\r\n");
+        feed(terminal, "\033[2J\033[Hhello ladder world");
+        return Screen::scrollbackCount(&terminal);
     }
 };
 
@@ -237,6 +249,41 @@ TEST(withNoReportingModeTheLadderRunsTheLocalGesture)
     CHECK_MSG(release.didFinishSelectionGesture, "the release finishes a gesture that selected");
     CHECK(!bench.ladder.isSelectionGestureOpen);
     CHECK_MSG(!bench.route(fact(PointerFact::Kind::Motion, 0, 9)).didChangeSelection, "a straggling drag extends nothing");
+}
+
+// A view scrolled back holds its rows over history the drain appended before
+// the view's transition took it, so its frame stands past the view's own
+// offset by the rows appended. A press and drag there select the line the
+// frame shows under the pointer, not the line that many rows below it.
+TEST(aPressBeforeTheViewTakesOutputLandsOnTheRowTheFrameShows)
+{
+    Bench bench;
+    hardReset(bench.terminal);
+    resize(bench.terminal, 6, 40);
+    bench.terminal.scrollbackLimit = 200;
+    for (int line = 0; line < 30; ++line)
+        feed(bench.terminal, "line " + std::to_string(10 + line) + "\r\n");
+    constexpr int viewOffset = 10;
+    static_cast<void>(Selection::viewportAfterOutput(bench.session, viewOffset, OutputSnapPolicy::Indeterminate, Screen::historyFacts(&bench.terminal)));
+    feed(bench.terminal, "arrived 0\r\narrived 1\r\narrived 2\r\n");
+    const int frameOffset = Selection::frameViewOffset(bench.session, bench.terminal, viewOffset);
+    REQUIRE(frameOffset == viewOffset + 3);
+
+    Selection::Session frame;
+    Selection::init(frame);
+    Selection::beginGesture(frame, bench.terminal, 2, 0, 1, frameOffset, {});
+    Selection::dragGesture(frame, bench.terminal, 2, 6, frameOffset);
+    const std::string shown = Selection::selectedText(frame, bench.terminal);
+    CHECK_MSG(shown == "line 27", shown.c_str());
+
+    PointerFact press = fact(PointerFact::Kind::Press, 2, 0);
+    press.viewOffset = viewOffset;
+    CHECK(bench.route(press).didOpenSelectionGesture);
+    PointerFact drag = fact(PointerFact::Kind::Motion, 2, 6);
+    drag.viewOffset = viewOffset;
+    CHECK(bench.route(drag).didChangeSelection);
+    const std::string selected = Selection::selectedText(bench.session, bench.terminal);
+    CHECK_MSG(selected == shown, selected.c_str());
 }
 
 TEST(aReportedPressGoesToTheHostAndDropsTheSelection)
@@ -1483,6 +1530,7 @@ TEST(readlineMouseMovementHonorsKeyboardEncodingAndHasNoShortReportLimit)
 TEST(readlineMouseMovementYieldsToReportingModifiersHistoryAndKeyboardLock)
 {
     Bench bench;
+    static_cast<void>(bench.keepHistoryBehindTheScreen());
     auto press = fact(PointerFact::Kind::Press, 0, 0);
     press.button = PointerButton::Middle;
     CHECK(bench.route(press).readlineInput.empty());
@@ -1602,8 +1650,9 @@ TEST(readlineDeletionYieldsToModifiersHistoryTrackingAndKeyboardLock)
 {
     for (int condition = 0; condition < 8; ++condition) {
         Bench bench;
+        const int screenTop = condition == 4 ? bench.keepHistoryBehindTheScreen() : 0;
         feed(bench.terminal, "\033[?2003h\033[1;6H");
-        selectCells(bench, 0, 2, 0, 4);
+        selectCells(bench, screenTop, 2, screenTop, 4);
         (void)rightClick(bench, 0, 4, 1, 10);
         auto press = fact(PointerFact::Kind::Press, 0, 4);
         press.button = PointerButton::Right;
@@ -1626,6 +1675,14 @@ TEST(readlineDeletionYieldsToModifiersHistoryTrackingAndKeyboardLock)
         press.kind = PointerFact::Kind::Release;
         CHECK(routePointer(bench.ladder, bench.terminal, &bench.session, press, bench.policy, 16).readlineInput.empty());
     }
+    // The history alone stands in nothing's way: a view at its tail deletes.
+    Bench bench;
+    const int screenTop = bench.keepHistoryBehindTheScreen();
+    feed(bench.terminal, "\033[?2003h\033[1;6H");
+    selectCells(bench, screenTop, 2, screenTop, 4);
+    (void)rightClick(bench, 0, 4, 1, 10);
+    const auto route = rightClick(bench, 0, 4, 2, 15);
+    CHECK(std::string(route.readlineInput.begin(), route.readlineInput.end()) == "\177\177\177");
 }
 
 TEST(readlineDoubleClickSurvivesPointerHoverBetweenClicks)
