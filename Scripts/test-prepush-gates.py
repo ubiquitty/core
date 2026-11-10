@@ -300,12 +300,112 @@ class PushGateTests(unittest.TestCase):
         self.assertEqual((ran, status), (self.DOCUMENTATION_ONLY, 0), error)
 
 
+RUNNER_GATES = f"""#!/usr/bin/env bash
+source "{SCRIPTS}/pre-push-gates-lib.sh"
+fake_gate_lint() {{ run "lint gate" ./Scripts/fake-lint.sh; }}
+fake_gate_build() {{ run "build gate" ./Scripts/fake-build.sh; }}
+fake_gate_selected() {{ if ubq_select_all; then run "selected gate" ./Scripts/fake-selected.sh; fi; }}
+fake_gate_stands_down() {{ run "standing-down gate" ./Scripts/fake-skip.sh; }}
+case "$TIER" in
+    families) ubq_run_families ;;
+    full) fake_gate_lint; fake_gate_build; fake_gate_selected; fake_gate_stands_down ;;
+    *) fake_gate_lint; fake_gate_selected; ubq_in_ci "the build gate" ;;
+esac
+ubq_pre_push_finish
+"""
+
+
+class GateRunnerTests(unittest.TestCase):
+    """The runner's account of a run: what it ran, how long each gate took, what
+    it left to CI, and which of the tiers CI drives selects what."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name)
+        self.repository = self.directory / "repo"
+        (self.repository / "Scripts").mkdir(parents=True)
+        self.marker = self.directory / "ran"
+        for command in (["init", "-q", "-b", "main"], ["config", "user.email", "t@example.com"],
+                        ["config", "user.name", "t"]):
+            run(["git", *command], self.repository)
+        (self.repository / "CMakeLists.txt").write_text("# scratch\n")
+        (self.repository / "Scripts/pre-push-gates.sh").write_text(RUNNER_GATES)
+        (self.repository / "Scripts/pre-push-gates.sh").chmod(0o755)
+        for name in ("lint", "build", "selected"):
+            script = self.repository / f"Scripts/fake-{name}.sh"
+            script.write_text(f'#!/bin/sh\necho {name} >> "$MARKER"\n')
+            script.chmod(0o755)
+        skip = self.repository / "Scripts/fake-skip.sh"
+        skip.write_text('#!/bin/sh\necho skip >> "$MARKER"\necho "fake-skip: SKIPPED — no such tool here"\n')
+        skip.chmod(0o755)
+        run(["git", "add", "-A"], self.repository)
+        run(["git", "commit", "-q", "-m", "base"], self.repository)
+        run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], self.repository)
+
+    def gates(self, tier, **extra):
+        """Runs the gates in `tier`; returns what ran, the status, stdout and stderr."""
+        self.marker.unlink(missing_ok=True)
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith(("UBQ_", "UBIQUITTY_", "GIT_"))}
+        env.update(MARKER=str(self.marker), UBQ_PREPUSH_PREREQUISITES="off", UBQ_PREPUSH_PTY_HEADROOM="0",
+                   UBQ_BUILD_ROOT=str(self.directory / "build"), UBIQUITTY_PREPUSH=tier,
+                   UBIQUITTY_PREPUSH_CACHE="off")
+        env.update(extra)
+        finished = subprocess.run(["bash", "Scripts/pre-push-gates.sh"], cwd=self.repository, env=env,
+                                  capture_output=True, text=True)
+        ran = self.marker.read_text().split() if self.marker.exists() else []
+        return ran, finished.returncode, finished.stdout, finished.stderr
+
+    def testEveryGateLineCarriesItsTimeAndTheRunItsTotal(self):
+        ran, status, output, error = self.gates("full")
+        self.assertEqual((ran, status), (["lint", "build", "selected", "skip"], 0), error)
+        for gate in ("lint gate", "build gate", "selected gate"):
+            self.assertRegex(output, rf"(?m)^  {gate} +ok  [0-9]+\.[0-9]s$")
+        self.assertRegex(output, r"(?m)^  standing-down gate +SKIPPED \(no such tool here\)  [0-9]+\.[0-9]s$")
+        self.assertRegex(error, r"pre-push gates: wall time [0-9]+(\.[0-9]s|m[0-9]{2}s) \(tier: full\)")
+        self.assertIn("slowest gates:", error)
+
+    def testTheQuickTierNamesWhatItLeavesToCiAndSelectsByTheDiff(self):
+        ran, status, _, error = self.gates("quick")
+        self.assertEqual((ran, status), (["lint"], 0), error)
+        self.assertIn("1 gate(s) run in CI, not in this tier", error)
+        self.assertIn("  - the build gate", error)
+
+    def testTheFullTierSelectsWhatTheDiffWouldNot(self):
+        self.assertIn("selected", self.gates("full")[0])
+        self.assertIn("selected", self.gates("quick", UBQ_PREPUSH_SELECT="all")[0])
+
+    def testTheFamiliesTierRunsTheNamedFamiliesInTheirOrder(self):
+        ran, status, _, error = self.gates("families", UBQ_PREPUSH_FAMILIES="fake_gate_build fake_gate_lint")
+        self.assertEqual((ran, status), (["build", "lint"], 0), error)
+
+    def testAFamilyNoScriptDefinesRefusesBeforeAnyGateRuns(self):
+        for families in ("fake_gate_lint fake_gate_typo", "fake_gate_lint ubq_select_all", "fake_gate_lint run",
+                         "fake_gate_lint fake_gate_lint;true"):
+            with self.subTest(families=families):
+                ran, status, _, error = self.gates("families", UBQ_PREPUSH_FAMILIES=families)
+                self.assertEqual((ran, status), ([], 2), error)
+                self.assertIn("is not a gate family this checkout defines", error)
+        ran, status, _, error = self.gates("families")
+        self.assertEqual((ran, status), ([], 2), error)
+        self.assertIn("names none", error)
+
+    def testAStrictRunFailsOnAGateThatStoodDown(self):
+        families = "fake_gate_lint fake_gate_stands_down"
+        ran, status, _, error = self.gates("families", UBQ_PREPUSH_FAMILIES=families)
+        self.assertEqual((ran, status), (["lint", "skip"], 0), error)
+        ran, status, _, error = self.gates("families", UBQ_PREPUSH_FAMILIES=families, UBQ_PREPUSH_STRICT="1")
+        self.assertEqual((ran, status), (["lint", "skip"], 1), error)
+        self.assertIn("strict run: 1 gate(s) stood down", error)
+
+
 # Statements a gate function may contain: the runner's own entry points, shell
 # control flow and bookkeeping, case labels, and calls to other gate functions
 # (which are scanned too). Anything else, a tool called directly, would run for
 # real in a plan, where only `run` is meant to be a dry run.
 PERMITTED_WORDS = frozenset({
-    "run", "run_for", "run_scoped", "run_whole", "ubq_need", "local", "return", "exit", "printf", "echo",
+    "run", "run_for", "run_scoped", "run_whole", "ubq_need", "ubq_in_ci", "local", "return", "exit", "printf", "echo",
     "case", "esac", "if", "then", "else", "elif", "fi", "for", "do", "done", "while", "[", "[[", "{", "}", ";;",
 })
 CASE_LABEL = re.compile(r"^[A-Za-z0-9_*|\s\"$]+\)")
