@@ -572,6 +572,18 @@ if(TEST test_frame_cadence)
     set_tests_properties(test_frame_cadence PROPERTIES RUN_SERIAL TRUE RESOURCE_LOCK timing)
 endif()
 
+# test_ingest_loop paces writers a millisecond or so apart and holds the loop to
+# a one-millisecond quiet interval, an eight-millisecond frame interval and the
+# title edge's settle; test_pty waits on wall-clock deadlines while it starts
+# shells. Each runs alone for the reason above: beside the rest of the suite on
+# a three-core runner a one-millisecond sleep took about six and a half.
+if(TEST test_ingest_loop)
+    set_tests_properties(test_ingest_loop PROPERTIES RUN_SERIAL TRUE RESOURCE_LOCK timing)
+endif()
+if(TEST test_pty)
+    set_tests_properties(test_pty PROPERTIES RUN_SERIAL TRUE RESOURCE_LOCK timing)
+endif()
+
 # ----------------------------------------------------------------------
 # The Rule-10 layer boundary, tried by the compiler.
 # check-core-layer-partition.sh proves that each Core source has exactly one
