@@ -844,6 +844,9 @@ struct Terminal {
     // maps a DEC function-key code to a hex transmit string; the input encoder consults udk on keypress.
     // Null until the first programmed key; absent means no programmed keys.
     std::unique_ptr<Ubiquitty::VT::UserDefinedKeys> udk;
+    // Moves with every DECUDK and every reset that drops the table, so a
+    // publication of it can tell a table it has not sent yet from one it has.
+    uint32_t userDefinedKeysGeneration = 0;
 
     // DECDLD downloadable soft character set (DRCS). DCS decodes sixel-style glyph bitmaps here; SCS maps
     // a G-set to it, the renderer draws them. Cleared by RIS / Pe; persists across DECSTR. Fixed caps.

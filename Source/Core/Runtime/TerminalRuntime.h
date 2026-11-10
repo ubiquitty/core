@@ -35,6 +35,7 @@
 #include <chrono>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -2414,6 +2415,11 @@ private:
     // What `link().keyModes` holds, so a release that changed no mode
     // publishes nothing. Written under the model lock alone.
     ModeSnapshot m_publishedKeyModes {};
+    // The DECUDK table `link().userDefinedKeys` holds, by the model's count
+    // of its changes; no count before the first publish, so a runtime given a
+    // model with a table, a handed-over one among them, publishes it at its
+    // first release. Written under the model lock alone.
+    std::uint32_t m_publishedUserDefinedKeysGeneration = std::numeric_limits<std::uint32_t>::max();
     std::atomic<bool> m_hasUnpublishedSnapshot { false };
     // Whether this drain pass closed a DECSET-2026 block. A completed sync frame
     // can reach the settle publish rather than a mid-chunk boundary fire — when

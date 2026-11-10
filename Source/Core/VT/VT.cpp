@@ -3490,6 +3490,7 @@ static void dcsH_decudk(Ubiquitty::Terminal& t)
     // A lock is state a later DECUDK reads, so it allocates where a clear does not.
     if (lockMode == 0)
         Ubiquitty::ensureUserDefinedKeys(t).locked = true;
+    ++t.userDefinedKeysGeneration;
 }
 
 // Clear cell `c`'s bitmap and mark it defined. Under Pe=1 a reloaded cell must be

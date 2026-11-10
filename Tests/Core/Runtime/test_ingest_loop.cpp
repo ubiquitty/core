@@ -1431,6 +1431,25 @@ TEST(testAKeyEncodesWithoutTheModelInTheModesTheLoopReleased)
     CHECK_STR_EQ(std::string(encoded.data(), 3), "\033OA");
 }
 
+// A key a DECUDK program changed encodes without the model while the loop
+// runs: the drain publishes the table before the modes that count it, so the
+// encode reads both off the link.
+TEST(testAProgrammedKeyEncodesWithoutTheModel)
+{
+    LoopSession loop;
+    REQUIRE(loop.isRunning);
+    // DECUDK, clearing nothing and locking nothing: F6 (DEC key 17) becomes "xyz".
+    REQUIRE(loop.write("\033P1;1|17/78797A\033\\"));
+    KeyPress f6;
+    f6.virtualKey = Ubiquitty::Keys::VirtualKey::F6;
+    f6.eventType = Ubiquitty::Keys::KeyEventType::Press;
+    std::array<char, 64> encoded {};
+    KeyEncoding encoding;
+    CHECK(returnsWhileTheModelIsHeld(loop.session(), [&] { encoding = loop.session().sendKey(f6, encoded); }));
+    REQUIRE(encoding.length == 3);
+    CHECK_STR_EQ(std::string(encoded.data(), 3), "xyz");
+}
+
 // A key's activity is posted to the loop rather than written under the lock:
 // the key returns while another thread holds the model, and the loop stamps
 // the cursor's activity tick once it may.

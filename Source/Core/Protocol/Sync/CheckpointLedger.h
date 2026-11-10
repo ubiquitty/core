@@ -492,6 +492,7 @@ inline constexpr std::array terminalLedger {
     MEMBER(titleStackValid, Digested),
     MEMBER(iconNameStackValid, Digested),
     MEMBER(udk, Digested),
+    MEMBER(userDefinedKeysGeneration, HostOnly),
     MEMBER(statusRow, Digested),
     MEMBER(sixelColorRegisters, Digested),
     MEMBER(mousePointerShapeStack, Digested),
