@@ -1695,6 +1695,57 @@ TEST(testARevealedLaneIsServedItsFirstFrameByTheLoopsNextTurn)
     CHECK_MSG(isServed, "the loop's turn captured the first frame within two seconds of the one ask");
 }
 
+// A demand no owner turn serves for a quarter of a second reads as a stalled
+// owner, not as a frame on its way: here the loop cannot take its turn while
+// another thread holds the model. Once it can, its turn serves the demand.
+TEST(testADemandNoTurnServesForAQuarterSecondReadsAsAStalledOwner)
+{
+    LoopSession loop;
+    REQUIRE(loop.isRunning);
+    TerminalSession& session = loop.session();
+    session.setSyncFrameCaptureGeometry(captureGeometry());
+    FrameSupply supply;
+    releaseFrameCapture(session.takeFrame({ .nowTicks = Ubiquitty::PAL::monotonicTicks() }, supply));
+    bool isFirstServed = false;
+    for (int waited = 0; waited < 2000 && !isFirstServed; ++waited) {
+        Ubiquitty::Rendering::FrameCapture* frame = session.takeSyncFrame();
+        isFirstServed = frame != nullptr;
+        releaseFrameCapture(frame);
+        if (!isFirstServed)
+            ::usleep(1000);
+    }
+    REQUIRE(isFirstServed);
+
+    std::binary_semaphore isHeld(0);
+    std::binary_semaphore shouldRelease(0);
+    std::thread holder([&] {
+        session.lockForRead();
+        isHeld.release();
+        shouldRelease.acquire();
+        session.unlockForRead();
+    });
+    isHeld.acquire();
+    releaseFrameCapture(session.takeFrame({ .nowTicks = Ubiquitty::PAL::monotonicTicks() }, supply));
+    const FrameDecline asked = supply.decline;
+    ::usleep(FrameLane::ownerStallMicros + 50'000);
+    releaseFrameCapture(session.takeFrame({ .nowTicks = Ubiquitty::PAL::monotonicTicks() }, supply));
+    const FrameDecline stalled = supply.decline;
+    shouldRelease.release();
+    holder.join();
+    CHECK(asked == FrameDecline::AwaitingCapture);
+    CHECK_MSG(stalled == FrameDecline::OwnerStalled, "a demand unserved for a quarter second, with no turn since, reads as a stalled owner");
+
+    bool isServed = false;
+    for (int waited = 0; waited < 2000 && !isServed; ++waited) {
+        Ubiquitty::Rendering::FrameCapture* frame = session.takeSyncFrame();
+        isServed = frame != nullptr;
+        releaseFrameCapture(frame);
+        if (!isServed)
+            ::usleep(1000);
+    }
+    CHECK_MSG(isServed, "the loop's turn served the demand once it could take the model");
+}
+
 // A view being resized over an update left open in a flood is held from the
 // mark the loop published while another thread holds the model, and the loop,
 // asked for a frame by the resize's rule, stamps the update at its next turn.

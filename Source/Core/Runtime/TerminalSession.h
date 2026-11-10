@@ -6804,15 +6804,19 @@ public:
     /// 5. With none waiting, a presented view whose captures are armed has
     ///    asked the owner for one (``FrameLane::raiseDemand``), served by the
     ///    rule step 3 judged it by at the next frame the coherence rule admits
-    ///    or the owner's next turn, and waits for it:
-    ///    ``FrameDecline::AwaitingCapture``, woken by its publication.
+    ///    or the owner's next turn. Of a pane its ingest loop drains, the view
+    ///    waits for it: ``FrameDecline::AwaitingCapture``, woken by its
+    ///    publication. Any other pane has no turn but its caller's, so the
+    ///    asking thread serves the demand itself, before step 3, and takes
+    ///    what it captured (``serveFrameDemandHere``).
     /// 6. Otherwise the view reads the model: ``FrameRoute::LiveRead``. A view
-    ///    keeping search live, and one whose captures are not armed, still
-    ///    does.
+    ///    keeping search live, one whose captures are not armed, and one of a
+    ///    pane no loop drains whose model another thread holds still do.
     ///
-    /// Reads published state only, with one exception kept from the withhold
-    /// it ports: while a synchronized update is open in a remote replica or a
-    /// fed pane, step 3 judges the block under the model lock.
+    /// Reads published state only, with two exceptions: while a synchronized
+    /// update is open in a remote replica or a fed pane, step 3 judges the
+    /// block under the model lock, and a pane no loop drains is served under
+    /// a model lock its caller finds free.
     ///
     /// - Parameters:
     ///   - demand: The view's facts at this tick.
@@ -6824,20 +6828,31 @@ public:
     {
         supply = {};
         publishSelectionForCaptures(demand.selection);
-        if (!demand.keepsSearchLive) {
-            if (Rendering::FrameCapture* capture = takeSyncFrame()) {
-                supply.route = FrameRoute::Captured;
-                supply.selection = selectionForTakenFrame(demand.selection, *capture, demand.selectionSpans, supply.selectionEnds);
-                return capture;
-            }
-        }
+        const auto takeWaitingCapture = [&]() -> Rendering::FrameCapture* {
+            if (demand.keepsSearchLive)
+                return nullptr;
+            Rendering::FrameCapture* capture = takeSyncFrame();
+            if (!capture)
+                return nullptr;
+            supply.route = FrameRoute::Captured;
+            supply.selection = selectionForTakenFrame(demand.selection, *capture, demand.selectionSpans, supply.selectionEnds);
+            return capture;
+        };
+        if (Rendering::FrameCapture* capture = takeWaitingCapture())
+            return capture;
         // No capture waits: the owner is asked for one, at its next turn or
         // the next frame the rule admits, whichever comes first.
         const bool isLaneServed = m_isSyncCaptureArmed.load(std::memory_order_acquire) && m_isSyncFramePresented.load(std::memory_order_relaxed);
+        const bool hasOwnerLoop = m_ingestThread.joinable();
         if (isLaneServed) {
             const FrameLane::DemandRule rule = demand.isResizing ? FrameLane::DemandRule::Resize : FrameLane::DemandRule::Coherence;
             static_cast<void>(m_frameLane.raiseDemand(PAL::monotonicMicros(), rule));
-            m_loop.raiseWake();
+            if (hasOwnerLoop)
+                m_loop.raiseWake();
+            else if (serveFrameDemandHere()) {
+                if (Rendering::FrameCapture* capture = takeWaitingCapture())
+                    return capture;
+            }
         }
         // A resize whose captures are not armed is judged by the live read,
         // under its lock.
@@ -6849,7 +6864,7 @@ public:
             if (supply.decline != FrameDecline::None)
                 return nullptr;
         }
-        if (!demand.keepsSearchLive && (shouldSkipLiveReadForSaturation() || isLaneServed)) {
+        if (!demand.keepsSearchLive && (shouldSkipLiveReadForSaturation() || (isLaneServed && hasOwnerLoop))) {
             supply.decline = isOwnerStalled() ? FrameDecline::OwnerStalled : FrameDecline::AwaitingCapture;
             return nullptr;
         }
@@ -10127,6 +10142,24 @@ private:
         m_syncFramePublicationCount.fetch_add(1, std::memory_order_release);
         m_frameLane.publish(*target);
         m_frameLane.markSupplied(servedDemand);
+    }
+
+    /// Serves the view's demand on the asking thread, for a pane no ingest
+    /// loop drains: a fed pane, whose caller drives it, or one whose model
+    /// another session's thread writes. Nothing else takes a turn for it, so
+    /// a demand left to an owner would wait forever.
+    ///
+    /// Never waits: a model lock another thread holds is that thread's turn,
+    /// and a pass it ends serves the demand at the frame the rule admits.
+    ///
+    /// - Returns: Whether the demand was served here.
+    bool serveFrameDemandHere() UBIQUITTY_EXCLUDES(modelLockRole)
+    {
+        if (!tryLockForRead())
+            return false;
+        serveFrameDemand();
+        unlockForRead();
+        return true;
     }
 
     /// Serves the view's outstanding demand at the owner's turn, under the

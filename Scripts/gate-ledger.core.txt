@@ -18,7 +18,7 @@ budget gate-self-tests-uncovered 44
 budget census-undated 13
 budget vocabulary-span 11
 budget vocabulary-array 161
-budget model-lock-holds 189
+budget model-lock-holds 190
 budget frame-decision-holds 1
 budget per-tick-waits 4
 budget plain-model-lock-holds 21
@@ -35,3 +35,4 @@ tool check-binary-footprint.py reports an instruction count — a measurement, w
 tool check-rename-coverage.sh run during a rename, against the rename being attempted
 tool check-rename-diff.py run during a rename, against the diff it produced
 raised model-lock-holds 190 193 the ingest thread integrates an image decode a worker finished, and parses the bytes its fence held back a bite per acquisition, as a drain pass does: the fence's turn, its bite handover, and the switches of a terminal's decodes to the worker at the loop's start and back inline at its end
+raised model-lock-holds 189 190 a pane no ingest loop drains has no owner turn to serve its view's demand, so the asking thread serves it under a try-lock of the model, which it never waits for (serveFrameDemandHere)
