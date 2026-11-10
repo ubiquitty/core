@@ -45,6 +45,7 @@
 #include "Core/Rendering/CellDecisions.h"
 #include "Core/Rendering/FrameCapture.h"
 #include "Core/Rendering/FrameDamage.h"
+#include "Core/Rendering/OverlaySpanGather.h"
 #include "Core/Rendering/StatusRow.h"
 #include "Core/RichText/Blocks.h"
 #include "Core/Runtime/DrainHostPacing.h"
@@ -5307,6 +5308,35 @@ public:
     ///
     /// - Returns: The latest published colours.
     [[nodiscard]] CoherentColors readCoherentColors() noexcept UBIQUITTY_NONBLOCKING { return m_runtime->link().coherentColors.read(); }
+
+    /// The search, trigger and hilite tiers over the capture a frame is built
+    /// from, read lock-free from any thread.
+    ///
+    /// From the writer's last publications, which every pass end, feed and
+    /// write release brings up to date, so the tiers never wait on the model.
+    /// For the terminal a capture froze they are the tiers the live gathers
+    /// (``Rendering::collectSearchMatchRowSpans`` and its siblings) answer at
+    /// the capture's view offset; see ``Rendering::overlaySpansOverCapture``
+    /// for a capture of another moment.
+    ///
+    /// - Parameters:
+    ///   - capture: The capture being built.
+    ///   - focusedSearch: Receives the focused match's spans;
+    ///     ``Rendering::maxSearchOverlaySpans`` always has room.
+    ///   - otherSearch: Receives every other match's spans, of the same bound.
+    ///   - triggers: Receives the trigger highlights' spans;
+    ///     ``Rendering::maxTriggerOverlaySpans`` always has room.
+    ///   - hilite: Receives the hilite band's spans; the capture's row count
+    ///     always has room.
+    /// - Returns: The counts written and the publication generations read.
+    [[nodiscard]] Rendering::OverlaySpanCounts overlaySpansOverCapture(const Rendering::FrameCapture& capture,
+        Rendering::OverlayRowSpans focusedSearch, Rendering::OverlayRowSpans otherSearch, Rendering::OverlayRowSpans triggers,
+        Rendering::OverlayRowSpans hilite) const noexcept UBIQUITTY_NONBLOCKING
+    {
+        const RuntimeLink& link = m_runtime->link();
+        return Rendering::overlaySpansOverCapture(link.searchOverlay.read(), link.markOverlay.read(), capture, focusedSearch,
+            otherSearch, triggers, hilite);
+    }
 
     /// The grid a title names: the laid-out grid during remote bootstrap, then the model's grid.
     [[nodiscard]] TitleGrid titleGrid(TitleGrid laidOut)

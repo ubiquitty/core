@@ -8,6 +8,7 @@
 #include "Core/Cursor/RenderState.h"
 #include "Core/OSC/TabStatus.h"
 #include "Core/Rendering/FrameDamage.h"
+#include "Core/Rendering/OverlayFacts.h"
 #include "Core/Rendering/PaletteColors.h"
 #include "Core/Runtime/ModeSnapshot.h"
 #include "Core/Screen/HistoryFacts.h"
@@ -492,6 +493,12 @@ struct RuntimeLink {
     // each update's close, which the next update can follow inside one drain.
     // An update the terminal expires is published by the check that expired it.
     SnapshotPublisher<CoherentColors> coherentColors; // (R) model -> main
+    // (R) The search matches and the trigger and hilite marks a frame draws
+    // over its grid, beside `reads` because a frame reads them and a key
+    // press does not. Each is published only when its content changed, so
+    // its generation says whether a frame's spans of it are still current.
+    SnapshotPublisher<Rendering::SearchOverlayFacts> searchOverlay; // (R) model -> frame
+    SnapshotPublisher<Rendering::MarkOverlayFacts> markOverlay; // (R) model -> frame
     CommandRing<Command, 64> commands; // (W) main -> model
 };
 

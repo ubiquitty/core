@@ -23,6 +23,7 @@
 #include "Core/Cursor/RenderState.h"
 #include "Core/Diagnostics/PaintHeatmap.h"
 #include "Core/Image/TerminalImage.h"
+#include "Core/Screen/HistoryFacts.h"
 #include "Core/TermPalette.h"
 #include "Core/TextSizeTable.h"
 #include "Core/VT/SoftFont.h"
@@ -106,6 +107,11 @@ struct UBIQUITTY_NONESCAPABLE FrameSource {
     int columns = 0;
     /// Scrollback available, for gridFloor the requested view offset.
     int scrollbackCount = 0;
+    /// The rows ever appended to history and the epoch the rows are numbered
+    /// under, beside `scrollbackCount` and `alternateActive`: together the
+    /// numbering a row recorded at another moment is read against.
+    std::int64_t appendedRows = 0;
+    std::uint32_t absoluteRowEpoch = 0;
     /// The model input epoch represented by this source.
     std::uint64_t modelGeneration = 0;
     /// The palette to copy into the immutable capture.
@@ -423,6 +429,9 @@ public:
     /// `options.viewOffset` as the frame shows it (``Screen::resolvedViewOffset``):
     /// clamped to the scrollback that exists, and none on the alternate screen.
     [[nodiscard]] int viewOffset() const { return m_viewOffset; }
+
+    /// How the captured terminal numbered its absolute rows.
+    [[nodiscard]] const Screen::RowNumbering& rowNumbering() const { return m_rowNumbering; }
 
     /// The fill a selection drawn over this frame takes, resolved from the
     /// capture's style and the host's selection colour whether or not the
@@ -790,6 +799,7 @@ private:
     BuildInputs m_inputs;
     int m_firstAbsoluteRow = 0;
     int m_viewOffset = 0;
+    Screen::RowNumbering m_rowNumbering;
     SelectionFill m_selectionFill {};
     std::uint64_t m_modelGeneration = 0;
     std::uint64_t m_paletteGeneration = 0;

@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#include "Base/ThreadSafety.h"
 #include "Core/Rendering/FrameDamage.h"
+#include "Core/Rendering/OverlayFacts.h"
 #include "Core/Rendering/OverlayGeometry.h"
+#include "Core/Screen/HistoryFacts.h"
 #include "Core/Terminal.h"
 
 #include <span>
@@ -23,6 +26,8 @@
 // Core.
 
 namespace Ubiquitty::Rendering {
+
+class FrameCapture;
 
 /// The selection a frame drew behind its text, kept for the next frame's
 /// comparison.
@@ -188,5 +193,111 @@ void collectTriggerHighlightRowSpans(const Terminal& terminal, int viewOffset, s
 ///   - outSpans: Receives one span per covered row, cleared first and left
 ///     empty when the host has set no band.
 void collectHiliteRegionRowSpans(const Terminal& terminal, int viewOffset, std::vector<SelectionRowSpan>& outSpans);
+
+/// The visible rows of the capture a frame is built from, as the overlay
+/// conversions below read them.
+struct CapturedRows {
+    int rows = 0;
+    int columns = 0;
+    /// The capture's view offset, already through `Screen::resolvedViewOffset`.
+    int viewOffset = 0;
+    /// How the captured terminal numbered its absolute rows.
+    Screen::RowNumbering numbering {};
+};
+
+/// The rows `capture` shows, for the conversions below.
+///
+/// - Parameter capture: The capture being built.
+/// - Returns: Its rows, columns, view offset and row numbering.
+[[nodiscard]] CapturedRows capturedRows(const FrameCapture& capture) noexcept UBIQUITTY_NONBLOCKING;
+
+/// The focused search match's spans over a capture, from published facts.
+///
+/// What ``collectSearchMatchRowSpans`` answers for the terminal the capture
+/// froze, at the capture's view offset, whenever the facts were gathered under
+/// the capture's numbering. Facts gathered at another moment under the same
+/// epoch and screen have their rows carried across the rows evicted in
+/// between; facts under another epoch or screen share no rows with the
+/// capture and give nothing.
+///
+/// - Parameters:
+///   - facts: The published matches.
+///   - captured: The capture's rows.
+///   - out: Caller-owned destination; its size bounds the answer.
+/// - Returns: How many entries were written.
+[[nodiscard]] int focusedSearchSpansOverCapture(const SearchOverlayFacts& facts, const CapturedRows& captured, OverlayRowSpans out) noexcept UBIQUITTY_NONBLOCKING;
+
+/// Every other search match's spans over a capture, from published facts:
+/// the complement of ``focusedSearchSpansOverCapture``, as
+/// ``collectOtherSearchMatchRowSpans`` is of its focused gather.
+///
+/// - Parameters:
+///   - facts: The published matches.
+///   - captured: The capture's rows.
+///   - out: Caller-owned destination; its size bounds the answer.
+/// - Returns: How many entries were written.
+[[nodiscard]] int otherSearchSpansOverCapture(const SearchOverlayFacts& facts, const CapturedRows& captured, OverlayRowSpans out) noexcept UBIQUITTY_NONBLOCKING;
+
+/// The trigger highlights' spans over a capture, from published facts.
+///
+/// Each highlight's row is read against the capture's top row as
+/// ``collectTriggerHighlightRowSpans`` reads it against the terminal's.
+///
+/// - Parameters:
+///   - facts: The published marks.
+///   - captured: The capture's rows.
+///   - out: Caller-owned destination; its size bounds the answer.
+/// - Returns: How many entries were written.
+[[nodiscard]] int triggerSpansOverCapture(const MarkOverlayFacts& facts, const CapturedRows& captured, OverlayRowSpans out) noexcept UBIQUITTY_NONBLOCKING;
+
+/// The hilite band's spans over a capture, from published facts: the band
+/// ``collectHiliteRegionRowSpans`` resolves at the capture's view offset,
+/// clamped to the capture's rows and columns.
+///
+/// - Parameters:
+///   - facts: The published marks.
+///   - captured: The capture's rows.
+///   - out: Caller-owned destination; its size bounds the answer.
+/// - Returns: How many entries were written.
+[[nodiscard]] int hiliteSpansOverCapture(const MarkOverlayFacts& facts, const CapturedRows& captured, OverlayRowSpans out) noexcept UBIQUITTY_NONBLOCKING;
+
+/// What ``overlaySpansOverCapture`` wrote, and which publications it read.
+struct OverlaySpanCounts {
+    int focusedSearch = 0;
+    int otherSearch = 0;
+    int triggers = 0;
+    int hilite = 0;
+    /// The generations read: a caller holding the spans of the same
+    /// generations over the same capture holds these spans.
+    std::uint64_t searchGeneration = 0;
+    std::uint64_t markGeneration = 0;
+    /// The search's count of focus changes at its gathering.
+    std::uint32_t activeMatchEpoch = 0;
+};
+
+/// The most search spans a capture's overlay can need.
+constexpr int maxSearchOverlaySpans = Screen::scrollSearchMaxSegments;
+
+/// The most trigger spans a capture's overlay can need.
+constexpr int maxTriggerOverlaySpans = maxTriggerOverlaySegments;
+
+/// Every published overlay tier over one capture, for a frame's
+/// ``FrameCapture/ViewTierOverrides``.
+///
+/// Destinations of ``maxSearchOverlaySpans``, ``maxTriggerOverlaySpans`` and
+/// the capture's row count always have room; a shorter one truncates.
+///
+/// - Parameters:
+///   - search: The published matches.
+///   - marks: The published trigger highlights and hilite band.
+///   - capture: The capture being built.
+///   - focusedSearch: Receives the focused match's spans.
+///   - otherSearch: Receives every other match's spans.
+///   - triggers: Receives the trigger highlights' spans.
+///   - hilite: Receives the hilite band's spans.
+/// - Returns: The counts written and the generations read.
+[[nodiscard]] OverlaySpanCounts overlaySpansOverCapture(const SearchOverlayFacts& search, const MarkOverlayFacts& marks,
+    const FrameCapture& capture, OverlayRowSpans focusedSearch, OverlayRowSpans otherSearch, OverlayRowSpans triggers,
+    OverlayRowSpans hilite) noexcept UBIQUITTY_NONBLOCKING;
 
 } // namespace Ubiquitty::Rendering

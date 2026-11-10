@@ -203,6 +203,7 @@ Source/Core/Rendering/LigatureSheet.cpp
 Source/Core/Rendering/LinkColor.cpp
 Source/Core/Rendering/OpenTypeShapingFilter.cpp
 Source/Core/Rendering/OverlayAssembly.cpp
+Source/Core/Rendering/OverlayFacts.cpp
 Source/Core/Rendering/OverlayGeometry.cpp
 Source/Core/Rendering/OverlaySpanGather.cpp
 Source/Core/Rendering/PNGEncoder.cpp

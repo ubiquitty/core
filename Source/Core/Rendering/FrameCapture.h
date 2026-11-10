@@ -562,6 +562,10 @@ public:
     /// clamped to the scrollback that exists, and none on the alternate screen.
     [[nodiscard]] int viewOffset() const { return m_frame->viewOffset(); }
 
+    /// How the captured terminal numbered its absolute rows: what a row
+    /// recorded at another moment is read against to land on this frame.
+    [[nodiscard]] const Screen::RowNumbering& rowNumbering() const { return m_frame->rowNumbering(); }
+
     /// The captured cursor's visible-grid row, or -1 when this frame draws none.
     ///
     /// -1 folds every reason a frame has no cursor — hidden, scrolled off the

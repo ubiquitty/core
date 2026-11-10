@@ -5,6 +5,7 @@
 
 #include "Base/Geometry.h"
 #include "Base/SwiftInterop.h"
+#include "Base/ThreadSafety.h"
 
 // OverlayGeometry — renderer-neutral pixel math for the cursor, selection
 // highlight, and scrollback-position indicator. Frontends gather inputs, call
@@ -198,7 +199,7 @@ struct UBIQUITTY_ESCAPABLE SelectionRowSpan {
 ///   - maxOut: Capacity of `out`.
 /// - Returns: How many spans were written, which is zero for an empty or
 ///   inverted band.
-int hiliteRegionRowSpans(int startColumn, int startRow, int firstRow, int lastRow, int rows, int columns, int viewOffset, SelectionRowSpan* out, int maxOut);
+int hiliteRegionRowSpans(int startColumn, int startRow, int firstRow, int lastRow, int rows, int columns, int viewOffset, SelectionRowSpan* out, int maxOut) noexcept UBIQUITTY_NONBLOCKING;
 
 /// Resolves one row of a hilite band into its tinted quad.
 ///

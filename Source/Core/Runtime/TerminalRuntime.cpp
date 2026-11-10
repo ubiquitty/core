@@ -1258,8 +1258,26 @@ void TerminalRuntime::publishReads(const RuntimeSnapshot& snap, Ubiquitty::Termi
     // colours stay the ones that frame was drawn in.
     if (term && !term->modes.syncOutput)
         publishCoherentColors(*term);
+    if (term)
+        publishOverlayFacts(*term);
     m_link.reads.publish(snap);
     m_hasUnpublishedSnapshot.store(false, std::memory_order_release);
+}
+
+void TerminalRuntime::publishOverlayFacts(const Ubiquitty::Terminal& term)
+{
+    Rendering::gatherSearchOverlayFacts(term, m_gatheredSearchOverlay);
+    if (!Rendering::hasSameContent(m_gatheredSearchOverlay, m_publishedSearchOverlay)) {
+        m_gatheredSearchOverlay.generation = m_publishedSearchOverlay.generation + 1;
+        m_publishedSearchOverlay = m_gatheredSearchOverlay;
+        m_link.searchOverlay.publish(m_publishedSearchOverlay);
+    }
+    Rendering::gatherMarkOverlayFacts(term, m_gatheredMarkOverlay);
+    if (!Rendering::hasSameContent(m_gatheredMarkOverlay, m_publishedMarkOverlay)) {
+        m_gatheredMarkOverlay.generation = m_publishedMarkOverlay.generation + 1;
+        m_publishedMarkOverlay = m_gatheredMarkOverlay;
+        m_link.markOverlay.publish(m_publishedMarkOverlay);
+    }
 }
 
 void TerminalRuntime::publishCoherentColors(const Ubiquitty::Terminal& term)

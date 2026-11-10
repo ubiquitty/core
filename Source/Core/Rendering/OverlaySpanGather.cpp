@@ -3,6 +3,7 @@
 
 #include "Core/Rendering/OverlaySpanGather.h"
 
+#include "Core/Rendering/FrameCapture.h"
 #include "Core/Rendering/FrameDamage.h"
 
 #include <algorithm>
@@ -194,6 +195,102 @@ int collectHiliteRegionRowSpans(const Terminal& terminal, int viewOffset, Overla
     static thread_local std::vector<SelectionRowSpan> scratch;
     collectHiliteRegionRowSpans(terminal, viewOffset, scratch);
     return copyIntoSpan(scratch, out);
+}
+
+CapturedRows capturedRows(const FrameCapture& capture) noexcept
+{
+    return { .rows = capture.rows(), .columns = capture.columns(), .viewOffset = capture.viewOffset(), .numbering = capture.rowNumbering() };
+}
+
+namespace {
+
+// The absolute row of the capture's top visible row, as `visibleCell` maps it.
+[[nodiscard]] int firstVisibleAbsoluteRow(const CapturedRows& captured) noexcept
+{
+    return captured.numbering.historyRows - captured.viewOffset;
+}
+
+enum class SearchTier : std::uint8_t {
+    Focused,
+    Other,
+};
+
+int searchSpansOverCapture(const SearchOverlayFacts& facts, const CapturedRows& captured, SearchTier tier, OverlayRowSpans out) noexcept UBIQUITTY_NONBLOCKING
+{
+    if (captured.rows <= 0 || out.empty())
+        return 0;
+    const int focusedCount = std::clamp(facts.focusedCount, 0, static_cast<int>(facts.segments.size()));
+    const int otherCount = std::clamp(facts.otherCount, 0, static_cast<int>(facts.segments.size()) - focusedCount);
+    const int first = tier == SearchTier::Focused ? 0 : focusedCount;
+    const int end = tier == SearchTier::Focused ? focusedCount : focusedCount + otherCount;
+    if (first == end)
+        return 0;
+    const int top = firstVisibleAbsoluteRow(captured);
+    int written = 0;
+    for (int index = first; index < end && written < static_cast<int>(out.size()); ++index) {
+        const OverlaySegment& segment = facts.segments[static_cast<std::size_t>(index)];
+        int row = 0;
+        if (!Screen::translateAbsoluteRow(segment.absoluteRow, facts.numbering, captured.numbering, row))
+            return 0;
+        const int visibleRow = row - top;
+        if (visibleRow < 0 || visibleRow >= captured.rows)
+            continue;
+        out[static_cast<std::size_t>(written++)] = { visibleRow, segment.column0, segment.column1 };
+    }
+    return written;
+}
+
+} // namespace
+
+int focusedSearchSpansOverCapture(const SearchOverlayFacts& facts, const CapturedRows& captured, OverlayRowSpans out) noexcept
+{
+    return searchSpansOverCapture(facts, captured, SearchTier::Focused, out);
+}
+
+int otherSearchSpansOverCapture(const SearchOverlayFacts& facts, const CapturedRows& captured, OverlayRowSpans out) noexcept
+{
+    return searchSpansOverCapture(facts, captured, SearchTier::Other, out);
+}
+
+int triggerSpansOverCapture(const MarkOverlayFacts& facts, const CapturedRows& captured, OverlayRowSpans out) noexcept
+{
+    if (captured.rows <= 0)
+        return 0;
+    const int top = firstVisibleAbsoluteRow(captured);
+    const int count = std::clamp(facts.triggerCount, 0, static_cast<int>(facts.triggers.size()));
+    int written = 0;
+    for (int index = 0; index < count && written < static_cast<int>(out.size()); ++index) {
+        const OverlaySegment& segment = facts.triggers[static_cast<std::size_t>(index)];
+        const int visibleRow = segment.absoluteRow - top;
+        if (visibleRow < 0 || visibleRow >= captured.rows)
+            continue;
+        out[static_cast<std::size_t>(written++)] = { visibleRow, segment.column0, segment.column1 };
+    }
+    return written;
+}
+
+int hiliteSpansOverCapture(const MarkOverlayFacts& facts, const CapturedRows& captured, OverlayRowSpans out) noexcept
+{
+    if (!facts.isHiliteValid || captured.rows <= 0 || out.empty())
+        return 0;
+    return hiliteRegionRowSpans(facts.hiliteStartColumn, facts.hiliteStartRow, facts.hiliteFirstRow, facts.hiliteLastRow,
+        captured.rows, captured.columns, captured.viewOffset, out.data(), static_cast<int>(out.size()));
+}
+
+OverlaySpanCounts overlaySpansOverCapture(const SearchOverlayFacts& search, const MarkOverlayFacts& marks,
+    const FrameCapture& capture, OverlayRowSpans focusedSearch, OverlayRowSpans otherSearch, OverlayRowSpans triggers,
+    OverlayRowSpans hilite) noexcept
+{
+    const CapturedRows captured = capturedRows(capture);
+    return {
+        .focusedSearch = focusedSearchSpansOverCapture(search, captured, focusedSearch),
+        .otherSearch = otherSearchSpansOverCapture(search, captured, otherSearch),
+        .triggers = triggerSpansOverCapture(marks, captured, triggers),
+        .hilite = hiliteSpansOverCapture(marks, captured, hilite),
+        .searchGeneration = search.generation,
+        .markGeneration = marks.generation,
+        .activeMatchEpoch = search.activeMatchEpoch,
+    };
 }
 
 } // namespace Ubiquitty::Rendering
