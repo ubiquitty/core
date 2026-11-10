@@ -137,6 +137,7 @@ class BatteryTests(unittest.TestCase):
                 "pgo": "python3 ./Scripts/check-profile-orphans.py --profile Support/pgo/portable-core.profdata\n"
                        "UBIQUITTY_PGO=REQUIRE python3 ./Scripts/check-pgo-applies.py --profile Support/pgo/portable-core.profdata",
                 "core-frames": "./Scripts/check-core-builder-frames.sh",
+                "metallib": "./Scripts/build-metallib.sh",
                 "swift-renderer": "./Scripts/check-swift-renderer.sh",
                 "forks": './Scripts/check-forks.sh "$UBQ_BUILD_ROOT/macos"',
                 "host-tests": "SNAPSHOT=skip ./Scripts/run-tests.sh",
@@ -381,6 +382,29 @@ class BatteryTests(unittest.TestCase):
             stage.command for stage in manifest if stage.key == "linux-build"))
         with self.assertRaises(ValueError):
             batteries.select_stages(manifest, ["linux-build", "linux-bulid"])
+
+    def test_only_refuses_a_stage_without_the_stage_whose_build_it_reads(self):
+        manifest = batteries.stages("apple")
+        with self.assertRaisesRegex(ValueError, "swift-renderer reads what portable-build builds"):
+            batteries.select_stages(manifest, ["setup", "swift-renderer"], ("kit",))
+        # The shader library comes from the Kit's own stage in a Kit checkout and
+        # from the app's build in the app; each is required only where it applies.
+        with self.assertRaisesRegex(ValueError, "swift-renderer reads what metallib builds"):
+            batteries.select_stages(manifest, ["portable-build", "swift-renderer"], ("kit",))
+        with self.assertRaisesRegex(ValueError, "swift-renderer reads what macos-build builds"):
+            batteries.select_stages(manifest, ["portable-build", "swift-renderer"], ("app",))
+        selected = batteries.select_stages(manifest, ["portable-build", "metallib", "swift-renderer"], ("kit",))
+        self.assertEqual([stage.key for stage in selected], ["portable-build", "metallib", "swift-renderer"])
+        selected = batteries.select_stages(manifest, ["macos-build", "portable-build", "swift-renderer"], ("app",))
+        self.assertEqual([stage.key for stage in selected], ["macos-build", "portable-build", "swift-renderer"])
+        # A battery runs its stages in manifest order, so what a stage reads is built before it.
+        for platform in ("linux", "apple"):
+            order = [stage.key for stage in batteries.stages(platform)]
+            for stage in batteries.stages(platform):
+                for required in stage.requires:
+                    with self.subTest(stage=stage.key, required=required):
+                        self.assertIn(required, order)
+                        self.assertLess(order.index(required), order.index(stage.key))
 
     def test_first_failure_stops_and_records_remaining_stages(self):
         manifest = tuple(batteries.Stage(str(index), f"stage {index}", "true") for index in range(4))
@@ -3258,6 +3282,28 @@ class EveryWorkflowTests(unittest.TestCase):
                         covered.update(words[1::2])
                     expected = {stage.key for stage in batteries.source_stages(platform, TEST_SOURCES)}
                     self.assertEqual(covered, expected)
+
+    @unittest.skipUnless(WORKFLOW, "pass --workflow to validate the live workflow contract")
+    def test_every_stage_list_selects_the_stages_whose_build_it_reads(self):
+        text = Path(WORKFLOW).read_text()
+        lists = []
+        for name, job in self.jobs().items():
+            for platform in ("linux", "apple"):
+                if f"name: {platform.title()} battery (" in job:
+                    lists += [(name, platform, group.split()[1::2], TEST_SOURCES.repositories)
+                              for group in re.findall(r"(?m)^            stages: (.*)$", job)]
+        # A step names the checkout it judges; a cross-repository job's is the Kit's or the app's.
+        subjects = {"$KIT_CHECKOUT": ("kit",), "$APP_CHECKOUT": ("app",)}
+        for platform, rest in re.findall(r"ci_batteries\.py\"? (?:run|report) (linux|apple)\b([^\n']*)", text):
+            keys = re.findall(r"--only (\S+)", rest)
+            source = re.search(r'--source-root "([^"]+)"', rest)
+            if keys:
+                lists.append(("step", platform, keys,
+                              subjects.get(source.group(1), TEST_SOURCES.repositories) if source else TEST_SOURCES.repositories))
+        self.assertTrue(lists, "no battery stage list found")
+        for job, platform, keys, repositories in lists:
+            with self.subTest(job=job, platform=platform, keys=" ".join(keys)):
+                batteries.select_stages(batteries.stages(platform), keys, repositories)
 
 def run_suite(run_tests):
     """Runs the tests under an artifact root no other run has; returns their status.
