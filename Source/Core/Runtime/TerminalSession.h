@@ -4999,6 +4999,8 @@ public:
     /// saturated drain is not withheld for the rule: its frames are the
     /// captures each full pass publishes, and the present skips the live read
     /// between them on its own. Takes the model lock for the block's stamp.
+    /// A block this check expires is published under that lock, and the host
+    /// is woken to its screen change once the lock is let go.
     [[nodiscard]] bool shouldWithholdFrame(Ticks nowTicks)
     {
         if (m_runtime->isFrameHeld() && !m_runtime->isDrainSaturated())
@@ -5014,10 +5016,17 @@ public:
         // snapshot, so only the model can say.
         if (!m_externalTerminal && !readSnapshot().syncHoldActive)
             return m_runtime->shouldWithholdPresentation(nullptr, nowTicks, PAL::monotonicMicros());
-        const std::scoped_lock hold(*m_activeLock);
-        if (auto* terminal = modelTerm())
-            return shouldWithholdCapture(*terminal, nowTicks);
-        return m_runtime->shouldWithholdPresentation(nullptr, nowTicks, PAL::monotonicMicros());
+        CaptureWithhold withhold;
+        {
+            const std::scoped_lock hold(*m_activeLock);
+            auto* terminal = modelTerm();
+            if (!terminal)
+                return m_runtime->shouldWithholdPresentation(nullptr, nowTicks, PAL::monotonicMicros());
+            withhold = withholdCapture(*terminal, nowTicks);
+        }
+        if (withhold.didExpireBlock)
+            signalDrain();
+        return withhold.isHeld;
     }
 
     /// The capture's recheck of ``shouldWithholdFrame``, under the model lock
@@ -5029,7 +5038,8 @@ public:
     /// screen the hold exists to keep off the glass.
     ///
     /// A block this check expires is published while the caller still holds
-    /// the lock, so no lock-free reader goes on reading it as open.
+    /// the lock, so no lock-free reader goes on reading it as open, and its
+    /// screen change is raised for the host's next ``takeEventFlags``.
     ///
     /// - Parameters:
     ///   - terminal: The model, borrowed under the caller's lock.
@@ -5037,13 +5047,46 @@ public:
     /// - Returns: True while the capture should wait.
     [[nodiscard]] bool shouldWithholdCapture(Ubiquitty::Terminal& terminal, Ticks nowTicks)
     {
-        const bool wasSyncOutputActive = terminal.modes.syncOutput || readSnapshot().syncHoldActive;
-        const bool isHeld = m_runtime->shouldWithholdPresentation(&terminal, nowTicks, PAL::monotonicMicros());
-        if (wasSyncOutputActive && !terminal.modes.syncOutput)
-            republishModel();
-        return isHeld;
+        return withholdCapture(terminal, nowTicks).isHeld;
     }
 
+private:
+    /// What a withhold check under the model lock decided.
+    struct CaptureWithhold {
+        bool isHeld = false;
+        bool didExpireBlock = false;
+    };
+
+    /// ``shouldWithholdCapture``, and whether the check expired a block.
+    ///
+    /// An expiry ends an update the program never closed, and the host hears
+    /// of it as it hears of a close: the block is published closed with the
+    /// colours set inside it, and a screen change is raised, so a host that
+    /// draws nothing still learns of them. A block that another check expired
+    /// while the snapshot still names it is republished closed. Caller holds
+    /// the model lock, and wakes the host for an expiry once it has let go.
+    ///
+    /// - Parameters:
+    ///   - terminal: The model, borrowed under the caller's lock.
+    ///   - nowTicks: Now, on the 60 Hz monotonic clock.
+    /// - Returns: Whether the capture should wait, and whether this check
+    ///   expired a block.
+    CaptureWithhold withholdCapture(Ubiquitty::Terminal& terminal, Ticks nowTicks)
+    {
+        const bool wasBlockOpen = terminal.modes.syncOutput;
+        const bool wasBlockPublished = wasBlockOpen || readSnapshot().syncHoldActive;
+        CaptureWithhold withhold { .isHeld = m_runtime->shouldWithholdPresentation(&terminal, nowTicks, PAL::monotonicMicros()) };
+        if (terminal.modes.syncOutput)
+            return withhold;
+        if (wasBlockPublished)
+            republishModel();
+        withhold.didExpireBlock = wasBlockOpen;
+        if (withhold.didExpireBlock)
+            m_events.pending.fetch_or(1u << static_cast<unsigned>(EventKind::ScreenDirty), std::memory_order_release);
+        return withhold;
+    }
+
+public:
     /// The live-resize capture's check, under the model lock the caller
     /// holds: whether the redraw behind the newest whole-screen erase is
     /// still arriving. See ``TerminalRuntime/isEraseRedrawArriving(_:_:)``.

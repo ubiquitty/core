@@ -1841,6 +1841,20 @@ private:
     /// Writer thread, under the model lock.
     void noteSyncClearParsed();
 
+    /// Asks the coherence rule whether it admits the frame now.
+    ///
+    /// The rule expires a DEC 2026 block that has outlived its budget, which
+    /// writes the model after the pass's snapshot was taken. A block it expires
+    /// is published closed here, colours and all, under the lock that expired
+    /// it, so the delivery of the pass carries the change to the host.
+    /// Caller holds the model lock.
+    ///
+    /// - Parameters:
+    ///   - now: The coherence clock's reading.
+    ///   - readiness: Whether the read has gone quiet.
+    /// - Returns: The rule's admission.
+    FrameAdmission admitFrame(std::uint64_t now, ReadReadiness readiness);
+
     void emit(EventKind, std::uint32_t data0 = 0);
 
     /// Derives the drain gate from the two facts.

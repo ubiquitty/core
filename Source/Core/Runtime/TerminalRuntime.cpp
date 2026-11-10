@@ -946,8 +946,7 @@ void TerminalRuntime::publishSettledFrameIfCoherent(DrainHost& host, SettleConte
     // burst-end ask, in contrast, follows its caller's readiness check.
     const std::uint64_t now = coherenceNow();
     m_coherence.setFramePacing(host.frameIntervalMicroseconds());
-    const FrameAdmission admission = m_coherence.admit(*m_term, now, PAL::monotonicTicks(),
-        isContinuingPass ? ReadReadiness::Pending : ReadReadiness::Quiet);
+    const FrameAdmission admission = admitFrame(now, isContinuingPass ? ReadReadiness::Pending : ReadReadiness::Quiet);
     if (!admission.isAdmitted) {
         ++m_settlePublishRefusedCount;
         return;
@@ -969,6 +968,15 @@ void TerminalRuntime::publishSettledFrameIfCoherent(DrainHost& host, SettleConte
         : admission.frameClass != FrameClass::Settled ? SyncFrameReason::ContinuingPass
                                                       : SyncFrameReason::Settle;
     host.onSyncFrameReadyLocked(reason);
+}
+
+FrameAdmission TerminalRuntime::admitFrame(std::uint64_t now, ReadReadiness readiness)
+{
+    const bool wasSyncOutputActive = m_term->modes.syncOutput;
+    const FrameAdmission admission = m_coherence.admit(*m_term, now, PAL::monotonicTicks(), readiness);
+    if (wasSyncOutputActive && !m_term->modes.syncOutput)
+        republishSnapshot();
+    return admission;
 }
 
 std::uint64_t TerminalRuntime::coherenceNow() const
@@ -998,7 +1006,7 @@ void TerminalRuntime::publishMidReadBoundaryIfCoherent(DrainHost& host)
     m_coherence.noteMidReadClose(*m_term, now);
     m_coherence.setFramePacing(host.frameIntervalMicroseconds());
     // The rest of the read is waiting behind the close.
-    const FrameAdmission admission = m_coherence.admit(*m_term, now, PAL::monotonicTicks(), ReadReadiness::Pending);
+    const FrameAdmission admission = admitFrame(now, ReadReadiness::Pending);
     if (!admission.isAdmitted) {
         m_isFrameHeld.store(true, std::memory_order_release);
         return;

@@ -6099,6 +6099,130 @@ TEST(aBlockTheWithholdExpiresIsPublishedClosed)
     CHECK_EQ(ticks, 0u);
 }
 
+namespace {
+
+constexpr std::uint32_t screenDirtyFlag = 1u << static_cast<unsigned>(EventKind::ScreenDirty);
+
+/// The host's side of the seam for colours, held the way an embedder holds
+/// it: the drain signal counts the wakes the host would post, and each wake
+/// it serves takes the event flags and, on a screen change, reports the
+/// published colours when their epoch and their value have moved.
+struct ColorReportingHost {
+    explicit ColorReportingHost(TerminalSession& session)
+        : session(session)
+        , reported(session.readCoherentColors())
+    {
+        session.setDrainSignal(this, &ColorReportingHost::countWake);
+        static_cast<void>(session.takeEventFlags());
+    }
+    ~ColorReportingHost() { session.setDrainSignal(nullptr, nullptr); }
+    ColorReportingHost(const ColorReportingHost&) = delete;
+    ColorReportingHost& operator=(const ColorReportingHost&) = delete;
+
+    static void countWake(void* context) { ++static_cast<ColorReportingHost*>(context)->wakes; }
+
+    static bool isSameColor(Ubiquitty::ColorRGBA left, Ubiquitty::ColorRGBA right)
+    {
+        return left.red == right.red && left.green == right.green && left.blue == right.blue && left.alpha == right.alpha;
+    }
+
+    /// Serves one wake.
+    ///
+    /// - Returns: The event flags the wake took.
+    std::uint32_t serveWake()
+    {
+        const std::uint32_t flags = session.takeEventFlags();
+        if (!(flags & screenDirtyFlag))
+            return flags;
+        const CoherentColors published = session.readCoherentColors();
+        if (published.paletteEpoch == reported.paletteEpoch)
+            return flags;
+        const bool hasMoved = !isSameColor(published.colors.background, reported.colors.background)
+            || !isSameColor(published.colors.foreground, reported.colors.foreground)
+            || !isSameColor(published.colors.cursor, reported.colors.cursor);
+        reported = published;
+        if (hasMoved)
+            reportedBackgrounds.push_back(published.colors.background);
+        return flags;
+    }
+
+    TerminalSession& session;
+    CoherentColors reported;
+    std::vector<Ubiquitty::ColorRGBA> reportedBackgrounds;
+    unsigned wakes = 0;
+};
+
+constexpr std::string_view openBlockWithBackground = "\033[?2026h\033]11;rgb:00/77/77\007.";
+
+} // namespace
+
+// A block the withhold expires ends an update the program never closed, and
+// the colours set inside it arrive with the expiry. The host hears of that the
+// way it hears of output, by a screen change and a wake, so a host with no
+// display to draw reports the colours too, and once.
+TEST(anExpiredBlockWakesTheHostToReportItsColorsOnce)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(4, 20);
+    ColorReportingHost host(*session);
+    session->feedBytes({ openBlockWithBackground.data(), openBlockWithBackground.size() });
+    CHECK_EQ(host.wakes, 1u);
+    CHECK_EQ(host.serveWake() & screenDirtyFlag, screenDirtyFlag);
+    CHECK_EQ(host.reportedBackgrounds.size(), 0u);
+    CHECK(session->readSnapshot().syncHoldActive);
+
+    // The host books one wake at the hold's deadline; the first ask stamps
+    // the block, and a block still held wakes nobody.
+    const std::uint32_t untilExpiry = session->presentationHoldTicksRemaining(Ubiquitty::Ticks(100));
+    CHECK(untilExpiry > 0u);
+    CHECK(session->shouldWithholdFrame(Ubiquitty::Ticks(100)));
+    CHECK_EQ(host.wakes, 1u);
+
+    const Ubiquitty::Ticks deadline(100 + untilExpiry);
+    CHECK(!session->shouldWithholdFrame(deadline));
+    CHECK(!session->readSnapshot().syncHoldActive);
+    CHECK_EQ(host.wakes, 2u);
+    CHECK_EQ(host.serveWake() & screenDirtyFlag, screenDirtyFlag);
+    REQUIRE(host.reportedBackgrounds.size() == 1u);
+    CHECK_EQ(static_cast<unsigned>(host.reportedBackgrounds[0].red), 0x00u);
+    CHECK_EQ(static_cast<unsigned>(host.reportedBackgrounds[0].green), 0x77u);
+    CHECK_EQ(static_cast<unsigned>(host.reportedBackgrounds[0].blue), 0x77u);
+
+    // Nothing is left to expire: a later ask neither wakes nor reports.
+    CHECK(!session->shouldWithholdFrame(Ubiquitty::Ticks(deadline.count + 60)));
+    CHECK_EQ(host.wakes, 2u);
+    CHECK_EQ(host.serveWake() & screenDirtyFlag, 0u);
+    CHECK_EQ(host.reportedBackgrounds.size(), 1u);
+}
+
+// A block the program closes reports its colours at the close, and the budget
+// that would have expired it then finds nothing to announce.
+TEST(aBlockClosedBeforeItsBudgetReportsItsColorsOnce)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(4, 20);
+    ColorReportingHost host(*session);
+    session->feedBytes({ openBlockWithBackground.data(), openBlockWithBackground.size() });
+    CHECK_EQ(host.serveWake() & screenDirtyFlag, screenDirtyFlag);
+    CHECK(session->shouldWithholdFrame(Ubiquitty::Ticks(100)));
+    CHECK_EQ(host.reportedBackgrounds.size(), 0u);
+
+    constexpr std::string_view close = "\033[?2026l";
+    session->feedBytes({ close.data(), close.size() });
+    CHECK_EQ(host.wakes, 2u);
+    CHECK_EQ(host.serveWake() & screenDirtyFlag, screenDirtyFlag);
+    REQUIRE(host.reportedBackgrounds.size() == 1u);
+    CHECK_EQ(static_cast<unsigned>(host.reportedBackgrounds[0].green), 0x77u);
+
+    CHECK_EQ(session->presentationHoldTicksRemaining(Ubiquitty::Ticks(130)), 0u);
+    CHECK(!session->shouldWithholdFrame(Ubiquitty::Ticks(161)));
+    CHECK_EQ(host.wakes, 2u);
+    CHECK_EQ(host.serveWake() & screenDirtyFlag, 0u);
+    CHECK_EQ(host.reportedBackgrounds.size(), 1u);
+}
+
 // An adopted terminal is parsed by its owner, whose drain never publishes the
 // adopting session's snapshot: a block the owner opens after the adoption is
 // visible only in the model.
