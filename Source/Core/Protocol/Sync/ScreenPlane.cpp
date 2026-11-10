@@ -1506,9 +1506,22 @@ void commitStateBlock(StateBlock block, Terminal& terminal, Terminal& scratch, S
     case StateBlock::Cursor:
         cursorBlock(CommitVisit {}, terminal, scratch, active);
         return;
-    case StateBlock::Modes:
+    case StateBlock::Modes: {
+        // An absolute tick on the sender's clock is never aged on this one
+        // (Docs/sync.md, "Clocks"). The synchronized update's stamp and the
+        // hilite await's deadline arrive in the block as the sender keeps
+        // them, and the receiver keeps its own: it stamps an update it sees
+        // open, or an await it sees start, at its own first decision, and
+        // holds that stamp while the same one stays open.
+        const bool wasUpdateOpen = terminal.modes.syncOutput;
+        const std::uint32_t updateStamp = terminal.modes.syncOutputTouchTicks;
+        const bool wasAwaiting = terminal.modes.hiliteAwaiting;
+        const std::uint32_t awaitDeadline = terminal.modes.hiliteDeadlineTick;
         modesBlock(CommitVisit {}, terminal, scratch);
+        terminal.modes.syncOutputTouchTicks = wasUpdateOpen && terminal.modes.syncOutput ? updateStamp : 0;
+        terminal.modes.hiliteDeadlineTick = wasAwaiting && terminal.modes.hiliteAwaiting ? awaitDeadline : 0;
         return;
+    }
     case StateBlock::Palette:
         terminal.palette = scratch.palette;
         terminal.paletteBaseline = scratch.paletteBaseline;

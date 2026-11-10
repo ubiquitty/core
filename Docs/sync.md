@@ -153,6 +153,12 @@ versioned body; it is not another remote-wire version.
 14. **Authority keys on the principal, not the transport.**
 15. **The host answers every program query, synchronously.** A program never
     waits for a network round trip.
+16. **No absolute tick crosses a clock domain.** A host and its client keep
+    monotonic clocks with different epochs: another machine's boot, or on one
+    Mac a daemon's clock that counts sleep against an app's that does not. A
+    deadline or an age travels as a remaining duration, or the receiver stamps
+    it on its own clock at first use. A receiver never ages a tick it was
+    handed (§7.4, "Clocks"; §6.13, "Clocks").
 
 ### 3.1 Security and framing invariants
 
@@ -2998,7 +3004,8 @@ screen update or every selected sound is skipped.
   `DECLRMM` with left and right margins.
 - **Character and text state:** tab stops (bitset), live G0–G3 with GL and GR,
   `titleStack`, UDK, the REP record, the status line, the text-size table, and
-  `syncOutputOpen` with its entry clock.
+  `syncOutputOpen` with its entry clock, which is the sender's (see "Clocks"
+  below).
 - **Dictionaries:** `{pens, links, longClusters}`.
 - **`screens`:** the active screen and, when present, the inactive one, as
   `[RowForm + RowAttributes]`.
@@ -3010,6 +3017,35 @@ screen update or every selected sound is skipped.
 The client verifies `stateDigest` on import *before* swapping the result in.
 The checkpoint is complete: the checkpoint ledger (§10) classifies every `Terminal`
 member, and an unclassified member fails the build.
+
+#### Clocks
+
+`ModesBlock` carries two absolute ticks on the sender's monotonic 60 Hz clock:
+the synchronized update's entry clock (`syncOutputTouchTicks`, the tick of the
+first frame decision that saw the update open) and the hilite await's deadline
+(`hiliteDeadlineTick`). Principle 16 forbids a receiver to age them, and the
+ledger classes them `SenderClocked`: they travel as wire version 2 defines them,
+a sender writes its own, and a receiver keeps its own instead.
+
+- **Synchronized update.** A receiver that sees an update open stamps it at its
+  own first frame decision, as a local frontend does, and holds that stamp
+  while the same update stays open. An update it sees closed leaves it
+  unstamped.
+- **Hilite await.** A receiver that sees an await start leaves its deadline
+  unstamped, and its first deadline check stamps it on the receiver's clock. An
+  await it sees end leaves it unstamped.
+- **Limit.** A receiver sees the sender's state only at the copies it
+  receives. A close and reopen, or an await re-armed, entirely between two
+  copies looks like the same update or await, so the receiver's window for the
+  new one can run short by at most one hold. A receiver whose own watchdog
+  ended an update the sender still holds open stamps it again when a later
+  copy shows it open. The sender's own watchdog bounds both.
+
+**At the next wire version.** The block carries the sender's count of
+synchronized-update closes (`syncOutputCloseCount`) in place of the entry
+clock, so a receiver drops its stamp across a close and reopen it never saw,
+and the entry clock becomes host-only. The hilite deadline leaves the block in
+the same way.
 
 **Ops** apply in order, and defines precede uses.
 

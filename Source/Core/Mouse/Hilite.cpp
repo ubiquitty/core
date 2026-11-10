@@ -62,13 +62,21 @@ void beginHiliteAwait(Ubiquitty::Terminal* t, uint32_t nowTicks)
     // tickHilite enforces the bound.
     t->modes.hiliteRegionValid = false;
     t->modes.hiliteAwaiting = true;
-    t->modes.hiliteDeadlineTick = nowTicks + hiliteAwaitDeadlineTicks;
+    const uint32_t deadline = nowTicks + hiliteAwaitDeadlineTicks;
+    t->modes.hiliteDeadlineTick = deadline ? deadline : 1;
 }
 
 bool tickHilite(Ubiquitty::Terminal* t, uint32_t nowTicks)
 {
     if (!t || !t->modes.hiliteAwaiting)
         return false;
+    // An await with no deadline is one a mirror saw start: its deadline is
+    // stamped here, on the clock that will check it.
+    if (t->modes.hiliteDeadlineTick == 0) {
+        const uint32_t deadline = nowTicks + hiliteAwaitDeadlineTicks;
+        t->modes.hiliteDeadlineTick = deadline ? deadline : 1;
+        return false;
+    }
     // Cyclic 32-bit tick comparison (monotonicTicks wraps): reached the deadline
     // once the signed delta is non-negative. No XTHIMOUSE arrived in time — abort
     // the wait so the terminal stays responsive and no highlight is stranded.
