@@ -1575,6 +1575,11 @@ private:
     /// Writes what the screen plane has to say, and arms the timer for what
     /// it will owe next.
     void flushScreen();
+    /// Asks the host for the history a view this deep reaches past the rows
+    /// the replica holds, once per gap. Session thread.
+    ///
+    /// - Parameter rowsAboveTail: Rows above the tail; zero is the tail.
+    void pullHistoryForViewOffset(int rowsAboveTail);
     /// Projects a strictly decoded canonical roster only onto currently bound
     /// exact pane identities. False means a callback replaced this carrier.
     [[nodiscard]] bool receiveAttachments(const Protocol::Sync::AttachmentsList&);
@@ -1724,6 +1729,11 @@ private:
     bool m_isScreenTickPosted = false;
     std::uint64_t m_screenTickDue = 0;
     std::uint64_t m_screenTickSerial = 0;
+    // The newest view offset a frontend reported, and whether a session turn
+    // that asks for its history is posted. The frontend writes the register;
+    // the session's turn reads it and asks once for every move before it.
+    std::atomic<int> m_requestedViewOffset { 0 };
+    std::atomic<bool> m_isViewOffsetPosted { false };
     bool m_foregroundIsShell = true; // host's latest Status flag; gates resize reflow
     bool m_reconnectScheduled = false;
     // A timer whose epoch was superseded cannot open a second channel beside
