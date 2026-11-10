@@ -401,7 +401,8 @@ private:
 
 // What a case checks of each frame's coherence.
 enum class Coherence : std::uint8_t {
-    // Nothing beyond the cadence.
+    // The stream opens no synchronized update: nothing beyond the cadence,
+    // and frame decisions that never take the model lock.
     Unchecked,
     // Every frame ends at the home position, as each synchronized update
     // does: a frame anywhere else was presented from inside one.
@@ -592,8 +593,9 @@ enum class SelectionAtAsk : std::uint8_t {
 // last frame drew, and the frame tick it runs.
 class Frontend {
 public:
-    Frontend(TerminalSession& session, const CadenceCase& cadenceCase, Decision decision)
+    Frontend(TerminalSession& session, const ModelLock& modelLock, const CadenceCase& cadenceCase, Decision decision)
         : m_session(session)
+        , m_modelLock(modelLock)
         , m_case(cadenceCase)
         , m_decision(decision)
         , m_viewOffset(cadenceCase.viewOffset)
@@ -672,6 +674,7 @@ public:
     [[nodiscard]] const CallTimes& times() const { return m_times; }
     [[nodiscard]] bool doesSelectionStand() const { return Selection::hasSelection(m_selection); }
     [[nodiscard]] int registrations() const { return m_registrations; }
+    [[nodiscard]] int lockingDecisions() const { return m_lockingDecisions; }
     [[nodiscard]] const std::array<int, frameDeclineCount>& declines() const { return m_declines; }
 
 private:
@@ -719,6 +722,19 @@ private:
         ++m_registrations;
     }
 
+    // Runs one frame decision, timed, and counts it when a thread other than
+    // the drain took the model lock while it ran: in these cases only the
+    // frontend's own thread does, so that is the decision itself.
+    template<typename Decide>
+    auto decide(Decide&& decision)
+    {
+        const std::uint32_t acquisitionsBefore = m_modelLock.acquisitionCountForTest();
+        auto result = m_times.time(FrontendCall::TakeFrame, std::forward<Decide>(decision));
+        if (m_modelLock.acquisitionCountForTest() != acquisitionsBefore)
+            ++m_lockingDecisions;
+        return result;
+    }
+
     void askForFrame()
     {
         const SelectionAtAsk selection = Selection::hasSelection(m_selection) ? SelectionAtAsk::Standing : SelectionAtAsk::Absent;
@@ -729,7 +745,7 @@ private:
             .keepsSearchLive = m_didLastFrameDrawSearch,
         };
         Runtime::FrameSupply supply;
-        const TakenFrame frame { m_times.time(FrontendCall::TakeFrame, [&] { return m_session.takeFrame(demand, supply); }) };
+        const TakenFrame frame { decide([&] { return m_session.takeFrame(demand, supply); }) };
         switch (supply.route) {
         case FrameRoute::Captured:
             m_didLastFrameDrawSearch = false;
@@ -756,14 +772,14 @@ private:
         m_didLastFrameDrawSelection = hasSelection;
         const bool keepsSearchLive = m_didLastFrameDrawSearch && !m_session.isDrainSaturated();
         if (!hasSelection && !didDrawSelection && !keepsSearchLive) {
-            if (const TakenFrame frame { m_times.time(FrontendCall::TakeFrame, [&] { return m_session.takeSyncFrame(); }) }) {
+            if (const TakenFrame frame { decide([&] { return m_session.takeSyncFrame(); }) }) {
                 m_didLastFrameDrawSearch = false;
                 presentCapture(*frame, selection, 0);
                 return;
             }
         }
         const Ticks now = PAL::monotonicTicks();
-        if (m_times.time(FrontendCall::TakeFrame, [&] { return m_session.shouldWithholdFrame(now); })) {
+        if (decide([&] { return m_session.shouldWithholdFrame(now); })) {
             decline(FrameDecline::HeldByCoherence);
             return;
         }
@@ -893,6 +909,7 @@ public:
 
 private:
     TerminalSession& m_session;
+    const ModelLock& m_modelLock;
     const CadenceCase& m_case;
     Decision m_decision;
     Selection::Session m_selection;
@@ -902,6 +919,7 @@ private:
     Screen::HistoryFacts m_registeredViewHistory {};
     bool m_isRegisteredViewOffsetHeld = false;
     int m_registrations = 0;
+    int m_lockingDecisions = 0;
     std::array<int, frameDeclineCount> m_declines {};
     bool m_didLastFrameDrawSearch = false;
     bool m_didLastFrameDrawSelection = false;
@@ -942,6 +960,9 @@ struct CadenceRun {
     CallTimes times;
     int ticks = 0;
     int registrations = 0;
+    // Frame decisions during which a thread other than the drain took the
+    // model lock.
+    int lockingDecisions = 0;
     std::array<int, frameDeclineCount> declines {};
 };
 
@@ -1014,7 +1035,7 @@ CadenceRun runCadence(const CadenceCase& cadenceCase, Decision decision)
             return run;
     }
 
-    Frontend frontend(*session, cadenceCase, decision);
+    Frontend frontend(*session, *session->modelLockPointer(), cadenceCase, decision);
     run.didSelect = frontend.select();
     if (!run.didSelect)
         return run;
@@ -1066,6 +1087,7 @@ CadenceRun runCadence(const CadenceCase& cadenceCase, Decision decision)
     run.times = frontend.times();
     run.doesSelectionStandAtEnd = frontend.doesSelectionStand();
     run.registrations = frontend.registrations();
+    run.lockingDecisions = frontend.lockingDecisions();
     run.declines = frontend.declines();
     run.colorReports = frontend.colorReports();
     run.blockOpenReachedAt = timeOf(watch.blockOpenReachedAt);
@@ -1191,6 +1213,11 @@ void checkCadence(const CadenceCase& cadenceCase, const CadenceRun& run, double 
         std::format("{}: the view registered its capture geometry {} times, against at most {}", name, run.registrations,
             cadenceCase.maxRegistrations)
             .c_str());
+    // With no synchronized update in the stream, the frame decision reads
+    // published state alone and never takes the model lock.
+    if (cadenceCase.coherence == Coherence::Unchecked)
+        CHECK_MSG(run.lockingDecisions == 0,
+            std::format("{}: {} frame decisions took the model lock, with no synchronized update open", name, run.lockingDecisions).c_str());
 
     int presentsWithSelection = 0;
     int presentsWithoutIt = 0;
@@ -1255,9 +1282,9 @@ void checkCadence(const CadenceCase& cadenceCase, const CadenceRun& run, double 
     if (cadenceCase.coherence == Coherence::SentinelUntilTheBlockCloses)
         updateOpen = std::format(", the update open {:.0f} ms", millisecondsOf(*run.blockCloseReachedAt - *run.blockOpenReachedAt));
     std::printf("cadence %s: %.2f of a core, %d ticks, %zu presents (%d fresh in the flow windows, %d of them captures, longest gap %.1f ms%s), "
-                "%d live reads, declines by reason:%s, %d registrations; longest call / longest wait (ms):%s\n",
+                "%d live reads, declines by reason:%s, %d registrations, %d decisions under the model lock; longest call / longest wait (ms):%s\n",
         cadenceCase.name, coreShare, run.ticks, run.presents.size(), presentsInWindows, capturedInWindows, millisecondsOf(longestFlowGap),
-        updateOpen.c_str(), liveReads, declines.c_str(), run.registrations, calls.c_str());
+        updateOpen.c_str(), liveReads, declines.c_str(), run.registrations, run.lockingDecisions, calls.c_str());
 }
 
 // The least share of a core any of a run's busy threads can have now: that
