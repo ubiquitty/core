@@ -29,18 +29,27 @@
 # passed: nothing goes red, so the tree looks green while nothing has executed.
 # These gates are the ones that decide whether a push is sound.
 #
-#   TIER=lint    every gate that needs no build                       no toolchain
-#   TIER=quick   style + SSOT + PGO drift + host build + the arms the
-#                push's changes reach                                 DEFAULT
-#   TIER=ctest   quick + the ctest suite                              ON REQUEST
-#   TIER=linux   quick + Core and the GTK frontend on real Linux
-#   TIER=full    linux + macOS app + snapshot regressions
+#   TIER=lint      every gate that needs no build                     no toolchain
+#   TIER=quick     style + SSOT + PGO drift + host build + the arms the
+#                  push's changes reach                                DEFAULT
+#   TIER=ctest     quick + the whole ctest suite                       ON REQUEST
+#   TIER=linux     quick + the Linux build in a container              ON REQUEST
+#   TIER=full      every gate the repository has, each run whatever
+#                  the diff reaches: what CI runs, run here            ON REQUEST
+#   TIER=families  the gate families UBQ_PREPUSH_FAMILIES names, in order:
+#                  the entry CI's jobs use, so a job runs the hook's own
+#                  commands rather than a copy of them
 #
 # How long a tier takes depends on what the push changes, because each arm runs
 # only when the push reaches its sources. A push that changes CMakeLists.txt or
 # a module it includes reaches every iOS gate, and the iOS UI tests on a
 # simulator dominate quick from a cold build root. The PGO total-drift gate
 # compiles every portable-core unit on every run.
+#
+# UBQ_PREPUSH_SELECT=all runs every gate that is chosen by what the push changes
+# as though the push reached it; the full tier sets it. UBQ_PREPUSH_STRICT=1 fails
+# a run in which any gate stood down: on a CI runner a missing tool is a broken
+# runner, and a skip there would read as a pass.
 #
 # Before the first gate runs, a preflight (ubq_preflight, below) answers two
 # questions. If the diff touches documentation alone (Scripts/prepush_preflight.py
@@ -71,17 +80,15 @@
 # raises and clang does not, all of which reach main when nothing compiles that
 # path.
 #
-# UNCOVERED, and named rather than dropped: musl static, coverage floors,
-# bounded fuzz, and the bench gate. Bench is excluded for correctness, not cost —
-# a contended machine against a baseline measured on an idle runner is wrong in
-# both directions.
-#
-# wasm32 is not on that list: gate_wasm runs from the quick tier. Its coverage
-# is conditional twice over, so read it as "covered when it can matter" rather
-# than "always" — the gate returns early when the branch touches none of
-# Source/Core, Source/Base or Source/Platform/Web, and reports SKIPPED,
-# counted as having checked nothing, on a machine without emsdk.
+# Not a gate of any tier, and named rather than dropped: musl static and bounded
+# fuzz run in CI's Linux battery (Scripts/ci_batteries.py), and coverage floors
+# and the bench gate run nowhere on a pull request. Bench is excluded for
+# correctness, not cost — a contended machine against a baseline measured on an
+# idle runner is wrong in both directions.
 set -uo pipefail
+
+# The run's wall time is measured from here, so the preflight's builds count.
+UBQ_PUSH_STARTED="$(python3 -c 'import time; print(time.time())' 2>/dev/null || echo 0)"
 
 # Preserve the caller's scheduling priority. Coordinate compile jobs through
 # the build-job limits and reserve a quiet machine for timing-sensitive tests.
@@ -136,12 +143,54 @@ if [ -z "$TIER" ]; then
 fi
 TIER="${TIER:-quick}"
 case "$TIER" in
-    lint | quick | default | ctest | linux | full) ;;
+    lint | quick | default | ctest | linux) ;;
+    full) UBQ_PREPUSH_SELECT=all ;;
+    families)
+        if [ -z "${UBQ_PREPUSH_FAMILIES:-}" ]; then
+            echo "pre-push gates: tier families runs the families UBQ_PREPUSH_FAMILIES names, and it names none" >&2
+            exit 2
+        fi
+        ;;
     *)
         echo "pre-push gates: unknown tier '$TIER'${TIER_SOURCE:+ (from $TIER_SOURCE)} — running quick" >&2
         TIER=quick
         ;;
 esac
+
+# Whether a gate chosen by what the push changes runs whatever the push changes.
+ubq_select_all() {
+    [ "${UBQ_PREPUSH_SELECT:-}" = all ]
+}
+
+# The families tier: each family UBQ_PREPUSH_FAMILIES names, in the order given.
+# A family is a function the sourcing script defined (core_gate_*, kit_gate_*,
+# gate_*). Every name is checked before the first runs: a misspelt family would
+# check nothing, and a CI job built on it would be green for that reason.
+ubq_run_families() {
+    local family
+    for family in ${UBQ_PREPUSH_FAMILIES:-}; do
+        if ! [[ "$family" =~ ^([a-z]+_)?gate_[a-z0-9_]+$ ]] || ! declare -F "$family" >/dev/null; then
+            echo "pre-push gates: '$family' is not a gate family this checkout defines" >&2
+            exit 2
+        fi
+    done
+    for family in ${UBQ_PREPUSH_FAMILIES:-}; do
+        "$family"
+    done
+}
+
+# The gates a tier leaves to CI, named at the end of the run: a green quick tier
+# is a verdict on the gates it ran, and this is the list it is not one on.
+IN_CI=()
+ubq_in_ci() { # <gate>...
+    IN_CI+=("$@")
+}
+
+ubq_gate_report_in_ci() {
+    [ "${#IN_CI[@]}" -gt 0 ] || return 0
+    echo "pre-push gates: ${#IN_CI[@]} gate(s) run in CI, not in this tier (UBIQUITTY_PREPUSH=full runs them here):" >&2
+    printf '  - %s\n' "${IN_CI[@]}" >&2
+}
 
 # Limit CTest fan-out because each test job may itself start a build.
 # UBIQUITTY_PREPUSH_JOBS overrides the default for the available machine budget.
@@ -267,6 +316,13 @@ ubq_pre_push_finish() {
     ubq_gate_report_skipped
     ubq_gate_report_warned
     ubq_gate_report_elsewhere
+    ubq_gate_report_in_ci
+    # Appended after every gate's own entry, so FAILED_LOG still pairs with the
+    # failures before it.
+    if [ "${UBQ_PREPUSH_STRICT:-}" = 1 ] && [ "${#SKIPPED[@]}" -gt 0 ]; then
+        FAILED+=("strict run: ${#SKIPPED[@]} gate(s) stood down, each listed above as SKIPPED")
+    fi
+    ubq_gate_report_times "$UBQ_PUSH_STARTED"
     local index=0 name log
     if [ "${#FAILED[@]}" -gt 0 ]; then
         gate_failed "pre-push gates" "gate(s) failed" "${FAILED[@]}"
@@ -294,10 +350,15 @@ ubq_pre_push_finish() {
         echo >&2
         return 1
     fi
-    echo "pre-push gates: ${#PASSED[@]} passed (${#CACHED[@]} cached). Uncovered here: musl, coverage," >&2
-    echo "  fuzz, the bench gate, and every test this diff does not reach — the" >&2
-    echo "  \"tests reaching the diff\" line above says which ran, and says so when none" >&2
-    echo "  did. UBIQUITTY_PREPUSH=default adds the whole suite, =linux the Linux build." >&2
+    echo "pre-push gates: ${#PASSED[@]} passed (${#CACHED[@]} cached)." >&2
+    case "$TIER" in
+        full | families) ;;
+        *)
+            echo "  Uncovered here: every test this diff does not reach — the \"tests reaching" >&2
+            echo "  the diff\" line above says which ran, and says so when none did. CI runs the" >&2
+            echo "  rest on the pull request; UBIQUITTY_PREPUSH=full runs it here." >&2
+            ;;
+    esac
     return 0
 }
 

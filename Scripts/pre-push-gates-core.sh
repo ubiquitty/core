@@ -56,7 +56,15 @@ core_gate_commit_rules() {
 # deleted, and the preflight then stops there for every push.
 # It reads ci.yml as the preflight does: without --workflow the workflow
 # contract test skips, and an edit to ci.yml reaches the preflight untested.
+#
+# The style checks, then the one step that compiles; core_gate_style_checks
+# alone is what the quick tier runs.
 core_gate_style() {
+    core_gate_style_checks
+    core_gate_bench_compiles
+}
+
+core_gate_style_checks() {
     # Whole tree, not the branch diff. This tier is the floor because it is the
     # one an author can rely on: it runs before the push, on the machine making
     # it, whatever the remote is doing. A rule narrowed here is narrowed for
@@ -74,10 +82,13 @@ core_gate_style() {
     # a number several checkouts share goes stale the moment any of them lands
     # anything, and then blocks all of them.
     run_for "core kit app" "backlog growth" python3 ./Scripts/check-backlog-growth.py
-    # Tests/Performance is built by scripts that each name the benchmarks they
-    # want, and several benchmarks are named by none of them. Nothing compiles
-    # those, so a tree-wide edit rots them with every gate green. Parsing the
-    # directory fits a push's budget and not a commit's.
+}
+
+# Tests/Performance is built by scripts that each name the benchmarks they
+# want, and several benchmarks are named by none of them. Nothing compiles
+# those, so a tree-wide edit rots them with every gate green. It compiles every
+# benchmark whatever the push changed, so it is CI's and the full tier's.
+core_gate_bench_compiles() {
     run_for "core" "benchmarks compile" ./Scripts/check-bench-compiles.sh
 }
 
@@ -99,13 +110,21 @@ core_gate_style_without_builds() {
     run_for "core kit app" "gate coverage" python3 ./Scripts/check-gate-coverage.py
     run_whole "CI orchestration tests" python3 ./Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml
     run_for "core kit app" "backlog growth" python3 ./Scripts/check-backlog-growth.py
-    SKIPPED+=("benchmarks compile (tier lint builds nothing; ask for quick to compile them)")
+    SKIPPED+=("benchmarks compile (tier lint builds nothing; CI compiles them, and so does the full tier)")
+}
+
+# The host's builds and the tests the push reaches. A repository that carries
+# Core calls this whole; CI calls the halves, since the whole suite runs there
+# and a subset of it first would run those tests twice.
+core_gate_host() {
+    core_gate_host_builds
+    core_gate_reached_tests
 }
 
 # ci.yml: host-linux (glibc). The host's platform branches are invisible to a
 # frontend-only build, and its source subset is trimmed, so a kept translation
 # unit calling into a trimmed one is caught at link or not at all.
-core_gate_host() {
+core_gate_host_builds() {
     run_scoped "ubiquitty-host build" \
         "Source/Platform/Host Source/Platform/POSIX Source/Agent Source/Core Source/Base Source/PAL CMakeLists.txt Scripts/cmake cmake Scripts/portable-core-sources.txt Scripts/check-core-layer-partition.sh Scripts/build-host.sh Scripts/build-provenance.sh Scripts/build-root.sh Scripts/build_root.py" \
         ./Scripts/build-host.sh
@@ -134,6 +153,10 @@ core_gate_host() {
     run_scoped "Tests/ compiles" \
         "Source Tests CMakeLists.txt Scripts/cmake cmake Scripts/build-tests.sh Scripts/ubq_roots.py Scripts/check-build-reached.py Scripts/portable-core-sources.txt Scripts/build-root.sh Scripts/build_root.py Scripts/build-jobs.sh Scripts/build_jobs.py" \
         ./Scripts/build-tests.sh
+}
+
+# The tests this branch can break, against the tree core_gate_host_builds built.
+core_gate_reached_tests() {
     # And RUNS the ones this branch can break. Compiling is not running: the
     # rows `test_preferences_keys` hand-copies from the `Key.h` descriptor table
     # can go one short, red on every platform, while every build gate here is
@@ -165,6 +188,10 @@ core_gate_host() {
     # stanzas; this proves the judge still fails, against a stanza that leaks
     # on purpose. Five seconds, and it builds nothing; unscoped, because what
     # it reads is the driver itself, whose inputs are the whole test tree.
+    core_gate_test_hygiene
+}
+
+core_gate_test_hygiene() {
     run_for "core" "test runs leave nothing behind" ./Scripts/run-tests.sh run_hygiene
 }
 
@@ -196,7 +223,15 @@ core_gate_ctest() {
 # suite bounds nothing: a profile bounded only beside the suite can drift far
 # enough to lose whole lanes against a retrained one. It compiles only the
 # portable-core units the branch changed, which is seconds.
+#
+# The per-branch bound is the quick tier's; the total, which compiles every
+# portable-core unit whatever the push changed, is CI's and the full tier's.
 core_gate_pgo_drift() {
+    core_gate_pgo_diff
+    core_gate_pgo_total
+}
+
+core_gate_pgo_diff() {
     # 30000, set from the tree rather than picked: a budget far above anything
     # this tree produces runs on every push and cannot fail. An ordinary branch
     # reads zero; the budget sits above the drift a long run of commits
@@ -208,6 +243,9 @@ core_gate_pgo_drift() {
     # the drift is real rather than a one-off.
     run "pgo diff-applies" python3 ./Scripts/check-pgo-applies.py \
         --changed-from origin/main --max-new-discarded 30000
+}
+
+core_gate_pgo_total() {
     # The total, against the budget pgo-train.sh recorded beside the profile.
     # The bound above reads only the units a push changed: a header edit that
     # reshapes every function inlining it compiles nothing there and reads
@@ -283,9 +321,11 @@ core_gate_wasm_oracle() {
 # The wasm32 arm of Core. Proves the arm still disagrees with the host before
 # trusting its build: a build that compiles everything and says ok is
 # indistinguishable from one whose toolchain quietly stopped rejecting what the
-# host accepts.
+# host accepts. Selected by a change to what it compiles, unless every gate is.
 core_gate_wasm() {
-    [ -n "$(git -C "$ROOT" diff --name-only origin/main...HEAD -- Source/Core Source/Base Source/PAL Scripts/cmake CMakeLists.txt Scripts/portable-core-sources.txt 2>/dev/null)" ] || return 0
+    if ! ubq_select_all; then
+        [ -n "$(git -C "$ROOT" diff --name-only origin/main...HEAD -- Source/Core Source/Base Source/PAL Scripts/cmake CMakeLists.txt Scripts/portable-core-sources.txt 2>/dev/null)" ] || return 0
+    fi
     if ! command -v emcmake >/dev/null 2>&1; then
         SKIPPED+=("wasm build (no emscripten; emsdk provides emcmake)")
         printf '  %-34s %s\n' "wasm build" "SKIPPED (no emscripten)"
@@ -295,18 +335,47 @@ core_gate_wasm() {
     run "portable Core on wasm" ./Scripts/build-core-wasm.sh
 }
 
+# The suite under AddressSanitizer and UndefinedBehaviorSanitizer, and the host
+# built and driven with the same instrumentation (Scripts/run-sanitized-tests.sh).
+# CI's Linux battery runs it with clang; here it is the full tier's.
+core_gate_sanitizers() {
+    run_for "core" "sanitized suite" ./Scripts/run-sanitized-tests.sh
+}
+
+# Clang's thread-safety and function-effect analyses as errors, in a tree of
+# their own: the option defaults on for a compiler that has both, so a build
+# that quietly lost them would still be green, and naming it here makes that
+# loss a configure failure instead. A tree without the option has nothing for
+# it to check and says so.
+core_gate_ownership() {
+    if ! grep -q 'UBIQUITTY_OWNERSHIP_ANALYSIS' "$UBQ_CORE_ROOT/Scripts/cmake/UbiquittyToolchain.cmake" 2>/dev/null; then
+        printf '  %-34s %s\n' "ownership analysis" "none — this tree has no UBIQUITTY_OWNERSHIP_ANALYSIS option"
+        return 0
+    fi
+    local build="$UBQ_BUILD_ROOT/BuildHostTests/ownership"
+    run_for "core" "ownership analysis configure" env CC="${CC:-clang}" CXX="${CXX:-clang++}" \
+        cmake -S . -B "$build" -G Ninja -DUBIQUITTY_FRONTEND=Core -DUBIQUITTY_BUILD_TESTS=ON \
+        -DCMAKE_BUILD_TYPE=Debug -DUBIQUITTY_OWNERSHIP_ANALYSIS=ON
+    [ -f "$build/CMakeCache.txt" ] || return 0
+    run_for "core" "ownership analysis build" cmake --build "$build" --parallel "$JOBS"
+}
+
 # The tiers of a checkout that holds ubiquitty-core and nothing above it. The
-# wasm build, the frontends' arms and the snapshot regressions are the gates of
-# the repositories that hold those frontends; the wasm oracle is Core's own.
+# frontends' arms and the snapshot regressions are the gates of the repositories
+# that hold those frontends; the wasm arm and its oracle are Core's own.
 core_tier() {
     case "$TIER" in
         lint) core_gate_style_without_builds; core_gate_commit_rules ;;
         quick | default) core_gate_pgo_drift; core_gate_style; core_gate_commit_rules; core_gate_host; core_gate_forks; core_gate_wasm ;;
         ctest) core_gate_pgo_drift; core_gate_style; core_gate_commit_rules; core_gate_host; core_gate_forks; core_gate_wasm; core_gate_ctest ;;
         linux) core_gate_pgo_drift; core_gate_style; core_gate_commit_rules; core_gate_host; core_gate_forks; core_gate_wasm; core_gate_linux ;;
-        full) core_gate_pgo_drift; core_gate_style; core_gate_commit_rules; core_gate_host; core_gate_forks; core_gate_wasm; core_gate_ctest; core_gate_linux ;;
+        full)
+            core_gate_pgo_drift; core_gate_style; core_gate_commit_rules; core_gate_host; core_gate_forks
+            core_gate_wasm; core_gate_ctest; core_gate_sanitizers; core_gate_ownership; core_gate_linux
+            ;;
+        families) ubq_run_families ;;
         *)
-            echo "pre-push gates: unknown tier '$TIER' (want lint|quick|ctest|linux|full)" >&2
+            echo "pre-push gates: unknown tier '$TIER' (want lint|quick|ctest|linux|full|families)" >&2
             exit 1
             ;;
     esac
