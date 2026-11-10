@@ -1520,6 +1520,29 @@ TEST(testANotificationIsTakenWithoutTheModel)
     CHECK(!hasMore);
 }
 
+// A window request a program makes is taken without the model, with the model
+// held by another thread, and a run of moves still folds into one.
+TEST(testAWindowRequestIsTakenWithoutTheModel)
+{
+    LoopSession loop;
+    REQUIRE(loop.isRunning);
+    REQUIRE(loop.session().installWindowRequestQueue());
+    REQUIRE(loop.write("\033[3;10;20t\033[3;30;40t"));
+    TerminalSession::WindowRequest request;
+    for (int waited = 0; waited < 2000 && request.kind == TerminalSession::WindowRequest::Kind::None; ++waited) {
+        CHECK(returnsWhileTheModelIsHeld(loop.session(), [&] { request = loop.session().takeWindowRequest(); }));
+        if (request.kind == TerminalSession::WindowRequest::Kind::None)
+            ::usleep(1000);
+    }
+    REQUIRE(request.kind == TerminalSession::WindowRequest::Kind::WindowOp);
+    CHECK_EQ(request.first, 3);
+    CHECK_EQ(request.second, 30);
+    CHECK_EQ(request.third, 40);
+    bool hasMore = true;
+    CHECK(returnsWhileTheModelIsHeld(loop.session(), [&] { hasMore = loop.session().hasPendingWindowRequest(); }));
+    CHECK(!hasMore);
+}
+
 // A text longer than the record keeps is cut on a character boundary, and the
 // record says the directory was cut.
 TEST(testTheTitleRecordCutsOnACharacterBoundary)
