@@ -273,6 +273,8 @@ set(test_ingest_loop_EXTRA_SOURCES     Source/Platform/POSIX/PTYStream.cpp
                                        Source/Platform/POSIX/SystemPAL.cpp
                                        Source/Platform/Host/HostPAL.cpp
                                        Source/Core/Session/ProcessSubtree.cpp)
+# test_flood_start runs the ingest loop over a pipe, on the real clock, poll and waker.
+set(test_flood_start_EXTRA_SOURCES ${test_ingest_loop_EXTRA_SOURCES})
 # The settings fan-out runs against a started session, and a session is the
 # runtime whether or not the case opens a PTY: the same PAL set has to link.
 set(test_apply_terminal_preferences_EXTRA_SOURCES
@@ -544,6 +546,12 @@ ubiquitty_add_host_tests(
 # bound for the reason above.
 if(TEST test_sync_handles)
     set_tests_properties(test_sync_handles PROPERTIES TIMEOUT 300)
+endif()
+
+# test_flood_start bounds how soon the drain captures a flood's first frame on
+# the wall clock, so it runs with no other test competing for the cores.
+if(TEST test_flood_start)
+    set_tests_properties(test_flood_start PROPERTIES RUN_SERIAL TRUE RESOURCE_LOCK timing)
 endif()
 
 # ----------------------------------------------------------------------
