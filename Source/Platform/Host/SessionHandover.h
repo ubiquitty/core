@@ -28,9 +28,10 @@ struct SessionHandover {
     /// - Parameters:
     ///   - session: Frozen holder with its original stream and input owners.
     ///   - limits: Independent receiver bounds for the entire session.
+    ///   - now: Now, on the clock the session's terminal keeps its ticks on.
     /// - Returns: Exact owned record or refusal, without consuming holder state.
     [[nodiscard]] static std::expected<Protocol::Sync::HandoverBytes, Protocol::Sync::HandoverBodyError> capture(
-        const Session& session, const SessionHandoverLimits& limits);
+        const Session& session, const SessionHandoverLimits& limits, Ticks now);
 
     /// Restores and binds an unpublished session without servicing its stream.
     /// The caller must authenticate and validate the inherited PTY first. Its
@@ -42,10 +43,12 @@ struct SessionHandover {
     ///   - bytes: One complete private session record.
     ///   - stream: Exclusively owned inherited endpoint, consumed on every path.
     ///   - limits: Receiver bounds independent of the incoming configuration.
+    ///   - now: Now, on the clock the successor keeps its sessions' ticks on,
+    ///     which is the predecessor's.
     /// - Returns: A private bound session, or refusal without touching live owners.
     [[nodiscard]] static std::expected<std::unique_ptr<Session>, Protocol::Sync::HandoverBodyError> restore(
         Daemon& daemon, std::span<const std::uint8_t> bytes, std::unique_ptr<PAL::Stream> stream,
-        const SessionHandoverLimits& limits);
+        const SessionHandoverLimits& limits, Ticks now);
 };
 
 } // namespace Ubiquitty::Host

@@ -163,7 +163,8 @@ ReclaimTransfer::~ReclaimTransfer() = default;
 
 std::expected<std::unique_ptr<ReclaimTransfer>, Error> ReclaimTransfer::prepare(
     const Protocol::Control::ReclaimTarget& target, AdoptOperation operation, ReclaimInputBarrier barrier,
-    const ReclaimCapsuleView& capsule, const ReclaimTransferLimits& limits, std::shared_ptr<Protocol::Sync::MemoryBudget> decodeMemory)
+    const ReclaimCapsuleView& capsule, const ReclaimTransferLimits& limits, Ticks now,
+    std::shared_ptr<Protocol::Sync::MemoryBudget> decodeMemory)
 {
     if (!isValid(target) || !isValid(operation) || !isValid(barrier.clientInstance)
         || operation.daemonInstanceID != target.daemonInstanceID)
@@ -175,7 +176,8 @@ std::expected<std::unique_ptr<ReclaimTransfer>, Error> ReclaimTransfer::prepare(
         return std::unexpected(digest.error());
     if (*digest != capsule.capsuleSHA256)
         return std::unexpected(Error::DigestMismatch);
-    auto terminal = Protocol::Sync::decodeHandoverTerminal(capsule.terminalBody, limits.terminal, std::move(decodeMemory));
+    auto terminal = Protocol::Sync::decodeHandoverTerminal(capsule.terminalBody, limits.terminal,
+        { .now = now, .sender = Protocol::Sync::HandoverSenderClock::Separate }, std::move(decodeMemory));
     if (!terminal)
         return std::unexpected(terminal.error() == Protocol::Sync::HandoverBodyError::AllocationRefused ? Error::NoMemory : Error::TerminalRefused);
     auto accepted = PAL::OutputQueue::Unwritten::copyOf(capsule.acceptedPTY, capsule.acceptedRuns);

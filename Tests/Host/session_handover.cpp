@@ -208,12 +208,12 @@ TEST(actualSessionJoinPreservesEveryOwnerWithoutServicingTheCandidate)
     REQUIRE(beforeRuntime && beforeRuntime->pasteCount == 1);
     CHECK_EQ(beforeRuntime->pastes[0].normalizer.heldBytes, 5u);
     const auto sourceCalls = *fixture.stream->counts;
-    const auto encoded = Host::SessionHandover::capture(*fixture.session, limits);
+    const auto encoded = Host::SessionHandover::capture(*fixture.session, limits, {});
     REQUIRE(encoded);
     CHECK(*fixture.stream->counts == sourceCalls);
     auto endpoint = std::make_unique<QueuedStream>();
     auto* stream = endpoint.get();
-    auto restored = Host::SessionHandover::restore(fixture.successor, encoded->view(), std::move(endpoint), limits);
+    auto restored = Host::SessionHandover::restore(fixture.successor, encoded->view(), std::move(endpoint), limits, {});
     REQUIRE(restored);
     Session& candidate = **restored;
     checkNoService(*stream->counts);
@@ -245,7 +245,7 @@ TEST(actualSessionJoinPreservesEveryOwnerWithoutServicingTheCandidate)
     const auto& notice = std::get<Host::HostNotification>(candidate.effects.heldEffects().front());
     CHECK(notice.primary == client);
     CHECK_EQ(notice.pendingPrimaryClientID, 19u);
-    const auto recaptured = Host::SessionHandover::capture(candidate, limits);
+    const auto recaptured = Host::SessionHandover::capture(candidate, limits, {});
     REQUIRE(recaptured);
     CHECK(std::ranges::equal(encoded->view(), recaptured->view()));
     const auto pending = stream->copyPendingWrite();
@@ -263,11 +263,11 @@ TEST(actualSessionResumesAcceptedSuffixBeforeUnsubmittedPasteAndKeysExactlyOnce)
     Fixture fixture;
     fixture.queuePaste();
     const std::string deliveredPrefix = fixture.stream->delivered;
-    const auto encoded = Host::SessionHandover::capture(*fixture.session, limits);
+    const auto encoded = Host::SessionHandover::capture(*fixture.session, limits, {});
     REQUIRE(encoded);
     auto endpoint = std::make_unique<QueuedStream>();
     auto* after = endpoint.get();
-    auto restored = Host::SessionHandover::restore(fixture.successor, encoded->view(), std::move(endpoint), limits);
+    auto restored = Host::SessionHandover::restore(fixture.successor, encoded->view(), std::move(endpoint), limits, {});
     REQUIRE(restored);
     fixture.stream->delivered.clear();
     for (auto* stream : { fixture.stream, after }) {
@@ -307,11 +307,11 @@ TEST(abandonedAndRefusedSessionCandidatesCannotTerminateTheChildOrUnlinkHolderFi
     {
         Fixture fixture;
         fixture.session->landedPastePaths.emplace_back(path);
-        const auto encoded = Host::SessionHandover::capture(*fixture.session, limits);
+        const auto encoded = Host::SessionHandover::capture(*fixture.session, limits, {});
         REQUIRE(encoded);
         const auto counts = std::make_shared<StreamCounts>();
         {
-            auto restored = Host::SessionHandover::restore(fixture.successor, encoded->view(), std::make_unique<QueuedStream>(counts), limits);
+            auto restored = Host::SessionHandover::restore(fixture.successor, encoded->view(), std::make_unique<QueuedStream>(counts), limits, {});
             REQUIRE(restored);
             CHECK(::access(path, F_OK) == 0);
             CHECK_EQ((*restored)->landedPastePaths.size(), 1u);
@@ -323,7 +323,7 @@ TEST(abandonedAndRefusedSessionCandidatesCannotTerminateTheChildOrUnlinkHolderFi
         std::vector<std::uint8_t> corrupt(encoded->view().begin(), encoded->view().end());
         corrupt.back() ^= 1;
         const auto refusedCounts = std::make_shared<StreamCounts>();
-        CHECK(!Host::SessionHandover::restore(fixture.successor, corrupt, std::make_unique<QueuedStream>(refusedCounts), limits));
+        CHECK(!Host::SessionHandover::restore(fixture.successor, corrupt, std::make_unique<QueuedStream>(refusedCounts), limits, {}));
         checkNoService(*refusedCounts);
         CHECK_EQ(refusedCounts->destructions, 1u);
         CHECK_EQ(refusedCounts->terminations, 0u);
@@ -331,13 +331,13 @@ TEST(abandonedAndRefusedSessionCandidatesCannotTerminateTheChildOrUnlinkHolderFi
         auto occupied = std::make_unique<QueuedStream>(occupiedCounts);
         CHECK_EQ(occupied->writeAll(std::span("old", 3)), 0);
         *occupiedCounts = {};
-        CHECK(!Host::SessionHandover::restore(fixture.successor, encoded->view(), std::move(occupied), limits));
+        CHECK(!Host::SessionHandover::restore(fixture.successor, encoded->view(), std::move(occupied), limits, {}));
         checkNoService(*occupiedCounts);
         CHECK_EQ(occupiedCounts->restores, 1u);
         CHECK_EQ(occupiedCounts->terminations, 0u);
         CHECK(::access(path, F_OK) == 0);
         CHECK_EQ(fixture.stream->counts->terminations, 0u);
-        CHECK(Host::SessionHandover::capture(*fixture.session, limits));
+        CHECK(Host::SessionHandover::capture(*fixture.session, limits, {}));
     }
     CHECK(::access(path, F_OK) != 0);
 }
@@ -348,11 +348,11 @@ TEST(restoredPartialPasteWithdrawalRepairsOnlyItsDelimiterAndKeepsSystemBytes)
     fixture.queuePaste();
     const std::string deliveredPrefix = fixture.stream->delivered;
     CHECK_EQ(fixture.stream->writeAll(std::span("R", 1)), 0);
-    const auto encoded = Host::SessionHandover::capture(*fixture.session, limits);
+    const auto encoded = Host::SessionHandover::capture(*fixture.session, limits, {});
     REQUIRE(encoded);
     auto endpoint = std::make_unique<QueuedStream>();
     auto* after = endpoint.get();
-    auto restored = Host::SessionHandover::restore(fixture.successor, encoded->view(), std::move(endpoint), limits);
+    auto restored = Host::SessionHandover::restore(fixture.successor, encoded->view(), std::move(endpoint), limits, {});
     REQUIRE(restored);
     fixture.stream->delivered.clear();
     Screen::attachments(fixture.holder).noteDetached(fixture.authority);

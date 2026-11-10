@@ -366,7 +366,7 @@ std::expected<HostHandoverSnapshot, HostHandover::Error> HostHandover::capture(
     for (const auto& session : daemon.m_sessions) {
         auto sessionLimits = limits.session;
         sessionLimits.maxRecordBytes = std::min(sessionLimits.maxRecordBytes, limits.maxAggregateBytes - used);
-        auto record = SessionHandover::capture(*session, sessionLimits);
+        auto record = SessionHandover::capture(*session, sessionLimits, Ticks::fromMilliseconds(now / 1000));
         if (!record)
             return std::unexpected(record.error());
         used += record->size;
@@ -413,7 +413,8 @@ std::expected<std::unique_ptr<HostHandover::Candidate>, HandoverPrepareRefusal> 
         return std::unexpected(std::move(tables.error()));
     candidate->m_tables = std::move(*tables);
     for (std::size_t index = 0; index < snapshot.sessions.size(); ++index) {
-        auto session = SessionHandover::restore(daemon, snapshot.sessions[index].record.view(), std::move(streams[index]), limits.session);
+        auto session = SessionHandover::restore(daemon, snapshot.sessions[index].record.view(), std::move(streams[index]), limits.session,
+            Ticks::fromMilliseconds(now / 1000));
         if (!session)
             return refuse(session.error(), std::format("pane {}'s record does not restore: {}", index, describe(session.error())));
         if ((*session)->screenSource->paneID() != snapshot.sessions[index].paneID)

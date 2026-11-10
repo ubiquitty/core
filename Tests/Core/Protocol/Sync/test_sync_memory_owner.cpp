@@ -551,13 +551,13 @@ TEST(theHostDecodeOwnerBoundsTwoConcurrentAdoptCandidates)
     Ubiquitty::resize(*terminal, 24, 80);
     UbiquittyTest::feed(*terminal, "a held adopt");
     const auto limits = Ubiquitty::Session::localShareTerminalLimits(Ubiquitty::Protocol::Local::maxAdoptBodyBytes);
-    const auto encoded = encodeHandoverTerminal(*terminal, 1, limits);
+    const auto encoded = encodeHandoverTerminal(*terminal, 1, limits, {});
     REQUIRE(encoded);
     // Measure one candidate's charge, then give the owner room for one and a half.
     auto measuring = std::make_shared<MemoryBudget>(std::size_t { 1 } << 40);
     std::size_t oneCandidate = 0;
     {
-        auto measured = decodeHandoverTerminal(encoded->view(), limits, measuring);
+        auto measured = decodeHandoverTerminal(encoded->view(), limits, {}, measuring);
         REQUIRE(measured);
         oneCandidate = measured->decodeCharge.bytes();
         CHECK(oneCandidate > 0);
@@ -565,16 +565,16 @@ TEST(theHostDecodeOwnerBoundsTwoConcurrentAdoptCandidates)
     }
     CHECK_EQ(measuring->heldBytes(), 0u);
     const auto decodeMemory = std::make_shared<MemoryBudget>(oneCandidate + oneCandidate / 2);
-    auto first = decodeHandoverTerminal(encoded->view(), limits, decodeMemory);
+    auto first = decodeHandoverTerminal(encoded->view(), limits, {}, decodeMemory);
     REQUIRE(first);
     // The second candidate waits on the first: refused, as NoMemory, not built.
-    const auto second = decodeHandoverTerminal(encoded->view(), limits, decodeMemory);
+    const auto second = decodeHandoverTerminal(encoded->view(), limits, {}, decodeMemory);
     REQUIRE(!second);
     CHECK(second.error() == HandoverBodyError::AllocationRefused);
     CHECK_EQ(decodeMemory->heldBytes(), oneCandidate);
     // Once the first is published or dropped, the next is admitted.
     first->decodeCharge = MemoryCharge();
-    const auto third = decodeHandoverTerminal(encoded->view(), limits, decodeMemory);
+    const auto third = decodeHandoverTerminal(encoded->view(), limits, {}, decodeMemory);
     CHECK(third.has_value());
 }
 

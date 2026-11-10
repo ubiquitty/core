@@ -515,7 +515,7 @@ bool holdTheSame(const Ubiquitty::Terminal& left, const Ubiquitty::Terminal& rig
 
 std::vector<std::uint8_t> terminalBody(const Ubiquitty::Terminal& terminal)
 {
-    const auto body = Share::captureShareTerminal(terminal, Local::maxAdoptBodyBytes);
+    const auto body = Share::captureShareTerminal(terminal, Local::maxAdoptBodyBytes, {});
     CHECK(body.has_value());
     if (!body)
         return {};
@@ -710,7 +710,7 @@ int main()
             return 1;
         }
         const auto rows = window->lineStore->count();
-        const auto refused = Share::captureShareTerminal(*window, whole.size() / 2);
+        const auto refused = Share::captureShareTerminal(*window, whole.size() / 2, {});
         CHECK_MSG(!refused && refused.error() == Share::ShareEncoding::TooLong, "a handover past the total was not refused whole");
         CHECK_MSG(window->lineStore->count() == rows, "refusing a handover dropped source history");
         CHECK_MSG(terminalBody(*window) == whole, "a refused handover changed what the complete one carries");

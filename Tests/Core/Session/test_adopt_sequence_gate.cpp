@@ -46,7 +46,7 @@ constexpr const char* osc52WriteHi = "\033]52;c;aGk=\033\\";
 std::expected<Ubiquitty::Protocol::Sync::HandoverBytes, Ubiquitty::Session::ShareEncoding> shareBodyFor(Ubiquitty::Terminal& window)
 {
     Ubiquitty::resize(window, 24, 80);
-    return Ubiquitty::Session::captureShareTerminal(window, Ubiquitty::Protocol::Local::maxAdoptBodyBytes);
+    return Ubiquitty::Session::captureShareTerminal(window, Ubiquitty::Protocol::Local::maxAdoptBodyBytes, {});
 }
 
 // The terminal the daemon mints from a share's body, under its own limits and
@@ -55,7 +55,7 @@ std::unique_ptr<Ubiquitty::Terminal> adopted(const std::expected<Ubiquitty::Prot
 {
     if (!body)
         return nullptr;
-    auto restored = Ubiquitty::Protocol::Sync::decodeHandoverTerminal(body->view(), Ubiquitty::Session::localShareTerminalLimits(Ubiquitty::Protocol::Local::maxAdoptBodyBytes));
+    auto restored = Ubiquitty::Protocol::Sync::decodeHandoverTerminal(body->view(), Ubiquitty::Session::localShareTerminalLimits(Ubiquitty::Protocol::Local::maxAdoptBodyBytes), {});
     if (!restored || !restored->terminal)
         return nullptr;
     restored->terminal->clipboardClient = &clipboard;

@@ -422,7 +422,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
         // whole terminal, read under the daemon's limits without any FD/Host
         // transport operation.
         const std::span<const std::uint8_t> input(body, bodyLength);
-        const auto restored = Ubiquitty::Protocol::Sync::decodeHandoverTerminal(input, Ubiquitty::Session::localShareTerminalLimits(Ubiquitty::Protocol::Local::maxAdoptBodyBytes));
+        const auto restored = Ubiquitty::Protocol::Sync::decodeHandoverTerminal(input, Ubiquitty::Session::localShareTerminalLimits(Ubiquitty::Protocol::Local::maxAdoptBodyBytes), {});
         if (restored && restored->terminal)
             checkTermSanity(*restored->terminal);
         break;

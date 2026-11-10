@@ -55,7 +55,7 @@ int main()
     auto* selfLeader = fixture.makeOwner();
     if (!selfLeader)
         return 1;
-    auto body = Ubiquitty::Session::captureShareTerminal(*selfLeader->terminal, Ubiquitty::Protocol::Local::maxAdoptBodyBytes);
+    auto body = Ubiquitty::Session::captureShareTerminal(*selfLeader->terminal, Ubiquitty::Protocol::Local::maxAdoptBodyBytes, {});
     if (!body)
         return 1;
     selfLeader->frozen = std::move(*body);

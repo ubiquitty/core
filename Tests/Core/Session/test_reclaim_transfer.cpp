@@ -119,7 +119,7 @@ struct Fixture {
     Fixture()
     {
         fillTerminal(terminal);
-        auto encoded = Sync::encodeHandoverTerminal(terminal, 9, limits.terminal);
+        auto encoded = Sync::encodeHandoverTerminal(terminal, 9, limits.terminal, {});
         CHECK(encoded.has_value());
         if (!encoded)
             return;
@@ -147,7 +147,7 @@ struct Fixture {
 
     std::expected<std::unique_ptr<ReclaimTransfer>, ReclaimTransferError> prepare() const
     {
-        return ReclaimTransfer::prepare(target, operation, barrier, capsule(), limits);
+        return ReclaimTransfer::prepare(target, operation, barrier, capsule(), limits, {});
     }
 };
 
@@ -201,7 +201,7 @@ TEST(reclaimCapsuleOwnsTheCompleteTerminalAndExactAcceptedSuffix)
     CHECK(installed->target == target && installed->operation == operation && installed->barrier == barrier);
     CHECK_EQ(installed->inputWritten, barrier.finalInputSeq);
     CHECK_EQ(installed->terminal.generation, 9u);
-    const auto reproduced = Sync::encodeHandoverTerminal(*installed->terminal.terminal, 9, limits.terminal);
+    const auto reproduced = Sync::encodeHandoverTerminal(*installed->terminal.terminal, 9, limits.terminal, {});
     REQUIRE(reproduced);
     CHECK(std::ranges::equal(reproduced->view(), borrowed.terminalBody));
     REQUIRE(installed->acceptedPTY.runs().size() == 2);
@@ -224,8 +224,8 @@ TEST(reclaimCapsuleOwnsTheCompleteTerminalAndExactAcceptedSuffix)
     constexpr std::string_view continuation = "\314\202\033[b\0338\033[2;4H\033[3b\033[6n";
     feed(source.terminal, continuation);
     feed(*installed->terminal.terminal, continuation);
-    const auto expected = Sync::encodeHandoverTerminal(source.terminal, 10, limits.terminal);
-    const auto actual = Sync::encodeHandoverTerminal(*installed->terminal.terminal, 10, limits.terminal);
+    const auto expected = Sync::encodeHandoverTerminal(source.terminal, 10, limits.terminal, {});
+    const auto actual = Sync::encodeHandoverTerminal(*installed->terminal.terminal, 10, limits.terminal, {});
     REQUIRE(expected && actual);
     CHECK(std::ranges::equal(expected->view(), actual->view()));
     std::array<char, 256> left {}, right {};
@@ -246,7 +246,7 @@ TEST(reclaimCapsuleRequiresEveryExactIdentityBeforeMaterialization)
         auto invalid = valid;
         change(invalid);
         const auto attempts = UbiquittyTest::ScopedNothrowAllocationRefusal::attemptCount();
-        CHECK(!ReclaimTransfer::prepare(target, operation, barrier, invalid, limits));
+        CHECK(!ReclaimTransfer::prepare(target, operation, barrier, invalid, limits, {}));
         CHECK_EQ(UbiquittyTest::ScopedNothrowAllocationRefusal::attemptCount(), attempts);
         CHECK_EQ(source.sink.queue.pendingBytes(), 8u);
     };
@@ -262,9 +262,9 @@ TEST(reclaimCapsuleRequiresEveryExactIdentityBeforeMaterialization)
     refuse([](auto& value) { ++value.barrier.finalInputSeq; });
     auto invalidTarget = target;
     invalidTarget.attachmentID = {};
-    CHECK(ReclaimTransfer::prepare(invalidTarget, operation, barrier, valid, limits).error() == ReclaimTransferError::InvalidIdentity);
-    CHECK(ReclaimTransfer::prepare(target, { {}, operation.daemonInstanceID }, barrier, valid, limits).error() == ReclaimTransferError::InvalidIdentity);
-    CHECK(ReclaimTransfer::prepare(target, operation, { {}, barrier.finalInputSeq }, valid, limits).error() == ReclaimTransferError::InvalidIdentity);
+    CHECK(ReclaimTransfer::prepare(invalidTarget, operation, barrier, valid, limits, {}).error() == ReclaimTransferError::InvalidIdentity);
+    CHECK(ReclaimTransfer::prepare(target, { {}, operation.daemonInstanceID }, barrier, valid, limits, {}).error() == ReclaimTransferError::InvalidIdentity);
+    CHECK(ReclaimTransfer::prepare(target, operation, { {}, barrier.finalInputSeq }, valid, limits, {}).error() == ReclaimTransferError::InvalidIdentity);
 }
 
 TEST(reclaimBarrierRequiresAKnownFinalQueueAdmissionReceiptNotKernelDelivery)
@@ -322,7 +322,7 @@ TEST(reclaimCapsuleDigestBindsMetadataLengthsPartitionAndEverySuffixByte)
     differs([&](auto& value) { value.acceptedRuns = runs; });
     auto corrupt = valid;
     corrupt.capsuleSHA256[0] ^= 1;
-    CHECK(ReclaimTransfer::prepare(target, operation, barrier, corrupt, limits).error() == ReclaimTransferError::DigestMismatch);
+    CHECK(ReclaimTransfer::prepare(target, operation, barrier, corrupt, limits, {}).error() == ReclaimTransferError::DigestMismatch);
 }
 
 TEST(reclaimCapsuleEnforcesComponentAndPartitionBoundsIndependently)
@@ -332,19 +332,19 @@ TEST(reclaimCapsuleEnforcesComponentAndPartitionBoundsIndependently)
     const auto valid = source.capsule();
     auto bounded = limits;
     bounded.maxAcceptedPTYBytes = valid.acceptedPTY.size() - 1;
-    CHECK(ReclaimTransfer::prepare(target, operation, barrier, valid, bounded).error() == ReclaimTransferError::OverCapacity);
+    CHECK(ReclaimTransfer::prepare(target, operation, barrier, valid, bounded, {}).error() == ReclaimTransferError::OverCapacity);
     bounded = limits;
     bounded.maxCapsuleBytes = valid.terminalBody.size() + valid.acceptedPTY.size();
-    CHECK(ReclaimTransfer::prepare(target, operation, barrier, valid, bounded).error() == ReclaimTransferError::OverCapacity);
+    CHECK(ReclaimTransfer::prepare(target, operation, barrier, valid, bounded, {}).error() == ReclaimTransferError::OverCapacity);
     bounded = limits;
     bounded.terminal.maxRecordBytes = valid.terminalBody.size() - 1;
-    CHECK(ReclaimTransfer::prepare(target, operation, barrier, valid, bounded).error() == ReclaimTransferError::OverCapacity);
+    CHECK(ReclaimTransfer::prepare(target, operation, barrier, valid, bounded, {}).error() == ReclaimTransferError::OverCapacity);
     bounded = limits;
     bounded.terminal.maxScreenCellBytes = 1;
-    CHECK(ReclaimTransfer::prepare(target, operation, barrier, valid, bounded).error() == ReclaimTransferError::TerminalRefused);
+    CHECK(ReclaimTransfer::prepare(target, operation, barrier, valid, bounded, {}).error() == ReclaimTransferError::TerminalRefused);
     bounded = limits;
     bounded.maxCapsuleBytes = 0;
-    CHECK(ReclaimTransfer::prepare(target, operation, barrier, valid, bounded).error() == ReclaimTransferError::InvalidPolicy);
+    CHECK(ReclaimTransfer::prepare(target, operation, barrier, valid, bounded, {}).error() == ReclaimTransferError::InvalidPolicy);
     auto invalid = valid;
     invalid.acceptedRuns = {};
     CHECK(reclaimCapsuleSHA256(invalid, limits).error() == ReclaimTransferError::InvalidPartition);
@@ -362,7 +362,7 @@ TEST(reclaimCapsuleEnforcesComponentAndPartitionBoundsIndependently)
     const auto digest = reclaimCapsuleSHA256(invalid, limits);
     REQUIRE(digest);
     invalid.capsuleSHA256 = *digest;
-    CHECK(ReclaimTransfer::prepare(target, operation, barrier, invalid, limits).error() == ReclaimTransferError::TerminalRefused);
+    CHECK(ReclaimTransfer::prepare(target, operation, barrier, invalid, limits, {}).error() == ReclaimTransferError::TerminalRefused);
     CHECK_EQ(source.sink.queue.pendingBytes(), 8u);
 }
 
@@ -439,13 +439,13 @@ TEST(reclaimPreparationAllocationRefusalNeverConsumesTheOriginalOwners)
     const auto refused = UbiquittyTest::ScopedNothrowAllocationRefusal::refusalCount();
     {
         UbiquittyTest::ScopedNothrowAllocationRefusal refuse(sizeof(Terminal));
-        const auto prepared = ReclaimTransfer::prepare(target, operation, barrier, capsule, limits);
+        const auto prepared = ReclaimTransfer::prepare(target, operation, barrier, capsule, limits, {});
         CHECK(!prepared && prepared.error() == ReclaimTransferError::NoMemory);
     }
     CHECK(UbiquittyTest::ScopedNothrowAllocationRefusal::refusalCount() > refused);
     CHECK_EQ(source.sink.queue.pendingBytes(), 8u);
     CHECK(source.sink.delivered == "abc");
-    const auto after = Sync::encodeHandoverTerminal(source.terminal, 9, limits.terminal);
+    const auto after = Sync::encodeHandoverTerminal(source.terminal, 9, limits.terminal, {});
     REQUIRE(after);
     CHECK(std::ranges::equal(after->view(), capsule.terminalBody));
     REQUIRE(source.prepare());

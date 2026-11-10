@@ -277,7 +277,7 @@ int main(int argc, char** argv)
         Ubiquitty::resize(*window, 4, 20);
         window->scrollbackLimit = 64;
         Ubiquitty::processBytes(window.get(), "first line\r\nsecond line\r\n\x1b[31mred\x1b[m prompt");
-        const auto captured = Ubiquitty::Session::captureShareTerminal(*window, Ubiquitty::Protocol::Local::maxAdoptBodyBytes);
+        const auto captured = Ubiquitty::Session::captureShareTerminal(*window, Ubiquitty::Protocol::Local::maxAdoptBodyBytes, {});
         if (!captured)
             return 1;
         const std::vector<uint8_t> share(captured->view().begin(), captured->view().end());

@@ -404,7 +404,7 @@ TEST(aSharedSessionHasOneReaderAndResumesItsOwnStreamOnReclaim)
 
     // The sender is given the complete private terminal, not one-phase frames.
     auto adoptMessage = Ubiquitty::Protocol::Sync::decodeHandoverTerminal(handoffRecord().frame,
-        Ubiquitty::Session::localShareTerminalLimits(Ubiquitty::Protocol::Local::maxAdoptBodyBytes));
+        Ubiquitty::Session::localShareTerminalLimits(Ubiquitty::Protocol::Local::maxAdoptBodyBytes), {});
     REQUIRE(adoptMessage && adoptMessage->terminal);
     CHECK(handoffRecord().limits.maxRecordBytes > handoffRecord().frame.size());
     CHECK(handoffRecord().limits.resolutionAttempts == 2);

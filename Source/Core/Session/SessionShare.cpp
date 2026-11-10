@@ -91,12 +91,12 @@ ShareHandoffLimits localShareHandoffLimits()
     };
 }
 
-std::expected<Protocol::Sync::HandoverBytes, ShareEncoding> captureShareTerminal(const Ubiquitty::Terminal& term, std::size_t maxBodyBytes)
+std::expected<Protocol::Sync::HandoverBytes, ShareEncoding> captureShareTerminal(const Ubiquitty::Terminal& term, std::size_t maxBodyBytes, Ticks now)
 {
     if (!term.grid || term.columns <= 0 || term.columns > maxColumns || term.rows <= 0 || term.rows > maxRows
         || term.scrollbackLimit < 0 || term.scrollbackCapacity < 0 || term.scrollbackCount < 0)
         return std::unexpected(ShareEncoding::NothingToShare);
-    auto terminal = Protocol::Sync::encodeHandoverTerminal(term, 1, localShareTerminalLimits(maxBodyBytes));
+    auto terminal = Protocol::Sync::encodeHandoverTerminal(term, 1, localShareTerminalLimits(maxBodyBytes), now);
     if (!terminal)
         return std::unexpected(terminal.error() == Protocol::Sync::HandoverBodyError::OverCapacity ? ShareEncoding::TooLong : ShareEncoding::NothingToShare);
     return std::move(*terminal);

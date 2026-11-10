@@ -30,6 +30,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -1483,9 +1484,9 @@ TEST(hostStateHandoverRefusesAGateItsListsCannotHold)
             source.sequenceGate.dcsDenyCount = 1;
             break;
         }
-        const auto bytes = encodeHandoverHostState(source, hostStateLimit);
+        const auto bytes = encodeHandoverHostState(source, hostStateLimit, {});
         Ubiquitty::Terminal successor;
-        CHECK_MSG(!bytes || !restoreHandoverHostState(bytes->view(), successor, hostStateLimit),
+        CHECK_MSG(!bytes || !restoreHandoverHostState(bytes->view(), successor, hostStateLimit, {}),
             "a gate past its lists' capacity was carried and restored");
     }
 }
@@ -1525,13 +1526,13 @@ TEST(hostStateHandoverPreservesPolicyAndOrderedUnsubmittedReplies)
     source.outputBuffer[2] = 'B';
     REQUIRE(source.bulkOutput.append("bulk-tail", Ubiquitty::VT::maxBulkOutputBytes));
     REQUIRE(source.extendedClipboardServedAliases.append("application/test", Ubiquitty::VT::maxExtendedClipboardAliasBytes));
-    const auto bytes = encodeHandoverHostState(source, hostStateLimit);
+    const auto bytes = encodeHandoverHostState(source, hostStateLimit, {});
     REQUIRE(bytes);
     Ubiquitty::Terminal successor;
-    REQUIRE(restoreHandoverHostState(bytes->view(), successor, hostStateLimit));
+    REQUIRE(restoreHandoverHostState(bytes->view(), successor, hostStateLimit, {}));
     CHECK(!successor.capabilityPolicy.installed());
     successor.capabilityPolicy = &answering;
-    const auto encodedAgain = encodeHandoverHostState(successor, hostStateLimit);
+    const auto encodedAgain = encodeHandoverHostState(successor, hostStateLimit, {});
     REQUIRE(encodedAgain);
     CHECK(std::ranges::equal(bytes->view(), encodedAgain->view()));
     CHECK(Ubiquitty::OSC::apcAllowed(successor, 'G'));
@@ -1572,10 +1573,10 @@ TEST(hostStateHandoverPreservesFontExhaustionAndTypographyEpoch)
     source.typography.facts = facts;
     source.typography.epoch = 0x76543210;
     source.typography.subscriptionID = 321;
-    const auto bytes = encodeHandoverHostState(source, hostStateLimit);
+    const auto bytes = encodeHandoverHostState(source, hostStateLimit, {});
     REQUIRE(bytes);
     Ubiquitty::Terminal successor;
-    REQUIRE(restoreHandoverHostState(bytes->view(), successor, hostStateLimit));
+    REQUIRE(restoreHandoverHostState(bytes->view(), successor, hostStateLimit, {}));
     CHECK_EQ(successor.fontRequests.generation(), UINT64_MAX);
     CHECK(successor.fontRequests.actualFamily() == "Test Mono");
     CHECK(successor.fontRequests.actualSizePoints() == 12.5);
@@ -1594,14 +1595,14 @@ TEST(hostStateHandoverPreservesFontExhaustionAndTypographyEpoch)
 TEST(anEarlierHostStateVersionIsRefused)
 {
     Ubiquitty::Terminal source;
-    const auto encoded = encodeHandoverHostState(source, hostStateLimit);
+    const auto encoded = encodeHandoverHostState(source, hostStateLimit, {});
     REQUIRE(encoded);
     std::vector<std::uint8_t> earlier(encoded->view().begin(), encoded->view().end());
     earlier[0] = static_cast<std::uint8_t>(oldestHandoverBodyVersion - 1);
     earlier[1] = 0;
     refreshImageDigest(earlier);
     Ubiquitty::Terminal successor;
-    const auto refused = restoreHandoverHostState(earlier, successor, hostStateLimit);
+    const auto refused = restoreHandoverHostState(earlier, successor, hostStateLimit, {});
     REQUIRE(!refused);
     CHECK(refused.error() == HandoverBodyError::Malformed);
 }
@@ -1622,10 +1623,10 @@ TEST(hostStateHandoverPreservesRecordedSlotsAndLatentColorChannels)
     source.unseenNotificationBody = "pending";
     source.userVariables[7] = { "seventh", "kept", true };
     source.userVariables[31] = { "last", "also kept", true };
-    const auto bytes = encodeHandoverHostState(source, hostStateLimit);
+    const auto bytes = encodeHandoverHostState(source, hostStateLimit, {});
     REQUIRE(bytes);
     Ubiquitty::Terminal successor;
-    REQUIRE(restoreHandoverHostState(bytes->view(), successor, hostStateLimit));
+    REQUIRE(restoreHandoverHostState(bytes->view(), successor, hostStateLimit, {}));
     CHECK(!successor.userVariables[0].used);
     CHECK(successor.userVariables[7].name == "seventh");
     CHECK(successor.userVariables[31].value == "also kept");
@@ -1641,8 +1642,8 @@ TEST(hostStateHandoverPreservesRecordedSlotsAndLatentColorChannels)
     UbiquittyTest::feed(successor, "\033]1337;SetUserVar=new=bmV3\007");
     CHECK(source.userVariables[0].name == "new");
     CHECK(successor.userVariables[0].name == "new");
-    const auto before = encodeHandoverHostState(source, hostStateLimit);
-    const auto after = encodeHandoverHostState(successor, hostStateLimit);
+    const auto before = encodeHandoverHostState(source, hostStateLimit, {});
+    const auto after = encodeHandoverHostState(successor, hostStateLimit, {});
     REQUIRE(before && after);
     CHECK(std::ranges::equal(before->view(), after->view()));
 }
@@ -1659,10 +1660,10 @@ TEST(hostStateHandoverPreservesTriggerProgramsAndPhysicalHighlightRing)
     source.triggerHighlights[63] = { 120, 2, 9 };
     source.triggerHighlights[0] = { 125, 0, 2 };
     source.triggerWrapEvaluatedRow = 17;
-    const auto bytes = encodeHandoverHostState(source, hostStateLimit);
+    const auto bytes = encodeHandoverHostState(source, hostStateLimit, {});
     REQUIRE(bytes);
     Ubiquitty::Terminal successor;
-    REQUIRE(restoreHandoverHostState(bytes->view(), successor, hostStateLimit));
+    REQUIRE(restoreHandoverHostState(bytes->view(), successor, hostStateLimit, {}));
     REQUIRE(successor.triggersEngine);
     std::array<Ubiquitty::Triggers::Matched, 4> before {};
     std::array<Ubiquitty::Triggers::Matched, 4> after {};
@@ -1697,11 +1698,11 @@ TEST(hostStateHandoverPreservesStableIntegrationButNotBorrowedCallbacks)
     int sourceContext = 1;
     int successorContext = 2;
     source.integration.paneRouter.context = &sourceContext;
-    const auto bytes = encodeHandoverHostState(source, hostStateLimit);
+    const auto bytes = encodeHandoverHostState(source, hostStateLimit, {});
     REQUIRE(bytes);
     Ubiquitty::Terminal successor;
     successor.integration.paneRouter.context = &successorContext;
-    REQUIRE(restoreHandoverHostState(bytes->view(), successor, hostStateLimit));
+    REQUIRE(restoreHandoverHostState(bytes->view(), successor, hostStateLimit, {}));
     CHECK(successor.integration.tmux.enabled && successor.integration.tmux.autoDetect);
     CHECK(!successor.integration.tmux.atLineStart);
     CHECK_EQ(successor.integration.tmux.activePaneID, 731);
@@ -1714,26 +1715,26 @@ TEST(hostStateHandoverRefusesMalformedOrOversizedStateBeforeMutation)
 {
     Ubiquitty::Terminal source;
     source.answerback = "source";
-    const auto bytes = encodeHandoverHostState(source, hostStateLimit);
+    const auto bytes = encodeHandoverHostState(source, hostStateLimit, {});
     REQUIRE(bytes);
     Ubiquitty::Terminal successor;
     successor.answerback = "untouched";
     for (std::size_t size = 0; size < bytes->size; ++size)
-        CHECK(!restoreHandoverHostState(bytes->view().first(size), successor, hostStateLimit));
+        CHECK(!restoreHandoverHostState(bytes->view().first(size), successor, hostStateLimit, {}));
     auto invalid = std::vector<std::uint8_t>(bytes->view().begin(), bytes->view().end());
     invalid[6] = 2; // First Boolean follows version and triggerWrapEvaluatedRow.
     refreshImageDigest(invalid);
-    CHECK(restoreHandoverHostState(invalid, successor, hostStateLimit).error() == HandoverBodyError::Malformed);
-    CHECK(restoreHandoverHostState(bytes->view(), successor, bytes->size - 1).error() == HandoverBodyError::OverCapacity);
+    CHECK(restoreHandoverHostState(invalid, successor, hostStateLimit, {}).error() == HandoverBodyError::Malformed);
+    CHECK(restoreHandoverHostState(bytes->view(), successor, bytes->size - 1, {}).error() == HandoverBodyError::OverCapacity);
     CHECK(successor.answerback == "untouched");
     source.answerback.resize(Ubiquitty::Terminal::maxAnswerbackLength + 1);
-    CHECK(!encodeHandoverHostState(source, hostStateLimit));
+    CHECK(!encodeHandoverHostState(source, hostStateLimit, {}));
     source.answerback.clear();
     source.outputLength = 257;
-    CHECK(!encodeHandoverHostState(source, hostStateLimit));
+    CHECK(!encodeHandoverHostState(source, hostStateLimit, {}));
     source.outputLength = 0;
     REQUIRE(source.fontRequests.append("pending", 12, 0));
-    CHECK(encodeHandoverHostState(source, hostStateLimit).error() == HandoverBodyError::NotAtGround);
+    CHECK(encodeHandoverHostState(source, hostStateLimit, {}).error() == HandoverBodyError::NotAtGround);
 }
 
 TEST(hostStateHandoverAllocationRefusalLeavesEveryDestinationOwner)
@@ -1743,19 +1744,19 @@ TEST(hostStateHandoverAllocationRefusalLeavesEveryDestinationOwner)
     REQUIRE(source.triggersEngine->addRule("a", Ubiquitty::Triggers::Action::Notify, "source", Ubiquitty::CaseSensitivity::Sensitive));
     source.answerback = "source";
     REQUIRE(source.bulkOutput.append("new tail", Ubiquitty::VT::maxBulkOutputBytes));
-    const auto bytes = encodeHandoverHostState(source, hostStateLimit);
+    const auto bytes = encodeHandoverHostState(source, hostStateLimit, {});
     REQUIRE(bytes);
     Ubiquitty::Terminal successor;
     successor.answerback = "destination";
     REQUIRE(successor.bulkOutput.append("old tail", Ubiquitty::VT::maxBulkOutputBytes));
     {
         UbiquittyTest::ScopedNothrowAllocationRefusal refuse(sizeof(Ubiquitty::Triggers::Engine));
-        CHECK(restoreHandoverHostState(bytes->view(), successor, hostStateLimit).error() == HandoverBodyError::AllocationRefused);
+        CHECK(restoreHandoverHostState(bytes->view(), successor, hostStateLimit, {}).error() == HandoverBodyError::AllocationRefused);
     }
     CHECK(successor.answerback == "destination");
     CHECK(std::string_view(successor.bulkOutput.data, successor.bulkOutput.length) == "old tail");
     CHECK(!successor.triggersEngine);
-    REQUIRE(restoreHandoverHostState(bytes->view(), successor, hostStateLimit));
+    REQUIRE(restoreHandoverHostState(bytes->view(), successor, hostStateLimit, {}));
     CHECK(successor.answerback == "source");
     CHECK(std::string_view(successor.bulkOutput.data, successor.bulkOutput.length) == "new tail");
 }
@@ -1867,9 +1868,9 @@ TEST(terminalHandoverCarriesTheHostRichTextStorageQuota)
     REQUIRE(!source.richTextBlocks.isEmpty());
     const auto quota = source.richTextBlocks.storageBytes();
     REQUIRE(source.richTextBlocks.setStorageLimit(quota));
-    const auto bytes = encodeHandoverTerminal(source, 17, terminalLimits);
+    const auto bytes = encodeHandoverTerminal(source, 17, terminalLimits, {});
     REQUIRE(bytes);
-    auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits);
+    auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits, {});
     REQUIRE(restored);
     auto& successor = *restored->terminal;
     CHECK_EQ(successor.richTextBlocks.storageLimit(), quota);
@@ -1881,10 +1882,10 @@ TEST(terminalHandoverCarriesTheHostRichTextStorageQuota)
 
     const auto sections = splitTerminalRecord(bytes->view());
     const auto insufficient = joinTerminalRecord(sections, source.richTextBlocks.nextSerial(), 0);
-    const auto refused = decodeHandoverTerminal(insufficient, terminalLimits);
+    const auto refused = decodeHandoverTerminal(insufficient, terminalLimits, {});
     CHECK(!refused && refused.error() == HandoverBodyError::Malformed);
     const auto oversized = joinTerminalRecord(sections, source.richTextBlocks.nextSerial(), Ubiquitty::RichText::maxRetainedBytes + 1);
-    const auto excessive = decodeHandoverTerminal(oversized, terminalLimits);
+    const auto excessive = decodeHandoverTerminal(oversized, terminalLimits, {});
     CHECK(!excessive && excessive.error() == HandoverBodyError::OverCapacity);
 }
 
@@ -1893,9 +1894,9 @@ TEST(terminalHandoverPreservesAZeroRichTextQuotaWithoutContent)
     Ubiquitty::Terminal source;
     Ubiquitty::resize(source, 6, 40);
     REQUIRE(source.richTextBlocks.setStorageLimit(0));
-    const auto bytes = encodeHandoverTerminal(source, 18, terminalLimits);
+    const auto bytes = encodeHandoverTerminal(source, 18, terminalLimits, {});
     REQUIRE(bytes);
-    auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits);
+    auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits, {});
     REQUIRE(restored);
     CHECK_EQ(restored->terminal->richTextBlocks.storageLimit(), std::size_t { 0 });
     UbiquittyTest::feed(*restored->terminal, "\033]7404;w=10:h=1;{\\rtf1 refused}\033\\");
@@ -1911,11 +1912,11 @@ TEST(anEarlierTerminalRecordVersionIsRefused)
         Ubiquitty::Terminal source;
         Ubiquitty::resize(source, 6, 40);
         UbiquittyTest::feed(source, std::string(text));
-        const auto bytes = encodeHandoverTerminal(source, 19, terminalLimits);
+        const auto bytes = encodeHandoverTerminal(source, 19, terminalLimits, {});
         REQUIRE(bytes);
         const auto sections = splitTerminalRecord(bytes->view());
         for (const std::uint16_t version : { std::uint16_t { 33 }, static_cast<std::uint16_t>(oldestHandoverBodyVersion - 1) }) {
-            const auto refused = decodeHandoverTerminal(joinTerminalRecord(sections, source.richTextBlocks.nextSerial(), Ubiquitty::RichText::maxRetainedBytes, version), terminalLimits);
+            const auto refused = decodeHandoverTerminal(joinTerminalRecord(sections, source.richTextBlocks.nextSerial(), Ubiquitty::RichText::maxRetainedBytes, version), terminalLimits, {});
             REQUIRE(!refused);
             CHECK(refused.error() == HandoverBodyError::Malformed);
         }
@@ -1925,7 +1926,7 @@ TEST(anEarlierTerminalRecordVersionIsRefused)
 TEST(aTerminalRecordCannotMixHandoverGrammars)
 {
     Ubiquitty::Terminal source;
-    const auto bytes = encodeHandoverTerminal(source, 19, terminalLimits);
+    const auto bytes = encodeHandoverTerminal(source, 19, terminalLimits, {});
     REQUIRE(bytes);
     const auto original = splitTerminalRecord(bytes->view());
     for (std::size_t index = 1; index < original.size(); ++index) {
@@ -1933,19 +1934,131 @@ TEST(aTerminalRecordCannotMixHandoverGrammars)
         const auto other = handoverBodyVersion == lastPublishedHandoverBodyVersion ? handoverBodyVersion + 1 : lastPublishedHandoverBodyVersion;
         writeLittle(sections[index], 0, other, 2);
         refreshImageDigest(sections[index]);
-        const auto result = decodeHandoverTerminal(joinTerminalRecord(sections, source.richTextBlocks.nextSerial()), terminalLimits);
+        const auto result = decodeHandoverTerminal(joinTerminalRecord(sections, source.richTextBlocks.nextSerial()), terminalLimits, {});
         REQUIRE(!result);
         CHECK(result.error() == HandoverBodyError::Malformed);
     }
+}
+
+namespace {
+
+// How long before the sender's now each tick a terminal handover carries was set.
+struct TickAges {
+    std::uint32_t activity = 100;
+    std::uint32_t bell = 5;
+    std::uint32_t display = 200;
+    std::uint32_t commandStart = 3'000;
+    std::uint32_t enclosingCommandStart = 4'000;
+};
+
+// A terminal with every carried tick set, `ages` before `now` on its clock.
+void stampTicks(Ubiquitty::Terminal& terminal, std::uint32_t now, const TickAges& ages)
+{
+    terminal.lastActivityTick = now - ages.activity;
+    terminal.lastBellTick = now - ages.bell;
+    terminal.hasDisplayActivityTick = true;
+    terminal.displayActivityTick = now - ages.display;
+    terminal.hasCommandStartTick = true;
+    terminal.commandStartTick = now - ages.commandStart;
+    terminal.shellCommands = std::make_unique<std::array<Ubiquitty::Terminal::ShellCommand, Ubiquitty::Terminal::shellCommandCapacity>>();
+    (*terminal.shellCommands)[0].hasStartTick = true;
+    (*terminal.shellCommands)[0].startTick = now - ages.enclosingCommandStart;
+    terminal.shellCommandCount = 1;
+}
+
+// The last body version whose ticks travel absolute, on the sender's clock.
+constexpr std::uint16_t absoluteTickBodyVersion = 35;
+
+// The record a writer at `absoluteTickBodyVersion` lays out as this one does.
+std::vector<std::uint8_t> asAbsoluteTickRecord(std::span<const std::uint8_t> record, const Ubiquitty::Terminal& source)
+{
+    auto sections = splitTerminalRecord(record);
+    for (std::size_t index = 1; index < sections.size(); ++index) {
+        writeLittle(sections[index], 0, absoluteTickBodyVersion, 2);
+        refreshImageDigest(sections[index]);
+    }
+    return joinTerminalRecord(sections, source.richTextBlocks.nextSerial(), Ubiquitty::RichText::maxRetainedBytes, absoluteTickBodyVersion);
+}
+
+} // namespace
+
+// A terminal moved between processes on different clocks, as the app shares a
+// session into its daemon or reclaims one, keeps how long ago each of its
+// ticks was, whichever clock is ahead.
+TEST(aTerminalMovedAcrossClocksKeepsTheAgeOfEveryTick)
+{
+    struct Clocks {
+        std::uint32_t sender;
+        std::uint32_t receiver;
+        const char* name;
+    };
+    for (const auto clocks : { Clocks { 1'000'000, 51'000'000, "receiver 50M ticks ahead" }, Clocks { 51'000'000, 1'000'000, "receiver 50M ticks behind" } }) {
+        Ubiquitty::Terminal source;
+        Ubiquitty::resize(source, 6, 40);
+        const TickAges ages;
+        stampTicks(source, clocks.sender, ages);
+        const auto bytes = encodeHandoverTerminal(source, 19, terminalLimits, Ubiquitty::Ticks(clocks.sender));
+        REQUIRE(bytes);
+        const auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits, { .now = Ubiquitty::Ticks(clocks.receiver), .sender = HandoverSenderClock::Separate });
+        REQUIRE(restored);
+        const auto& terminal = *restored->terminal;
+        CHECK_MSG(terminal.lastActivityTick == clocks.receiver - ages.activity, clocks.name);
+        CHECK_MSG(terminal.lastBellTick == clocks.receiver - ages.bell, clocks.name);
+        CHECK_MSG(terminal.hasDisplayActivityTick && terminal.displayActivityTick == clocks.receiver - ages.display, clocks.name);
+        CHECK_MSG(terminal.hasCommandStartTick && terminal.commandStartTick == clocks.receiver - ages.commandStart, clocks.name);
+        REQUIRE(terminal.shellCommands);
+        CHECK_MSG((*terminal.shellCommands)[0].hasStartTick, clocks.name);
+        CHECK_MSG((*terminal.shellCommands)[0].startTick == clocks.receiver - ages.enclosingCommandStart, clocks.name);
+    }
+}
+
+// A tick that was never set stays unset on any clock, and one set at the
+// sender's now arrives set at the receiver's.
+TEST(aTerminalMovedAcrossClocksTellsAnUnsetTickFromOneSetNow)
+{
+    Ubiquitty::Terminal source;
+    Ubiquitty::resize(source, 6, 40);
+    REQUIRE(source.lastActivityTick == 0);
+    source.lastBellTick = 51'000'000;
+    const auto bytes = encodeHandoverTerminal(source, 19, terminalLimits, Ubiquitty::Ticks(51'000'000));
+    REQUIRE(bytes);
+    const auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits, { .now = Ubiquitty::Ticks(1'000'000), .sender = HandoverSenderClock::Separate });
+    REQUIRE(restored);
+    CHECK_EQ(restored->terminal->lastActivityTick, 0u);
+    CHECK_EQ(restored->terminal->lastBellTick, 1'000'000u);
+}
+
+// A body whose ticks travel absolute, from a process on another clock, says
+// when on that clock each tick was, which the receiver cannot read: an
+// activity, display or bell tick is stamped at the receiver's now, and a
+// command's start becomes unknown, so its duration reads as unknown.
+TEST(anAbsoluteTickTerminalFromAnotherClockTakesItsTicksAsUnknown)
+{
+    Ubiquitty::Terminal source;
+    Ubiquitty::resize(source, 6, 40);
+    stampTicks(source, 51'000'000, {});
+    const auto bytes = encodeHandoverTerminal(source, 19, terminalLimits, Ubiquitty::Ticks(51'000'000));
+    REQUIRE(bytes);
+    const Ubiquitty::Ticks now(1'000'000);
+    const auto restored = decodeHandoverTerminal(asAbsoluteTickRecord(bytes->view(), source), terminalLimits, { .now = now, .sender = HandoverSenderClock::Separate });
+    REQUIRE(restored);
+    const auto& terminal = *restored->terminal;
+    CHECK_EQ(terminal.lastActivityTick, now.count);
+    CHECK_EQ(terminal.lastBellTick, now.count);
+    CHECK(terminal.hasDisplayActivityTick);
+    CHECK_EQ(terminal.displayActivityTick, now.count);
+    CHECK(!terminal.hasCommandStartTick);
+    REQUIRE(terminal.shellCommands);
+    CHECK(!(*terminal.shellCommands)[0].hasStartTick);
 }
 
 TEST(joinedTerminalHandoverPreservesOwnersAndFutureProgramBytes)
 {
     Ubiquitty::Terminal source;
     joinedTerminalFixture(source);
-    const auto bytes = encodeHandoverTerminal(source, 91, terminalLimits);
+    const auto bytes = encodeHandoverTerminal(source, 91, terminalLimits, {});
     REQUIRE(bytes);
-    auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits);
+    auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits, {});
     REQUIRE(restored);
     CHECK_EQ(restored->generation, 91u);
     auto& successor = *restored->terminal;
@@ -1954,7 +2067,7 @@ TEST(joinedTerminalHandoverPreservesOwnersAndFutureProgramBytes)
     CHECK(source.softFont.get() != successor.softFont.get());
     CHECK(source.pendingSound->front()->request.samplePCM != successor.pendingSound->front()->request.samplePCM);
     CHECK(source.images.stored[0].pixels != successor.images.stored[0].pixels);
-    const auto roundTrip = encodeHandoverTerminal(successor, 91, terminalLimits);
+    const auto roundTrip = encodeHandoverTerminal(successor, 91, terminalLimits, {});
     REQUIRE(roundTrip);
     CHECK(std::ranges::equal(bytes->view(), roundTrip->view()));
     for (auto* terminal : { &source, &successor }) {
@@ -1964,8 +2077,8 @@ TEST(joinedTerminalHandoverPreservesOwnersAndFutureProgramBytes)
         Ubiquitty::Image::advanceFrames(terminal, 150);
     }
     CHECK(replies(source) == replies(successor));
-    const auto before = encodeHandoverTerminal(source, 92, terminalLimits);
-    const auto after = encodeHandoverTerminal(successor, 92, terminalLimits);
+    const auto before = encodeHandoverTerminal(source, 92, terminalLimits, {});
+    const auto after = encodeHandoverTerminal(successor, 92, terminalLimits, {});
     REQUIRE(before && after);
     const auto beforeSections = splitTerminalRecord(before->view());
     const auto afterSections = splitTerminalRecord(after->view());
@@ -2001,9 +2114,9 @@ TEST(compactScreensAndWrappedHistorySurviveCheckpointHandoverAndCancellation)
             UbiquittyTest::feed(source, "\033[?1049lQ");
         REQUIRE(source.grid->compactASCIIRow(Row(2)));
 
-        auto bytes = encodeHandoverTerminal(source, 91, terminalLimits);
+        auto bytes = encodeHandoverTerminal(source, 91, terminalLimits, {});
         REQUIRE(bytes);
-        auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits);
+        auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits, {});
         REQUIRE(restored);
         auto& successor = *restored->terminal;
         REQUIRE(successor.lineStore);
@@ -2025,8 +2138,8 @@ TEST(compactScreensAndWrappedHistorySurviveCheckpointHandoverAndCancellation)
         for (auto* terminal : { &source, &successor })
             UbiquittyTest::feed(*terminal, "\r\nnext\033T\033[?1049lR\033T");
         CHECK(UbiquittyTest::firstDisagreement(source, successor).empty());
-        const auto continuedSource = encodeHandoverTerminal(source, 92, terminalLimits);
-        const auto continuedSuccessor = encodeHandoverTerminal(successor, 92, terminalLimits);
+        const auto continuedSource = encodeHandoverTerminal(source, 92, terminalLimits, {});
+        const auto continuedSuccessor = encodeHandoverTerminal(successor, 92, terminalLimits, {});
         REQUIRE(continuedSource && continuedSuccessor);
         CHECK(std::ranges::equal(continuedSource->view(), continuedSuccessor->view()));
     }
@@ -2036,35 +2149,35 @@ TEST(joinedTerminalHandoverAdmitsTheLastSectionBeforeConstructingAnyTerminal)
 {
     Ubiquitty::Terminal source;
     joinedTerminalFixture(source);
-    const auto bytes = encodeHandoverTerminal(source, 1, terminalLimits);
+    const auto bytes = encodeHandoverTerminal(source, 1, terminalLimits, {});
     REQUIRE(bytes);
     auto sections = splitTerminalRecord(bytes->view());
     sections[8][6] = 2; // Canonically invalid host Boolean, with both digests refreshed.
     refreshImageDigest(sections[8]);
     const auto invalid = joinTerminalRecord(sections, source.richTextBlocks.nextSerial());
     const auto attempts = UbiquittyTest::ScopedNothrowAllocationRefusal::attemptCount();
-    CHECK(decodeHandoverTerminal(invalid, terminalLimits).error() == HandoverBodyError::Malformed);
+    CHECK(decodeHandoverTerminal(invalid, terminalLimits, {}).error() == HandoverBodyError::Malformed);
     CHECK_EQ(UbiquittyTest::ScopedNothrowAllocationRefusal::attemptCount(), attempts);
     auto small = terminalLimits;
     small.images.maxPixelBytes = 0;
-    CHECK(decodeHandoverTerminal(bytes->view(), small).error() == HandoverBodyError::OverCapacity);
+    CHECK(decodeHandoverTerminal(bytes->view(), small, {}).error() == HandoverBodyError::OverCapacity);
     CHECK_EQ(UbiquittyTest::ScopedNothrowAllocationRefusal::attemptCount(), attempts);
     small = terminalLimits;
     small.maxScreenCellBytes = 1;
-    CHECK(decodeHandoverTerminal(bytes->view(), small).error() == HandoverBodyError::OverCapacity);
+    CHECK(decodeHandoverTerminal(bytes->view(), small, {}).error() == HandoverBodyError::OverCapacity);
     CHECK_EQ(UbiquittyTest::ScopedNothrowAllocationRefusal::attemptCount(), attempts);
     {
         UbiquittyTest::ScopedNothrowAllocationRefusal refuse(sizeof(Ubiquitty::Terminal));
-        CHECK(decodeHandoverTerminal(bytes->view(), terminalLimits).error() == HandoverBodyError::AllocationRefused);
+        CHECK(decodeHandoverTerminal(bytes->view(), terminalLimits, {}).error() == HandoverBodyError::AllocationRefused);
     }
-    REQUIRE(decodeHandoverTerminal(bytes->view(), terminalLimits));
+    REQUIRE(decodeHandoverTerminal(bytes->view(), terminalLimits, {}));
 }
 
 TEST(joinedTerminalHandoverRejectsMixedEpochsAndDictionaryOwners)
 {
     Ubiquitty::Terminal source;
     joinedTerminalFixture(source);
-    const auto bytes = encodeHandoverTerminal(source, 2, terminalLimits);
+    const auto bytes = encodeHandoverTerminal(source, 2, terminalLimits, {});
     REQUIRE(bytes);
     auto sections = splitTerminalRecord(bytes->view());
     Ubiquitty::Terminal foreign;
@@ -2072,42 +2185,42 @@ TEST(joinedTerminalHandoverRejectsMixedEpochsAndDictionaryOwners)
     const auto history = encodeHandoverHistory(foreign, historyLimits);
     REQUIRE(history);
     sections[1].assign(history->view().begin(), history->view().end());
-    CHECK(decodeHandoverTerminal(joinTerminalRecord(sections, 731), terminalLimits).error() == HandoverBodyError::Malformed);
+    CHECK(decodeHandoverTerminal(joinTerminalRecord(sections, 731), terminalLimits, {}).error() == HandoverBodyError::Malformed);
     sections = splitTerminalRecord(bytes->view());
     const std::array<std::uint32_t, 2> foreignCluster { 'z', 0x301 };
     (void)foreign.clusterPool.intern(foreignCluster);
     const auto text = encodeHandoverTextStores(foreign, textLimits);
     REQUIRE(text);
     sections[3].assign(text->view().begin(), text->view().end());
-    CHECK(decodeHandoverTerminal(joinTerminalRecord(sections, 731), terminalLimits).error() == HandoverBodyError::Malformed);
+    CHECK(decodeHandoverTerminal(joinTerminalRecord(sections, 731), terminalLimits, {}).error() == HandoverBodyError::Malformed);
     sections = splitTerminalRecord(bytes->view());
     UbiquittyTest::feed(foreign, "\033]8;;https://example.test/foreign\033\\X");
     const auto links = encodeHandoverLinks(foreign, terminalLimits.maxLinkBytes);
     REQUIRE(links);
     sections[2].assign(links->view().begin(), links->view().end());
-    CHECK(decodeHandoverTerminal(joinTerminalRecord(sections, 731), terminalLimits).error() == HandoverBodyError::Malformed);
+    CHECK(decodeHandoverTerminal(joinTerminalRecord(sections, 731), terminalLimits, {}).error() == HandoverBodyError::Malformed);
 }
 
 TEST(joinedTerminalHandoverRejectsFramingAndGroundViolations)
 {
     Ubiquitty::Terminal source;
-    const auto bytes = encodeHandoverTerminal(source, 3, terminalLimits);
+    const auto bytes = encodeHandoverTerminal(source, 3, terminalLimits, {});
     REQUIRE(bytes);
     for (const auto length : { std::size_t(0), std::size_t(5), bytes->size / 2, bytes->size - 1 })
-        CHECK(!decodeHandoverTerminal(bytes->view().first(length), terminalLimits));
+        CHECK(!decodeHandoverTerminal(bytes->view().first(length), terminalLimits, {}));
     auto invalid = std::vector<std::uint8_t>(bytes->view().begin(), bytes->view().end());
     invalid.insert(invalid.end() - 16, 0);
     refreshImageDigest(invalid);
-    CHECK(decodeHandoverTerminal(invalid, terminalLimits).error() == HandoverBodyError::Malformed);
+    CHECK(decodeHandoverTerminal(invalid, terminalLimits, {}).error() == HandoverBodyError::Malformed);
     auto exact = terminalLimits;
     exact.maxRecordBytes = bytes->size;
-    REQUIRE(encodeHandoverTerminal(source, 3, exact));
+    REQUIRE(encodeHandoverTerminal(source, 3, exact, {}));
     --exact.maxRecordBytes;
-    CHECK(encodeHandoverTerminal(source, 3, exact).error() == HandoverBodyError::OverCapacity);
-    CHECK(decodeHandoverTerminal(bytes->view(), exact).error() == HandoverBodyError::OverCapacity);
-    CHECK(!encodeHandoverTerminal(source, 0, terminalLimits));
+    CHECK(encodeHandoverTerminal(source, 3, exact, {}).error() == HandoverBodyError::OverCapacity);
+    CHECK(decodeHandoverTerminal(bytes->view(), exact, {}).error() == HandoverBodyError::OverCapacity);
+    CHECK(!encodeHandoverTerminal(source, 0, terminalLimits, {}));
     UbiquittyTest::feed(source, "\033[12;");
-    CHECK(encodeHandoverTerminal(source, 3, terminalLimits).error() == HandoverBodyError::NotAtGround);
+    CHECK(encodeHandoverTerminal(source, 3, terminalLimits, {}).error() == HandoverBodyError::NotAtGround);
 }
 
 TEST(joinedTerminalHandoverKeepsSizedCellsAndRejectsAFalseBlankTail)
@@ -2116,19 +2229,19 @@ TEST(joinedTerminalHandoverKeepsSizedCellsAndRejectsAFalseBlankTail)
     source.drawsSizedText = true;
     source.drawsProportionalText = true;
     UbiquittyTest::feed(source, "\033]66;p=1:c=12;proportional text\007\r\nplain");
-    const auto bytes = encodeHandoverTerminal(source, 4, terminalLimits);
+    const auto bytes = encodeHandoverTerminal(source, 4, terminalLimits, {});
     REQUIRE(bytes);
-    auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits);
+    auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits, {});
     REQUIRE(restored);
     CHECK(restored->terminal->drawsSizedText);
-    const auto after = encodeHandoverTerminal(*restored->terminal, 4, terminalLimits);
+    const auto after = encodeHandoverTerminal(*restored->terminal, 4, terminalLimits, {});
     REQUIRE(after);
     CHECK(std::ranges::equal(bytes->view(), after->view()));
     auto sections = splitTerminalRecord(bytes->view());
     // Width zero claims a blank first row although it contains the sized run.
     writeLittle(sections[9], 6, 0, 2);
     refreshImageDigest(sections[9]);
-    CHECK(decodeHandoverTerminal(joinTerminalRecord(sections, source.richTextBlocks.nextSerial()), terminalLimits).error() == HandoverBodyError::Malformed);
+    CHECK(decodeHandoverTerminal(joinTerminalRecord(sections, source.richTextBlocks.nextSerial()), terminalLimits, {}).error() == HandoverBodyError::Malformed);
     CHECK(!source.grid->restoreRowContentWidth(Ubiquitty::ScreenMode::Primary, Ubiquitty::Row(0), 0));
 }
 
@@ -2140,9 +2253,9 @@ TEST(joinedTerminalHandoverKeepsIndependentRendererDeclarations)
             source.drawsSizedText = drawsSized;
             source.drawsProportionalText = drawsProportional;
             UbiquittyTest::feed(source, "\033]66;p=1:c=6;Run\007\033[3;1H\033]66;s=2;X\007");
-            const auto bytes = encodeHandoverTerminal(source, 4, terminalLimits);
+            const auto bytes = encodeHandoverTerminal(source, 4, terminalLimits, {});
             REQUIRE(bytes);
-            auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits);
+            auto restored = decodeHandoverTerminal(bytes->view(), terminalLimits, {});
             REQUIRE(restored);
             CHECK(restored->terminal->drawsSizedText == drawsSized);
             CHECK(restored->terminal->drawsProportionalText == drawsProportional);
@@ -2170,9 +2283,9 @@ TEST(panePublicationHandoverPreservesDictionaryHistoryAndImageRevisions)
     const HandoverPublicationLimits publicationLimits { 1024 * 1024, 65536, 4096, 4096, 4096 };
     auto bytes = encodeHandoverPublication(source, publicationLimits);
     REQUIRE(bytes);
-    const auto terminalBytes = encodeHandoverTerminal(terminal, source.generation(), terminalLimits);
+    const auto terminalBytes = encodeHandoverTerminal(terminal, source.generation(), terminalLimits, {});
     REQUIRE(terminalBytes);
-    auto successor = decodeHandoverTerminal(terminalBytes->view(), terminalLimits);
+    auto successor = decodeHandoverTerminal(terminalBytes->view(), terminalLimits, {});
     auto publication = decodeHandoverPublication(bytes->view(), publicationLimits);
     REQUIRE(successor && publication);
     PaneSource restored(*successor->terminal, pane);
@@ -2397,9 +2510,9 @@ TEST(joinedPaneHandoverKeepsReceiptsEffectsGeometryAndAcceptedPTYOwnership)
     const std::array<Ubiquitty::PAL::OutputQueue::Run, 3> runs { { { 7, 2 }, { 8, 6 }, { 0, 1 } } };
     const auto pending = Ubiquitty::PAL::OutputQueue::Unwritten::copyOf(accepted, runs);
     REQUIRE(pending);
-    const auto bytes = encodePaneHandover(source, session, *pending, paneLimits);
+    const auto bytes = encodePaneHandover(source, session, *pending, paneLimits, {});
     REQUIRE(bytes);
-    auto restored = decodePaneHandover(bytes->view(), paneLimits);
+    auto restored = decodePaneHandover(bytes->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(restored->source->paneID() == pane);
     CHECK(restored->source->facts() == source.facts());
@@ -2415,7 +2528,7 @@ TEST(joinedPaneHandoverKeepsReceiptsEffectsGeometryAndAcceptedPTYOwnership)
         CHECK_EQ(restored->unwrittenPTY.runs()[index].owner, runs[index].owner);
         CHECK_EQ(restored->unwrittenPTY.runs()[index].bytes, runs[index].bytes);
     }
-    auto repeated = encodePaneHandover(*restored->source, restored->session, restored->unwrittenPTY, paneLimits);
+    auto repeated = encodePaneHandover(*restored->source, restored->session, restored->unwrittenPTY, paneLimits, {});
     REQUIRE(repeated);
     CHECK(std::ranges::equal(bytes->view(), repeated->view()));
     const auto effects = restored->source->effects().readAfter(0, EffectReadMode::Consecutive);
@@ -2441,8 +2554,8 @@ TEST(joinedPaneHandoverKeepsReceiptsEffectsGeometryAndAcceptedPTYOwnership)
     UbiquittyTest::feed(*restored->terminal, "\r\nfuture bytes\r\n");
     source.publish(FrameClass::Settled, 600);
     restored->source->publish(FrameClass::Settled, 600);
-    const auto before = encodePaneHandover(source, session, *pending, paneLimits);
-    const auto after = encodePaneHandover(*restored->source, restored->session, restored->unwrittenPTY, paneLimits);
+    const auto before = encodePaneHandover(source, session, *pending, paneLimits, {});
+    const auto after = encodePaneHandover(*restored->source, restored->session, restored->unwrittenPTY, paneLimits, {});
     REQUIRE(before && after);
     CHECK(std::ranges::equal(before->view(), after->view()));
     CHECK_EQ(successorWriter.bytes.size(), 1u);
@@ -2458,28 +2571,28 @@ TEST(joinedPaneHandoverRefusesMixedOwnersAndBoundsWithoutDiscardingInput)
     SessionFacts session;
     session.sessionID = 17;
     Ubiquitty::PAL::OutputQueue::Unwritten empty;
-    const auto bytes = encodePaneHandover(source, session, empty, paneLimits);
+    const auto bytes = encodePaneHandover(source, session, empty, paneLimits, {});
     REQUIRE(bytes);
     for (std::size_t length = 0; length < bytes->size; length += 31)
-        CHECK(!decodePaneHandover(bytes->view().first(length), paneLimits));
-    CHECK(!decodePaneHandover(bytes->view().first(bytes->size - 1), paneLimits));
+        CHECK(!decodePaneHandover(bytes->view().first(length), paneLimits, {}));
+    CHECK(!decodePaneHandover(bytes->view().first(bytes->size - 1), paneLimits, {}));
     auto exact = paneLimits;
     exact.maxRecordBytes = bytes->size;
-    REQUIRE(decodePaneHandover(bytes->view(), exact));
+    REQUIRE(decodePaneHandover(bytes->view(), exact, {}));
     --exact.maxRecordBytes;
-    CHECK(decodePaneHandover(bytes->view(), exact).error() == HandoverBodyError::OverCapacity);
+    CHECK(decodePaneHandover(bytes->view(), exact, {}).error() == HandoverBodyError::OverCapacity);
     exact = paneLimits;
     exact.maxEffectRetainedBytes = 1;
-    CHECK(!decodePaneHandover(bytes->view(), exact));
+    CHECK(!decodePaneHandover(bytes->view(), exact, {}));
     std::vector<std::uint8_t> changed(bytes->view().begin(), bytes->view().end());
     writeLittle(changed, 2, 99, 8);
     refreshImageDigest(changed);
-    CHECK(decodePaneHandover(changed, paneLimits).error() == HandoverBodyError::Malformed);
+    CHECK(decodePaneHandover(changed, paneLimits, {}).error() == HandoverBodyError::Malformed);
     session.sessionID = 99;
-    CHECK(!encodePaneHandover(source, session, empty, paneLimits));
+    CHECK(!encodePaneHandover(source, session, empty, paneLimits, {}));
     session.sessionID = 17;
     REQUIRE(source.queueInput({ 21, 22 }, 1, RawInput { { 'a' } }, 100) == EnqueueOutcome::Queued);
-    REQUIRE(encodePaneHandover(source, session, empty, paneLimits));
+    REQUIRE(encodePaneHandover(source, session, empty, paneLimits, {}));
     CHECK(!source.inputLedger().lastWritten({ 21, 22 }));
 }
 
@@ -2494,7 +2607,7 @@ TEST(joinedPaneHandoverRejectsTypedEffectAndPTYPartitionForgery)
     const std::array<Ubiquitty::PAL::OutputQueue::Run, 1> runs { { { 9, 3 } } };
     const auto pending = Ubiquitty::PAL::OutputQueue::Unwritten::copyOf(payload, runs);
     REQUIRE(pending);
-    const auto bytes = encodePaneHandover(source, session, *pending, paneLimits);
+    const auto bytes = encodePaneHandover(source, session, *pending, paneLimits, {});
     REQUIRE(bytes);
     std::vector<std::uint8_t> changed(bytes->view().begin(), bytes->view().end());
     WireReader reader(changed);
@@ -2512,15 +2625,15 @@ TEST(joinedPaneHandoverRejectsTypedEffectAndPTYPartitionForgery)
     writeLittle(changed, offset + sectionBytes - 16, digest.low, 8);
     writeLittle(changed, offset + sectionBytes - 8, digest.high, 8);
     refreshImageDigest(changed);
-    CHECK(decodePaneHandover(changed, paneLimits).error() == HandoverBodyError::Malformed);
+    CHECK(decodePaneHandover(changed, paneLimits, {}).error() == HandoverBodyError::Malformed);
     {
         UbiquittyTest::ScopedNothrowAllocationRefusal refusal(sizeof(PaneSource));
-        CHECK(!decodePaneHandover(bytes->view(), paneLimits));
+        CHECK(!decodePaneHandover(bytes->view(), paneLimits, {}));
     }
-    REQUIRE(decodePaneHandover(bytes->view(), paneLimits));
+    REQUIRE(decodePaneHandover(bytes->view(), paneLimits, {}));
     const std::array<std::uint8_t, 1> malformedBell { 1 };
     REQUIRE(source.effects().append({ .generation = source.generation(), .kind = EffectKind::Bell, .payload = malformedBell }));
-    CHECK(encodePaneHandover(source, session, *pending, paneLimits).error() == HandoverBodyError::Malformed);
+    CHECK(encodePaneHandover(source, session, *pending, paneLimits, {}).error() == HandoverBodyError::Malformed);
     CHECK_EQ(source.effects().size(), 1u);
 }
 
@@ -2561,9 +2674,9 @@ TEST(joinedPaneHandoverContinuesPartialPasteAndQueuedNeighbourWithoutReplay)
     SessionFacts session;
     session.sessionID = 17;
     Ubiquitty::PAL::OutputQueue::Unwritten pending;
-    const auto bytes = encodePaneHandover(source, session, pending, paneLimits);
+    const auto bytes = encodePaneHandover(source, session, pending, paneLimits, {});
     REQUIRE(bytes);
-    auto restored = decodePaneHandover(bytes->view(), paneLimits);
+    auto restored = decodePaneHandover(bytes->view(), paneLimits, {});
     REQUIRE(restored);
     restored->source->setInputWriter(after);
     before.bytes.clear();
@@ -2580,8 +2693,8 @@ TEST(joinedPaneHandoverContinuesPartialPasteAndQueuedNeighbourWithoutReplay)
     CHECK(std::ranges::equal(after.bytes, std::array<std::uint8_t, 6> { 'c', 'd', 'N', 'e', 'f', 'X' }));
     CHECK_EQ(restored->source->inputLedger().lastWritten(client).value_or(0), 2u);
     CHECK_EQ(restored->source->inputLedger().lastWritten(neighbour).value_or(0), 1u);
-    const auto original = encodePaneHandover(source, session, pending, paneLimits);
-    const auto continued = encodePaneHandover(*restored->source, session, pending, paneLimits);
+    const auto original = encodePaneHandover(source, session, pending, paneLimits, {});
+    const auto continued = encodePaneHandover(*restored->source, session, pending, paneLimits, {});
     REQUIRE(original && continued);
     CHECK(std::ranges::equal(original->view(), continued->view()));
 }
@@ -2615,9 +2728,9 @@ TEST(joinedPaneHandoverKeepsAnOvertakingSignalsOriginalWriteTime)
     SessionFacts session;
     session.sessionID = 17;
     Ubiquitty::PAL::OutputQueue::Unwritten pending;
-    const auto encoded = encodePaneHandover(source, session, pending, paneLimits);
+    const auto encoded = encodePaneHandover(source, session, pending, paneLimits, {});
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     restored->source->setInputWriter(after);
     before.bytes.clear();
@@ -2629,9 +2742,9 @@ TEST(joinedPaneHandoverKeepsAnOvertakingSignalsOriginalWriteTime)
     }
     CHECK(before.bytes == after.bytes);
     CHECK(std::ranges::equal(after.bytes, std::array<std::uint8_t, 2> { 'b', 'X' }));
-    const auto again = encodePaneHandover(*restored->source, session, pending, paneLimits);
+    const auto again = encodePaneHandover(*restored->source, session, pending, paneLimits, {});
     REQUIRE(again);
-    auto next = decodePaneHandover(again->view(), paneLimits);
+    auto next = decodePaneHandover(again->view(), paneLimits, {});
     REQUIRE(next);
     next->source->noteReadWouldBlock(599);
     CHECK_EQ(next->source->inputLedger().settledThrough(client), 0u);
@@ -2696,9 +2809,9 @@ TEST(joinedPaneHandoverCarriesEveryUnencodedInputKindAndOwner)
     SessionFacts session;
     session.sessionID = 17;
     Ubiquitty::PAL::OutputQueue::Unwritten pending;
-    const auto bytes = encodePaneHandover(source, session, pending, paneLimits);
+    const auto bytes = encodePaneHandover(source, session, pending, paneLimits, {});
     REQUIRE(bytes);
-    const auto restored = decodePaneHandover(bytes->view(), paneLimits);
+    const auto restored = decodePaneHandover(bytes->view(), paneLimits, {});
     REQUIRE(restored);
     const auto state = restored->source->continuation();
     REQUIRE(state && state->queue.pending.size() == 4);
@@ -2710,7 +2823,7 @@ TEST(joinedPaneHandoverCarriesEveryUnencodedInputKindAndOwner)
     CHECK(std::get<KeyInput>(state->queue.pending[1].intent).events == std::vector<KeyEvent> { key });
     CHECK(std::get<PointerInput>(state->queue.pending[2].intent).events == std::vector<PointerEvent> { pointer });
     CHECK(std::get<FocusInput>(state->queue.pending[3].intent).focus == Ubiquitty::Modes::FocusState::Focused);
-    const auto roundTrip = encodePaneHandover(*restored->source, session, pending, paneLimits);
+    const auto roundTrip = encodePaneHandover(*restored->source, session, pending, paneLimits, {});
     REQUIRE(roundTrip);
     CHECK(std::ranges::equal(bytes->view(), roundTrip->view()));
     auto malformed = *state;
@@ -2795,7 +2908,7 @@ namespace {
 /// The frozen pane record of the version this build writes, by the content
 /// hash the fuzzer's corpus names its units with. A grammar change takes a new
 /// body version and a newly minted fixture; the published fixture stays readable.
-constexpr std::string_view frozenCurrentPaneRecordName = "6b76710f4379439cbb9afaaef26fa3a59a1701d8";
+constexpr std::string_view frozenCurrentPaneRecordName = "ac78d713b8620171b389c54f04b4207336dbb473";
 /// The v0.3.2 record retained independently of the current encoder fixture.
 /// Its provenance and minting command are in Tests/Corpus/sync/handover-release.md.
 constexpr std::string_view frozenPublishedPaneRecordName = "6b76710f4379439cbb9afaaef26fa3a59a1701d8";
@@ -2837,7 +2950,7 @@ struct FrozenPane {
         const auto unwritten = Ubiquitty::PAL::OutputQueue::Unwritten::copyOf({}, {});
         if (!unwritten)
             return std::unexpected(HandoverBodyError::AllocationRefused);
-        return encodePaneHandover(*source, session, *unwritten, paneLimits);
+        return encodePaneHandover(*source, session, *unwritten, paneLimits, {});
     }
 };
 
@@ -2865,7 +2978,7 @@ TEST(theFrozenCurrentPaneRecordRestores)
 {
     const auto frozen = readFrozenPaneRecord();
     REQUIRE_MSG(frozen.has_value(), frozenPaneRecordPath().c_str());
-    auto restored = decodePaneHandover(*frozen, paneLimits);
+    auto restored = decodePaneHandover(*frozen, paneLimits, {});
     REQUIRE(restored);
     CHECK((restored->source->paneID() == ID128 { 17, 18 }));
     CHECK(restored->source->facts().programTitle == "frozen pane");
@@ -2886,7 +2999,9 @@ TEST(theLastPublishedHandoverFormatRemainsReadable)
     REQUIRE(frozen);
     WireReader reader(*frozen);
     CHECK_EQ(reader.u16(), lastPublishedHandoverBodyVersion);
-    auto restored = decodePaneHandover(*frozen, paneLimits);
+    // A successor shares its predecessor's clock, so a record whose ticks
+    // travel absolute is read as written, whatever the successor's now.
+    auto restored = decodePaneHandover(*frozen, paneLimits, Ubiquitty::Ticks(50'000'000));
     REQUIRE(restored);
     CHECK((restored->source->paneID() == ID128 { 17, 18 }));
     CHECK_EQ(restored->session.sessionID, 17u);
@@ -2895,6 +3010,10 @@ TEST(theLastPublishedHandoverFormatRemainsReadable)
     FrozenPane original;
     CHECK(UbiquittyTest::firstDisagreement(original.terminal, *restored->terminal).empty());
     CHECK_EQ(restored->terminal->scrollbackCount, original.terminal.scrollbackCount);
+    CHECK_EQ(restored->terminal->lastActivityTick, original.terminal.lastActivityTick);
+    CHECK_EQ(restored->terminal->lastBellTick, original.terminal.lastBellTick);
+    CHECK_EQ(restored->terminal->displayActivityTick, original.terminal.displayActivityTick);
+    CHECK_EQ(restored->terminal->commandStartTick, original.terminal.commandStartTick);
 }
 
 TEST(aPaneCannotMixSupportedHandoverGrammars)
@@ -2920,7 +3039,7 @@ TEST(aPaneCannotMixSupportedHandoverGrammars)
         writeLittle(changed, offset + size - 16, digest.low, 8);
         writeLittle(changed, offset + size - 8, digest.high, 8);
         refreshImageDigest(changed);
-        const auto result = decodePaneHandover(changed, paneLimits);
+        const auto result = decodePaneHandover(changed, paneLimits, {});
         REQUIRE(!result);
         CHECK(result.error() == HandoverBodyError::Malformed);
     }
@@ -2934,7 +3053,7 @@ TEST(aPaneRecordInANewerFormatIsRefusedUnread)
     REQUIRE(record.has_value());
     (*record)[0] = static_cast<std::uint8_t>(handoverBodyVersion + 1);
     (*record)[1] = 0;
-    const auto refused = decodePaneHandover(*record, paneLimits);
+    const auto refused = decodePaneHandover(*record, paneLimits, {});
     REQUIRE(!refused);
     CHECK(refused.error() == HandoverBodyError::NewerVersion);
 }
@@ -2948,7 +3067,7 @@ TEST(aPaneRecordBelowThePublishedReleaseFloorIsRefused)
     for (std::uint16_t version = 1; version < oldestHandoverBodyVersion; ++version) {
         writeLittle(*record, 0, version, 2);
         refreshImageDigest(*record);
-        const auto refused = decodePaneHandover(*record, paneLimits);
+        const auto refused = decodePaneHandover(*record, paneLimits, {});
         REQUIRE(!refused);
         CHECK(refused.error() == HandoverBodyError::Malformed);
     }
@@ -2994,7 +3113,7 @@ TEST(cancellationHandoverRefusesEachBufferWithoutChangingTheDestination)
     Ubiquitty::resize(source, 2, 4);
     UbiquittyTest::feed(source, "A");
     REQUIRE(source.graphicCancellation);
-    const auto encoded = encodeHandoverHostState(source, 65536);
+    const auto encoded = encodeHandoverHostState(source, 65536, {});
     REQUIRE(encoded);
     const auto& capture = *source.graphicCancellation;
     const std::array sizes { capture.cells.size() * sizeof(Ubiquitty::Cell),
@@ -3005,10 +3124,10 @@ TEST(cancellationHandoverRefusesEachBufferWithoutChangingTheDestination)
         Ubiquitty::resize(destination, 2, 4);
         UbiquittyTest::feed(destination, "keep");
         UbiquittyTest::ScopedNothrowAllocationRefusal refusal(size);
-        const auto write = encodeHandoverHostState(source, 65536);
+        const auto write = encodeHandoverHostState(source, 65536, {});
         REQUIRE(!write);
         CHECK(write.error() == HandoverBodyError::AllocationRefused);
-        const auto read = restoreHandoverHostState(encoded->view(), destination, 65536);
+        const auto read = restoreHandoverHostState(encoded->view(), destination, 65536, {});
         REQUIRE(!read);
         CHECK(read.error() == HandoverBodyError::AllocationRefused);
         CHECK_EQ(destination.grid->logicalCellAt(Ubiquitty::Row(0), Ubiquitty::Column(0))->codePoint, 'k');
@@ -3024,7 +3143,7 @@ TEST(printerControllerStateSurvivesHandoverBetweenCompleteSequences)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(restored->terminal->printMode == 5);
     CHECK(!restored->terminal->shouldIgnorePrinterNUL);
@@ -3052,7 +3171,7 @@ TEST(independentStatusNationalReplacementModeSurvivesHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(restored->terminal->isStatusNationalReplacementEnabled);
     CHECK(!restored->terminal->modes.nrcMode);
@@ -3069,7 +3188,7 @@ TEST(rightToLeftCopyModeSurvivesHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(restored->terminal->shouldCopyRightToLeft);
     CHECK(UbiquittyTest::firstDisagreement(pane.terminal, *restored->terminal).empty());
@@ -3083,7 +3202,7 @@ TEST(rightToLeftWritingSurvivesHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(restored->terminal->shouldWriteRightToLeft);
     UbiquittyTest::feed(pane.terminal, "CD");
@@ -3100,7 +3219,7 @@ TEST(cancelCharacterSurvivesHandover)
         pane.source->publish(FrameClass::Settled, 500);
         const auto encoded = pane.encode();
         REQUIRE(encoded);
-        auto restored = decodePaneHandover(encoded->view(), paneLimits);
+        auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
         REQUIRE(restored);
         CHECK(restored->terminal->graphicCancellation && restored->terminal->graphicCancellation->isValid);
         CHECK(!restored->terminal->graphicCancellation->isCapturing);
@@ -3118,7 +3237,7 @@ TEST(theLineLimitTheDirectionAndTheStringStartSurviveHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK_EQ(restored->terminal->lineLimit, 60);
     CHECK(restored->terminal->implicitMovementDirection == Ubiquitty::VT::ImplicitMovementDirection::AgainstProgression);
@@ -3136,7 +3255,7 @@ TEST(theApplicationIdentifierAndTheCursorTextColorSurviveHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(restored->terminal->hasCursorTextColor);
     CHECK_EQ(restored->terminal->cursorTextRed, 0x4444);
@@ -3167,7 +3286,7 @@ TEST(anApplicationIdentifierOfTheFullCapacitySurvivesHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(restored->terminal->applicationIdentifier.view() == identifier);
 }
@@ -3183,7 +3302,7 @@ TEST(theDECACAssignedDefaultMarksSurviveHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     const Ubiquitty::Cell* explicitRed = UbiquittyTest::cell(*restored->terminal, 0, 0);
     const Ubiquitty::Cell* assigned = UbiquittyTest::cell(*restored->terminal, 0, 1);
@@ -3229,7 +3348,7 @@ TEST(paneHandoverKeepsSemanticRoles)
     pane.source->publish(FrameClass::Settled, 500);
     const auto record = pane.encode();
     REQUIRE(record);
-    auto restored = decodePaneHandover(record->view(), paneLimits);
+    auto restored = decodePaneHandover(record->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(screenCheckpoint(*restored->terminal) == screenCheckpoint(pane.terminal));
     CHECK(restored->terminal->screens.active->pen.semanticRole == SemanticRole::Input);
@@ -3246,7 +3365,7 @@ TEST(paneHandoverKeepsIndependentCellProtection)
     pane.source->publish(FrameClass::Settled, 500);
     const auto record = pane.encode();
     REQUIRE(record);
-    auto restored = decodePaneHandover(record->view(), paneLimits);
+    auto restored = decodePaneHandover(record->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(screenCheckpoint(*restored->terminal) == screenCheckpoint(pane.terminal));
     UbiquittyTest::feed(*restored->terminal, "\033W\033[0\"q\0338C\033[?2K");
@@ -3268,7 +3387,7 @@ TEST(paneHandoverKeepsChecksumSelectionAndSavedPalettes)
     pane.source->publish(FrameClass::Settled, 500);
     const auto record = pane.encode();
     REQUIRE(record);
-    auto restored = decodePaneHandover(record->view(), paneLimits);
+    auto restored = decodePaneHandover(record->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(restored->terminal->checksumExtensions == pane.terminal.checksumExtensions);
     REQUIRE(restored->terminal->savedPalettes);
@@ -3286,7 +3405,7 @@ TEST(paneHandoverKeepsKeyboardSelection)
     pane.source->publish(FrameClass::Settled, 500);
     const auto record = pane.encode();
     REQUIRE(record);
-    auto restored = decodePaneHandover(record->view(), paneLimits);
+    auto restored = decodePaneHandover(record->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(!restored->terminal->modes.shouldHonorNumLock);
     CHECK(restored->terminal->modes.keyboardType == Ubiquitty::Keys::KeyboardType::Termcap);
@@ -3306,7 +3425,7 @@ TEST(lineHomeSurvivesHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK_EQ(restored->terminal->lineHome, 6);
     UbiquittyTest::feed(*restored->terminal, "\rX");
@@ -3321,7 +3440,7 @@ TEST(progressPropertiesSurviveHandoverBeforeTheirValueIsSet)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK_EQ(restored->terminal->termpropProgressHint, 4);
     CHECK_EQ(restored->terminal->termpropProgressValue, -1);
@@ -3338,7 +3457,7 @@ TEST(readlineMouseModesSurviveHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(restored->terminal->modes.shouldMoveReadlinePointOnClick);
     CHECK(restored->terminal->modes.shouldMoveReadlinePointBeforePaste);
@@ -3353,7 +3472,7 @@ TEST(alignedTabStopsSurviveHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     REQUIRE(restored->terminal->tabAlignments.size() == Ubiquitty::maxColumns);
     CHECK(restored->terminal->tabAlignments[8] == Ubiquitty::CharacterTabAlignment::LeadingEdge);
@@ -3372,7 +3491,7 @@ TEST(screenPointerStacksAndLineSemanticsSurviveHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(restored->terminal->mousePointerShapeStack == pane.terminal.mousePointerShapeStack);
     CHECK(restored->terminal->alternateMousePointerShapeStack == pane.terminal.alternateMousePointerShapeStack);
@@ -3395,7 +3514,7 @@ TEST(nestedShellCommandsContinueAfterHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK_EQ(restored->terminal->shellCommandCount, 2);
     CHECK_EQ((*restored->terminal->shellCommands)[0].startTick, 123u);
@@ -3410,13 +3529,13 @@ TEST(hostStateHandoverRejectsInvalidShellCommandFrames)
     Ubiquitty::Terminal source;
     UbiquittyTest::feed(source, "\033]133;N;aid=shell\a");
     source.shellCommandCount = Ubiquitty::Terminal::shellCommandCapacity + 1;
-    CHECK(!encodeHandoverHostState(source, hostStateLimit));
+    CHECK(!encodeHandoverHostState(source, hostStateLimit, {}));
     source.shellCommandCount = 1;
     (*source.shellCommands)[0].applicationIDLength = 257;
-    CHECK(!encodeHandoverHostState(source, hostStateLimit));
+    CHECK(!encodeHandoverHostState(source, hostStateLimit, {}));
     (*source.shellCommands)[0].applicationIDLength = 1;
     (*source.shellCommands)[0].applicationID[0] = '\033';
-    CHECK(!encodeHandoverHostState(source, hostStateLimit));
+    CHECK(!encodeHandoverHostState(source, hostStateLimit, {}));
 }
 
 TEST(shellCommandAllocationRefusalDoesNotChangeTheCurrentPrompt)
@@ -3431,13 +3550,13 @@ TEST(shellCommandAllocationRefusalDoesNotChangeTheCurrentPrompt)
     CHECK_EQ(source.screens.active->cursorX, 1);
     CHECK_EQ(source.screens.active->cursorY, 0);
     UbiquittyTest::feed(source, "\033]133;N;aid=shell\a");
-    const auto bytes = encodeHandoverHostState(source, hostStateLimit);
+    const auto bytes = encodeHandoverHostState(source, hostStateLimit, {});
     REQUIRE(bytes);
     Ubiquitty::Terminal successor;
     successor.answerback = "destination";
     {
         UbiquittyTest::ScopedNothrowAllocationRefusal refuse(sizeof(std::array<Ubiquitty::Terminal::ShellCommand, Ubiquitty::Terminal::shellCommandCapacity>));
-        CHECK(restoreHandoverHostState(bytes->view(), successor, hostStateLimit).error() == HandoverBodyError::AllocationRefused);
+        CHECK(restoreHandoverHostState(bytes->view(), successor, hostStateLimit, {}).error() == HandoverBodyError::AllocationRefused);
     }
     CHECK_EQ(successor.shellCommandCount, 0);
     CHECK(!successor.shellCommands);
@@ -3456,7 +3575,7 @@ TEST(readlineEraseFactsSurviveHandover)
         pane.source->publish(FrameClass::Settled, 500);
         const auto encoded = pane.encode();
         REQUIRE(encoded);
-        auto restored = decodePaneHandover(encoded->view(), paneLimits);
+        auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
         REQUIRE(restored);
         REQUIRE(restored->session.publishedEchoFacts);
         CHECK(restored->session.publishedEchoFacts->eraseCharacter == erase);
@@ -3476,7 +3595,7 @@ TEST(pasteAndCRTStateSurviveHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(restored->terminal->modes.shouldReportPasteEvents);
     CHECK(restored->terminal->screenBlanked);
@@ -3494,7 +3613,7 @@ TEST(answerbackConcealmentSurvivesHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(restored->terminal->isAnswerbackConcealed);
     CHECK(restored->terminal->answerback == "answerback");
@@ -3511,7 +3630,7 @@ TEST(alternateTextColorsSurviveHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(Ubiquitty::alternateTextColorTable(*restored->terminal)[1] == (Ubiquitty::ColorAssignment { 15, 4 }));
     CHECK(Ubiquitty::alternateTextColorTable(*restored->terminal)[15] == (Ubiquitty::ColorAssignment { 9, 1 }));
@@ -3531,7 +3650,7 @@ TEST(colorAssignmentsSurviveHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(restored->terminal->normalTextColors == (Ubiquitty::ColorAssignment { 1, 2 }));
     CHECK(restored->terminal->windowFrameColors == (Ubiquitty::ColorAssignment { 3, 4 }));
@@ -3545,7 +3664,7 @@ TEST(keyPositionModeAndModifierActionsSurviveHandover)
     pane.source->publish(FrameClass::Settled, 500);
     const auto encoded = pane.encode();
     REQUIRE(encoded);
-    auto restored = decodePaneHandover(encoded->view(), paneLimits);
+    auto restored = decodePaneHandover(encoded->view(), paneLimits, {});
     REQUIRE(restored);
     CHECK(restored->terminal->modes.shouldReportKeyPositions);
     CHECK(restored->terminal->keyPositionReportedModifiers == 0x11);

@@ -71,7 +71,7 @@ static void applyCheckpointBody(std::span<const uint8_t> body)
 // daemon's own limits, and checks the terminal it admits.
 static void shareBody(std::span<const uint8_t> body)
 {
-    const auto restored = Ubiquitty::Protocol::Sync::decodeHandoverTerminal(body, Ubiquitty::Session::localShareTerminalLimits(Local::maxAdoptBodyBytes));
+    const auto restored = Ubiquitty::Protocol::Sync::decodeHandoverTerminal(body, Ubiquitty::Session::localShareTerminalLimits(Local::maxAdoptBodyBytes), {});
     if (restored && restored->terminal)
         checkTermSanity(*restored->terminal);
 }

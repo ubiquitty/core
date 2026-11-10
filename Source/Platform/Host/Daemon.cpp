@@ -2930,7 +2930,9 @@ public:
         if (m_daemon.m_preparedLocalAdopts >= maxSessions || m_daemon.m_sessions.size() >= maxSessions - m_daemon.m_preparedLocalAdopts)
             return std::unexpected(Rejection::HostFull);
         auto restored = Protocol::Sync::decodeHandoverTerminal(m_body,
-            Ubiquitty::Session::localShareTerminalLimits(Protocol::Local::maxAdoptBodyBytes), m_daemon.m_decodeMemory);
+            Ubiquitty::Session::localShareTerminalLimits(Protocol::Local::maxAdoptBodyBytes),
+            { .now = Ticks::fromMilliseconds(m_daemon.m_monotonicMicroseconds() / 1000), .sender = Protocol::Sync::HandoverSenderClock::Separate },
+            m_daemon.m_decodeMemory);
         if (!restored)
             return std::unexpected(restored.error() == Protocol::Sync::HandoverBodyError::AllocationRefused
                     ? Rejection::NoMemory

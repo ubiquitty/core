@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "Base/Types.h"
 #include "Core/Protocol/Sync/Connection.h"
 #include "Core/Protocol/Sync/Messages.h"
 #include "PAL/OutputQueue.h"
@@ -17,7 +18,7 @@ struct Terminal;
 namespace Ubiquitty::Protocol::Sync {
 
 /// The state-format version a host writes; the format rule is in Docs/sync.md §6.13.
-inline constexpr std::uint16_t handoverBodyVersion = 35;
+inline constexpr std::uint16_t handoverBodyVersion = 36;
 /// The state format written by the last published release, v0.3.3, as v0.3.2 wrote it.
 /// Release updates keep its frozen fixture alongside the writer's fixture.
 inline constexpr std::uint16_t lastPublishedHandoverBodyVersion = 35;
@@ -36,6 +37,29 @@ enum class HandoverBodyError : std::uint8_t {
     DigestMismatch,
     AllocationRefused,
     NotAtGround,
+};
+
+/// Whether a body's sender kept the terminal's ticks on the receiver's clock.
+enum class HandoverSenderClock : std::uint8_t {
+    /// The receiver's own: a daemon's predecessor on the same machine.
+    Shared,
+    /// Another: the app sharing a session into its daemon or reclaiming one
+    /// from it. The app's clock stops while the Mac sleeps; the daemon's
+    /// does not.
+    Separate,
+};
+
+/// The clock a decoded terminal's ticks are kept on (Docs/sync.md §6.13,
+/// "Clocks"). A body carries each tick as its age at the sender's now, and
+/// the receiver re-bases it on this one. A body at version 35 carries them
+/// absolute: a shared clock takes them as they are, and a separate one takes
+/// them as unknown, stamping an activity, display or bell tick now and leaving
+/// a command's start unknown.
+struct HandoverReceiverClock {
+    /// Now, on the clock the receiver keeps the terminal's ticks on.
+    Ticks now;
+    /// How the sender kept them.
+    HandoverSenderClock sender = HandoverSenderClock::Shared;
 };
 
 /// Names the state issuer and bounded sections on the local successor channel.
@@ -285,8 +309,10 @@ struct HandoverSoundLimits {
 /// - Parameters:
 ///   - terminal: The exclusively held model at handover ground.
 ///   - maxBytes: The receiver's section ceiling.
+///   - now: Now, on the clock the terminal's ticks are kept on; each tick
+///     travels as its age at this instant.
 /// - Returns: Exact owned bytes, or refusal without consuming any work.
-[[nodiscard]] std::expected<HandoverBytes, HandoverBodyError> encodeHandoverHostState(const Ubiquitty::Terminal& terminal, std::size_t maxBytes);
+[[nodiscard]] std::expected<HandoverBytes, HandoverBodyError> encodeHandoverHostState(const Ubiquitty::Terminal& terminal, std::size_t maxBytes, Ticks now);
 
 /// Validates and prepares all replacement owners before committing host state.
 ///
@@ -297,8 +323,10 @@ struct HandoverSoundLimits {
 ///   - bytes: One complete host-state section.
 ///   - terminal: The private unpublished receiving model at ground.
 ///   - maxBytes: The receiver's independent section ceiling.
+///   - clock: The clock the receiver keeps the terminal's ticks on.
 /// - Returns: Success after replacement, or refusal without mutation.
-[[nodiscard]] std::expected<void, HandoverBodyError> restoreHandoverHostState(std::span<const std::uint8_t> bytes, Ubiquitty::Terminal& terminal, std::size_t maxBytes);
+[[nodiscard]] std::expected<void, HandoverBodyError> restoreHandoverHostState(std::span<const std::uint8_t> bytes, Ubiquitty::Terminal& terminal, std::size_t maxBytes,
+    HandoverReceiverClock clock);
 
 /// Receiver-owned limits for one joined terminal, independent of session/PTY state.
 struct HandoverTerminalLimits {
@@ -343,8 +371,10 @@ struct HandoverTerminal {
 ///   - terminal: The authoritative, unchanged terminal at ground.
 ///   - generation: Its frozen nonzero screen generation.
 ///   - limits: The receiver's independently chosen admission bounds.
+///   - now: Now, on the clock the terminal's ticks are kept on.
 /// - Returns: One complete owned record, or refusal without source mutation.
-[[nodiscard]] std::expected<HandoverBytes, HandoverBodyError> encodeHandoverTerminal(const Ubiquitty::Terminal& terminal, std::uint64_t generation, const HandoverTerminalLimits& limits);
+[[nodiscard]] std::expected<HandoverBytes, HandoverBodyError> encodeHandoverTerminal(const Ubiquitty::Terminal& terminal, std::uint64_t generation, const HandoverTerminalLimits& limits,
+    Ticks now);
 
 /// Validates continuation sections before constructing a private candidate.
 ///
@@ -360,11 +390,12 @@ struct HandoverTerminal {
 /// - Parameters:
 ///   - bytes: Exactly one joined terminal record.
 ///   - limits: The receiving host's limits, never inferred from sender policy.
+///   - clock: The clock the receiver keeps the terminal's ticks on.
 ///   - decodeMemory: The process's decode owner; null bounds the candidate by
 ///     `limits` alone.
 /// - Returns: A wholly owned terminal and generation, or explicit refusal.
 [[nodiscard]] std::expected<HandoverTerminal, HandoverBodyError> decodeHandoverTerminal(std::span<const std::uint8_t> bytes, const HandoverTerminalLimits& limits,
-    std::shared_ptr<MemoryBudget> decodeMemory = nullptr);
+    HandoverReceiverClock clock, std::shared_ptr<MemoryBudget> decodeMemory = nullptr);
 
 /// Bounds publication dictionaries and retained rewrite metadata independently.
 struct HandoverPublicationLimits {
@@ -511,18 +542,23 @@ struct HandoverPaneImage {
 ///   - session: Portable facts from the same frozen Session.
 ///   - unwrittenPTY: Exact stream-owned bytes and ownership partition.
 ///   - limits: Independent successor admission bounds.
+///   - now: Now, on the clock the pane's terminal keeps its ticks on.
 /// - Returns: One record or refusal without changing the predecessor.
 [[nodiscard]] std::expected<HandoverBytes, HandoverBodyError> encodePaneHandover(const PaneSource& source,
-    const SessionFacts& session, const PAL::OutputQueue::Unwritten& unwrittenPTY, const HandoverPaneLimits& limits);
+    const SessionFacts& session, const PAL::OutputQueue::Unwritten& unwrittenPTY, const HandoverPaneLimits& limits, Ticks now);
 
 /// Reconstructs private terminal, source and stream-byte owners as one unit.
+///
+/// A pane record passes from a daemon to its successor, which keeps the
+/// terminal's ticks on the same clock.
 /// - Parameters:
 ///   - bytes: One entire checksummed pane record, excluding transport framing.
 ///   - limits: Successor admission bounds, never inferred from carried policy.
+///   - now: Now, on the successor's clock.
 ///   - decodeMemory: The successor's decode owner (`decodeHandoverTerminal`).
 /// - Returns: Private owners ready for host validation/rebinding, or refusal.
 [[nodiscard]] std::expected<HandoverPaneImage, HandoverBodyError> decodePaneHandover(std::span<const std::uint8_t> bytes,
-    const HandoverPaneLimits& limits, std::shared_ptr<MemoryBudget> decodeMemory = nullptr);
+    const HandoverPaneLimits& limits, Ticks now, std::shared_ptr<MemoryBudget> decodeMemory = nullptr);
 
 /// Encodes exact publisher identity without capturing or advancing the source.
 /// - Parameters:
