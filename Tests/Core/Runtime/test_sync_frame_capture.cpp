@@ -2903,6 +2903,44 @@ TEST(aTickTakesTheNewestCaptureWithTheSelectionResolvedForIt)
     CHECK(next.frame == nullptr);
 }
 
+// A buffer with no room for every span of the frame's selection, as one sized
+// from a grid read before the program widened the screen has none, receives
+// the spans it has room for and learns how many the frame has. Taking the
+// held frame again into a buffer that size writes them all, and adopts
+// nothing the first take did not.
+TEST(aBufferTooSmallForTheFramesSpansLearnsHowManyItNeeds)
+{
+    FloodedPane pane(24, 80);
+    pane.floodPass("one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\n");
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+    pane.select(0, 0, 5, 2);
+    Selection::Session reference = pane.selection;
+    pane.floodPass("seven\r\n");
+    const DrawnSelection live = liveRead(reference, *pane.terminal, 0);
+    REQUIRE(live.spans.size() > 2);
+
+    std::vector<SelectionRowSpan> room(2);
+    Runtime::FrameSupply supply;
+    const TakenFrame frame { pane.fixture.session->takeFrame({ .selection = &pane.selection, .selectionSpans = room }, supply) };
+    REQUIRE(supply.route == Runtime::FrameRoute::Captured);
+    REQUIRE(frame != nullptr);
+    CHECK_EQ(supply.selection.count, 2);
+    CHECK_EQ(supply.selection.needed, static_cast<int>(live.spans.size()));
+    CHECK(std::ranges::equal(room, std::span(live.spans).first(2)));
+    CHECK(supply.selection.didAdopt);
+    const Selection::Session adopted = pane.selection;
+
+    std::vector<SelectionRowSpan> whole(static_cast<std::size_t>(supply.selection.needed));
+    Selection::ViewportEnds ends;
+    const Selection::CaptureSpans refill = pane.fixture.session->selectionOverCapture(&pane.selection, *frame, whole, ends);
+    CHECK_EQ(refill.count, supply.selection.needed);
+    CHECK_EQ(refill.needed, supply.selection.needed);
+    CHECK(whole == live.spans);
+    CHECK_EQ(ends.startRow, supply.selectionEnds.startRow);
+    CHECK(!refill.didAdopt);
+    CHECK(isSameState(pane.selection.state, adopted.state));
+}
+
 // A view whose last frame drew search matches reads the model, saturated or
 // not, and the capture stays in the slot for the tick that stops drawing them.
 TEST(aViewKeepingSearchLiveReadsTheModelAndLeavesTheCaptureWaiting)
