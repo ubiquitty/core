@@ -2930,6 +2930,26 @@ FrameAsk askForFrame(TerminalSession& session, Runtime::FrameDemand demand)
 
 } // namespace
 
+// A capture says whether it draws a status row, so a view reads it from the
+// frame it presents rather than from the model: none before the program asks
+// for the indicator line, one after.
+TEST(aCaptureSaysWhetherItDrawsAStatusRow)
+{
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    fixture.session->setSyncFrameCaptureGeometry(testGeometry());
+    fixture.drainSyncFrame("no status line");
+    {
+        const TakenFrame plain { fixture.session->takeSyncFrame() };
+        REQUIRE(plain != nullptr);
+        CHECK(!plain->hasStatusRow());
+    }
+    fixture.drainSyncFrame("\x1b[1$~indicator");
+    const TakenFrame indicated { fixture.session->takeSyncFrame() };
+    REQUIRE(indicated != nullptr);
+    CHECK(indicated->hasStatusRow());
+}
+
 // A capture waiting in the slot is the tick's frame, with the selection the
 // drain resolved for it: the spans the live read draws over the terminal the
 // frame froze.
