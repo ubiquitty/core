@@ -1013,7 +1013,6 @@ private:
 // still open: here it never ends, so nothing waits on its teardown.
 TEST(testAPipelinedPauseOnAPassBoundaryDeliversBeforeTheBurstEnds)
 {
-    ownModelOnTestThread();
     constexpr std::size_t burstBytes = 3 * static_cast<std::size_t>(TerminalRuntime::drainPassCapacityBytes);
     std::string burst;
     constexpr std::string_view line = "0123456789abcdefghijklmnopqrstuvwxyz\n";
@@ -1044,7 +1043,7 @@ TEST(testAPipelinedPauseOnAPassBoundaryDeliversBeforeTheBurstEnds)
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> loopEndpoint = stream->duplicateAsPollableStream();
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> floodEndpoint = stream->duplicateAsPollableStream();
     REQUIRE(loopEndpoint != nullptr && floodEndpoint != nullptr);
-    REQUIRE(runtime.prepareAdoption());
+    REQUIRE(prepareAdoptionBeforeIngest(runtime));
     auto adoption = runtime.adoptStream(std::move(stream));
     REQUIRE(adoption.has_value());
 
@@ -1079,7 +1078,6 @@ TEST(testAPipelinedPauseOnAPassBoundaryDeliversBeforeTheBurstEnds)
 
 TEST(testATimedPipelinePauseReleasesAHeldFrameBeforeTheBurstEnds)
 {
-    ownModelOnTestThread();
     class TimedPausedDrainHost final : public DrainHost {
     public:
         void lockModel() override UBIQUITTY_ACQUIRES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_lock.lock(); }
@@ -1128,7 +1126,7 @@ TEST(testATimedPipelinePauseReleasesAHeldFrameBeforeTheBurstEnds)
     auto loopEndpoint = stream->duplicateAsPollableStream();
     auto floodEndpoint = stream->duplicateAsPollableStream();
     REQUIRE(loopEndpoint != nullptr && floodEndpoint != nullptr);
-    REQUIRE(runtime.prepareAdoption());
+    REQUIRE(prepareAdoptionBeforeIngest(runtime));
     REQUIRE(runtime.adoptStream(std::move(stream)).has_value());
 
     TimedPausedDrainHost host;
@@ -1184,7 +1182,6 @@ private:
 // late.
 TEST(testAHeldFrameIsAnnouncedOnTheRulesScheduleWhileADeliveryIsHeld)
 {
-    ownModelOnTestThread();
     int pipeDescriptors[2] = { -1, -1 };
     REQUIRE(::pipe(pipeDescriptors) == 0);
     Ubiquitty::PAL::UnixFileDescriptor readEnd(pipeDescriptors[0]);
@@ -1200,7 +1197,7 @@ TEST(testAHeldFrameIsAnnouncedOnTheRulesScheduleWhileADeliveryIsHeld)
     auto stream = std::make_unique<Ubiquitty::PAL::PipeStream>(std::move(readEnd));
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> loopEndpoint = stream->duplicateAsPollableStream();
     REQUIRE(loopEndpoint != nullptr);
-    REQUIRE(runtime.prepareAdoption());
+    REQUIRE(prepareAdoptionBeforeIngest(runtime));
     auto adoption = runtime.adoptStream(std::move(stream));
     REQUIRE(adoption.has_value());
 
@@ -1239,7 +1236,6 @@ TEST(testAHeldFrameIsAnnouncedOnTheRulesScheduleWhileADeliveryIsHeld)
 // held frame is released, and announced, on the way out.
 TEST(testALoopThatStopsReleasesTheFrameTheRuleHolds)
 {
-    ownModelOnTestThread();
     int pipeDescriptors[2] = { -1, -1 };
     REQUIRE(::pipe(pipeDescriptors) == 0);
     Ubiquitty::PAL::UnixFileDescriptor readEnd(pipeDescriptors[0]);
@@ -1255,7 +1251,7 @@ TEST(testALoopThatStopsReleasesTheFrameTheRuleHolds)
     auto stream = std::make_unique<Ubiquitty::PAL::PipeStream>(std::move(readEnd));
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> loopEndpoint = stream->duplicateAsPollableStream();
     REQUIRE(loopEndpoint != nullptr);
-    REQUIRE(runtime.prepareAdoption());
+    REQUIRE(prepareAdoptionBeforeIngest(runtime));
     auto adoption = runtime.adoptStream(std::move(stream));
     REQUIRE(adoption.has_value());
 
@@ -1504,9 +1500,6 @@ enum class FloodContent {
 ShapedFloodOutcome runShapedFlood(Ubiquitty::PAL::ReadShape shape, FramePacing pacing = FramePacing::Never,
     FloodContent content = FloodContent::Lines)
 {
-    // This thread reads the model only before the loop starts and after it
-    // stops, when no other thread does.
-    ownModelOnTestThread();
     ShapedFloodOutcome outcome;
     // Past the drain pass capacity, so the flood rides the pipeline, and
     // small enough that the slow parser finishes it in a few hundred ms.
@@ -1544,7 +1537,7 @@ ShapedFloodOutcome runShapedFlood(Ubiquitty::PAL::ReadShape shape, FramePacing p
     auto stream = std::make_unique<Ubiquitty::PAL::PrefilledStream>(std::move(file), shape);
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> loopEndpoint = stream->duplicateAsPollableStream();
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> floodEndpoint = stream->duplicateAsPollableStream();
-    if (!loopEndpoint || !floodEndpoint || !runtime.prepareAdoption() || !runtime.adoptStream(std::move(stream)).has_value())
+    if (!loopEndpoint || !floodEndpoint || !prepareAdoptionBeforeIngest(runtime) || !runtime.adoptStream(std::move(stream)).has_value())
         return outcome;
 
     SlowParseDrainHost host(pacing);
@@ -1566,14 +1559,16 @@ ShapedFloodOutcome runShapedFlood(Ubiquitty::PAL::ReadShape shape, FramePacing p
     loop.requestStop();
     loop.raiseWake();
     ingest.join();
-    if (const auto* terminal = runtime.borrowTermForRender(); terminal && terminal->grid) {
-        outcome.didReachTail = true;
+    outcome.didReachTail = withModelAfterIngest(runtime, [&](const Ubiquitty::Terminal* terminal) {
+        if (!terminal || !terminal->grid)
+            return false;
         for (std::size_t column = 0; column < tail.size(); ++column) {
             const auto* cell = terminal->grid->cellAt(Ubiquitty::Row(0), Ubiquitty::Column(static_cast<int>(column)));
             if (!cell || cell->codePoint != static_cast<std::uint32_t>(tail[column]))
-                outcome.didReachTail = false;
+                return false;
         }
-    }
+        return true;
+    });
     outcome.continuingFrames = host.continuingFrames;
     outcome.budgetedMidSequenceFrames = host.budgetedMidSequenceFrames;
     runtime.close();
@@ -1641,9 +1636,6 @@ TEST(testATimedPassHandsAFloodToTheReader)
 // and the flood rides the reader.
 TEST(testPassesThatEachEndAtAWouldBlockHandAFastWriterToTheReader)
 {
-    // This thread reads the model only before the loop starts and after it
-    // stops, when no other thread does.
-    ownModelOnTestThread();
     // 64 KB between pauses, each one would-block longer than a pass's refill
     // band re-reads: it ends the pass that meets it, and the next pass finds
     // the writer's next 64 KB.
@@ -1669,7 +1661,7 @@ TEST(testPassesThatEachEndAtAWouldBlockHandAFastWriterToTheReader)
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> loopEndpoint = stream->duplicateAsPollableStream();
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> floodEndpoint = stream->duplicateAsPollableStream();
     REQUIRE(loopEndpoint != nullptr && floodEndpoint != nullptr);
-    REQUIRE(runtime.prepareAdoption());
+    REQUIRE(prepareAdoptionBeforeIngest(runtime));
     REQUIRE(runtime.adoptStream(std::move(stream)).has_value());
 
     LockOnlyDrainHost host;
@@ -1715,7 +1707,6 @@ TEST(testTheReadersTimedPassesTakeFramesInsideASequence)
 // the interval rather than only when the rule's clock lands between bites.
 TEST(testAStarvedWritersFloodKeepsTakingFramesAtTheInterval)
 {
-    ownModelOnTestThread();
     class StarvedWriterDrainHost final : public DrainHost {
     public:
         void lockModel() override UBIQUITTY_ACQUIRES(Ubiquitty::modelLockRole) UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { m_lock.lock(); }
@@ -1750,7 +1741,7 @@ TEST(testAStarvedWritersFloodKeepsTakingFramesAtTheInterval)
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> loopEndpoint = stream->duplicateAsPollableStream();
     std::unique_ptr<Ubiquitty::PAL::PollableByteStream> floodEndpoint = stream->duplicateAsPollableStream();
     REQUIRE(loopEndpoint != nullptr && floodEndpoint != nullptr);
-    REQUIRE(runtime.prepareAdoption());
+    REQUIRE(prepareAdoptionBeforeIngest(runtime));
     REQUIRE(runtime.adoptStream(std::move(stream)).has_value());
 
     StarvedWriterDrainHost host;
