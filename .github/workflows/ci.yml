@@ -432,7 +432,7 @@ jobs:
       # and the iOS simulator arm, as the Kit's own CI runs them.
       - name: Kit's Apple stages
         working-directory: kit
-        run: python3 "$CORE_CHECKOUT/Scripts/ci_batteries.py" run apple --source-root "$KIT_CHECKOUT" --only setup --only quic --only swift-renderer --only ios-protected-file
+        run: python3 "$CORE_CHECKOUT/Scripts/ci_batteries.py" run apple --source-root "$KIT_CHECKOUT" --only setup --only quic --only portable-build --only metallib --only swift-renderer --only ios-protected-file
       - name: Swift renderer from clean
         working-directory: kit
         run: '"$KIT_CHECKOUT/Scripts/check-swift-module-compiles.sh"'
@@ -454,7 +454,7 @@ jobs:
       - name: Report the Kit's Apple stages
         if: always()
         working-directory: kit
-        run: python3 "$CORE_CHECKOUT/Scripts/ci_batteries.py" report apple --source-root "$KIT_CHECKOUT" --only setup --only quic --only swift-renderer --only ios-protected-file
+        run: python3 "$CORE_CHECKOUT/Scripts/ci_batteries.py" report apple --source-root "$KIT_CHECKOUT" --only setup --only quic --only portable-build --only metallib --only swift-renderer --only ios-protected-file
       - name: Save the compiler cache
         if: always()
         continue-on-error: true
