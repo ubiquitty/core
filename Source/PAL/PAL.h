@@ -342,12 +342,13 @@ void schedulerYield();
 
 /// Places the calling thread in the band interactive ingest runs in.
 ///
-/// Called once by the ingest thread as it starts, so the band is a property
-/// of the loop rather than of whichever thread created it — a thread with no
-/// band of its own inherits its creator's, which makes the answer depend on
-/// a caller that has nothing to do with ingest. A hint only: a backend with
-/// no priority control may do nothing, and one whose threads already sit in
-/// the band gains nothing measurable.
+/// Called once by each ingest thread as it starts, the loop's and the flood
+/// reader's, so the band is a property of the loop rather than of whichever
+/// thread created it: whether a new thread takes its creator's band is the
+/// platform's to decide, and a Darwin pthread starts in the default class
+/// whatever its creator's is. A hint only: a backend with no priority control
+/// may do nothing, and one whose threads already sit in the band gains
+/// nothing measurable.
 void raiseCurrentThreadToInteractivePriority();
 
 /// Places the calling thread in the band background work runs in.

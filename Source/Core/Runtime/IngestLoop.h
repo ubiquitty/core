@@ -28,10 +28,10 @@
 //
 // The OS lives behind PAL: the wait is ``PAL::waitForReadiness`` and the
 // cross-thread wake is a ``PAL::Waker``, so this header names no descriptor
-// and no syscall. What stays with the platform: the thread and its scheduling
-// class (the Metal arm pins its ingest queue to user-initiated so the parser
-// is not scheduled onto efficiency cores), and the hop from the deliver hook
-// to the main thread.
+// and no syscall. Both ingest threads, the loop's and the flood reader, enter
+// the interactive band through ``PAL::raiseCurrentThreadToInteractivePriority``;
+// what that band is stays with the platform, as does the hop from the deliver
+// hook to the main thread.
 
 namespace Ubiquitty::Runtime {
 
@@ -782,6 +782,12 @@ private:
     /// classifies and latches the end state.
     void floodReaderLoop()
     {
+        // In the ingest thread's band: every refill the writer makes waits on
+        // this thread to read it, so a reader ranked with a loaded machine's
+        // busy work holds the writer back by its own scheduling delay. A new
+        // thread does not take its creator's band everywhere; a Darwin pthread
+        // starts in the default class whatever its creator's is.
+        PAL::raiseCurrentThreadToInteractivePriority();
         char* ring = m_floodRing.get();
         // Hoisted: the transport's cadence is a property of the endpoint, not
         // of any one gap. A wait-first endpoint parks on the first empty read

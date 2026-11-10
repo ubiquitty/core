@@ -6394,10 +6394,8 @@ public:
     /// C++23 jthread this session owns, so a caller that forgets to stop is a
     /// join on destruction rather than a leak. The loop waits on an
     /// independently owned duplicate of the transport's endpoint, which is
-    /// the polling contract ``PAL::PollableByteStream`` states. No scheduling
-    /// class is pinned here: that is a platform statement, and the smoke and
-    /// the bench are what decide whether the default class costs throughput
-    /// before a PAL hook buys it back.
+    /// the polling contract ``PAL::PollableByteStream`` states. The thread
+    /// enters the interactive band through PAL before the loop starts.
     ///
     /// - Returns: Whether the loop started; false with no pollable transport.
     bool startIngest()
