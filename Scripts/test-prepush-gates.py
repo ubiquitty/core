@@ -306,6 +306,8 @@ fake_gate_lint() {{ run "lint gate" ./Scripts/fake-lint.sh; }}
 fake_gate_build() {{ run "build gate" ./Scripts/fake-build.sh; }}
 fake_gate_selected() {{ if ubq_select_all; then run "selected gate" ./Scripts/fake-selected.sh; fi; }}
 fake_gate_stands_down() {{ run "standing-down gate" ./Scripts/fake-skip.sh; }}
+fake_gate_killed() {{ run "killed gate" ./Scripts/fake-killed.sh; }}
+fake_gate_silent() {{ run "silent gate" ./Scripts/fake-silent.sh; }}
 case "$TIER" in
     families) ubq_run_families ;;
     full) fake_gate_lint; fake_gate_build; fake_gate_selected; fake_gate_stands_down ;;
@@ -335,6 +337,11 @@ class GateRunnerTests(unittest.TestCase):
         for name in ("lint", "build", "selected"):
             script = self.repository / f"Scripts/fake-{name}.sh"
             script.write_text(f'#!/bin/sh\necho {name} >> "$MARKER"\n')
+            script.chmod(0o755)
+        for name, body in (("killed", 'echo killed >> "$MARKER"\nkill -9 $$\n'),
+                           ("silent", 'echo silent >> "$MARKER"\nexit 3\n')):
+            script = self.repository / f"Scripts/fake-{name}.sh"
+            script.write_text("#!/bin/sh\n" + body)
             script.chmod(0o755)
         skip = self.repository / "Scripts/fake-skip.sh"
         skip.write_text('#!/bin/sh\necho skip >> "$MARKER"\necho "fake-skip: SKIPPED — no such tool here"\n')
@@ -390,6 +397,12 @@ class GateRunnerTests(unittest.TestCase):
         ran, status, _, error = self.gates("families")
         self.assertEqual((ran, status), ([], 2), error)
         self.assertIn("names none", error)
+
+    def testAGateASignalEndedOrThatFailedSilentlySaysSo(self):
+        ran, status, output, error = self.gates("families", UBQ_PREPUSH_FAMILIES="fake_gate_killed fake_gate_silent")
+        self.assertEqual((ran, status), (["killed", "silent"], 1), error)
+        self.assertRegex(output, r"(?m)^  killed gate +FAILED \(killed by signal 9 KILL before it gave a verdict\)")
+        self.assertRegex(output, r"(?m)^  silent gate +FAILED \(exit 3, and the gate printed nothing\)")
 
     def testAStrictRunFailsOnAGateThatStoodDown(self):
         families = "fake_gate_lint fake_gate_stands_down"
