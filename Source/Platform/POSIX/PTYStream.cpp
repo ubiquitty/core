@@ -646,8 +646,13 @@ void PTYStream::settleLoginStartup()
         return;
     if (m_guardLifeline) {
         // One byte tells the guard to leave without killing; closing then is harmless.
+        // Any failure but a signal means no guard reads the lifeline (EPIPE), so
+        // closing it is harmless as well.
         const char settled = 'P';
-        (void)::write(m_guardLifeline.get(), &settled, 1);
+        ssize_t written;
+        do
+            written = ::write(m_guardLifeline.get(), &settled, 1);
+        while (written < 0 && errno == EINTR);
         m_guardLifeline.reset();
     }
 }
