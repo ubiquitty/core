@@ -102,7 +102,8 @@ bool prepareHandOff(const Session& selection, PublishedSelection& handedOff) noe
 CaptureSpans takeCapturedSelection(Session& selection, PublishedSelection& handedOff, const CapturedSelection& captured,
     ViewportSpans out, ViewportEnds& ends) noexcept UBIQUITTY_NONBLOCKING
 {
-    const std::size_t count = std::min({ static_cast<std::size_t>(std::max(captured.spanCount, 0)), captured.spans.size(), out.size() });
+    const std::size_t needed = std::min(static_cast<std::size_t>(std::max(captured.spanCount, 0)), captured.spans.size());
+    const std::size_t count = std::min(needed, out.size());
     std::copy_n(captured.spans.begin(), count, out.begin());
     ends = captured.ends;
     const bool canAdopt = captured.generation != 0 && captured.generation == handedOff.generation
@@ -115,7 +116,7 @@ CaptureSpans takeCapturedSelection(Session& selection, PublishedSelection& hande
         copyBytes(handedOff.session, resolved);
         handedOff.resolution = captured.resolution;
     }
-    return { static_cast<int>(count), captured.outcome, canAdopt };
+    return { .count = static_cast<int>(count), .needed = static_cast<int>(needed), .outcome = captured.outcome, .didAdopt = canAdopt };
 }
 
 } // namespace Ubiquitty::Selection

@@ -8552,16 +8552,20 @@ public:
     /// left unchanged since the hand-off the frame resolved is brought up to
     /// what output did to it there (``Selection::takeCapturedSelection``). A
     /// capture this session's slot did not hand out shows no selection.
+    /// Taking the same held frame again writes the same spans and adopts
+    /// nothing more, so a buffer that had no room for them all is refilled
+    /// this way at the size the first take said it needed.
     ///
     /// - Parameters:
     ///   - selection: The caller-owned selection session.
-    ///   - capture: A frame from ``takeSyncFrame``, still held.
-    ///   - out: Receives the spans, in the frame's visible rows; a buffer of
-    ///     ``Selection::viewportSpanCapacity`` spans for the frame always has
-    ///     room.
+    ///   - capture: A frame from ``takeSyncFrame`` or ``takeFrame``, still
+    ///     held.
+    ///   - out: Receives the spans, in the frame's visible rows, as many as it
+    ///     has room for; a buffer of ``Selection::viewportSpanCapacity`` spans
+    ///     for the frame's grid always has room.
     ///   - ends: Receives where the selection begins and ends on the frame.
-    /// - Returns: How many spans were written, the outcome, and whether the
-    ///   view took the resolved session.
+    /// - Returns: How many spans were written and how many the frame has, the
+    ///   outcome, and whether the view took the resolved session.
     [[nodiscard]] Ubiquitty::Selection::CaptureSpans selectionOverCapture(Ubiquitty::Selection::Session* selection,
         const Rendering::FrameCapture& capture, Ubiquitty::Selection::ViewportSpans out, Ubiquitty::Selection::ViewportEnds& ends) noexcept UBIQUITTY_NONBLOCKING
     {

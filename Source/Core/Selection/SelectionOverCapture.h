@@ -109,6 +109,11 @@ struct CapturedSelection {
 struct CaptureSpans {
     /// How many spans were written.
     int count = 0;
+    /// How many spans the frame's selection has. More than `count` when the
+    /// buffer had no room for them all, as one sized for a grid other than
+    /// the frame's can: a second take of the same frame into a buffer this
+    /// size writes every one.
+    int needed = 0;
     /// What output did to the selection the frame shows.
     CaptureOutcome outcome = CaptureOutcome::Kept;
     /// Whether the view's session took the frame's resolved one back.
@@ -132,11 +137,11 @@ struct CaptureSpans {
 ///   - selection: The view's session.
 ///   - handedOff: The frontend's record of its last hand-off.
 ///   - captured: The frame's resolved selection.
-///   - out: Receives the spans; a buffer of ``viewportSpanCapacity`` spans
-///     for the frame always has room.
+///   - out: Receives the spans, as many as it has room for; a buffer of
+///     ``viewportSpanCapacity`` spans for the frame's grid always has room.
 ///   - ends: Receives where the selection begins and ends on the frame.
-/// - Returns: How many spans were written, the outcome, and whether the view
-///   took the resolved session.
+/// - Returns: How many spans were written and how many the frame has, the
+///   outcome, and whether the view took the resolved session.
 [[nodiscard]] CaptureSpans takeCapturedSelection(Session& selection, PublishedSelection& handedOff, const CapturedSelection& captured,
     ViewportSpans out, ViewportEnds& ends) noexcept UBIQUITTY_NONBLOCKING;
 

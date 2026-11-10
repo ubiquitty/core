@@ -28,8 +28,12 @@ struct FrameDemand {
     /// selects nothing.
     Selection::Session* selection = nullptr;
     /// Receives the selection's spans over a captured frame, in its visible
-    /// rows. ``Selection::viewportSpanCapacity`` spans for the frame always
-    /// have room; an empty buffer receives none.
+    /// rows, as many as it has room for. ``Selection::viewportSpanCapacity``
+    /// spans for the frame's grid always have room. A frame captured at a
+    /// grid larger than the one the buffer was sized for says how many it
+    /// needed (``Selection::CaptureSpans::needed``), and
+    /// ``TerminalSession::selectionOverCapture`` on the frame refills a
+    /// buffer that size. An empty buffer receives none.
     Selection::ViewportSpans selectionSpans {};
     /// Whether the view is in a live resize. A resize does not wait for quiet
     /// output: only an open synchronized update and the redraw behind a
