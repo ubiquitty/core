@@ -28,6 +28,7 @@
 #if defined(__APPLE__)
 #include <libproc.h>
 #include <os/lock.h>
+#include <sys/event.h>
 #else
 #include <mutex>
 #endif
@@ -368,6 +369,13 @@ public:
     }
     ~PTYStream() override;
 
+    /// Takes the write end of the pipe a `login` child's guard watches (see startLifelineGuard).
+    /// The guard kills the child's process group when this end closes before `settleLoginStartup`
+    /// says the shell is past the startup window in which `login` ignores a hangup.
+    void holdGuardLifeline(UnixFileDescriptor lifeline) { m_guardLifeline = std::move(lifeline); }
+    /// Starts this process's guard for an adopted pane still in `login`'s startup window.
+    void guardAdoptedLoginPane();
+
     int read(std::span<char> buffer) override;
     int write(std::span<const char> bytes) override;
     int writeAll(std::span<const char> bytes) override;
@@ -521,6 +529,21 @@ private:
     std::optional<ProcessBirthIdentity> m_inheritedBirth;
     bool m_isLoginProgram = false;
     ProcessClosePolicy m_processClosePolicy = ProcessClosePolicy::Terminate;
+    // Write end of the guard's pipe; empty when no guard was started (not a login child, or not macOS).
+    UnixFileDescriptor m_guardLifeline;
+    // True once a `login` child's shell has been seen to produce output after it was known to exist:
+    // from then on a hangup reaches the shell and ends it. Before, `login` ignores the hangup and the
+    // shell may be blocked opening a terminal whose master is gone, so only SIGKILL ends the group.
+    std::atomic<bool> m_loginSettled { false };
+    bool m_hasSeenShellAtEarlierRead = false; // read thread only
+    // True for an adopted pane whose `login` leader had not yet handed the terminal to its shell,
+    // and for which this process started its own guard: the host that started the child holds the
+    // original lifeline, and its death is not the adopter's to rely on.
+    bool m_isGuardingAdoptedPane = false;
+    /// Ends the guard's watch without killing: the shell is at a state in which a hangup works.
+    void settleLoginStartup();
+    /// True while a hangup would be ignored by this stream's `login` child.
+    bool loginStartupIsOpen() const { return (m_isLoginProgram || m_isGuardingAdoptedPane) && !m_loginSettled.load(std::memory_order_acquire); }
     std::atomic<ProcessID> m_effectiveShellProcessID = 0; // resolved shell-leader cache (see effectiveShellLeader); read by every thread that asks for facts
     /* owned */ ProcessTracker* m_processTracker = nullptr; // kqueue subtree watcher; stopProcessTracker on close
     // The replica this stream wrote a login-session record for, empty when it
@@ -617,6 +640,18 @@ ProcessID PTYStream::effectiveShellLeader()
     return leader;
 }
 
+void PTYStream::settleLoginStartup()
+{
+    if (m_loginSettled.exchange(true, std::memory_order_acq_rel))
+        return;
+    if (m_guardLifeline) {
+        // One byte tells the guard to leave without killing; closing then is harmless.
+        const char settled = 'P';
+        (void)::write(m_guardLifeline.get(), &settled, 1);
+        m_guardLifeline.reset();
+    }
+}
+
 int PTYStream::read(std::span<char> buffer)
 {
     if (buffer.empty())
@@ -632,6 +667,16 @@ int PTYStream::read(std::span<char> buffer)
     ssize_t n = ::read(m_masterFileDescriptor.get(), buffer.data(), isAwaitingEcho ? buffer.size() - 1 : buffer.size());
     if (n > 0) {
         m_lastError = 0;
+        if (loginStartupIsOpen()) {
+            // Output from a shell that existed at an earlier read cannot be `login`'s own banner,
+            // which is printed before the shell is forked.
+            if (m_hasSeenShellAtEarlierRead)
+                settleLoginStartup();
+            else {
+                (void)effectiveShellLeader(); // caches the shell's id once it exists
+                m_hasSeenShellAtEarlierRead = m_effectiveShellProcessID.load(std::memory_order_relaxed) > 0;
+            }
+        }
         return isAwaitingEcho ? markOutputCutByInterrupt(buffer, static_cast<int>(n)) : static_cast<int>(n);
     }
     if (n == 0) {
@@ -1284,6 +1329,16 @@ private:
     std::set<ProcessID> m_pending;
 };
 
+// Ends a child that is its own process group's leader, and everything in the
+// group, with the one signal that cannot be ignored. A child from forkpty leads
+// the group it started, so no other process's group is reached; the leader is
+// signalled by id as well for the case that its group was already left.
+void killProcessGroup(ProcessID leader)
+{
+    (void)::kill(-leader, SIGKILL);
+    (void)::kill(leader, SIGKILL);
+}
+
 // Escalates and reaps a child that ignored its hangup.
 //
 // Takes the process id by value and touches nothing else: the stream that
@@ -1364,9 +1419,16 @@ PTYStream::~PTYStream()
     // login record; it can publish the child's exit until the join completes.
     stopProcessTracker(m_processTracker);
     m_processTracker = nullptr;
+    // An orderly end of an adopted pane is the hangup below, or an abandoned adoption whose
+    // master the original host still holds; neither is the death the guard exists for.
+    if (m_isGuardingAdoptedPane)
+        settleLoginStartup();
     if (m_child->isInherited()) {
         // The predecessor (or its replacement reaper) owns waitpid. Never put
         // this non-child in a delayed signal/reap task keyed only by a PID.
+        // An adopted pane was taken over from a live shell, past the window in
+        // which `login` ignores a hangup; the guard stays with the host that
+        // started the child.
         if (m_processClosePolicy == ProcessClosePolicy::Terminate && inheritedProcessIsCurrent())
             (void)::killpg(m_child->processID(), SIGHUP);
         m_masterFileDescriptor.reset();
@@ -1376,24 +1438,34 @@ PTYStream::~PTYStream()
     }
     const bool shouldKeepChild = m_processClosePolicy == ProcessClosePolicy::KeepRunning
         && m_child->processID() > 0 && !m_child->hasExited();
+    // A transferred child keeps running past this host, so its guard must not
+    // kill it when this host's end of the pipe goes: it is told to leave.
+    if (shouldKeepChild)
+        settleLoginStartup();
     // A transferred child keeps its login record until the reaper sees its
     // exit; an ordinary close ends the recorded session here.
     if (!shouldKeepChild && !m_recordedPTY.empty())
         unregisterLoginSession(m_recordedPTY.c_str());
+    // Decided before the master closes: the guard watches this end, and the
+    // answer to "may a hangup still be ignored" must not change under it.
+    const bool isHangupIgnorable = m_isLoginProgram && !m_loginSettled.load(std::memory_order_acquire);
     m_masterFileDescriptor.reset();
     if (m_child->processID() > 0 && !m_child->hasExited()) {
         const ProcessID childProcess = m_child->processID();
         if (shouldKeepChild) {
             reapTransferredChild(childProcess, std::move(m_recordedPTY));
         } else {
-            // A `login` wrapper that has not forked its shell yet is still in
-            // the stretch where it ignores SIGHUP; a hangup there is dropped,
-            // and the master's close that follows leaves it to start a shell
-            // on a dead pty. With no shell there is nothing to hang up
-            // gracefully, so that case gets the signal login cannot ignore.
-            const bool isLoginWithoutShell = m_isLoginProgram && m_effectiveShellProcessID.load(std::memory_order_relaxed) <= 0
-                && firstChildProcess(childProcess) <= 0;
-            ::kill(childProcess, isLoginWithoutShell ? SIGKILL : SIGHUP);
+            // While `login` is starting up it ignores SIGHUP, and the shell it
+            // forked may be blocked opening a terminal whose master has just
+            // gone, where a hangup that arrived once is never repeated. Nothing
+            // is running that a graceful hangup could save, so the whole group
+            // gets the signal that cannot be ignored, here and not on a thread
+            // a dying process would take with it. Afterwards a shell has default
+            // handling and dies on the hangup the master's close raises.
+            if (isHangupIgnorable)
+                killProcessGroup(childProcess);
+            else
+                ::kill(childProcess, SIGHUP);
             // One non-blocking probe covers what almost always happens: a shell
             // exits on the hangup before this returns. Anything else escalates off
             // this thread, because this destructor runs on the main thread and a
@@ -1424,12 +1496,136 @@ namespace {
 void abandonSpawnedChild(ProcessID childProcessID, UnixFileDescriptor master)
 {
     master = {};
-    ::kill(childProcessID, SIGHUP);
+    // Never reached a prompt, and may be inside `login`'s window of ignoring a hangup.
+    killProcessGroup(childProcessID);
     if (::waitpid(childProcessID, nullptr, WNOHANG) != childProcessID)
         reapAfterHangup(childProcessID);
 }
 
+#if defined(__APPLE__)
+// A pane closed during `login`'s start, or a host killed with panes open, left a
+// `login` and its shell for the life of the machine, each holding a pty.
+// `login` ignores SIGHUP until it has forked and committed to its shell, the
+// master's close raises exactly one hangup, and a shell that was forked inside
+// that instant then blocks forever opening a terminal whose master is gone.
+// Nothing the host does afterwards can reach it when the host is dead, so the
+// child carries its own undertaker: a watcher in a session of its own, held by
+// launchd rather than by the pane's process tree, that kills the child's group
+// when the host's end of a pipe closes before the host has said the shell is
+// past that window. It also leaves when the child does, which is watched by
+// process id while that id is certainly this child's.
+//
+// Contract: this runs between fork and exec (or exit) in a child of a process with
+// other threads, so it may use only system calls and memory it already has: no
+// allocation, no stdio, no locks, no runtime that another thread could have held
+// at the fork. The watcher closes every descriptor it inherited, so it holds none
+// of another pane's lifeline and cannot keep another host's guard from firing.
+// Returns in the calling process; never returns in the watcher. The caller keeps the write end
+// and, when it is the child that goes on to exec, closes its copy of it first.
+void startLifelineGuard(pid_t leader, int lifelineRead, int maxDescriptorCount)
+{
+    const pid_t intermediate = ::fork();
+    if (intermediate < 0) {
+        (void)::close(lifelineRead);
+        return;
+    }
+    if (intermediate > 0) {
+        // The intermediate exits at once, after forking the watcher, so the watcher
+        // is not this child's child and never shows in the pane's process tree.
+        while (::waitpid(intermediate, nullptr, 0) < 0 && errno == EINTR) {
+        }
+        (void)::close(lifelineRead);
+        return;
+    }
+    if (::fork() != 0)
+        _exit(0);
+
+    (void)::setsid();
+    for (int descriptor = 0; descriptor < maxDescriptorCount; ++descriptor) {
+        if (descriptor != lifelineRead)
+            (void)::close(descriptor);
+    }
+    const int none = ::open("/dev/null", O_RDWR);
+    if (none >= 0) {
+        (void)::dup2(none, STDIN_FILENO);
+        (void)::dup2(none, STDOUT_FILENO);
+        (void)::dup2(none, STDERR_FILENO);
+        if (none > STDERR_FILENO && none != lifelineRead)
+            (void)::close(none);
+    }
+    struct sigaction ignored {};
+    ignored.sa_handler = SIG_IGN;
+    sigemptyset(&ignored.sa_mask);
+    (void)::sigaction(SIGHUP, &ignored, nullptr);
+    (void)::sigaction(SIGPIPE, &ignored, nullptr);
+
+    const int queue = ::kqueue();
+    if (queue < 0)
+        _exit(0);
+    struct kevent registrations[2];
+    EV_SET(&registrations[0], static_cast<uintptr_t>(leader), EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, nullptr);
+    EV_SET(&registrations[1], static_cast<uintptr_t>(lifelineRead), EVFILT_READ, EV_ADD, 0, 0, nullptr);
+    // A leader already gone fails the registration: nothing left to guard.
+    if (::kevent(queue, registrations, 2, nullptr, 0, nullptr) < 0)
+        _exit(0);
+    for (;;) {
+        struct kevent event;
+        const int ready = ::kevent(queue, nullptr, 0, &event, 1, nullptr);
+        if (ready < 0) {
+            if (errno == EINTR)
+                continue;
+            _exit(0);
+        }
+        if (ready == 0)
+            continue;
+        if (event.filter == EVFILT_PROC)
+            _exit(0);
+        char byte;
+        const ssize_t count = ::read(lifelineRead, &byte, 1);
+        if (count > 0)
+            _exit(0); // the host says the shell is past the window
+        if (count < 0 && (errno == EINTR || errno == EAGAIN))
+            continue;
+        // The host's end closed while the child was still starting. If the child went
+        // in the same instant its id may be reused, so ask before signalling.
+        const struct timespec now = { 0, 0 };
+        struct kevent exited;
+        if (::kevent(queue, nullptr, 0, &exited, 1, &now) > 0 && exited.filter == EVFILT_PROC)
+            _exit(0);
+        (void)::kill(-leader, SIGKILL);
+        (void)::kill(leader, SIGKILL);
+        _exit(0);
+    }
+}
+#endif
+
 } // namespace
+
+void PTYStream::guardAdoptedLoginPane()
+{
+#if defined(__APPLE__)
+    if (!m_masterFileDescriptor)
+        return;
+    const ProcessID leader = sessionLeader();
+    // Past the start window the shell has taken the terminal for its own process group; a
+    // leader that still holds it, under the name `login`, has not handed it on.
+    if (leader <= 1 || processExecutableName(leader) != "login" || ::tcgetpgrp(m_masterFileDescriptor.get()) != leader)
+        return;
+    UnixPipe lifeline = makeUnixPipe();
+    if (!lifeline)
+        return;
+    constexpr int firstHighDescriptor = 16;
+    const int high0 = ::fcntl(lifeline.read.get(), F_DUPFD_CLOEXEC, firstHighDescriptor);
+    const int high1 = ::fcntl(lifeline.write.get(), F_DUPFD_CLOEXEC, firstHighDescriptor);
+    UnixFileDescriptor readEnd(high0);
+    UnixFileDescriptor writeEnd(high1);
+    if (!readEnd || !writeEnd)
+        return;
+    startLifelineGuard(leader, readEnd.get(), maxChildDescriptorCount());
+    m_guardLifeline = std::move(writeEnd);
+    m_isGuardingAdoptedPane = true;
+#endif
+}
 
 std::unique_ptr<Stream> openPTY(std::span<const std::string> arguments, const PTYLaunchOptions& options)
 {
@@ -1604,12 +1800,45 @@ std::unique_ptr<Stream> openPTY(std::span<const std::string> arguments, const PT
     (void)::fcntl(execReportPipe.write.get(), F_SETFD, FD_CLOEXEC);
     const int reportDescriptor = execReportPipe.write.get();
 
+#if defined(__APPLE__)
+    // The guard's pipe, for a `login` child only: any other program has default
+    // handling of the hangup from its first instruction. Both ends sit above the
+    // descriptors the child rearranges, so none of that can land on them.
+    const bool isLoginChild = arguments.front() == "/usr/bin/login";
+    UnixFileDescriptor lifelineRead;
+    UnixFileDescriptor lifelineWrite;
+    if (isLoginChild) {
+        UnixPipe lifeline = makeUnixPipe();
+        if (lifeline) {
+            constexpr int firstHighDescriptor = 16;
+            const int high0 = ::fcntl(lifeline.read.get(), F_DUPFD_CLOEXEC, firstHighDescriptor);
+            const int high1 = ::fcntl(lifeline.write.get(), F_DUPFD_CLOEXEC, firstHighDescriptor);
+            if (high0 >= 0 && high1 >= 0) {
+                lifelineRead = UnixFileDescriptor(high0);
+                lifelineWrite = UnixFileDescriptor(high1);
+            } else {
+                if (high0 >= 0)
+                    (void)::close(high0);
+                if (high1 >= 0)
+                    (void)::close(high1);
+            }
+        }
+    }
+#endif
+
     int rawMasterFileDescriptor = -1;
     ProcessID childProcessID = ::forkpty(&rawMasterFileDescriptor, nullptr, nullptr, nullptr);
     if (childProcessID < 0)
         return {};
     UnixFileDescriptor masterFileDescriptor(rawMasterFileDescriptor);
     if (childProcessID == 0) {
+#if defined(__APPLE__)
+        // First, before anything slow: the window the guard covers starts here.
+        if (lifelineRead && lifelineWrite) {
+            (void)::close(lifelineWrite.get());
+            startLifelineGuard(::getpid(), lifelineRead.get(), maxDescriptorCount);
+        }
+#endif
         // Child: start in the requested directory when reachable, else $HOME (the
         // inherited cwd is "/" when launched from Finder / `open`). First, before
         // the sweep below, so the directory is the shell's from the earliest
@@ -1748,6 +1977,11 @@ std::unique_ptr<Stream> openPTY(std::span<const std::string> arguments, const PT
         _exit(127); // every exec attempt failed
     }
 
+#if defined(__APPLE__)
+    // The watcher owns the read end now; this process keeps the write end, whose
+    // closing (by anything, including this process dying) is the guard's signal.
+    lifelineRead = {};
+#endif
     // Parent: wait out the child's exec (or its exit after every exec failed).
     execReportPipe.write = {};
     for (char discarded = 0;;) {
@@ -1778,11 +2012,15 @@ std::unique_ptr<Stream> openPTY(std::span<const std::string> arguments, const PT
         exitSource = ProcessExitSource::LoginShell;
     }
 #endif
-    Stream* stream = new (std::nothrow) PTYStream(std::move(masterFileDescriptor), childProcessID, std::move(recordedPTY), exitSource);
+    PTYStream* stream = new (std::nothrow) PTYStream(std::move(masterFileDescriptor), childProcessID, std::move(recordedPTY), exitSource);
     if (!stream) {
+        // The lifeline closes with this scope, which is what the guard wants of a child nobody owns.
         abandonSpawnedChild(childProcessID, std::move(masterFileDescriptor));
         return {};
     }
+#if defined(__APPLE__)
+    stream->holdGuardLifeline(std::move(lifelineWrite));
+#endif
     return std::unique_ptr<Stream>(stream);
 }
 
@@ -1826,11 +2064,13 @@ std::unique_ptr<Stream> adoptPTYWithPolicy(int masterFileDescriptor, ProcessID c
     // kill block is gated on childProcessID > 0). Master EOF signals shell exit.
     // What the shell is doing is read off the session the master names
     // (`sessionLeader`), which the check above verified.
-    Stream* stream = flagsPolicy == PTYAdoptionFlags::RequireNonBlocking
+    PTYStream* stream = flagsPolicy == PTYAdoptionFlags::RequireNonBlocking
         ? new (std::nothrow) PTYStream(std::move(adoptedMasterFileDescriptor))
         : new (std::nothrow) PTYStream(std::move(adoptedMasterFileDescriptor), -1);
     if (!stream)
         return {};
+    // The original host's guard dies with it, and this process may be the one that dies next.
+    stream->guardAdoptedLoginPane();
     return std::unique_ptr<Stream>(stream);
 }
 
