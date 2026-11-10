@@ -20,7 +20,7 @@ lockForRead waits the live read waits for the model lock
 nextAnimationDelay waits reads a raw adopted model, which no writer publishes, under the model lock after every drawn frame
 presentationHoldTicksRemaining waits reads a raw adopted model's open synchronized update, which no writer publishes, under the model lock
 sendKey waits encodes the key and notes the activity under the model lock where no ingest loop drains the pane's own model (adopted, remote, fed) or a DECUDK table is programmed
-setPresentedViewOffset waits a remote pane's offset asks its host for history
+setPresentedViewOffset nowait stores the offset; a remote link keeps the newest in a register and posts one session turn, which asks its host for history
 setSyncFrameCaptureGeometry waits registers the capture geometry under the model lock
 shouldWithholdCapture nowait reads the model inside the live read's hold
 shouldWithholdFrame waits judges an open synchronized update, and an adopted model on every tick, under the model lock

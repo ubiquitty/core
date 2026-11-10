@@ -3359,6 +3359,16 @@ TEST(aScrollPastTheBackfillWantsTheGapOnceAndFillsIt)
     CHECK_EQ(session->readSnapshot().history.retainedRows, backfilled + 48);
     CHECK_STR_EQ(oldestHistoryRow(*session), "history-" + std::to_string(oldestLine - 48));
 
+    // The frame path asks nothing itself: the session's turn asks for the
+    // newest offset, so a view that reaches the next gap and is back at the
+    // tail before that turn asks for nothing.
+    const std::size_t beforeBounce = factory.lastChannel->sent.size();
+    session->setPresentedViewOffset(backfilled + 48);
+    CHECK_EQ(factory.lastChannel->sent.size(), beforeBounce);
+    session->setPresentedViewOffset(0);
+    pumpPostedWork();
+    CHECK(viewportWantsOnCarrier(factory.lastChannel->sent, beforeBounce).empty());
+
     // The next gap is the next want's.
     const std::size_t afterFill = factory.lastChannel->sent.size();
     session->setPresentedViewOffset(backfilled + 48);

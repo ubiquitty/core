@@ -148,6 +148,10 @@ public:
     /// near the oldest row it holds reaches past them (Docs/sync.md §6.6
     /// "On demand"), one want per gap however often the view moves within
     /// it. A local terminal already owns its history and sends nothing.
+    ///
+    /// Called from a frontend's frame path, so it does no I/O there: a link
+    /// that asks keeps the newest offset and asks from its own session's
+    /// turn.
     /// - Parameter rowsAboveTail: Rows above the tail; zero is the tail.
     virtual void setViewOffset(int rowsAboveTail) = 0;
 

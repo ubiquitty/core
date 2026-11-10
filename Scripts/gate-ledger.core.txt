@@ -20,7 +20,7 @@ budget vocabulary-span 11
 budget vocabulary-array 161
 budget model-lock-holds 194
 budget frame-decision-holds 2
-budget per-tick-waits 10
+budget per-tick-waits 9
 budget plain-model-lock-holds 21
 budget thread-safety-escapes 20
 budget thread-safety-escapes-tests 94
