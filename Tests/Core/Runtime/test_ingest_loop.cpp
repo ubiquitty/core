@@ -1928,6 +1928,40 @@ TEST(testAPaneAControlModeProgramHostsIsAdoptedThroughItsSource)
     CaseLoop::discard();
 }
 
+// The end of a width drag costs the frontend a wake: the loop rewraps the stale history a slice at a time
+// between its passes, and publishes it when the last line is done.
+TEST(testASettleOnALoopDrainedPaneIsRewrappedByTheLoop)
+{
+    LoopSession loop;
+    REQUIRE(loop.isRunning);
+    std::string lines;
+    for (int line = 0; line < 600; ++line)
+        lines += std::format("{:03} a line of history long enough to wrap when the width is narrowed a good deal\r\n", line);
+    REQUIRE(loop.write(lines));
+    // A pipe has no shell in front, so only the alternate screen is reflowed freely; the primary's history
+    // is rewrapped behind it.
+    REQUIRE(loop.write("\033[?1049h"));
+    loop.session().resize(24, 23, TerminalSession::ResizeGesture::Interactive, Ubiquitty::Modes::AnchorMode::Top);
+    REQUIRE(loop.session().hasDeferredHistoryRewrap());
+    const auto started = std::chrono::steady_clock::now();
+    loop.session().settleResize();
+    const auto returned = std::chrono::steady_clock::now();
+    // The call itself pays nothing proportional to the scrollback.
+    CHECK(std::chrono::duration_cast<std::chrono::milliseconds>(returned - started).count() < 50);
+    bool didFinish = false;
+    for (int waited = 0; waited < 3000 && !didFinish; ++waited) {
+        didFinish = !loop.session().hasDeferredHistoryRewrap();
+        if (!didFinish)
+            ::usleep(1000);
+    }
+    CHECK(didFinish);
+    loop.session().lockForRead();
+    const int modelHistory = Ubiquitty::Screen::scrollbackCount(loop.session().terminal());
+    loop.session().unlockForRead();
+    CHECK_EQ(loop.session().readSnapshot().scrollbackCount, modelHistory);
+    CHECK(modelHistory > 600);
+}
+
 TEST(testIngestInputCommandsAndRestart)
 {
     SessionHandle handle;

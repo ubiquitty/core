@@ -109,6 +109,18 @@ namespace Ubiquitty {
 class LineStore;
 }
 
+namespace Ubiquitty::Screen {
+/// The sliced history rewrap a terminal carries while one is open; Screen/Reflow.cpp defines it.
+struct HistoryRewrapJob;
+/// Frees a ``HistoryRewrapJob`` where its definition is visible.
+struct HistoryRewrapJobDeleter {
+    /// Deletes the job.
+    ///
+    /// - Parameter job: The job to free; may be null.
+    void operator()(HistoryRewrapJob* job) const noexcept;
+};
+}
+
 // Forward-declared to carry by pointer without Core/Triggers/Engine.h. Allocated lazily on first
 // trigger rule / characterClass, released by ~Terminal.
 
@@ -1604,6 +1616,11 @@ struct Terminal {
     int pendingHistoryRewrapColumns {};
     // The deferred rewrap retains the viewport intent of its last geometry change.
     Ubiquitty::Modes::AnchorMode pendingHistoryRewrapAnchor { Ubiquitty::Modes::AnchorMode::Top };
+    // While a rewrap is pending: the number of the first history line already at the target width. The
+    // lines below it are stored at earlier widths and are what the settle rewraps.
+    std::uint64_t staleHistoryEndLine {};
+    // The settle's rewrap of those lines, in slices, while one is open; null otherwise. Never serialized.
+    std::unique_ptr<Ubiquitty::Screen::HistoryRewrapJob, Ubiquitty::Screen::HistoryRewrapJobDeleter> historyRewrap;
 
     struct Integration {
         // Control-mode filtering and pane routing are one lifetime domain: a cached child is valid only

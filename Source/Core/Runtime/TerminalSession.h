@@ -5139,6 +5139,13 @@ public:
     {
         if (m_remote)
             return;
+        // A pane an ingest loop drains is rewrapped by the loop, a slice at a time between its passes: the
+        // drag's end costs the frontend a wake, not a pause proportional to the scrollback. Any other pane
+        // pays for it here.
+        if (isModelDrainedByIngestLoop()) {
+            wakeIngest();
+            return;
+        }
         const ModelWrite write(*this);
         if (Ubiquitty::Terminal* term = modelTerm())
             Ubiquitty::settleResize(term);

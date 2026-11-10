@@ -172,6 +172,35 @@ struct PixelGeometry {
 ///   - geometry: The sizes; each saturates at 65535, the width of its field.
 void publishPixelGeometry(Ubiquitty::Terminal& t, const PixelGeometry& geometry);
 
+/// Where a sliced history rewrap stands.
+enum class HistoryRewrapProgress : std::uint8_t {
+    /// Nothing was deferred.
+    Idle,
+    /// Lines remain; ask again at the next service point.
+    Pending,
+    /// The history is at the current width.
+    Finished,
+    /// The rewrap cannot be sliced for this terminal (a live image placement or rich-text block, a
+    /// proportional run, a store too small for the rewrapped rows): the caller pays for it whole.
+    Declined,
+    /// An allocation was refused. Nothing changed and the rewrap stays pending.
+    Refused,
+};
+
+/// Rewraps the history a width drag deferred, a slice at a time.
+///
+/// Takes whole logical lines, oldest first, from the stale part of the scrollback, rewraps each to the
+/// current width into a store of its own, and when the last is done replaces the stale rows with the
+/// rewrapped ones in a step that moves blocks and copies no cell. The live scrollback stays readable at
+/// its stored widths throughout, new output appends after it, and a resize, a clear or a reset cancels
+/// the work. The result is the one `settleResize` produced as a single pass.
+///
+/// - Parameters:
+///   - t: The terminal; a no-op when nothing is pending.
+///   - budgetMicros: How long to work before returning; zero works to the end.
+/// - Returns: Where the rewrap stands.
+HistoryRewrapProgress advanceHistoryRewrap(Ubiquitty::Terminal* t, std::uint32_t budgetMicros);
+
 /// Finishes a history rewrap deferred by an `Interactive` resize.
 ///
 /// Brings the stored-width scrollback up to the current column count. Call from

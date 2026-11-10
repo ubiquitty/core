@@ -558,6 +558,8 @@ inline constexpr std::array terminalLedger {
     MEMBER(isBandScrollLaneEnabled, HostOnly),
     MEMBER(pendingHistoryRewrapColumns, HostOnly),
     MEMBER(pendingHistoryRewrapAnchor, HostOnly),
+    MEMBER(staleHistoryEndLine, HostOnly),
+    MEMBER(historyRewrap, HostOnly),
     MEMBER(ambiguousWidthAnnounced, HostOnly),
     MEMBER(syncOutputCloseCount, HostOnly),
     MEMBER(cursorHideCount, HostOnly),

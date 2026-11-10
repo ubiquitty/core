@@ -2020,6 +2020,21 @@ bool TerminalRuntime::foldColdScrollback(DrainHost& host, int blockBudget)
     return hasColdBlocks;
 }
 
+bool TerminalRuntime::advanceHistoryRewrap(DrainHost& host, std::uint32_t budgetMicros)
+{
+    if (!m_term)
+        return false;
+    host.lockModel();
+    const auto progress = Ubiquitty::advanceHistoryRewrap(m_term.get(), budgetMicros);
+    if (progress == HistoryRewrapProgress::Finished) {
+        republishSnapshot();
+        publishSettledFrameIfCoherent(host, SettleContext::BurstEnd);
+    }
+    host.unlockModel();
+    // A terminal that cannot be sliced is settled by the frontend's own call in one pass; the loop leaves it.
+    return progress == HistoryRewrapProgress::Pending;
+}
+
 DrainOutcome TerminalRuntime::sampleProcessStateOffDrain(DrainHost& host)
 {
     DrainOutcome outcome;
