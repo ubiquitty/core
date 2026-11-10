@@ -18,13 +18,11 @@ namespace Ubiquitty::Runtime {
 
 namespace {
 
-// Mid-burst would-block retry budgets. The dwell must sit inside the tty's
-// refill window; a much longer dwell overshoots every refill, a zero dwell
-// burns a probe syscall per quantum. The dwell is a fixed constant, not
-// self-tuned: a persistent would-block means the writer is not yet scheduled,
-// so what matters is how fast the loop escalates to schedulerYield().
-constexpr int drainQuietSpinBudget = 4;
-constexpr int drainQuietYieldBudget = 32;
+// The dwell before each re-read in the refill band (drainQuietSpinBudget).
+// It must sit inside the tty's refill window: a much longer dwell overshoots
+// every refill, and a zero dwell burns a probe syscall per quantum. A
+// persistent would-block means the writer is not yet scheduled, which no
+// dwell this side of the pass can change.
 constexpr std::uint64_t drainRefillDwellNanoseconds = 100;
 
 } // namespace
@@ -33,12 +31,11 @@ DrainPassResult runDrainPass(Terminal& terminal, PAL::Stream& stream, DrainHost&
 {
     DrainPassResult result;
     const int spinBudget = policy.doesRideBurst ? drainQuietSpinBudget : 0;
-    const int yieldBudget = policy.doesRideBurst ? drainQuietYieldBudget : 0;
     const int bite = std::max(1, policy.modelLockBiteBytes);
     const std::uint32_t startedAt = policy.maxMicroseconds ? PAL::monotonicMicros() : 0;
 
     std::array<char, drainReadBufferBytes> buffer;
-    int quietYields = 0;
+    int quietSpins = 0;
     while (result.bytesDrained < policy.maxBytes) {
         owner.noteReadBegin();
         const auto readCapacity = static_cast<std::size_t>(std::min(drainReadBufferBytes, policy.maxBytes - result.bytesDrained));
@@ -78,7 +75,7 @@ DrainPassResult runDrainPass(Terminal& terminal, PAL::Stream& stream, DrainHost&
                 result.end = DrainPassEnd::OwnerFence;
                 break;
             }
-            quietYields = 0;
+            quietSpins = 0;
             if (!TerminalRuntime::drainPassReadsAgain(result.bytesDrained) || result.bytesDrained >= policy.maxBytes) {
                 result.end = DrainPassEnd::ByteBudget;
                 break; // the caller's poll loop re-drains the remainder
@@ -95,21 +92,17 @@ DrainPassResult runDrainPass(Terminal& terminal, PAL::Stream& stream, DrainHost&
         if (n == std::to_underlying(PAL::StreamStatus::Again)) {
             // Mid-burst would-block: a flooding writer refills the tty within
             // microseconds. Ending the pass per quantum makes every ~1 KB pay full
-            // pass teardown, so ride the burst to the capacity; a pass that
-            // starts quiet still returns on its first would-block.
-            if (result.bytesDrained > 0 && quietYields < yieldBudget) {
-                ++quietYields;
-                // A blind re-read takes the kernel tty lock the writer needs to
-                // refill, so the first retries wait out the gap on the clock
-                // (syscall-free) and only a longer gap pays a yield.
-                if (quietYields <= spinBudget) {
-                    // steady_clock, not PAL::monotonicMicros: the dwell is
-                    // sub-microsecond, below that clock's resolution.
-                    const auto start = std::chrono::steady_clock::now();
-                    while (static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count()) < drainRefillDwellNanoseconds) {
-                    }
-                } else {
-                    PAL::schedulerYield();
+            // pass teardown, so ride the burst through a refill the band
+            // catches; a pass that starts quiet still returns on its first
+            // would-block. A blind re-read takes the kernel tty lock the
+            // writer needs to refill, so each retry waits the gap out on the
+            // clock first.
+            if (result.bytesDrained > 0 && quietSpins < spinBudget) {
+                ++quietSpins;
+                // steady_clock, not PAL::monotonicMicros: the dwell is
+                // sub-microsecond, below that clock's resolution.
+                const auto start = std::chrono::steady_clock::now();
+                while (static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count()) < drainRefillDwellNanoseconds) {
                 }
                 continue;
             }

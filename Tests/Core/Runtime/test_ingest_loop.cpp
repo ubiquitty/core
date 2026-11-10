@@ -96,6 +96,10 @@ struct ReadShape {
     std::chrono::microseconds landing { 0 };
     // Most bytes a read returns once the slab has landed; 0 for no cap.
     int slabBytes = 0;
+    // Every this many bytes the writer pauses, and the next `pauseReads` reads
+    // find nothing; 0 for a writer that never pauses.
+    int pauseEveryBytes = 0;
+    int pauseReads = 0;
 };
 
 class PrefilledEndpoint final : public PollableByteStream {
@@ -110,6 +114,13 @@ public:
     int read(std::span<char> buffer) override
     {
         std::size_t length = buffer.size();
+        if (m_shape.pauseEveryBytes > 0) {
+            if (m_pauseReadsLeft > 0) {
+                --m_pauseReadsLeft;
+                return std::to_underlying(StreamStatus::Again);
+            }
+            length = std::min(length, static_cast<std::size_t>(m_shape.pauseEveryBytes - m_bytesSincePause));
+        }
         if (m_shape.quantumBytes > 0) {
             const bool hasLanded = m_shape.landing.count() > 0 && std::chrono::steady_clock::now() - m_lastReturn >= m_shape.landing;
             if (!hasLanded)
@@ -121,6 +132,13 @@ public:
         m_lastReturn = std::chrono::steady_clock::now();
         if (count > 0 && m_readBands)
             m_readBands->noteRead();
+        if (count > 0 && m_shape.pauseEveryBytes > 0) {
+            m_bytesSincePause += static_cast<int>(count);
+            if (m_bytesSincePause >= m_shape.pauseEveryBytes) {
+                m_bytesSincePause = 0;
+                m_pauseReadsLeft = m_shape.pauseReads;
+            }
+        }
         if (count > 0)
             return static_cast<int>(count);
         if (count == 0)
@@ -149,6 +167,8 @@ private:
     ReadShape m_shape;
     ReadBands* m_readBands;
     std::chrono::steady_clock::time_point m_lastReturn {};
+    int m_bytesSincePause = 0;
+    int m_pauseReadsLeft = 0;
 };
 
 // A session transport whose whole stream is on disk before ingest starts.
@@ -1597,6 +1617,61 @@ TEST(testATimedPassHandsAFloodToTheReader)
     CHECK_MSG(outcome.bursts >= 1, "a pass that ran out its frame interval with the writer ahead elects the flood reader");
     CHECK(outcome.continuingFrames > 0);
     CHECK(outcome.didReachTail);
+}
+
+// A writer the machine starves refills the tty after a pass's refill band has
+// run out, so every pass ends at a would-block while the writer stays far
+// ahead of the parser. Its passes are one flood once they drain a pass's
+// capacity with the loop waiting less in all than the reader's quiet budget,
+// and the flood rides the reader.
+TEST(testPassesThatEachEndAtAWouldBlockHandAFastWriterToTheReader)
+{
+    // 64 KB between pauses, each one would-block longer than a pass's refill
+    // band re-reads: it ends the pass that meets it, and the next pass finds
+    // the writer's next 64 KB.
+    std::string flood;
+    constexpr std::string_view line = "0123456789abcdefghijklmnopqrstuvwxyz\n";
+    while (flood.size() < 3 * static_cast<std::size_t>(TerminalRuntime::drainPassCapacityBytes))
+        flood += line;
+    const char* directory = std::getenv("TMPDIR");
+    std::string path = std::string(directory && *directory ? directory : "/tmp") + "/ubiquitty-paused-XXXXXX";
+    Ubiquitty::PAL::UnixFileDescriptor file(::mkstemp(path.data()));
+    REQUIRE(static_cast<bool>(file));
+    ::unlink(path.c_str());
+    REQUIRE(::write(file.get(), flood.data(), flood.size()) == static_cast<ssize_t>(flood.size()));
+    REQUIRE(::lseek(file.get(), 0, SEEK_SET) == 0);
+
+    TerminalRuntime runtime;
+    RuntimeInitParameters parameters;
+    parameters.rows = 24;
+    parameters.columns = 80;
+    parameters.allowReflowOnInit = false;
+    runtime.init(parameters);
+    auto stream = std::make_unique<Ubiquitty::PAL::PrefilledStream>(std::move(file), Ubiquitty::PAL::ReadShape { .pauseEveryBytes = 64 * 1024, .pauseReads = drainQuietSpinBudget + 1 });
+    std::unique_ptr<Ubiquitty::PAL::PollableByteStream> loopEndpoint = stream->duplicateAsPollableStream();
+    std::unique_ptr<Ubiquitty::PAL::PollableByteStream> floodEndpoint = stream->duplicateAsPollableStream();
+    REQUIRE(loopEndpoint != nullptr && floodEndpoint != nullptr);
+    REQUIRE(runtime.adoptStream(std::move(stream)).has_value());
+
+    LockOnlyDrainHost host;
+    IngestLoop loop(runtime, host);
+    std::atomic<std::uint64_t> deliveredBytes { 0 };
+    loop.setDeliverHook(
+        [](void* context, const DrainOutcome& outcome, std::uint32_t) {
+            static_cast<std::atomic<std::uint64_t>*>(context)->fetch_add(static_cast<std::uint64_t>(outcome.bytesDrained), std::memory_order_relaxed);
+        },
+        &deliveredBytes);
+    (void)loop.prepare();
+    loop.adoptFloodEndpoint(std::move(floodEndpoint));
+    std::jthread ingest([&loop, &loopEndpoint] { loop.run(loopEndpoint->handle()); });
+    for (int waited = 0; waited < 20000 && deliveredBytes.load(std::memory_order_relaxed) < flood.size(); waited += 5)
+        ::usleep(5 * 1000);
+    loop.requestStop();
+    loop.raiseWake();
+    ingest.join();
+    runtime.close();
+    CHECK_EQ(deliveredBytes.load(std::memory_order_relaxed), static_cast<std::uint64_t>(flood.size()));
+    CHECK_MSG(loop.floodBurstCount() >= 1, "passes that each ended at a would-block handed the writer to the reader");
 }
 
 // The reader's passes end at the same frame interval, and a pass that ends
