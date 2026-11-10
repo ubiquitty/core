@@ -2996,6 +2996,57 @@ TEST(aBufferTooSmallForTheFramesSpansLearnsHowManyItNeeds)
     CHECK(isSameState(pane.selection.state, adopted.state));
 }
 
+// A view that moves its selection after the drain captured a frame draws,
+// over that frame, the selection it holds rather than the one the frame
+// resolved: what the live read draws over the terminal the frame froze. A
+// view that moved nothing is not ahead of its frame, and draws the frame's.
+TEST(aViewThatMovedItsSelectionAfterTheCaptureDrawsItsOwnOverTheFrame)
+{
+    FloodedPane pane(24, 80);
+    pane.floodPass("one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\n");
+    REQUIRE(TakenFrame(pane.fixture.session->takeSyncFrame()));
+    pane.select(0, 0, 1, 2);
+    pane.floodPass("seven\r\n");
+
+    // Unmoved: the frame's resolution is the view's.
+    {
+        std::vector<SelectionRowSpan> spans(static_cast<std::size_t>(Selection::viewportSpanCapacity(24, 80)));
+        Runtime::FrameSupply supply;
+        const TakenFrame frame { pane.fixture.session->takeFrame({ .selection = &pane.selection, .selectionSpans = spans }, supply) };
+        REQUIRE(supply.route == Runtime::FrameRoute::Captured);
+        CHECK(!supply.selection.isViewAhead);
+    }
+
+    pane.select(2, 1, 4, 3);
+    pane.floodPass("eight\r\n");
+    // The view moves again after this capture: the frame resolved the
+    // previous hand-off.
+    pane.select(3, 0, 5, 1);
+    Selection::Session reference = pane.selection;
+    const DrawnSelection live = liveRead(reference, *pane.terminal, 0);
+    REQUIRE(!live.spans.empty());
+
+    std::vector<SelectionRowSpan> spans(static_cast<std::size_t>(Selection::viewportSpanCapacity(24, 80)));
+    Runtime::FrameSupply supply;
+    const TakenFrame frame { pane.fixture.session->takeFrame({ .selection = &pane.selection, .selectionSpans = spans }, supply) };
+    REQUIRE(supply.route == Runtime::FrameRoute::Captured);
+    REQUIRE(frame != nullptr);
+    CHECK(supply.selection.isViewAhead);
+    CHECK(!supply.selection.didAdopt);
+    spans.resize(static_cast<std::size_t>(supply.selection.count));
+    CHECK(spans != live.spans);
+
+    const Selection::Session before = pane.selection;
+    DrawnSelection own;
+    own.spans.resize(static_cast<std::size_t>(Selection::viewportSpanCapacity(24, 80)));
+    const Selection::CaptureSpans answer = pane.fixture.session->viewSelectionOverCapture(&pane.selection, *frame, own.spans, own.ends);
+    own.spans.resize(static_cast<std::size_t>(answer.count));
+    CHECK(answer.isViewAhead);
+    CHECK_EQ(answer.needed, answer.count);
+    CHECK(own == live);
+    CHECK(isSameState(pane.selection.state, before.state));
+}
+
 // A view whose last frame drew search matches reads the model, saturated or
 // not, and the capture stays in the slot for the tick that stops drawing them.
 TEST(aViewKeepingSearchLiveReadsTheModelAndLeavesTheCaptureWaiting)
