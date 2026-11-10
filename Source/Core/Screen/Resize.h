@@ -69,6 +69,12 @@ enum class HistoryRewrapFault : std::uint8_t {
 };
 /// The fault planted, `None` outside that test.
 extern HistoryRewrapFault historyRewrapFaultForTest;
+
+/// The bytes the sliced rewrap's staged store holds now, zero with no job open.
+///
+/// - Parameter t: The terminal.
+/// - Returns: The staged store's cell arena in bytes.
+[[nodiscard]] std::size_t historyRewrapStagedBytesForTest(const Ubiquitty::Terminal& t);
 #endif
 
 } // namespace Ubiquitty::Screen
