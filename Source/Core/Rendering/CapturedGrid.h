@@ -82,6 +82,11 @@ public:
     /// terminal. The capture's own resolved selection stands for such a frame.
     [[nodiscard]] bool isReadable() const noexcept { return m_isReadable; }
 
+    /// Whether a gesture over this frame expands here: a readable frame of a
+    /// terminal that grows a double click by the built-in word classes, not
+    /// by a configured character-class table only the terminal holds.
+    [[nodiscard]] bool canExpandGestures() const noexcept { return m_isReadable && !m_frame.hasWordCharacterClasses(); }
+
     /// The cells a selection row stores; empty outside the frame.
     ///
     /// - Parameter row: A selection row.
