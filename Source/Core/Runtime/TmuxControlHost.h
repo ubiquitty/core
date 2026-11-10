@@ -98,7 +98,6 @@ public:
     /// - Parameter paneID: The tmux pane.
     /// - Returns: Its facts; zero addresses when the Session holds no such pane.
     [[nodiscard]] HostedPaneFacts paneFacts(int paneID) override;
-    [[nodiscard]] bool hasPanePublications() const override { return true; }
     [[nodiscard]] std::shared_ptr<const HostedPanePublication> panePublicationHandle(int paneID, const Ubiquitty::Terminal&) override;
 
     /// Refreshes the exact owner's facts without admitting a new frame.

@@ -18,9 +18,9 @@ budget gate-self-tests-uncovered 44
 budget census-undated 13
 budget vocabulary-span 11
 budget vocabulary-array 161
-budget model-lock-holds 194
-budget frame-decision-holds 2
-budget per-tick-waits 9
+budget model-lock-holds 191
+budget frame-decision-holds 1
+budget per-tick-waits 5
 budget plain-model-lock-holds 21
 budget thread-safety-escapes 20
 budget thread-safety-escapes-tests 94

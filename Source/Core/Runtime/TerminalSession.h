@@ -1140,8 +1140,7 @@ public:
     ///
     /// Process-wide and set once, at launch: a frontend that links no source
     /// never calls it, and its sessions never host. The factory's address
-    /// crosses as a number for the reason the adoption seam's lock address
-    /// does.
+    /// crosses as a number, which Swift can neither dereference nor retype.
     ///
     /// - Parameters:
     ///   - factoryAddress: A ``HostedWindowSourceFactory``, as an address.
@@ -1234,32 +1233,49 @@ public:
     /// resize through; zero when nothing is hosted.
     [[nodiscard]] std::uintptr_t hostedWindowSourceAddress() const { return reinterpret_cast<std::uintptr_t>(m_hostedWindows.get()); }
 
-    /// Routes this adopted pane's resize and client-size report through the
-    /// source that hosts it.
+    /// Becomes the view of one pane a hosting session's source owns.
     ///
-    /// The pane's model is the source's: a resize goes to the source, which
-    /// resizes it now, ahead of the program's re-layout confirming it.
-    /// Cleared with the adoption.
+    /// Every model accessor reads and mutates the pane's model under the
+    /// pane's lock, and the per-tick reads (the frame clock, the frames, the
+    /// open update) come from the pane's publication, which its writer keeps.
+    /// A resize and a client-size report go to the source, which resizes the
+    /// model now, ahead of the program's re-layout confirming it. The
+    /// session's own runtime terminal stays an unused publish anchor, and a
+    /// session that adopts never starts ingest. The source outlives the
+    /// adoption, which ``endExternalAdoption`` ends before the source frees
+    /// the pane.
     ///
     /// - Parameters:
     ///   - sourceAddress: ``hostedWindowSourceAddress`` of the hosting session.
     ///   - paneID: The pane this session renders.
-    void routeResizeThroughHostedSource(std::uintptr_t sourceAddress, int paneID) UBIQUITTY_EXCLUDES(modelLockRole)
+    /// - Returns: Whether the pane is live and this session now presents it.
+    bool adoptHostedPane(std::uintptr_t sourceAddress, int paneID) UBIQUITTY_EXCLUDES(modelLockRole)
     {
-        if (hasUnresolvedLocalAdoption())
-            return;
+        auto* source = reinterpret_cast<HostedWindowSource*>(sourceAddress);
+        if (!source || hasUnresolvedLocalAdoption())
+            return false;
+        const HostedPaneFacts facts = source->paneFacts(paneID);
+        auto* terminal = reinterpret_cast<Ubiquitty::Terminal*>(facts.terminalAddress);
+        if (!terminal || facts.lockAddress == 0)
+            return false;
+        bindAdoptedTerminal(terminal, facts.lockAddress);
         assertOnHostedPaneThread();
         m_hostedPaneThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
-        m_hostedPaneSource = reinterpret_cast<HostedWindowSource*>(sourceAddress);
+        m_hostedPaneSource = source;
         m_hostedPaneID = paneID;
-        const ModelLockHold hold(*m_activeLock);
-        auto publication = m_externalTerminal && m_hostedPaneSource
-            ? m_hostedPaneSource->panePublicationHandle(paneID, *m_externalTerminal)
-            : nullptr;
-        if (publication != m_hostedPanePublication)
-            m_localPaneLink.modelDidChange();
-        m_hostedPanePublication = std::move(publication);
-        republishModel();
+        {
+            const ModelLockHold hold(*m_activeLock);
+            auto publication = source->panePublicationHandle(paneID, *terminal);
+            if (publication != m_hostedPanePublication)
+                m_localPaneLink.modelDidChange();
+            m_hostedPanePublication = std::move(publication);
+            if (m_hostedPanePublication)
+                republishModel();
+        }
+        if (m_hostedPanePublication)
+            return true;
+        endExternalAdoption();
+        return false;
     }
 
     /// Attaches this session as a thin client: the model becomes the
@@ -5133,18 +5149,11 @@ public:
     /// anything is held, 0 otherwise.
     ///
     /// Only a block's budget lives in the model; the erase hold is the
-    /// runtime's own. The pane's writer publishes the block with the stamp
-    /// its budget runs from, so it is read without the lock; an adopted
-    /// terminal, which its owner parses without publishing this session's
-    /// snapshot, takes it.
-    [[nodiscard]] std::uint32_t presentationHoldTicksRemaining(Ticks nowTicks) UBIQUITTY_EXCLUDES(modelLockRole)
+    /// runtime's own. The model's writer publishes the block with the stamp
+    /// its budget runs from, so it is read without the lock.
+    [[nodiscard]] std::uint32_t presentationHoldTicksRemaining(Ticks nowTicks) noexcept
     {
-        if (!m_externalTerminal)
-            return m_runtime->presentationHoldTicksRemaining(readSnapshot(), nowTicks, PAL::monotonicMicros());
-        const ModelLockHold hold(*m_activeLock);
-        if (const Ubiquitty::Terminal* terminal = modelTerm())
-            return m_runtime->presentationHoldTicksRemaining(*terminal, nowTicks, PAL::monotonicMicros());
-        return m_runtime->presentationHoldTicksRemaining(PAL::monotonicMicros());
+        return m_runtime->presentationHoldTicksRemaining(publishedBlock(), nowTicks, PAL::monotonicMicros());
     }
 
     /// Plans a live frame against the damage baseline the boundary captures
@@ -6529,9 +6538,8 @@ public:
     /// them here sees each event once and none twice — the same one-pass-per-
     /// drain discipline the Metal arm's bridge delivers through a delegate.
     ///
-    /// Polls the pane link's published notifications first. Local and hosted
-    /// publishers need no parser lock; raw adopted models without a publication
-    /// protocol retain their canonical borrowed-model lock.
+    /// Polls the pane link's published notifications first, from this
+    /// session's publication or an adopted pane's, without the parser's lock.
     /// Takes the bells this pane rang since the last take, from every path
     /// that delivers them: the ingest loop's drains, a frontend's own feed
     /// and a remote host's bell.
@@ -7846,11 +7854,9 @@ public:
     /// One tick serves the cursor resolve and the builder's blink curves, so
     /// the caret and SGR 5/6 text stay in the phase the curve defines.
     ///
-    /// Runs on every link tick. Local and hosted publishers advance against
-    /// the current clock without borrowing the mutable model. A raw adopted
-    /// model without a publication protocol retains its canonical
-    /// borrowed-model lock, which the drain's release hands over within about
-    /// one bite.
+    /// Runs on every link tick. The writer's publication, this session's or
+    /// an adopted pane's, advances against the current clock without
+    /// borrowing the mutable model.
     ///
     /// - Returns: The tick and the cursor's blink weight at it; the solid
     ///   defaults when no model exists.
@@ -8858,9 +8864,8 @@ public:
     /// when a surface carries them.
     ///
     /// Runs after every drawn frame. Reads one coherent publication and
-    /// evaluates both phase curves at the current tick. Raw adopted models
-    /// without a publication protocol retain their canonical borrowed-model
-    /// lock, as for ``frameClockFactsNow``.
+    /// evaluates both phase curves at the current tick, without the model
+    /// lock, as ``frameClockFactsNow`` does.
     ///
     /// - Returns: Whether anything animates, and the delay to its next
     ///   visible change.
@@ -8983,37 +8988,30 @@ public:
     /// its reads checked.
     [[nodiscard]] ModelReadScope modelReadScope() UBIQUITTY_NO_THREAD_SAFETY_ANALYSIS { return ModelReadScope(*this); }
 
-    /// The model lock itself, for a render adapter that brackets with it.
+    /// Returns the lock this session's model is read and written under: its
+    /// own, or an adopted pane's.
     ///
-    /// The adoption seam: an adapter that renders this session's Terminal
-    /// takes the same mutex the drain bites, by address, because a second
-    /// lock over one model is two opinions about exclusivity. The pointer
-    /// lives exactly as long as the session.
+    /// For a caller that brackets the model itself. The pointer lives as long
+    /// as the session, or until the adoption it names ends.
+    ///
+    /// - Returns: The active model lock.
     [[nodiscard]] ModelLock* modelLockPointer() { return m_activeLock; }
 
-    /// The same pointer as an integer, for the interop seam.
-    ///
-    /// ``ModelLock`` does not import, and the importer also drops a bare
-    /// pointer return on a shared-reference type, so the address crosses as
-    /// a number — which is the correct amount of access: Swift can neither
-    /// dereference nor retype it, and the one consumer casts it back on the
-    /// C++ side where the type lives.
-    [[nodiscard]] std::uintptr_t modelLockAddressForAdoption() { return reinterpret_cast<std::uintptr_t>(&m_modelLock); }
-
-    /// Becomes a render adapter for an externally owned Terminal.
+private:
+    /// Binds this session to an externally owned terminal and its lock, or
+    /// unbinds it given none; ``adoptHostedPane`` then binds the pane's
+    /// publication.
     ///
     /// Every model accessor reads and mutates the adopted terminal under the
     /// adopted lock — a second lock over one model is two opinions about
     /// exclusivity — and teardown never disposes it: the owner does, after
-    /// the frontend unbinds. The session's own runtime terminal stays an
-    /// unused publish anchor, and an adopted session never starts ingest.
-    /// Both pointers must outlive this session's use of them.
+    /// the frontend unbinds. Both pointers must outlive this session's use
+    /// of them.
     ///
     /// - Parameters:
-    ///   - terminal: The externally owned terminal to render.
-    ///   - lockAddress: The owner's model lock, as
-    ///     ``modelLockAddressForAdoption`` hands it across the interop seam.
-    void adoptExternalTerminal(Ubiquitty::Terminal* terminal, std::uintptr_t lockAddress) UBIQUITTY_EXCLUDES(modelLockRole)
+    ///   - terminal: The externally owned terminal to render, or null.
+    ///   - lockAddress: The owner's model lock.
+    void bindAdoptedTerminal(Ubiquitty::Terminal* terminal, std::uintptr_t lockAddress) UBIQUITTY_EXCLUDES(modelLockRole)
     {
         if (terminal && hasUnresolvedLocalAdoption())
             return;
@@ -9068,6 +9066,7 @@ public:
         republishModel();
     }
 
+public:
     /// Whether an adopted terminal's window verbs, banners and trigger
     /// reports reach this session.
     ///
@@ -9088,7 +9087,7 @@ public:
     /// frontend unbinds — so an unbind calls this first, and only then may the
     /// owner free. A session that skips this and is torn down later touches the
     /// owner's freed terminal from its own teardown.
-    void endExternalAdoption() { adoptExternalTerminal(nullptr, 0); }
+    void endExternalAdoption() { bindAdoptedTerminal(nullptr, 0); }
 
     /// The signature of a per-drain signal.
     using DrainSignal = void (*)(void*);
@@ -9355,15 +9354,10 @@ private:
             auto publication = m_publication.read();
             if (m_owner.m_externalTerminal) {
                 m_owner.assertOnHostedPaneThread();
+                publication = {};
                 if (const auto& owner = m_owner.m_hostedPanePublication) {
                     const auto state = owner->read();
                     publication = { .factsGeneration = state.factsGeneration, .frame = state.frame, .hasFrame = state.hasFrame };
-                } else {
-                    // A raw adopted model has no writer publication protocol.
-                    // Its supported borrowed-model contract still requires a lock.
-                    const ModelLockHold hold(*m_owner.m_activeLock);
-                    publishModel(*m_owner.m_externalTerminal);
-                    publication = m_publication.read();
                 }
             }
             if (m_view == Protocol::Sync::ViewState::Live) {
@@ -9388,9 +9382,9 @@ private:
                 if (m_owner.m_hostedPaneSource)
                     (void)m_owner.m_hostedPaneSource->setPaneFocus(m_owner.m_hostedPaneID, *m_owner.modelTermIdentity(), focus);
                 const ModelLockHold hold(*m_owner.m_activeLock);
-                // A raw adopted model has no program-focus route. Its local
-                // presentation still follows focus; a hosted source above
-                // owns any DEC 1004 report and drains it to that exact pane.
+                // The source above owns the pane's DEC 1004 report and drains
+                // it to that exact pane; the model's local presentation
+                // follows focus here.
                 m_owner.m_externalTerminal->windowFocused = focus == Modes::FocusState::Focused;
                 if (focus == Modes::FocusState::Focused)
                     (void)Ubiquitty::markAttentionSeen(*m_owner.m_externalTerminal);
@@ -9431,7 +9425,7 @@ private:
         std::uint64_t clockMicroseconds() const override
         {
             m_owner.assertOnHostedPaneThread();
-            if (m_owner.m_externalTerminal && m_owner.m_hostedPaneSource && m_owner.m_hostedPaneSource->hasPanePublications())
+            if (m_owner.m_externalTerminal && m_owner.m_hostedPaneSource)
                 return m_owner.m_hostedPaneSource->publicationClockMicroseconds();
             return m_owner.m_preparedRemote ? m_owner.m_preparedRemote->screenClockMicroseconds() : m_owner.m_runtime->frameClockMicroseconds();
         }
@@ -9747,8 +9741,8 @@ private:
     /// What holds a view's frame off the glass, by the check
     /// ``shouldWithholdFrame`` and ``takeFrame`` share.
     ///
-    /// The published facts decide it (``publishedFrameHold(_:)``), and the
-    /// model only while a block is open or the terminal is adopted
+    /// The published facts decide it (``publishedFrameHold(_:)``), and this
+    /// session's own model only while a block is open in it
     /// (``modelFrameHold(_:_:)``).
     ///
     /// - Parameter nowTicks: Now, on the 60 Hz monotonic clock.
@@ -9757,11 +9751,13 @@ private:
     {
         const std::uint32_t nowMicros = PAL::monotonicMicros();
         if (const std::optional<FrameDecline> published = publishedFrameHold(nowMicros)) {
-            // Published, the presentation hold is the erase's alone, whose
-            // budget is the runtime's own; the coherence rule's release wakes
-            // the view.
+            // Published, the presentation hold is an adopted pane's update,
+            // with the stamp its owner published, or the erase's, whose budget
+            // is the runtime's own; the coherence rule's release wakes the
+            // view.
             const bool isPresentationHeld = *published == FrameDecline::HeldByPresentation;
-            return { .decline = *published, .askAgainTicks = isPresentationHeld ? m_runtime->presentationHoldTicksRemaining(nowMicros) : 0 };
+            return { .decline = *published,
+                .askAgainTicks = isPresentationHeld ? m_runtime->presentationHoldTicksRemaining(publishedBlock(), nowTicks, nowMicros) : 0 };
         }
         return modelFrameHold(nowTicks, nowMicros);
     }
@@ -9774,19 +9770,37 @@ private:
     /// captures each full pass publishes. Whether a block is open is
     /// published: the writer raises `syncHoldActive` on the drain that opened
     /// one, and the frame that would show it runs after that delivery. An
-    /// adopted terminal is parsed by its owner, whose drain does not publish
-    /// this session's snapshot, so only its model can say.
+    /// adopted pane's owner publishes its block in the pane's publication and
+    /// ages it as its coherence advances, so an open one holds the frame here.
     ///
     /// - Parameter nowMicros: Now, in monotonic microseconds.
-    /// - Returns: The hold, or nothing while a block is open or the terminal
-    ///   is adopted.
+    /// - Returns: The hold, or nothing while a block is open in this
+    ///   session's own model.
     [[nodiscard]] std::optional<FrameDecline> publishedFrameHold(std::uint32_t nowMicros) noexcept UBIQUITTY_NONBLOCKING
     {
         if (m_runtime->isFrameHeld() && !m_runtime->isDrainSaturated())
             return FrameDecline::HeldByCoherence;
-        if (m_externalTerminal || readSnapshot().syncHoldActive)
+        if (publishedBlock().isOpen) {
+            // An adopted pane's owner ages its update as its coherence
+            // advances; an owned pane's is aged by the model's decision.
+            if (m_externalTerminal)
+                return FrameDecline::HeldByPresentation;
             return std::nullopt;
+        }
         return m_runtime->shouldWithholdPresentation(nowMicros) ? FrameDecline::HeldByPresentation : FrameDecline::None;
+    }
+
+    /// Returns the open synchronized update as the presented model's writer
+    /// published it: an adopted pane's owner in the pane's publication, this
+    /// session's drain in its snapshot.
+    ///
+    /// - Returns: Whether an update is open, and the tick its budget runs from.
+    [[nodiscard]] Modes::SyncOutput::BlockMark publishedBlock() noexcept UBIQUITTY_NONBLOCKING
+    {
+        if (m_externalTerminal)
+            return m_hostedPanePublication ? m_hostedPanePublication->read().block : Modes::SyncOutput::BlockMark {};
+        const RuntimeSnapshot snapshot = readSnapshot();
+        return { .isOpen = snapshot.syncHoldActive, .touchTicks = snapshot.syncHoldTouchTicks };
     }
 
     /// The hold the model decides, under its lock: the decision stamps a
@@ -13804,19 +13818,15 @@ private:
     }
 
     /// Reads the frame clock's inputs from the writer's publication, without
-    /// the model lock. A raw adopted model publishes nothing, so it is read
-    /// under its lock.
+    /// the model lock: an adopted pane's from the pane's publication, this
+    /// session's own from its runtime.
     ///
     /// - Returns: The presented model's frame-clock inputs.
     [[nodiscard]] FramePresentationState framePresentationState()
     {
         if (m_externalTerminal) {
             assertOnHostedPaneThread();
-            if (m_hostedPanePublication)
-                return m_hostedPanePublication->read().presentation;
-            // Unknown adopted writers have no publish protocol to read.
-            const ModelLockHold hold(*m_activeLock);
-            return captureFramePresentationState(m_externalTerminal);
+            return m_hostedPanePublication ? m_hostedPanePublication->read().presentation : FramePresentationState {};
         }
         return m_runtime->link().presentation.read();
     }

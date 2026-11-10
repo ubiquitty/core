@@ -3,6 +3,7 @@
 
 #include "Core/Terminal.h"
 #include "Harness.h"
+#include "HostedPaneFixture.h"
 #include "SoleModelThread.h"
 
 //
@@ -6533,28 +6534,34 @@ TEST(aBlockClosedBeforeItsBudgetReportsItsColorsOnce)
     CHECK_EQ(host.reportedBackgrounds.size(), 1u);
 }
 
-// An adopted terminal is parsed by its owner, whose drain never publishes the
-// adopting session's snapshot: a block the owner opens after the adoption is
-// visible only in the model.
-TEST(anAdoptedTerminalsBlockIsReadFromItsModel)
+// An adopted pane's owner publishes its block in the pane's publication and
+// ages it as its coherence advances: the view holds its frame and reads the
+// block's budget from there while another thread holds the pane's model, and
+// the owner's advance past the budget releases it.
+TEST(anAdoptedPanesBlockIsReadFromItsPublication)
 {
+    UbiquittyTest::HostedPaneFixture pane(4, 20);
+    REQUIRE(pane.paneTerminal() != nullptr);
     RetainedTerminalSession session { TerminalSession::make() };
     REQUIRE(session);
     session->start(4, 20);
-    Ubiquitty::Terminal external;
-    Ubiquitty::resize(external, 4, 20);
-    Ubiquitty::ModelLock externalLock;
-    session->adoptExternalTerminal(&external, reinterpret_cast<std::uintptr_t>(&externalLock));
-    {
-        const std::lock_guard hold(externalLock);
-        Ubiquitty::processBytes(&external, "\033[?2026h");
-    }
+    REQUIRE(session->adoptHostedPane(pane.sourceAddress(), UbiquittyTest::HostedPaneFixture::paneID));
+    pane.setClock(100, 2'000'000);
+    pane.sendToPane("\\033[?2026h");
     CHECK(!session->readSnapshot().syncHoldActive);
-    CHECK(session->shouldWithholdFrame(Ubiquitty::Ticks(100)));
-    CHECK(session->presentationHoldTicksRemaining(Ubiquitty::Ticks(130)) > 0u);
+    bool isHeld = false;
+    std::uint32_t ticks = 0;
+    CHECK(completesWhileTheModelIsHeld(*session, [&] {
+        isHeld = session->shouldWithholdFrame(Ubiquitty::Ticks(130));
+        ticks = session->presentationHoldTicksRemaining(Ubiquitty::Ticks(130));
+    }));
+    CHECK(isHeld);
+    CHECK_EQ(ticks, Ubiquitty::Modes::SyncOutput::maxHoldTicks - 30 + 1);
+    pane.setClock(161, 3'100'000);
+    pane.sendToPane("x");
     CHECK(!session->shouldWithholdFrame(Ubiquitty::Ticks(161)));
     CHECK_EQ(session->presentationHoldTicksRemaining(Ubiquitty::Ticks(161)), 0u);
-    session->adoptExternalTerminal(nullptr, 0);
+    session->endExternalAdoption();
 }
 
 TEST(publishedFrameClockDoesNotWaitForTheParserModel)
@@ -7214,27 +7221,29 @@ TEST(theTextMeasurerReachesATerminalStartedOrAdoptedAfterItWasSet)
     }
     CHECK_EQ(beforeStart.calls, 1);
 
-    // An adopted terminal answers through the same measurer, and the one the
-    // session left no longer reaches it.
+    // An adopted pane's model answers through the same measurer, and the one
+    // the session left no longer reaches it.
+    UbiquittyTest::HostedPaneFixture pane;
+    Ubiquitty::Terminal* external = pane.paneTerminal();
+    REQUIRE(external != nullptr);
+    {
+        const Ubiquitty::ModelLockHold hold(*pane.paneLock());
+        external->drawsSizedText = true;
+        external->drawsProportionalText = true;
+    }
     CountingMeasurer adopted;
     const std::unique_ptr<TerminalSession, decltype(&releaseTerminalSession)> host(
         TerminalSession::make(), releaseTerminalSession);
     REQUIRE(host != nullptr);
     host->setTextMeasurer(CountingMeasurer::measure, &adopted);
-    Ubiquitty::Terminal external;
-    hardReset(external);
-    resize(external, 24, 80);
-    external.drawsSizedText = true;
-    external.drawsProportionalText = true;
-    Ubiquitty::ModelLock externalLock;
-    host->adoptExternalTerminal(&external, reinterpret_cast<std::uintptr_t>(&externalLock));
+    REQUIRE(host->adoptHostedPane(pane.sourceAddress(), UbiquittyTest::HostedPaneFixture::paneID));
     {
-        const Ubiquitty::ModelLockHold hold(externalLock);
+        const Ubiquitty::ModelLockHold hold(*pane.paneLock());
         CHECK_EQ(host->proportionalRunCells(Ubiquitty::Runtime::TerminalSession::CodePointSpan(text)), 3);
     }
     CHECK_EQ(adopted.calls, 1);
-    host->adoptExternalTerminal(nullptr, 0);
-    CHECK(external.textMeasureClient.get() == nullptr);
+    host->endExternalAdoption();
+    CHECK(external->textMeasureClient.get() == nullptr);
 }
 
 // A working or blocked record ends when the shell has the terminal back. A
@@ -7843,16 +7852,16 @@ TEST(anUnresolvedAdoptionCannotRebindItsActiveModelOrInstallBorrowedInputRoutes)
     REQUIRE(fixture.session->hasUnresolvedLocalAdoption());
     CHECK(fixture.session->swiftReferences.load(std::memory_order_acquire) == referencesBefore + 1);
 
-    Ubiquitty::Terminal external;
-    Ubiquitty::resize(external, 3, 5, Ubiquitty::Modes::ReflowMode::Fixed);
-    Ubiquitty::ModelLock externalLock;
-    fixture.session->adoptExternalTerminal(&external, reinterpret_cast<std::uintptr_t>(&externalLock));
+    UbiquittyTest::HostedPaneFixture pane(3, 5);
+    Ubiquitty::Terminal* external = pane.paneTerminal();
+    REQUIRE(external != nullptr);
+    CHECK(!fixture.session->adoptHostedPane(pane.sourceAddress(), UbiquittyTest::HostedPaneFixture::paneID));
     CHECK(withSessionModel(*fixture.session, modelIdentity) == originalModel);
     CHECK(fixture.session->modelLockPointer() == originalLock);
-    CHECK(!external.windowClient.installed());
-    CHECK(external.shellClient.get() == nullptr);
-    CHECK(external.triggerClient.get() == nullptr);
-    CHECK(external.textMeasureClient.get() == nullptr);
+    CHECK(!external->windowClient.installed());
+    CHECK(external->shellClient.get() == nullptr);
+    CHECK(external->triggerClient.get() == nullptr);
+    CHECK(external->textMeasureClient.get() == nullptr);
     CHECK(fixture.session->swiftReferences.load(std::memory_order_acquire) == referencesBefore + 1);
 
     Ubiquitty::Protocol::Tmux::TmuxClient client;
@@ -8408,45 +8417,38 @@ TEST(searchCounterDistinguishesProgressFromAnEmptyAnswer)
 
 TEST(sessionSearchRebindsWhenThePresentedTerminalChanges)
 {
-    auto external = std::make_unique<Ubiquitty::Terminal>();
-    Ubiquitty::resize(*external, 4, 30);
-    Ubiquitty::processBytes(external.get(), "external text");
-    Ubiquitty::ModelLock externalLock;
+    auto pane = std::make_unique<UbiquittyTest::HostedPaneFixture>(4, 30);
+    pane->sendToPane("external text");
     RetainedTerminalSession session { TerminalSession::make() };
     REQUIRE(session);
     session->start(4, 30);
     const std::string local = "local text";
     session->feedBytes({ local.data(), local.size() });
     CHECK_EQ(session->searchScrollbackAndWait({ .pattern = "local" }).foundCount, 1);
-    session->adoptExternalTerminal(external.get(), reinterpret_cast<std::uintptr_t>(&externalLock));
+    REQUIRE(session->adoptHostedPane(pane->sourceAddress(), UbiquittyTest::HostedPaneFixture::paneID));
     CHECK_EQ(session->searchScrollbackAndWait({ .pattern = "external" }).foundCount, 1);
     CHECK_EQ(session->searchScrollbackAndWait({ .pattern = "local" }).foundCount, 0);
     CHECK(session->setSearchQuery(Ubiquitty::Search::Request { .pattern = "external" }));
-    session->adoptExternalTerminal(nullptr, 0);
-    external.reset();
+    session->endExternalAdoption();
+    pane.reset();
     CHECK_EQ(session->searchScrollbackAndWait({ .pattern = "local" }).foundCount, 1);
 }
 
 TEST(sessionPublicationsRefreshCompletedSearchesInOwnedAndAdoptedModels)
 {
     for (const bool isAdopted : { false, true }) {
-        auto external = std::make_unique<Ubiquitty::Terminal>();
-        Ubiquitty::resize(*external, 4, 30);
-        Ubiquitty::ModelLock externalLock;
+        UbiquittyTest::HostedPaneFixture pane(4, 30);
         RetainedTerminalSession session { TerminalSession::make() };
         REQUIRE(session);
         session->start(4, 30);
         if (isAdopted)
-            session->adoptExternalTerminal(external.get(), reinterpret_cast<std::uintptr_t>(&externalLock));
+            REQUIRE(session->adoptHostedPane(pane.sourceAddress(), UbiquittyTest::HostedPaneFixture::paneID));
         const auto first = session->searchScrollbackAndWait({ .pattern = "arrived" });
         CHECK_EQ(first.foundCount, 0);
         (void)session->takeEventFlags();
         const std::string text = "arrived\r\n";
         if (isAdopted) {
-            {
-                const std::scoped_lock hold(externalLock);
-                Ubiquitty::processBytes(external.get(), text);
-            }
+            pane.sendToPane("arrived\\015\\012");
             session->republishSnapshot();
         } else
             session->feedBytes({ text.data(), text.size() });
@@ -8465,6 +8467,6 @@ TEST(sessionPublicationsRefreshCompletedSearchesInOwnedAndAdoptedModels)
         CHECK(events & (1u << static_cast<unsigned>(EventKind::SearchChanged)));
         session->clearScrollbackSearch();
         if (isAdopted)
-            session->adoptExternalTerminal(nullptr, 0);
+            session->endExternalAdoption();
     }
 }

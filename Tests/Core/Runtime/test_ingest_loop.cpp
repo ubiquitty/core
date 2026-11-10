@@ -14,6 +14,9 @@
 // frame announced within 100 ms, where the defect it pins takes 500), only
 // that bytes arrive, events coalesce, and stops end the thread.
 
+#include "Core/Runtime/HostedWindows.h"
+#include "Core/Runtime/LaunchCommand.h"
+#include "Core/Runtime/PostedWorkTable.h"
 #include "Core/Runtime/TerminalSession.h"
 
 #include "Core/CellGrid.h"
@@ -1515,6 +1518,113 @@ TEST(testAKeyWakesACRTSaverBlankThroughTheLoop)
     flags |= session.takeEventFlags();
     CHECK_MSG(!session.readSnapshot().modes.isScreenBlanked, "the key woke the screen");
     CHECK_MSG(flags & screenDirtyBit, "the frontend was told to draw the screen the key woke");
+}
+
+namespace {
+
+// The frontend loop a hosting source posts its work to, which the case's own
+// thread runs between its checks.
+struct CaseLoop {
+    static std::mutex& lock()
+    {
+        static std::mutex mutex;
+        return mutex;
+    }
+
+    static std::vector<PostedWorkToken>& tokens()
+    {
+        static std::vector<PostedWorkToken> pending;
+        return pending;
+    }
+
+    static void post(PostedWorkToken token)
+    {
+        const std::scoped_lock hold(lock());
+        tokens().push_back(token);
+    }
+
+    static void postAfter(double, PostedWorkToken token) { post(token); }
+
+    static void pump()
+    {
+        std::vector<PostedWorkToken> due;
+        {
+            const std::scoped_lock hold(lock());
+            due.swap(tokens());
+        }
+        for (const PostedWorkToken token : due)
+            static_cast<void>(runPostedSessionWork(token));
+    }
+
+    static void discard()
+    {
+        std::vector<PostedWorkToken> left;
+        {
+            const std::scoped_lock hold(lock());
+            left.swap(tokens());
+        }
+        for (const PostedWorkToken token : left)
+            static_cast<void>(discardPostedSessionWork(token));
+    }
+};
+
+// What a tmux server says to a control client that attaches to one window of
+// one pane, and the pane's first output: the attach's empty answer, which the
+// client enters control mode on, the pane listing it asks for, and a %output
+// line. Echo is off so the client's commands do not come back as text.
+constexpr std::string_view controlModeProgram = "stty -echo; "
+                                                "printf '%%begin 1 1 0\\n%%end 1 1 0\\n"
+                                                "%%begin 2 2 1\\n@1 %%1 80 24 1 ef01,80x24,0,0,1 work editor\\n%%end 2 2 1\\n"
+                                                "%%output %%1 hosted-pane-content\\\\015\\\\012\\n'; "
+                                                "exec sleep 30";
+
+} // namespace
+
+// A tmux pane drawn through a view with no tmux server: a program speaking the
+// control protocol, launched as a frontend launches a local `tmux -CC`, hosts
+// one pane, and a view adopts it through the hosting source, reads the pane's
+// output, and reads its frame clock while the pane's model is held elsewhere.
+TEST(testAPaneAControlModeProgramHostsIsAdoptedThroughItsSource)
+{
+    TerminalSession::enableHostedWindows(Ubiquitty::Runtime::tmuxControlHostFactoryAddress(), { .runSoon = &CaseLoop::post, .runAfter = &CaseLoop::postAfter });
+    SessionHandle handle;
+    TerminalSession& host = *handle.session;
+    host.start(24, 80);
+    LaunchCommand command = LaunchCommand::fromArguments({ "/bin/sh", "-c", std::string(controlModeProgram) });
+    command.setArgument0Style(Ubiquitty::PAL::Argument0Style::ProgramPath);
+    command.setTmuxControlHost("");
+    REQUIRE(host.launch(command));
+    REQUIRE(host.startIngest());
+    const std::uintptr_t source = host.hostedWindowSourceAddress();
+    REQUIRE(source != 0);
+    bool isPaneLive = false;
+    for (int waited = 0; waited < 5000 && !isPaneLive; waited += 5) {
+        CaseLoop::pump();
+        isPaneLive = host.hostedPaneFacts(1).terminalAddress != 0;
+        if (!isPaneLive)
+            ::usleep(5000);
+    }
+    REQUIRE(isPaneLive);
+
+    TerminalSession* view = TerminalSession::make();
+    REQUIRE(view != nullptr);
+    view->start(24, 80);
+    REQUIRE(view->adoptHostedPane(source, 1));
+    bool hasContent = false;
+    for (int waited = 0; waited < 5000 && !hasContent; waited += 5) {
+        CaseLoop::pump();
+        hasContent = gridContains(*view, "hosted-pane-content");
+        if (!hasContent)
+            ::usleep(5000);
+    }
+    CHECK_MSG(hasContent, "the view reads the output the program sent its pane");
+    CHECK(returnsWhileTheModelIsHeld(*view, [&] { static_cast<void>(view->frameClockFactsNow()); }));
+    view->endExternalAdoption();
+    view->close();
+    releaseTerminalSession(view);
+    host.stopIngest();
+    host.endHostedWindows();
+    CaseLoop::discard();
 }
 
 TEST(testIngestInputCommandsAndRestart)

@@ -187,19 +187,33 @@ public:
     /// - Returns: Its facts; zero addresses when it is not live.
     [[nodiscard]] virtual HostedPaneFacts paneFacts(int paneID) = 0;
 
-    /// Whether this source supplies actual model-owner frame publications.
-    [[nodiscard]] virtual bool hasPanePublications() const { return false; }
+    /// Binds the pane's publication, making it if the pane has none, while
+    /// the caller holds the pane model's lock.
+    ///
+    /// Every hosted pane publishes: a view reads its frame clock, its frames
+    /// and its open update from here and never borrows the model per tick.
+    /// The handle never borrows a terminal and remains readable after
+    /// retirement; the expected model keeps a reused pane id from crossing
+    /// owners.
+    ///
+    /// - Parameters:
+    ///   - paneID: The pane.
+    ///   - terminal: The model the caller expects the pane to own.
+    /// - Returns: The publication, or null when `terminal` is not the pane's.
+    [[nodiscard]] virtual std::shared_ptr<const HostedPanePublication> panePublicationHandle(int paneID, const Ubiquitty::Terminal& terminal) = 0;
 
-    /// Binds a stable publication while the caller holds the adopted model's
-    /// lock. The handle never borrows a terminal and remains readable after
-    /// retirement; the expected model prevents pane-id reuse from crossing owners.
-    [[nodiscard]] virtual std::shared_ptr<const HostedPanePublication> panePublicationHandle(int, const Ubiquitty::Terminal&) { return {}; }
+    /// Refreshes the pane's publication after a view-side mutation, under the
+    /// pane model's lock, without admitting a frame or changing coherence.
+    ///
+    /// - Parameters:
+    ///   - paneID: The pane.
+    ///   - terminal: The model the caller expects the pane to own.
+    virtual void refreshPanePublication(int paneID, const Ubiquitty::Terminal& terminal) = 0;
 
-    /// Refreshes publication after a view-side mutation under the exact model
-    /// lock, without admitting a frame or changing coherence.
-    virtual void refreshPanePublication(int, const Ubiquitty::Terminal&) { }
-
-    [[nodiscard]] virtual std::uint64_t publicationClockMicroseconds() const { return 0; }
+    /// Returns the clock the pane publications are stamped on.
+    ///
+    /// - Returns: Now, in microseconds.
+    [[nodiscard]] virtual std::uint64_t publicationClockMicroseconds() const = 0;
 
     /// Reports focus through the exact adopted model's owner. No model lock
     /// is held by the caller; false means the source cannot route this report.

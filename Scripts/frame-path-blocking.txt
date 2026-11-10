@@ -14,18 +14,18 @@
 #   cannot prove: a try-lock, or a read inside a hold its caller took.
 #
 # <member> <waits|nowait> <reason>
-frameClockFactsNow waits reads a raw adopted model, which no writer publishes, under the model lock on every tick
+frameClockFactsNow nowait reads the writer's publication, its own or an adopted pane's, behind a thread assertion and the fake-tick environment
 liveReadDecline nowait reads the model inside the live read's hold
 lockForRead waits the live read waits for the model lock
-nextAnimationDelay waits reads a raw adopted model, which no writer publishes, under the model lock after every drawn frame
-presentationHoldTicksRemaining waits reads a raw adopted model's open synchronized update, which no writer publishes, under the model lock
+nextAnimationDelay nowait reads the writer's publication, its own or an adopted pane's, behind a thread assertion and the fake-tick environment
+presentationHoldTicksRemaining nowait reads the writer's publication, its own or an adopted pane's, and the monotonic clock
 sendKey waits encodes the key and notes the activity under the model lock where no ingest loop drains the pane's own model (adopted, remote, fed) or a DECUDK table is programmed
 setPresentedViewOffset nowait stores the offset; a remote link keeps the newest in a register and posts one session turn, which asks its host for history
 setSyncFrameCaptureGeometry waits registers the capture geometry under the model lock
 shouldWithholdCapture nowait reads the model inside the live read's hold
-shouldWithholdFrame waits judges an open synchronized update, and an adopted model on every tick, under the model lock
-takeEventFlags waits polls the pane link, which reads a raw adopted model under the model lock
-takeFrame waits judges an open synchronized update, and an adopted model on every tick, under the model lock
+shouldWithholdFrame waits stamps and expires an open synchronized update in the session's own model under the model lock
+takeEventFlags nowait polls the pane link's publication through its virtual interface
+takeFrame waits stamps and expires an open synchronized update in the session's own model under the model lock
 terminal nowait hands the live read the model its hold covers
 unlockForRead nowait releases the live read's hold
 updateSelectionAfterOutput nowait try-locks the model to judge the selection after output, and never waits for it
