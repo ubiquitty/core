@@ -1394,7 +1394,7 @@ public:
     /// One of the two platform facts behind the ride/park decision, pushed by
     /// the frontend on its presentation edges. The fold lives here so every
     /// ingest adapter shares one policy: only a presented, unthrottled pane
-    /// rides mid-burst EAGAIN gaps (spin + sched_yield); anything else ends
+    /// rides mid-burst EAGAIN gaps (a spin band); anything else ends
     /// the pass on the first gap so the poll() loop parks the ingest thread
     /// at 0 CPU rather than busy-wait a core. The defaults presume a
     /// presented, full-rate pane — also what a frontend that never pushes an

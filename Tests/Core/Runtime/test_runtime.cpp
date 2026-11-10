@@ -1597,11 +1597,13 @@ TEST(runtimeCases)
     }
 
     // The ingest-drain ride-the-burst gate. A presented pane rides
-    // mid-burst EAGAIN gaps (spin+yield retries) to keep throughput up; a
+    // mid-burst EAGAIN gaps (the refill spin band) to keep throughput up; a
     // background/occluded/throttled pane (presentation Hidden) collapses
     // the budget to 0 and ends the pass on the FIRST gap, making far fewer
     // read() retries. Verify-by-revert: if drainAvailable ignored the flag, the
     // not-presented pass would ride too and readsNotPresented would blow past 2.
+    // The band is spins and re-reads alone: a yield in it hands a loaded
+    // machine's core to its busy work at every refill gap.
     {
         CountingSink sink;
         TerminalRuntime rt;
@@ -1629,7 +1631,7 @@ TEST(runtimeCases)
 
             CHECK(readsNotPresented >= 1); // still drained the byte(s)
             CHECK(readsNotPresented <= 2); // data read + one EAGAIN, no ride
-            CHECK(readsPresented > readsNotPresented + 5); // gate actually rode the burst
+            CHECK_EQ(readsPresented, readsNotPresented + drainQuietSpinBudget); // the gate rode the burst through the band and no further
         }
         rt.close();
     }

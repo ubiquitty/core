@@ -76,6 +76,16 @@ inline constexpr std::size_t floodAccumulateBacklogBytes = 64 * 1024;
 inline constexpr int floodReaderQuietPollMilliseconds = 10;
 inline constexpr int floodReaderQuietPollBudget = 3; // ~30 ms silent: the burst is over
 
+// A writer the machine starves refills the tty slower than a pass's refill
+// band, so each of its passes ends at a would-block however far ahead of the
+// parser it stays, and no single pass reaches a budget. Its passes are one
+// flood once they drain a pass's capacity while the loop, between them, has
+// waited for the writer less in all than the reader waits before it calls a
+// burst over. Only the waits count, so a parse of any speed sees the same
+// writer: a starved flood keeps the loop waiting microseconds a kilobyte,
+// and an interactive program's redraw keeps it waiting a frame.
+inline constexpr std::uint32_t floodAcrossPassesWaitBudgetMicros = floodReaderQuietPollBudget * floodReaderQuietPollMilliseconds * 1000;
+
 // Bit 63 of each flood ring counter is that side's done flag. On the consumer
 // counter, folding it in makes a stop CHANGE the word the reader's ring-full
 // atomic wait is parked on, so that wake cannot be lost (a separate exited
@@ -327,6 +337,12 @@ private:
     void runPasses(PAL::FileDescriptor& transportHandle)
     {
         bool shouldDrain = true;
+        // What the passes since the loop last waited out the budget drained,
+        // and how long the loop has waited between them; see
+        // ``floodAcrossPassesWaitBudgetMicros``.
+        long long acrossPassesBytes = 0;
+        std::uint32_t acrossPassesWaitMicros = 0;
+        std::uint32_t lastDrainingPassEndMicros = 0;
         DrainOutcome pendingOutcome;
         bool havePendingOutcome = false;
         std::uint32_t pendingIngestMicros = 0;
@@ -379,8 +395,21 @@ private:
                     coalesce(out, pendingOutcome, havePendingOutcome, pendingIngestMicros, now - passStart, now, lastDeliverMicros);
                 if (out.reachedEnd)
                     return;
-                if ((out.end == DrainPassEnd::ByteBudget || out.end == DrainPassEnd::TimeBudget) && m_floodEndpoint
-                    && m_runtime.drainRidesBurst()) {
+                if (out.bytesDrained > 0) {
+                    if (acrossPassesBytes)
+                        acrossPassesWaitMicros += passStart - lastDrainingPassEndMicros;
+                    if (acrossPassesWaitMicros > floodAcrossPassesWaitBudgetMicros) {
+                        acrossPassesBytes = 0;
+                        acrossPassesWaitMicros = 0;
+                    }
+                    acrossPassesBytes += out.bytesDrained;
+                    lastDrainingPassEndMicros = now;
+                }
+                const bool isWriterAhead = out.end == DrainPassEnd::ByteBudget || out.end == DrainPassEnd::TimeBudget
+                    || acrossPassesBytes >= TerminalRuntime::drainPassCapacityBytes;
+                if (isWriterAhead && m_floodEndpoint && m_runtime.drainRidesBurst()) {
+                    acrossPassesBytes = 0;
+                    acrossPassesWaitMicros = 0;
                     // A pass that ended with the writer still ahead: a flood.
                     // Hand the burst to the pipelined reader and parser, then
                     // resume this loop — which classifies any end-of-stream or

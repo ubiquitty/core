@@ -10,7 +10,7 @@
 // `TerminalRuntime::drainAvailable` and the host daemon's `servicePTY`. A pass
 // ends at a would-block or at `TerminalRuntime::drainPassCapacityBytes`, never at
 // a short read; where the host's policy asks, it rides a writer's refill gaps
-// for a few spins and yields before calling a would-block the end of a burst;
+// for a few spins before calling a would-block the end of a burst;
 // it parses under the host's model lock a bite at a time; and it stops the
 // parser at each DEC 2026 close so the owner can take that frame. One loop, so
 // every host reads and parses the same way; a host whose thread is its own
@@ -40,6 +40,16 @@ class DrainHost;
 
 /// The bytes one read syscall asks for.
 inline constexpr int drainReadBufferBytes = 64 * 1024;
+
+/// The re-reads a pass that rides the burst takes at a would-block after
+/// bytes, each after a syscall-free dwell, before it ends at the would-block.
+///
+/// The band never yields the core: on a loaded machine a yield hands it to
+/// the machine's busy work, and the pass then waits a scheduling delay at
+/// every refill gap while the writer waits behind it. A gap longer than the
+/// band ends the pass, and the ingest loop's readiness wait, which a waker
+/// can end, takes the rest of it.
+inline constexpr int drainQuietSpinBudget = 4;
 
 /// What the owner of a pass adds to the shared read loop.
 class DrainPassOwner {
@@ -83,8 +93,9 @@ public:
 
 /// How a pass reads.
 struct DrainPassPolicy {
-    /// Whether a would-block after bytes is waited out for a few spins and
-    /// yields before the pass ends; false ends it at the first one.
+    /// Whether a would-block after bytes is waited out for
+    /// ``drainQuietSpinBudget`` spins before the pass ends; false ends it at
+    /// the first one.
     bool doesRideBurst = true;
     /// How many bytes are parsed per acquisition of the model lock.
     int modelLockBiteBytes = 4 * 1024;
