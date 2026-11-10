@@ -1325,8 +1325,32 @@ void LineStore::dropOldest(int lineCount)
         return;
     if (lineCount > m_count)
         lineCount = m_count;
-    for (int i = 0; i < lineCount; ++i)
+    if (lineCount == 1) {
         evictOldest();
+        return;
+    }
+    // What `lineCount` calls of `evictOldest` leave, without paying each call's block test: the rows are
+    // read once for the lines they close and the cells they back, and the front blocks that no retained row
+    // backs are retired after.
+    int rowsWithCells = 0;
+    for (int index = 0; index < lineCount; ++index) {
+        const StoredLine& row = m_ring[ringIndex(m_start + index)];
+        rowsWithCells += row.length > 0;
+        if (!row.wrapped) {
+            ++m_frontLine;
+            m_frontContinuity = LineContinuity::StartsLine;
+        } else {
+            m_frontContinuity = LineContinuity::ContinuesLine;
+        }
+    }
+    m_start = ringIndex(m_start + lineCount);
+    m_count -= lineCount;
+    m_frontEvicted += rowsWithCells;
+    while (rowsWithCells > 0 && !m_blocks.empty() && m_frontEvicted >= m_blocks.front().linesAppended) {
+        m_frontEvicted -= m_blocks.front().linesAppended;
+        retireFrontBlock(m_blocks.front());
+        m_blocks.popFront();
+    }
 }
 
 void LineStore::dropNewest(int lineCount)
