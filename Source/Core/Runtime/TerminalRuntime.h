@@ -1331,14 +1331,13 @@ public:
     ///
     /// Armed only during a live resize, so outside one the ingest loop's wait
     /// is its own: a resize step drawn outside one finds a redraw arriving by
-    /// the settle alone. The caller holds the model lock: the erase
-    /// generation is the model's, and a writer outside a drain changes it
-    /// under that lock.
+    /// the settle alone. Takes no lock: it reads the erase generation the
+    /// newest drain pass or feed left behind under the model lock.
     ///
     /// - Parameter nowMicros: Now, in monotonic microseconds.
     /// - Returns: Zero once the interval has passed; none outside a live
     ///   resize or with no erase redraw pending.
-    [[nodiscard]] std::optional<std::uint32_t> eraseRedrawQuietDueInMicros(std::uint32_t nowMicros) const UBIQUITTY_REQUIRES(modelLockRole);
+    [[nodiscard]] std::optional<std::uint32_t> eraseRedrawQuietDueInMicros(std::uint32_t nowMicros) const;
 
     /// Reports the pending erase redraw whole once the transport has stayed
     /// empty for the quiet interval, and publishes the frame it completed.
@@ -2175,6 +2174,10 @@ private:
     // lock when a drain pass catches up with its program, the stream ends, or
     // a feed carries its own erase.
     std::atomic<std::uint32_t> m_parsedEraseGeneration { 0 };
+    // The model's erase generation as the newest holder of the model lock
+    // that armed the hold or parsed a feed read it. The ingest loop's quiet
+    // rule compares it with the parsed generation without the lock.
+    std::atomic<std::uint32_t> m_observedEraseGeneration { 0 };
     // When the live-resize hold first found a redraw arriving; 0 when none
     // is, and cleared by every redraw parsed whole.
     std::atomic<std::uint32_t> m_redrawArrivingSinceMicros { 0 };
