@@ -13,17 +13,21 @@
 //
 // - a fresh frame reaches the glass at least every two refresh intervals
 //   (nine in a sanitized build) while output flows, outside an open
-//   synchronized update, whose hold is the rule's own;
+//   synchronized update, whose hold is the rule's own; a live read is fresh
+//   only when the model moved since the last one;
 // - every frame presented while the selection stands draws it;
-// - the frame decision answers inside a millisecond (four in a sanitized
-//   build), and no frontend call waits longer than one (ten in an
-//   unoptimized or sanitized build, whose drain holds the model lock longer),
-//   including while the drain is stalled for half a second between two bites.
+// - a flood's frames are the drain's captures, not live reads under the lock;
+// - the view registers its capture geometry once;
+// - the frame decision answers inside a millisecond (four in an unoptimized
+//   or sanitized build), and no frontend call takes or waits longer than one
+//   (ten in an unoptimized or sanitized build, whose drain holds the model
+//   lock longer), including while the drain is stalled for half a second
+//   between two bites.
 //
 // The tick asks TerminalSession::takeFrame. With
-// UBIQUITTY_CADENCE_DECISION=origin-main it runs instead the decision Kit made
-// at 713c29c, before Core owned it, from the session's primitives: the run
-// then shows which cases that decision fails.
+// UBIQUITTY_CADENCE_DECISION=primitives it runs instead the decision a
+// frontend makes from the session's primitives when Core does not decide: the
+// run then shows which cases that decision fails.
 
 #include "Core/Runtime/TerminalSession.h"
 #include "Core/Selection/TerminalSelection.h"
@@ -172,9 +176,11 @@ constexpr bool isCoreOptimized = false;
 // parses and captures several times slower than the build it instruments, so
 // such a build bounds the stretch at nine intervals.
 constexpr Clock::duration cadenceBound = (isCoreInstrumented ? 9 : 2) * refreshInterval;
-// The frame decision reads published state, so it answers inside a
-// millisecond; a sanitized build, whose every access is checked, inside four.
-constexpr Clock::duration frameDecisionBound = isCoreInstrumented ? 4ms : 1ms;
+// The frame decision reads published state, but judges an open synchronized
+// update under the model lock, which waits one owner hold: inside a
+// millisecond in the shipping build, and inside four where an unoptimized or
+// sanitized Core holds the lock longer.
+constexpr Clock::duration frameDecisionBound = isCoreOptimized && !isCoreInstrumented ? 1ms : 4ms;
 // The longest a frontend call may wait. A wait for the model lock lasts the
 // owner's current hold, which an unoptimized or instrumented Core makes
 // several times as long as the shipping build does, a whole-grid capture
@@ -182,30 +188,31 @@ constexpr Clock::duration frameDecisionBound = isCoreInstrumented ? 4ms : 1ms;
 // is well below the owner stall and the waits a first-fit lock gave a waiter
 // behind a flood.
 constexpr Clock::duration frontendWaitBound = isCoreOptimized && !isCoreInstrumented ? 1ms : 10ms;
+// The longest any frontend call may take, waiting or working: a call that
+// spins counts its spin as work, not as a wait, and is bounded all the same.
+constexpr Clock::duration frontendCallBound = frontendWaitBound;
 
 // Output before this much of a flood has passed is the drain electing its
 // reader, not the cadence under test.
 constexpr Clock::duration warmUp = 150ms;
 constexpr Clock::duration ownerStall = 500ms;
 // How much of the flood the writer puts inside one synchronized update around
-// the stream: what it writes in `updateWriteSpan`, and in a sanitized build no
-// more than `maxUpdateBytes`. The drain's reader runs up to its flood ring
-// ahead of the parse, so the parse reaches the close only once it has parsed
-// what was read; a sanitized Core parses a ring's worth too slowly to land the
-// close inside the rule's one-second budget.
-constexpr Clock::duration updateWriteSpan = 400ms;
-constexpr std::size_t maxUpdateBytes = isCoreInstrumented ? 1024 * 1024 : std::numeric_limits<std::size_t>::max();
+// the stream. The drain's reader runs up to its flood ring ahead of the parse,
+// so the parse reaches the close only once it has parsed what was read: a
+// bounded update, not a span of the writer's time, keeps the close inside the
+// rule's one-second budget however fast the drain parses.
+constexpr std::size_t updateBytes = 1024 * 1024;
 
 // Which per-tick decision the frontend runs.
 enum class Decision : std::uint8_t {
     TakeFrame,
-    OriginMain,
+    FromPrimitives,
 };
 
 Decision decisionUnderTest()
 {
     const char* named = std::getenv("UBIQUITTY_CADENCE_DECISION");
-    return named && std::string_view(named) == "origin-main" ? Decision::OriginMain : Decision::TakeFrame;
+    return named && std::string_view(named) == "primitives" ? Decision::FromPrimitives : Decision::TakeFrame;
 }
 
 // How many reasons a tick can present nothing for.
@@ -242,8 +249,9 @@ enum class FrontendCall : std::uint8_t {
     LockForRead,
     PresentationHoldTicks,
     RecheckHold,
+    NextAnimationDelay,
 };
-constexpr std::size_t frontendCallCount = 10;
+constexpr std::size_t frontendCallCount = 11;
 
 constexpr std::string_view frontendCallName(FrontendCall call)
 {
@@ -268,6 +276,8 @@ constexpr std::string_view frontendCallName(FrontendCall call)
         return "presentationHoldTicksRemaining";
     case FrontendCall::RecheckHold:
         return "shouldWithholdFrame (the hold's recheck)";
+    case FrontendCall::NextAnimationDelay:
+        return "nextAnimationDelay";
     }
     return "?";
 }
@@ -379,6 +389,16 @@ enum class Coherence : std::uint8_t {
     SentinelUntilTheBlockCloses,
 };
 
+// A flood's frames are mostly the drain's captures: a live read stands in for
+// one only at a tick no pass has captured for, a few times a run, and the
+// bounds leave three times the most of those a case was measured to make. A
+// sanitized Core's fill-bound passes straddle the refresh interval, so how
+// many ticks a REP fill reads live there follows the machine's load: such a
+// build holds a flood only to a tenth of its frames captured, a third of the
+// least a case was measured to capture.
+constexpr double floodCapturedShare = isCoreInstrumented ? 0.1 : 0.6;
+constexpr int floodLiveReads = isCoreInstrumented ? std::numeric_limits<int>::max() : 21;
+
 constexpr int sentinelRow = 5;
 constexpr int sentinelColumn = 7;
 
@@ -400,11 +420,22 @@ struct CadenceCase {
     int scrollbackLimit = 0;
     SelectionPlacement selection;
     Clock::duration duration = 1200ms;
+    // Writes from the writer's start, so the bytes it writes are built when
+    // the case is made and none of the clock is the test's own formatting.
     std::function<void(Writer&)> write;
     bool shouldPostKeys = false;
     // How long after the writer starts the drain is stalled between two bites.
     std::optional<Clock::duration> stallAfter {};
     Coherence coherence = Coherence::Unchecked;
+    // The least share of the frames presented in the flow windows that are
+    // the drain's captures; a flood's frames are, and a live read under the
+    // lock stands in for one only now and then.
+    double minCapturedShare = 0;
+    // The most live reads, each a wait for the model lock, the run may make.
+    int maxLiveReads = std::numeric_limits<int>::max();
+    // How many times the view may register its capture geometry: once, at
+    // the selection, while the view's offset stands.
+    int maxRegistrations = 1;
 };
 
 std::int64_t microsecondsOf(Clock::time_point at) { return std::chrono::duration_cast<std::chrono::microseconds>(at.time_since_epoch()).count(); }
@@ -546,7 +577,8 @@ public:
     {
         m_slot = slot;
         const std::uint32_t flags = m_times.time(FrontendCall::TakeEventFlags, [&] { return m_session.takeEventFlags(); });
-        if (flags & (1u << static_cast<unsigned>(Runtime::EventKind::ScreenDirty)))
+        const bool isScreenDirty = flags & (1u << static_cast<unsigned>(Runtime::EventKind::ScreenDirty));
+        if (isScreenDirty)
             followOutput();
         static_cast<void>(m_times.time(FrontendCall::FrameClockFacts, [&] { return m_session.frameClockFactsNow(); }));
         static_cast<void>(m_times.time(FrontendCall::ReadSnapshot, [&] { return m_session.readSnapshot(); }));
@@ -559,7 +591,7 @@ public:
         if (m_decision == Decision::TakeFrame)
             askForFrame();
         else
-            askForFrameAsOriginMainDid();
+            askForFrameFromPrimitives();
         recheckHoldIfDue();
     }
 
@@ -597,12 +629,16 @@ private:
         return registeredNow != m_viewOffset;
     }
 
+    // Whether the view's offset holds its rows over history appended since
+    // the view last observed it, for a reader that missed the deliveries.
+    [[nodiscard]] bool isViewOffsetHeld() const { return m_selection.hasViewportObservation && !m_selection.usesLogicalViewport; }
+
     void registerCaptureGeometry()
     {
         Runtime::SyncFrameCaptureGeometry geometry = captureGeometry(m_case.rows, m_case.columns);
         geometry.viewOffset = m_viewOffset;
         geometry.viewHistory = m_selection.viewportObservedHistory;
-        geometry.isViewOffsetHeld = m_selection.hasViewportObservation && !m_selection.usesLogicalViewport;
+        geometry.isViewOffsetHeld = isViewOffsetHeld();
         m_times.time(FrontendCall::RegisterCaptureGeometry, [&] { m_session.setSyncFrameCaptureGeometry(geometry); });
         m_registeredViewOffset = geometry.viewOffset;
         m_registeredViewHistory = geometry.viewHistory;
@@ -635,10 +671,11 @@ private:
         }
     }
 
-    // Kit's frame decision at 713c29c: the boundary capture only for a view
-    // with no selection now or on its last frame, the rule's hold, and the
-    // saturated drain's skip on the drain's flag alone.
-    void askForFrameAsOriginMainDid()
+    // The decision a frontend makes from the session's primitives: the
+    // boundary capture only for a view with no selection now or on its last
+    // frame, the rule's hold, and the saturated drain's skip on the drain's
+    // flag alone.
+    void askForFrameFromPrimitives()
     {
         const bool hasSelection = Selection::hasSelection(m_selection);
         const SelectionAtAsk selection = hasSelection ? SelectionAtAsk::Standing : SelectionAtAsk::Absent;
@@ -678,10 +715,20 @@ private:
             .selectionSpans = selectionSpans,
             .cursorRow = frame.cursorRow(),
             .cursorColumn = frame.cursorColumn() });
+        afterDrawnFrame();
+    }
+
+    // What a frontend asks after each frame it draws: when anything on it
+    // next animates.
+    void afterDrawnFrame()
+    {
+        static_cast<void>(m_times.time(FrontendCall::NextAnimationDelay, [&] { return m_session.nextAnimationDelay(); }));
     }
 
     // The live read: the model lock, the decision's check under it, and the
-    // selection resolved against the live terminal as the capture is taken.
+    // selection resolved against the live terminal as the capture is taken,
+    // over the rows the view holds across history the drain appended since
+    // the view last observed it.
     template<typename DeclineUnderLock>
     void readLive(SelectionAtAsk selection, DeclineUnderLock&& declineUnderLock)
     {
@@ -691,11 +738,20 @@ private:
         }
         Terminal* terminal = m_session.terminal();
         FrameDecline declined = terminal ? declineUnderLock(*terminal) : FrameDecline::None;
-        Present present { .at = m_slot, .takenAt = Clock::now(), .route = FrameRoute::LiveRead, .isFresh = true, .didSelectionStand = selection == SelectionAtAsk::Standing };
+        Present present { .at = m_slot, .takenAt = Clock::now(), .route = FrameRoute::LiveRead, .didSelectionStand = selection == SelectionAtAsk::Standing };
         if (terminal && declined == FrameDecline::None) {
+            const LiveContent content { .grid = terminal->grid.get(),
+                .generation = terminal->grid ? terminal->grid->contentGeneration() : 0,
+                .cursorRow = terminal->screens.active->cursorY,
+                .cursorColumn = terminal->screens.active->cursorX };
+            present.isFresh = content != m_lastLiveContent;
+            m_lastLiveContent = content;
             if (Selection::hasSelection(m_selection)) {
                 Selection::ViewportEnds ends;
-                present.selectionSpans = Selection::viewportSpansAndEnds(m_selection, *terminal, m_viewOffset, m_spans, ends);
+                const int viewOffset = isViewOffsetHeld()
+                    ? Selection::heldViewOffset(m_viewOffset, m_selection.viewportObservedHistory, Screen::historyFacts(terminal))
+                    : m_viewOffset;
+                present.selectionSpans = Selection::viewportSpansAndEnds(m_selection, *terminal, viewOffset, m_spans, ends);
             }
             present.cursorRow = terminal->screens.active->cursorY;
             present.cursorColumn = terminal->screens.active->cursorX;
@@ -709,6 +765,7 @@ private:
         }
         m_didLastFrameDrawSearch = false;
         m_presents.push_back(present);
+        afterDrawnFrame();
     }
 
     // A declined tick keeps the frame owed, and a hold's budget is asked
@@ -739,6 +796,7 @@ private:
             bookHoldRecheck();
     }
 
+private:
     TerminalSession& m_session;
     const CadenceCase& m_case;
     Decision m_decision;
@@ -753,6 +811,16 @@ private:
     bool m_didLastFrameDrawSearch = false;
     bool m_didLastFrameDrawSelection = false;
     std::uint64_t m_lastSequence = 0;
+    // What the last live read showed: the model it read moved when any of
+    // this did.
+    struct LiveContent {
+        const void* grid = nullptr;
+        std::uint64_t generation = 0;
+        int cursorRow = -1;
+        int cursorColumn = -1;
+        friend bool operator==(const LiveContent&, const LiveContent&) = default;
+    };
+    LiveContent m_lastLiveContent;
     std::optional<Clock::time_point> m_recheckAt;
     Clock::time_point m_slot;
     std::vector<Present> m_presents;
@@ -821,7 +889,7 @@ CadenceRun runCadence(const CadenceCase& cadenceCase, Decision decision)
         session->unlockForRead();
     }
     DrainWatch watch;
-    watch.shouldWatchBlocks = cadenceCase.coherence == Coherence::SentinelUntilTheBlockCloses;
+    watch.shouldWatchBlocks = cadenceCase.coherence != Coherence::Unchecked && cadenceCase.coherence != Coherence::EveryFrameAtHome;
     session->setRawByteTap(&DrainWatch::tap, &watch);
     session->setSyncPublishRefreshSeconds(refreshSeconds);
     session->setSyncFrameCaptureGeometry(captureGeometry(cadenceCase.rows, cadenceCase.columns));
@@ -950,6 +1018,7 @@ void checkCadence(const CadenceCase& cadenceCase, const CadenceRun& run, double 
         CHECK_MSG(run.stallStartedAt.has_value(), (name + ": the drain was stalled").c_str());
 
     int presentsInWindows = 0;
+    int capturedInWindows = 0;
     Clock::duration longestFlowGap {};
     for (const auto& [from, to] : windows) {
         if (to <= from)
@@ -963,7 +1032,22 @@ void checkCadence(const CadenceCase& cadenceCase, const CadenceRun& run, double 
                 .c_str());
         presentsInWindows += static_cast<int>(std::ranges::count_if(
             run.presents, [&](const Present& present) { return present.isFresh && present.at >= from && present.at < to; }));
+        capturedInWindows += static_cast<int>(std::ranges::count_if(run.presents, [&](const Present& present) {
+            return present.isFresh && present.route == FrameRoute::Captured && present.at >= from && present.at < to;
+        }));
     }
+    const double capturedShare = presentsInWindows ? static_cast<double>(capturedInWindows) / presentsInWindows : 0;
+    CHECK_MSG(capturedShare >= cadenceCase.minCapturedShare,
+        std::format("{}: {} of {} fresh frames in the flow windows were the drain's captures, against at least {:.0f}%", name,
+            capturedInWindows, presentsInWindows, cadenceCase.minCapturedShare * 100)
+            .c_str());
+    const int liveReads = run.times.count[static_cast<std::size_t>(FrontendCall::LockForRead)];
+    CHECK_MSG(liveReads <= cadenceCase.maxLiveReads,
+        std::format("{}: {} live reads took the model lock, against at most {}", name, liveReads, cadenceCase.maxLiveReads).c_str());
+    CHECK_MSG(run.registrations <= cadenceCase.maxRegistrations,
+        std::format("{}: the view registered its capture geometry {} times, against at most {}", name, run.registrations,
+            cadenceCase.maxRegistrations)
+            .c_str());
 
     int presentsWithSelection = 0;
     int presentsWithoutIt = 0;
@@ -984,6 +1068,13 @@ void checkCadence(const CadenceCase& cadenceCase, const CadenceRun& run, double 
     for (std::size_t index = 0; index < frontendCallCount; ++index) {
         if (run.times.count[index] == 0)
             continue;
+        const auto call = static_cast<FrontendCall>(index);
+        if (call != FrontendCall::TakeFrame) {
+            CHECK_MSG(run.times.longest[index] <= frontendCallBound,
+                std::format("{}: {} took {:.2f} ms, against {:.2f} ms", name, frontendCallName(call), millisecondsOf(run.times.longest[index]),
+                    millisecondsOf(frontendCallBound))
+                    .c_str());
+        }
         const Clock::duration blocked = run.times.longestBlocked[index];
         CHECK_MSG(blocked <= frontendWaitBound,
             std::format("{}: {} waited {:.2f} ms at {:.0f} ms into the writer, against {:.2f} ms", name,
@@ -1020,10 +1111,10 @@ void checkCadence(const CadenceCase& cadenceCase, const CadenceRun& run, double 
     std::string updateOpen;
     if (cadenceCase.coherence == Coherence::SentinelUntilTheBlockCloses)
         updateOpen = std::format(", the update open {:.0f} ms", millisecondsOf(*run.blockCloseReachedAt - *run.blockOpenReachedAt));
-    std::printf("cadence %s: %.2f of a core, %d ticks, %zu presents (%d fresh in the flow windows, longest gap %.1f ms%s), declines by reason:%s, "
-                "%d registrations; longest call / longest wait (ms):%s\n",
-        cadenceCase.name, coreShare, run.ticks, run.presents.size(), presentsInWindows, millisecondsOf(longestFlowGap), updateOpen.c_str(),
-        declines.c_str(), run.registrations, calls.c_str());
+    std::printf("cadence %s: %.2f of a core, %d ticks, %zu presents (%d fresh in the flow windows, %d of them captures, longest gap %.1f ms%s), "
+                "%d live reads, declines by reason:%s, %d registrations; longest call / longest wait (ms):%s\n",
+        cadenceCase.name, coreShare, run.ticks, run.presents.size(), presentsInWindows, capturedInWindows, millisecondsOf(longestFlowGap),
+        updateOpen.c_str(), liveReads, declines.c_str(), run.registrations, calls.c_str());
 }
 
 // The least share of a core any of a run's busy threads can have now: that
@@ -1138,23 +1229,31 @@ std::string asciiLines(int lines, int& counter)
 
 // A writer the machine starves: a burst that elects the flood reader, then
 // truecolour slices a consumer nap apart, each ending inside a sequence.
-void writeStarved(Writer& writer)
+std::string asciiFlood(int lines)
+{
+    int counter = 0;
+    return asciiLines(lines, counter);
+}
+
+std::function<void(Writer&)> starvedWriter()
 {
     int counter = 0;
     std::string burst;
     while (burst.size() < 2 * static_cast<std::size_t>(Runtime::TerminalRuntime::drainPassCapacityBytes))
         burst += asciiLines(64, counter);
-    if (!writer.write(burst))
-        return;
     std::string slice;
     while (slice.size() < 250)
         slice += "\x1b[38;2;111;222;123mx";
     slice.resize(250);
-    while (!writer.isStopping()) {
-        if (!writer.write(slice))
+    return [burst = std::move(burst), slice = std::move(slice)](Writer& writer) {
+        if (!writer.write(burst))
             return;
-        writer.sleepFor(1500us);
-    }
+        while (!writer.isStopping()) {
+            if (!writer.write(slice))
+                return;
+            writer.sleepFor(1500us);
+        }
+    };
 }
 
 constexpr int paneRows = 24;
@@ -1201,24 +1300,25 @@ TEST(cadenceOfAnASCIIFlood)
         .name = "ascii flood",
         .prologue = protectedRowScreen(paneRows),
         .selection = protectedSelection,
-        .write =
-            [](Writer& writer) {
-                int counter = 0;
-                replay(writer, asciiLines(4096, counter));
-            },
+        .write = [lines = asciiFlood(4096)](Writer& writer) { replay(writer, lines); },
+        .minCapturedShare = floodCapturedShare,
+        .maxLiveReads = floodLiveReads,
     });
 }
 
 // The sgr_churn shape, every cell under its own truecolour SGR redrawn in
 // place, with a selection on a row it redraws: the drain is parse-bound, so
-// every pass ends on its budget. The selection freeze measured on origin/main.
+// every pass ends on its budget, and a frame that waited for the model lock
+// would wait behind every bite.
 TEST(cadenceOfAnSGRChurnFlood)
 {
     runAndCheck({
         .name = "sgr_churn flood",
         .prologue = sgrChurnFrame(paneRows, paneColumns, 0),
         .selection = { .row = 6, .fromColumn = 2, .toColumn = 40 },
-        .write = [](Writer& writer) { replay(writer, sgrChurnRecording(paneRows, paneColumns)); },
+        .write = [frames = sgrChurnRecording(paneRows, paneColumns)](Writer& writer) { replay(writer, frames); },
+        .minCapturedShare = floodCapturedShare,
+        .maxLiveReads = floodLiveReads,
     });
 }
 
@@ -1231,7 +1331,9 @@ TEST(cadenceOfAnSGRChurnFloodAtTwoHundredColumns)
         .columns = 200,
         .prologue = sgrChurnFrame(50, 200, 0),
         .selection = { .row = 20, .fromColumn = 10, .toColumn = 120 },
-        .write = [](Writer& writer) { replay(writer, sgrChurnRecording(50, 200)); },
+        .write = [frames = sgrChurnRecording(50, 200)](Writer& writer) { replay(writer, frames); },
+        .minCapturedShare = floodCapturedShare,
+        .maxLiveReads = floodLiveReads,
     });
 }
 
@@ -1242,12 +1344,14 @@ TEST(cadenceOfARepFillFlood)
         .name = "rep_fill flood",
         .prologue = repFillFrame(paneRows, paneColumns, 0),
         .selection = { .row = 3, .fromColumn = 0, .toColumn = 30 },
-        .write = [](Writer& writer) { replay(writer, recording(64, [](int frame) { return repFillFrame(paneRows, paneColumns, frame); })); },
+        .write = [frames = recording(64, [](int frame) { return repFillFrame(paneRows, paneColumns, frame); })](Writer& writer) { replay(writer, frames); },
+        .minCapturedShare = floodCapturedShare,
+        .maxLiveReads = floodLiveReads,
     });
 }
 
 // A writer the machine starves: passes close at a would-block long before
-// their budget. The under-load stall measured on origin/main.
+// their budget, and each pass's frame must still reach the glass.
 TEST(cadenceOfAStarvedWriter)
 {
     runAndCheck({
@@ -1255,20 +1359,22 @@ TEST(cadenceOfAStarvedWriter)
         .prologue = protectedRowScreen(paneRows),
         .selection = protectedSelection,
         .duration = 1500ms,
-        .write = writeStarved,
+        .write = starvedWriter(),
+        .maxLiveReads = floodLiveReads,
     });
 }
 
 // A full-screen program on the alternate screen redrawing every row in place,
-// with a selection on one of them. The in-place selection measured on
-// origin/main.
+// with a selection on one of them that every redraw rewrites.
 TEST(cadenceOfAnAlternateScreenRedrawnInPlace)
 {
     runAndCheck({
         .name = "alternate screen redrawn in place",
         .prologue = "\x1b[?1049h" + redrawnInPlace(paneRows, 0),
         .selection = { .row = 10, .fromColumn = 0, .toColumn = 25 },
-        .write = [](Writer& writer) { replay(writer, redrawnInPlaceRecording()); },
+        .write = [frames = redrawnInPlaceRecording()](Writer& writer) { replay(writer, frames); },
+        .minCapturedShare = floodCapturedShare,
+        .maxLiveReads = floodLiveReads,
     });
 }
 
@@ -1280,18 +1386,17 @@ TEST(cadenceOfSynchronizedUpdatesOnePerFrame)
         .name = "one synchronized update per frame",
         .prologue = sgrChurnFrame(paneRows, paneColumns, 0),
         .selection = { .row = 6, .fromColumn = 2, .toColumn = 40 },
-        .write =
-            [](Writer& writer) {
-                replay(writer, recording(16, [](int frame) { return "\x1b[?2026h" + sgrChurnFrame(paneRows, paneColumns, frame) + "\x1b[?2026l"; }));
-            },
+        .write = [frames = recording(16, [](int frame) { return "\x1b[?2026h" + sgrChurnFrame(paneRows, paneColumns, frame) + "\x1b[?2026l"; })](
+                     Writer& writer) { replay(writer, frames); },
         .coherence = Coherence::EveryFrameAtHome,
+        .maxLiveReads = floodLiveReads,
     });
 }
 
-// One synchronized update around `updateWriteSpan` of a flood, no more than
-// `maxUpdateBytes` of it, then the flood without one: the screen the update
-// opened over stands until the drain reaches its close, inside the rule's
-// one-second budget, and frames follow at the cadence from the close.
+// One synchronized update around `updateBytes` of a flood, then the flood
+// without one: the screen the update opened over stands until the drain
+// reaches its close, inside the rule's one-second budget, and frames follow at
+// the cadence from the close.
 TEST(cadenceOfOneSynchronizedUpdateAroundTheStream)
 {
     runAndCheck({
@@ -1299,16 +1404,16 @@ TEST(cadenceOfOneSynchronizedUpdateAroundTheStream)
         .prologue = "\x1b[?1049h" + redrawnInPlace(paneRows, 0) + std::format("\x1b[{};{}H", sentinelRow + 1, sentinelColumn + 1),
         .selection = { .row = 10, .fromColumn = 0, .toColumn = 25 },
         .write =
-            [](Writer& writer) {
-                const std::string frames = redrawnInPlaceRecording();
+            [frames = redrawnInPlaceRecording()](Writer& writer) {
                 if (!writer.write("\x1b[?2026h"))
                     return;
-                replay(writer, frames, Clock::now() + updateWriteSpan, maxUpdateBytes);
+                replay(writer, frames, std::nullopt, updateBytes);
                 if (!writer.write("\x1b[?2026l"))
                     return;
                 replay(writer, frames);
             },
         .coherence = Coherence::SentinelUntilTheBlockCloses,
+        .maxLiveReads = floodLiveReads,
     });
 }
 
@@ -1327,11 +1432,11 @@ TEST(cadenceOfAViewScrolledBack)
         .scrollbackLimit = 50'000,
         .selection = { .row = 4, .fromColumn = 0, .toColumn = 20 },
         .write =
-            [](Writer& writer) {
-                replay(writer, recording(16, [](int frame) {
-                    return sgrChurnFrame(paneRows - 1, paneColumns, frame) + std::format("\x1b[{};1H\r\nscrolled line {:06}", paneRows, frame);
-                }));
-            },
+            [frames = recording(16, [](int frame) {
+                return sgrChurnFrame(paneRows - 1, paneColumns, frame) + std::format("\x1b[{};1H\r\nscrolled line {:06}", paneRows, frame);
+            })](Writer& writer) { replay(writer, frames); },
+        .minCapturedShare = floodCapturedShare,
+        .maxLiveReads = floodLiveReads,
     });
 }
 
@@ -1343,14 +1448,17 @@ TEST(cadenceOfKeysTypedThroughAFlood)
         .name = "keys through a flood",
         .prologue = sgrChurnFrame(paneRows, paneColumns, 0),
         .selection = { .row = 6, .fromColumn = 2, .toColumn = 40 },
-        .write = [](Writer& writer) { replay(writer, sgrChurnRecording(paneRows, paneColumns)); },
+        .write = [frames = sgrChurnRecording(paneRows, paneColumns)](Writer& writer) { replay(writer, frames); },
         .shouldPostKeys = true,
+        .minCapturedShare = floodCapturedShare,
+        .maxLiveReads = floodLiveReads,
     });
 }
 
 // The drain stalled for half a second between two bites of an sgr_churn
-// flood, as a long decode or reflow stalls it: every frontend call still
-// answers inside the bound, and frames resume at the cadence after it.
+// flood, the model lock released while it stalls, as a reader thread starved
+// of the CPU stalls it: every frontend call still answers inside the bound,
+// and frames resume at the cadence after it.
 TEST(cadenceAcrossAnOwnerStall)
 {
     runAndCheck({
@@ -1358,7 +1466,7 @@ TEST(cadenceAcrossAnOwnerStall)
         .prologue = sgrChurnFrame(paneRows, paneColumns, 0),
         .selection = { .row = 6, .fromColumn = 2, .toColumn = 40 },
         .duration = 1500ms,
-        .write = [](Writer& writer) { replay(writer, sgrChurnRecording(paneRows, paneColumns)); },
+        .write = [frames = sgrChurnRecording(paneRows, paneColumns)](Writer& writer) { replay(writer, frames); },
         .shouldPostKeys = true,
         .stallAfter = 400ms,
     });

@@ -17,6 +17,7 @@
 frameClockFactsNow waits reads a raw adopted model, which no writer publishes, under the model lock on every tick
 liveReadDecline nowait reads the model inside the live read's hold
 lockForRead waits the live read waits for the model lock
+nextAnimationDelay waits reads a raw adopted model, which no writer publishes, under the model lock after every drawn frame
 presentationHoldTicksRemaining waits judges an open synchronized update under the model lock
 sendKey waits encodes the key and notes the activity under the model lock
 setPresentedViewOffset waits a remote pane's offset asks its host for history
