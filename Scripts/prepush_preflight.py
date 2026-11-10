@@ -66,6 +66,9 @@ def is_documentation(path):
         return False
     suffix = posix.suffix.lower()
     text = str(posix)
+    # Markdown under Tests/ is a fixture some test reads, whatever its suffix.
+    if text.startswith("Tests/"):
+        return False
     if name in DOCUMENT_BASENAMES or name.startswith(DOCUMENT_BASENAME_PREFIXES):
         # A README or LICENSE* is prose whatever its extension, but a script that
         # happens to be named like one is not: only text-like suffixes qualify.
@@ -79,9 +82,16 @@ def is_documentation(path):
     return False
 
 
+# A line the caller marks with this prefix names a path whose mode is not that of a
+# plain file (a symlink, an executable, a submodule): it is code whatever its name.
+NONREGULAR_MARK = "!"
+
+
 def classify(paths):
     """`docs` when there is at least one path and every one is documentation."""
     paths = [path.strip() for path in paths if path.strip()]
+    if any(path.startswith(NONREGULAR_MARK) for path in paths):
+        return "code"
     if paths and all(is_documentation(path) for path in paths):
         return "docs"
     return "code"

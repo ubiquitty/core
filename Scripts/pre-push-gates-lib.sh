@@ -204,6 +204,30 @@ ubq_changed_with_libraries() {
     printf '%s\n' "$changed"
 }
 
+# The paths the push changes whose mode, before or after, is not a plain file's
+# (a symlink, an executable, a submodule), with each library read the way
+# ubq_changed_with_libraries reads it. A documentation path that became a symlink
+# to code, or gained an executable bit, is not documentation.
+ubq_nonregular_changes() {
+    local filter='{ split($1, mode, " "); old = substr(mode[1], 2); new = mode[2];
+        if ((old != "100644" && old != "000000") || (new != "100644" && new != "000000")) print $NF }'
+    local library pinned pinnedHere
+    git diff --raw --no-renames --ignore-submodules=none origin/main...HEAD 2>/dev/null | awk -F'\t' "$filter"
+    for library in ubiquitty-core ubiquitty-kit; do
+        pinned="$(git rev-parse --verify --quiet "origin/main:Libraries/$library" 2>/dev/null)" || continue
+        pinnedHere="$(git rev-parse --verify --quiet "HEAD:Libraries/$library" 2>/dev/null)" || continue
+        git -C "Libraries/$library" diff --raw --no-renames --ignore-submodules=none "$pinned" "$pinnedHere" 2>/dev/null \
+            | awk -F'\t' "$filter" | sed 's#^#Libraries/'"$library"'/#'
+    done
+}
+
+# What the classifier reads: the changed paths, then a marked line for each one
+# that is not a plain file.
+ubq_classification_input() {
+    ubq_changed_with_libraries || return 1
+    ubq_nonregular_changes | sed 's/^/!/'
+}
+
 # The end of a run: what stood down, what warned, what failed and where its log
 # is, and the line saying how much a pass covers. Returns the run's status.
 ubq_pre_push_finish() {
@@ -314,7 +338,7 @@ ubq_preflight() {
     local changed class mode="${UBQ_PREPUSH_PREREQUISITES:-build}" preflight="$UBQ_LIB/prepush_preflight.py"
     if { [ "$TIER" = quick ] || [ "$TIER" = default ]; } && [ "${UBQ_PREPUSH_DOCS_ONLY:-on}" != off ] \
             && ubq_pushes_only_head; then
-        changed="$(ubq_changed_with_libraries)" || changed=""
+        changed="$(ubq_classification_input)" || changed=""
         class="$(printf '%s\n' "$changed" | python3 "$preflight" classify 2>/dev/null)" || class=""
         if [ "$class" = docs ]; then
             TIER=lint
