@@ -1720,8 +1720,19 @@ TEST(aJobLedByAForkIsNamedByItsOldestProgram)
     std::printf("  a job led by a fork: %d samples, %d misnamed\n", samples, samplesMisnamed);
     CHECK_MSG(samplesMisnamed == 0, ("named \"" + misnamed + "\" rather than its oldest program").c_str());
 
-    REQUIRE(stream->writeAll(std::span("\x03", 1)) == 0);
-    CHECK(drainUntil([&] { return process.foregroundProcessGroup() == shellGroup; }));
+    // One interrupt ends the job, except on a loaded machine, where bash's
+    // subshell can be left blocked in wait4 with no child; the next interrupt
+    // ends it, as a second ^C at the keyboard does. So the job is interrupted
+    // until the shell holds the terminal again.
+    const auto isShellBack = [&] { return process.foregroundProcessGroup() == shellGroup; };
+    for (int interrupt = 0; interrupt < 5 && !isShellBack(); ++interrupt) {
+        REQUIRE(stream->writeAll(std::span("\x03", 1)) == 0);
+        for (int tick = 0; tick < 400 && !isShellBack(); ++tick) {
+            int finalStatus = 0;
+            drainWithBudget(stream.get(), sink, sizeof(sink), 5, &finalStatus);
+        }
+    }
+    CHECK(isShellBack());
 }
 
 // A nested shell is a job of the session's shell, and so is everything it
