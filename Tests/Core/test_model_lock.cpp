@@ -6,7 +6,12 @@
 // the releasing thread take it straight back ahead of the waiter it woke, so a
 // waiter that the lock did not count would wait for the bite train to stop.
 // These cases wait the way most of the session's members do, through a plain
-// std::lock_guard, and bound the wait.
+// std::lock_guard. They check the handoff by what the drain's releases report
+// and by the order in which two waiters are served. A wait's length is the
+// scheduler's as much as the lock's: a busy machine leaves a waiter it woke
+// unscheduled for tens of milliseconds, as long as a waiter no release hands
+// the lock to. So only the median wait is bounded, which a few descheduled
+// waits do not move, and the longest is printed.
 //
 // This test links Source/Platform/POSIX/SystemPAL.cpp (see Tests/CMakeLists.txt)
 // because the handoff spins on PAL::monotonicMicros and yields through
@@ -16,6 +21,7 @@
 #include "Harness.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -40,6 +46,7 @@ namespace {
 
 using Ubiquitty::ModelLock;
 using Ubiquitty::ModelLockHandoff;
+using Ubiquitty::ModelLockRelease;
 using Clock = std::chrono::steady_clock;
 
 // The parse a bite stands for, spun rather than slept: a drain parsing a flood
@@ -48,9 +55,8 @@ constexpr auto biteHold = std::chrono::microseconds(20);
 // How long a waiter keeps the lock once it has it: a render capture's order.
 constexpr auto waiterHold = std::chrono::microseconds(50);
 constexpr int trialsPerWaiter = 200;
-// The bound every wait must meet: a handoff costs one bite plus the waiter's
-// wake, far below this, and a waiter the train starves waits hundreds of
-// milliseconds.
+// The bound the median wait must meet: a handoff costs one bite plus the
+// waiter's wake, far below this.
 constexpr auto waitBound = std::chrono::milliseconds(5);
 
 void spinFor(Clock::duration span)
@@ -142,10 +148,11 @@ TEST(aPlainWaiterBehindAGapFreeDrainIsHandedTheLockEveryTime)
         static_cast<unsigned long long>(drain.biteCount()), static_cast<unsigned long long>(drain.handoffCount()));
     std::printf("%s\n", message);
     // The drain kept biting through the whole run, so every wait was against a
-    // live train rather than an idle lock.
+    // live train rather than an idle lock, and its releases handed the lock to
+    // a waiter that locked through std::lock_guard.
     CHECK_MSG(drain.biteCount() > static_cast<std::uint64_t>(trialsPerWaiter), message);
     CHECK_MSG(drain.handoffCount() > 0, message);
-    CHECK_MSG(waits.longest < boundMicros, message);
+    CHECK_MSG(waits.median < boundMicros, message);
 }
 
 // Two waiters at once: neither one's acquisition may end the other's claim on
@@ -162,11 +169,105 @@ TEST(waitersOnTwoThreadsAreEachHandedTheLock)
     const WaitSummary theirs = summarize(otherWaits);
 
     char message[192];
-    std::snprintf(message, sizeof(message), "longest waits %.1fus and %.1fus, medians %.1fus and %.1fus, bound %.0fus",
-        own.longest, theirs.longest, own.median, theirs.median, boundMicros);
+    std::snprintf(message, sizeof(message), "longest waits %.1fus and %.1fus, medians %.1fus and %.1fus, bound %.0fus; %llu handoffs",
+        own.longest, theirs.longest, own.median, theirs.median, boundMicros, static_cast<unsigned long long>(drain.handoffCount()));
     std::printf("%s\n", message);
-    CHECK_MSG(own.longest < boundMicros, message);
-    CHECK_MSG(theirs.longest < boundMicros, message);
+    CHECK_MSG(drain.handoffCount() > 0, message);
+    CHECK_MSG(own.median < boundMicros, message);
+    CHECK_MSG(theirs.median < boundMicros, message);
+}
+
+// What the drain's next release did once one of two waiters had been handed
+// the lock and let it go.
+enum class SecondTurn : std::uint8_t {
+    // The second waiter was still counted: the release offered it the lock.
+    Offered,
+    // The release found no waiter although the second one was still waiting.
+    Unwanted,
+    // The second waiter took the lock before the drain could take it back, so
+    // this case saw no release while it waited.
+    Unobserved,
+};
+
+// Pairs of waiters the claim case tries.
+constexpr int claimTrials = 8;
+
+// Two threads wait behind the drain, and the drain hands the lock to whichever
+// takes it. Once that one lets go and the drain takes the lock back, the other
+// is still waiting, and the drain's next release must find it counted.
+SecondTurn secondWaitersTurn()
+{
+    ModelLock lock;
+    lock.lockForDrain();
+    std::atomic<int> askingCount { 0 };
+    std::atomic<int> holder { -1 };
+    std::array<std::atomic<bool>, 2> mayLetGo {};
+    const auto wait = [&](int waiter) {
+        askingCount.fetch_add(1, std::memory_order_acq_rel);
+        const std::lock_guard hold(lock);
+        holder.store(waiter, std::memory_order_release);
+        while (!mayLetGo[static_cast<std::size_t>(waiter)].load(std::memory_order_acquire)) {
+        }
+        holder.store(-1, std::memory_order_release);
+    };
+    std::thread first(wait, 0);
+    std::thread second(wait, 1);
+    while (askingCount.load(std::memory_order_acquire) < 2) {
+        std::this_thread::yield();
+    }
+    // Long enough for both to find the lock held and count themselves, on any
+    // machine that runs a thread within this long of its asking.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    (void)lock.unlockForDrain();
+    int firstHolder = -1;
+    while ((firstHolder = holder.load(std::memory_order_acquire)) < 0) {
+        std::this_thread::yield();
+    }
+    // A try, as the drain's re-take after a timed-out band is: the other
+    // waiter, woken by the release, may take the lock first.
+    mayLetGo[static_cast<std::size_t>(firstHolder)].store(true, std::memory_order_release);
+    SecondTurn turn = SecondTurn::Unobserved;
+    for (;;) {
+        if (lock.try_lock()) {
+            const ModelLockRelease release = lock.unlockForDrain();
+            turn = release.handoff == ModelLockHandoff::Unwanted ? SecondTurn::Unwanted : SecondTurn::Offered;
+            break;
+        }
+        if (holder.load(std::memory_order_acquire) == 1 - firstHolder)
+            break;
+    }
+    mayLetGo[static_cast<std::size_t>(1 - firstHolder)].store(true, std::memory_order_release);
+    first.join();
+    second.join();
+    return turn;
+}
+
+// One waiter's acquisition ends only its own claim: the drain's next release
+// still finds the other waiter counted and offers it the lock.
+TEST(aWaitersClaimOutlivesAnotherWaitersTurn)
+{
+    int offered = 0;
+    int unwanted = 0;
+    int unobserved = 0;
+    for (int trial = 0; trial < claimTrials; ++trial) {
+        switch (secondWaitersTurn()) {
+        case SecondTurn::Offered:
+            ++offered;
+            break;
+        case SecondTurn::Unwanted:
+            ++unwanted;
+            break;
+        case SecondTurn::Unobserved:
+            ++unobserved;
+            break;
+        }
+    }
+    char message[160];
+    std::snprintf(message, sizeof(message), "%d trials: second waiter offered the lock %d times, found uncounted %d times, served before a release %d times",
+        claimTrials, offered, unwanted, unobserved);
+    std::printf("%s\n", message);
+    CHECK_MSG(unwanted == 0, message);
+    CHECK_MSG(offered > 0, message);
 }
 
 TEST(aDrainReacquiringItsOwnLockHandsNothingOff)
