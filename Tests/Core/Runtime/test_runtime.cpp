@@ -6796,6 +6796,34 @@ TEST(publishedClockTracksDrainedCursorStyleTransitions)
     Ubiquitty::Cursor::Blink::setAnimation(previousAnimation);
 }
 
+// A key mode a frontend's own write sets, through the write pair, is in the
+// key modes at the write's release, as the snapshot's modes are.
+TEST(aKeyModeWrittenThroughTheWritePairReachesTheKeyModes)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(2, 20);
+    REQUIRE(!session->link().keyModes.read().applicationCursorKeys);
+    session->lockForWrite();
+    Ubiquitty::processBytes(session->terminal(), "\033[?1h");
+    session->unlockAfterWrite();
+    CHECK(session->link().keyModes.read().applicationCursorKeys);
+    CHECK(session->readSnapshot().modes.applicationCursorKeys);
+}
+
+// A drain bite that sets a key mode publishes it at the release that ends the
+// bite, though the bite publishes no snapshot: the key modes are never older
+// than the model a waiting thread is handed.
+TEST(aKeyModeADrainBiteSetsIsPublishedAtItsRelease)
+{
+    RetainedTerminalSession session { TerminalSession::make() };
+    REQUIRE(session);
+    session->start(2, 20);
+    session->feedFloodBiteForTest("\033[?1h");
+    CHECK(session->link().keyModes.read().applicationCursorKeys);
+    CHECK_MSG(!session->readSnapshot().modes.applicationCursorKeys, "the snapshot, which a key no longer reads, trails the bite");
+}
+
 // A frontend's own write to the model, made through the write pair, is
 // published at its release: the frame clock and the snapshot read it at once,
 // with no drain and no feed behind it.

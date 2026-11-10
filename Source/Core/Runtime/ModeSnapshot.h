@@ -75,6 +75,8 @@ struct ModeSnapshot {
     // per key press and per mouse query. Zero here means the encoder needs no
     // table at all.
     int userDefinedKeyCount = 0;
+
+    friend bool operator==(const ModeSnapshot&, const ModeSnapshot&) = default;
 };
 
 /// Samples the keyboard/terminal modes off a live terminal.
