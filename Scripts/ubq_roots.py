@@ -182,7 +182,9 @@ def ledger(subject=None):
     tree's. Every count is over files and each file has one owner, so a subject
     holding several repositories sums their budgets. A line `tool <gate> <why>`
     names a gate that nothing invokes because a person runs it, and what invokes
-    it instead.
+    it instead. A line `raised <name> <from> <to> <reason>` records why a budget
+    rose past the merge base's number; Scripts/check-ledger-ratchet.py judges it,
+    and the budget it names is read from its own `budget` line.
 
     - Parameters:
       - subject: the subject's root; the working directory's repository by default.
@@ -208,6 +210,8 @@ def ledger(subject=None):
                     canaries.append(words[1])
                 elif len(words) == 3 and words[0] == "budget":
                     budgets[words[1]] = budgets.get(words[1], 0) + int(words[2])
+                elif len(words) >= 5 and words[0] == "raised":
+                    continue
                 elif words:
                     raise ValueError("%s: unrecognised line %r" % (name, line.strip()))
     return budgets, tuple(canaries), tools

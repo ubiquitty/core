@@ -768,6 +768,15 @@ SECTIONS = (
         "fail": None,
     },
     {
+        "title": 'a ledger budget rises only with its reason (Scripts/check-ledger-ratchet.py)',
+        "kind": "gate",
+        "gate": 'check-ledger-ratchet.py',
+        "command": ['python3', './Scripts/check-ledger-ratchet.py'],
+        "ok": 'all',
+        "bad": 'all',
+        "fail": None,
+    },
+    {
         "title": 'the OSC payload moves one direction (Scripts/check-osc-payload-view.py)',
         "kind": "gate",
         "gate": 'check-osc-payload-view.py',
