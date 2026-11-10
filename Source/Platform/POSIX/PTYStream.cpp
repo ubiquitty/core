@@ -646,8 +646,13 @@ void PTYStream::settleLoginStartup()
         return;
     if (m_guardLifeline) {
         // One byte tells the guard to leave without killing; closing then is harmless.
+        // The guard reads a close without the byte as the pane ending inside login's
+        // startup, so an interrupted write is retried. The loop consumes write's
+        // result, which glibc marks warn_unused_result and a (void) cast does not
+        // silence under GCC.
         const char settled = 'P';
-        (void)::write(m_guardLifeline.get(), &settled, 1);
+        while (::write(m_guardLifeline.get(), &settled, 1) < 0 && errno == EINTR) {
+        }
         m_guardLifeline.reset();
     }
 }
