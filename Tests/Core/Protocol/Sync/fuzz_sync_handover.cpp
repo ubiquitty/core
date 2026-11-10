@@ -27,7 +27,12 @@ void checkHeader(std::span<const std::uint8_t> input)
         return;
     std::vector<std::uint8_t> encoded;
     encodeHandoverHeader(encoded, *header);
-    assert(std::ranges::equal(input, encoded));
+    // An accepted header encodes to its own bytes but the leading version, which
+    // the writer stamps current while the receiver also reads the last published
+    // release's.
+    constexpr std::size_t versionBytes = sizeof(handoverBodyVersion);
+    assert(input.size() == encoded.size());
+    assert(std::ranges::equal(input.subspan(versionBytes), std::span(encoded).subspan(versionBytes)));
     assert(encoded.size() <= 153);
     assert(header->inherited.size() <= maxInheritedInstances);
     assert(header->paneCount <= limits.maxPanes && header->tableBytes <= limits.maxTableBytes);
