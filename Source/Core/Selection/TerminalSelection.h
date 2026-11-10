@@ -36,6 +36,10 @@
 // argument is required; the callback internals keep the pointers their C
 // shapes demand.
 
+namespace Ubiquitty::Rendering {
+class CapturedGrid;
+}
+
 namespace Ubiquitty::Selection {
 
 /// One view's selection over one terminal.
@@ -652,6 +656,56 @@ struct ViewportEnds {
 ///     out of one.
 /// - Returns: How many spans were written.
 [[nodiscard]] int viewportSpansAndEnds(Session& session, Terminal& terminal, int viewOffset, ViewportSpans out, ViewportEnds& ends) noexcept;
+
+/// ``viewportSpansAndEnds`` over a captured frame, without the terminal or
+/// its lock.
+///
+/// The same resolution reading the frame's rows: for the terminal a frame
+/// froze, and a session synchronized with that terminal, the spans and ends
+/// are the ones ``viewportSpansAndEnds`` answers at the frame's view offset.
+/// The session is read as it stands; output since the frame it last met is
+/// brought to it first. A frame ``Rendering::CapturedGrid::isReadable``
+/// refuses answers nothing, and its capture's own resolved selection
+/// (``CapturedSelection``) stands for it.
+///
+/// - Parameters:
+///   - session: The view's selection session, unchanged.
+///   - grid: The frame being drawn.
+///   - out: Receives the spans, as ``viewportSpans`` writes them.
+///   - ends: Receives where the selection begins and ends on the frame.
+/// - Returns: How many spans were written.
+[[nodiscard]] int viewportSpansAndEndsOverCapture(const Session& session, const Rendering::CapturedGrid& grid, ViewportSpans out, ViewportEnds& ends) noexcept;
+
+/// What bringing a session to a captured frame did to it.
+enum class CaptureRebase : std::uint8_t {
+    /// No row the session names was renumbered.
+    Unchanged,
+    /// The selection's rows moved with the history evicted under them.
+    Moved,
+    /// The selection is gone: its rows were evicted, or the frame shows the
+    /// other screen, or renumbered the alternate one.
+    Lost,
+    /// The frame renumbered the primary screen's rows (a resize, a clear), or
+    /// the session has met no terminal: only the owner can say where the ends
+    /// went, and the session is left as it was.
+    NeedsOwner,
+};
+
+/// Brings a view's session to the numbering of a captured frame, without
+/// the terminal or its lock.
+///
+/// Arithmetic on the frame's history: every row the history evicted since
+/// the session last met the terminal moves the ends up by one, as the
+/// terminal's synchronization moves them when output only scrolled. What
+/// else output did (rewrote the selected text, repainted the screen) only the
+/// owner can see; its resolution of the next hand-off
+/// (``takeCapturedSelection``) carries it.
+///
+/// - Parameters:
+///   - session: The view's selection session, moved in place.
+///   - grid: The frame being drawn.
+/// - Returns: What the move did.
+[[nodiscard]] CaptureRebase rebaseOverCapture(Session& session, const Rendering::CapturedGrid& grid) noexcept;
 
 /// How many spans a frontend must make room for so ``viewportSpans`` drops none.
 ///

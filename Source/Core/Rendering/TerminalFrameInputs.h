@@ -266,6 +266,19 @@ std::optional<PaletteRGB> cursorTextColor(const Ubiquitty::Terminal& terminal);
 ///     renderer's own contrast with the cursor.
 void setCursorTextColor(CursorRenderState& cursor, std::optional<PaletteRGB> color);
 
+/// One visible row as a selection reads it from the terminal a capture froze.
+struct CapturedSelectionRow {
+    /// Cells the row stores; a selection reads every column past them as blank.
+    int storedLength = 0;
+    /// The row's DEC line attribute, as the selection reads it.
+    std::uint8_t lineAttribute = 0;
+    /// Whether the row soft-wraps into the next one.
+    bool isWrapped = false;
+    /// Whether the row's cells are drawn in another order than they are
+    /// stored; a selection over such a row reads the terminal.
+    bool needsShaping = false;
+};
+
 /// Everything `buildCellInstances` needs about a terminal, captured once.
 ///
 /// Turning a `Terminal` into `BuildInputs` is not a lookup: it snapshots the
@@ -432,6 +445,31 @@ public:
 
     /// How the captured terminal numbered its absolute rows.
     [[nodiscard]] const Screen::RowNumbering& rowNumbering() const { return m_rowNumbering; }
+
+    /// The visible rows' cells as the captured terminal stores them, before
+    /// chrome or a status row is composited over them; empty for a capture
+    /// made from a source rather than a terminal.
+    [[nodiscard]] std::span<const Cell> storedCells() const
+    {
+        switch (m_terminalRowStorage) {
+        case TerminalRowStorage::Cells:
+            return m_cells;
+        case TerminalRowStorage::Scratch:
+            return m_scratchCells;
+        case TerminalRowStorage::None:
+            break;
+        }
+        return {};
+    }
+
+    /// The visible rows as a selection reads them, one per row beside
+    /// ``storedCells()``; empty where that is.
+    [[nodiscard]] std::span<const CapturedSelectionRow> selectionRows() const
+    {
+        if (m_terminalRowStorage == TerminalRowStorage::None)
+            return {};
+        return m_selectionRows;
+    }
 
     /// The fill a selection drawn over this frame takes, resolved from the
     /// capture's style and the host's selection colour whether or not the
@@ -704,6 +742,7 @@ private:
     std::uint64_t m_rowRefreshGeneration = 0;
     std::vector<std::uint8_t> m_lineAttributes;
     std::vector<std::uint8_t> m_rowFlags;
+    std::vector<CapturedSelectionRow> m_selectionRows;
     std::vector<std::uint8_t> m_rowMarks;
     /// Moves the retained link flags the way the retained cells move.
     ///

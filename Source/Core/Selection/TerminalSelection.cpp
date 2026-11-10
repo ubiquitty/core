@@ -8,6 +8,7 @@
 #include "Core/Mouse/Mouse.h"
 #include "Core/OSC/TextSizing.h"
 #include "Core/Protocol/Sync/Hash.h"
+#include "Core/Rendering/CapturedGrid.h"
 #include "Core/RichText/Blocks.h"
 #include "Core/RowMeta.h"
 #include "Core/Screen/Addressing.h"
@@ -20,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <optional>
 #include <span>
@@ -224,15 +226,39 @@ struct BoundContext {
     int scaledCopyEmitRow = -1;
     int scaledCopyEmitColumn = -1;
     std::vector<std::uint32_t> scaledCopyText {};
+    // The captured frame the rows are read from instead of `terminal`, which
+    // is then null. Only a grid ``Rendering::CapturedGrid::isReadable`` admits
+    // is read this way: one with no run, sized glyph, rich text or shaped row,
+    // so no read below that needs the terminal is reached.
+    const Rendering::CapturedGrid* captured = nullptr;
 };
+
+// The grid's columns, from whichever of the terminal and the capture the
+// context reads.
+[[nodiscard]] inline int boundColumns(const BoundContext& bound) noexcept
+{
+    return bound.captured ? bound.captured->columns() : bound.terminal->columns;
+}
 
 // Resolves `row` into the row memo: its cells, and for a row that may need
 // shaping, the permutation from visual to logical columns. Out of line, so the
 // per-cell read below stays small enough to inline into every callback.
 [[gnu::noinline]] void loadRowMemo(BoundContext& bound, int row)
 {
-    const Terminal& terminal = *bound.terminal;
     bound.memoRow = row;
+    if (bound.captured) {
+        const Rendering::CapturedGrid& grid = *bound.captured;
+        const std::span<const Cell> stored = grid.storedRow(row);
+        bound.memoBase = stored.data();
+        bound.memoLength = static_cast<int>(stored.size());
+        bound.isMemoRowLowerHalfOfPair = row > 0 && grid.lineAttribute(row) == lineAttributeDoubleHeightBottom
+            && grid.lineAttribute(row - 1) == lineAttributeDoubleHeightTop;
+        bound.isMemoRowShaped = false;
+        bound.logicalColumns.clear();
+        bound.visualWideAttributes.clear();
+        return;
+    }
+    const Terminal& terminal = *bound.terminal;
     bool needsShaping = false;
     std::uint8_t lineAttribute = lineAttributeNormal;
     if (terminal.screens.isUsingAlternateScreen) {
@@ -296,7 +322,7 @@ struct BoundContext {
 // column directly; only a shaped row maps through the permutation.
 [[nodiscard]] inline const Cell* boundCell(BoundContext& bound, int row, int column) noexcept
 {
-    if (column < 0 || column >= bound.terminal->columns)
+    if (column < 0 || column >= boundColumns(bound))
         return &defaultBlankCell;
     if (row != bound.memoRow) [[unlikely]]
         loadRowMemo(bound, row);
@@ -863,7 +889,7 @@ TextCell textCellAt(void* context, int row, int column)
 {
     auto& bound = *static_cast<BoundContext*>(context);
     if (row == bound.memoRow && !bound.isMemoRowShaped && !bound.isMemoRowLowerHalfOfPair
-        && column >= 0 && column < bound.terminal->columns) [[likely]] {
+        && column >= 0 && column < boundColumns(bound)) [[likely]] {
         const Cell& cell = column < bound.memoLength ? bound.memoBase[column] : defaultBlankCell;
         if (cell.pen.extendedAttributes.textSizeSpecID() == 0 && cell.clusterID() == 0 && !penRichTextCovered(&cell.pen)) [[likely]] {
             TextCell text;
@@ -930,12 +956,16 @@ int rowExtentAt(void* context, int row)
 int rowWrappedAt(void* context, int row)
 {
     const auto& bound = *static_cast<const BoundContext*>(context);
+    if (bound.captured)
+        return bound.captured->isRowWrapped(row) ? 1 : 0;
     return screenRowWrapped(*bound.terminal, row) ? 1 : 0;
 }
 
 std::uint8_t rowLineAttributeAt(void* context, int row)
 {
     const auto& bound = *static_cast<const BoundContext*>(context);
+    if (bound.captured)
+        return bound.captured->lineAttribute(row);
     return screenRowLineAttribute(*bound.terminal, row);
 }
 
@@ -2517,6 +2547,29 @@ int addScaledRunLetterSpans(Terminal& terminal, const SelectionBounds& bounds, S
 
 } // namespace
 
+namespace {
+
+// Where a selection begins and ends on a frame, read off its own row spans
+// before anything is cut out of them or added to them.
+[[nodiscard]] ViewportEnds endsOfSpans(std::span<const Rendering::SelectionRowSpan> spans) noexcept
+{
+    ViewportEnds ends;
+    for (const Rendering::SelectionRowSpan& span : spans) {
+        if (!ends.isVisible || span.visibleRow < ends.startRow) {
+            ends.startRow = span.visibleRow;
+            ends.startColumn = span.column0;
+        }
+        if (!ends.isVisible || span.visibleRow >= ends.endRow) {
+            ends.endRow = span.visibleRow;
+            ends.endColumn = span.column1;
+        }
+        ends.isVisible = true;
+    }
+    return ends;
+}
+
+} // namespace
+
 int viewportSpansAndEnds(Session& session, Terminal& terminal, int viewOffset, ViewportSpans out, ViewportEnds& ends) noexcept
 {
     ends = {};
@@ -2533,23 +2586,107 @@ int viewportSpansAndEnds(Session& session, Terminal& terminal, int viewOffset, V
         .firstAbsoluteRow = firstVisibleAbsoluteRow(terminal, viewOffset),
     };
     const int count = collectViewportSpans(bounds, session.state.mode, viewport, cellAt, &bound, attributesAt, &bound, out, rowLineAttributeAt, &bound);
-    // The ends are read off the selection's own row spans, before anything is
-    // cut out of them or added to them.
-    for (int index = 0; index < count; ++index) {
-        const Rendering::SelectionRowSpan& span = out[static_cast<std::size_t>(index)];
-        if (!ends.isVisible || span.visibleRow < ends.startRow) {
-            ends.startRow = span.visibleRow;
-            ends.startColumn = span.column0;
-        }
-        if (!ends.isVisible || span.visibleRow >= ends.endRow) {
-            ends.endRow = span.visibleRow;
-            ends.endColumn = span.column1;
-        }
-        ends.isVisible = true;
-    }
+    ends = endsOfSpans(out.first(static_cast<std::size_t>(count)));
     const int splitCount = terminal.richTextBlocks.isEmpty() ? count : splitAroundBlocks(terminal, viewOffset, out, count);
     const int blockCount = addSizedBlockSpans(terminal, bounds, session.state.mode, viewOffset, session, out, splitCount);
     return addScaledRunLetterSpans(terminal, bounds, session.state.mode, viewOffset, session, out, blockCount);
+}
+
+int viewportSpansAndEndsOverCapture(const Session& session, const Rendering::CapturedGrid& grid, ViewportSpans out, ViewportEnds& ends) noexcept
+{
+    ends = {};
+    if (!grid.isReadable() || !Selection::hasSelection(&session.state))
+        return 0;
+    // The bounds read the session's word engine and nothing else of it, so a
+    // copy carries what they write without touching the view's session.
+    Session reading = session;
+    BoundContext bound { .session = &reading, .terminal = nullptr, .viewOffset = grid.viewOffset(), .style = {}, .captured = &grid };
+    SelectionBounds bounds;
+    if (!getBoundsWideWith(&reading.state, grid.totalRows(), grid.columns(), cellAt, &bound, attributesAt, &bound, &bounds,
+            &reading.engine, rowWrappedAt, &bound))
+        return 0;
+    const Viewport viewport {
+        .rows = grid.rows(),
+        .columns = grid.columns(),
+        .firstAbsoluteRow = grid.firstRow(),
+    };
+    const int count = collectViewportSpans(bounds, reading.state.mode, viewport, cellAt, &bound, attributesAt, &bound, out, rowLineAttributeAt, &bound);
+    ends = endsOfSpans(out.first(static_cast<std::size_t>(count)));
+    return count;
+}
+
+CaptureRebase rebaseOverCapture(Session& session, const Rendering::CapturedGrid& grid) noexcept
+{
+    const Screen::RowNumbering& numbering = grid.numbering();
+    if (!session.hasBufferObservation)
+        return CaptureRebase::NeedsOwner;
+    const auto observe = [&] {
+        session.observedScrollbackAppended = numbering.appendedRows;
+        session.observedScrollbackRows = grid.historyRows();
+        session.observedBufferEpoch = numbering.absoluteRowEpoch;
+        session.wasUsingAlternateScreen = numbering.isAlternateScreen;
+        // The screen the digest describes is not the frame's: no repaint is
+        // taken as the screen reproducing itself across this move.
+        session.hasScreenObservation = false;
+        session.observedScreenDigest = 0;
+    };
+    const bool hadSelection = Selection::hasSelection(&session.state);
+    const auto forget = [&] {
+        clear(&session.state);
+        gestureReset(&session.gesture);
+        session.namedEnds = {};
+        observe();
+        return hadSelection ? CaptureRebase::Lost : CaptureRebase::Unchanged;
+    };
+    // As the terminal's synchronization does: a change of screen takes the
+    // selection, and so does a renumbering of the alternate screen, whose
+    // ends name rows a program lays out again.
+    if (session.wasUsingAlternateScreen != numbering.isAlternateScreen)
+        return forget();
+    if (session.observedBufferEpoch != numbering.absoluteRowEpoch)
+        return numbering.isAlternateScreen ? forget() : CaptureRebase::NeedsOwner;
+    if (numbering.isAlternateScreen) {
+        observe();
+        return CaptureRebase::Unchanged;
+    }
+    const std::int64_t appended = numbering.appendedRows - session.observedScrollbackAppended;
+    const std::int64_t historyGrowth = static_cast<std::int64_t>(grid.historyRows()) - session.observedScrollbackRows;
+    const std::int64_t evicted = appended - historyGrowth;
+    if (evicted == 0) {
+        observe();
+        return CaptureRebase::Unchanged;
+    }
+    // Every row eviction renumbered moves up by as many rows; an end it
+    // carried above the oldest retained row stood on a line that is gone.
+    if (std::abs(evicted) > std::numeric_limits<int>::max() / 2)
+        return forget();
+    const int delta = static_cast<int>(evicted);
+    const bool isSelectionEvicted = hadSelection && std::min(session.state.anchorRow, session.state.headRow) - delta < 0;
+    const bool isGestureEvicted = session.gesture.isOpen
+        && std::min(session.gestureAnchorAbsoluteRow, session.gestureTargetAbsoluteRow) - delta < 0;
+    if (isSelectionEvicted || isGestureEvicted)
+        return forget();
+    if (hadSelection) {
+        session.state.anchorRow -= delta;
+        session.state.headRow -= delta;
+    }
+    if (session.gesture.isOpen) {
+        session.gestureAnchorAbsoluteRow -= delta;
+        session.gestureTargetAbsoluteRow -= delta;
+    }
+    // The names stand for the same characters; only the rows they were
+    // named at moved, so the owner's next synchronization resolves them
+    // rather than taking the ends as moved by hand.
+    if (session.namedEnds.hasSelection) {
+        session.namedEnds.anchorRow -= delta;
+        session.namedEnds.headRow -= delta;
+    }
+    if (session.namedEnds.hasGesture) {
+        session.namedEnds.gestureAnchorRow -= delta;
+        session.namedEnds.gestureTargetRow -= delta;
+    }
+    observe();
+    return hadSelection ? CaptureRebase::Moved : CaptureRebase::Unchanged;
 }
 
 int viewportSpans(Session& session, Terminal& terminal, int viewOffset, ViewportSpans out) noexcept
