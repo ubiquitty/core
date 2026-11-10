@@ -132,24 +132,34 @@ set(UBIQUITTY_NARROWING_WARNING
 # Every first-party C++ target takes UBIQUITTY_OWNERSHIP_WARNINGS beside
 # UBIQUITTY_NARROWING_WARNING, and the host tests take it too, because they are
 # the only Core targets that compile the header-only TerminalSession.h.
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    set(_ubq_ownership_analysis_default ON)
+#
+# Clang's function-effect analysis (clang 20 and later) proves that a function
+# marked UBIQUITTY_NONBLOCKING takes no lock, waits on nothing and allocates
+# nothing; a frontend's per-tick calls carry the mark, and
+# Scripts/check-model-lock-holds.py takes the mark as that proof. The two
+# analyses are one option: a build that runs one without the other would let
+# the mark stand unproven, so configure refuses it, and a compiler without both
+# defaults the option off and says so.
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag(-Wthread-safety UBIQUITTY_HAS_THREAD_SAFETY_ANALYSIS)
+check_cxx_compiler_flag(-Wfunction-effects UBIQUITTY_HAS_FUNCTION_EFFECTS)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND UBIQUITTY_HAS_THREAD_SAFETY_ANALYSIS AND UBIQUITTY_HAS_FUNCTION_EFFECTS)
+    set(_ubq_ownership_analysis_available ON)
 else()
-    set(_ubq_ownership_analysis_default OFF)
+    set(_ubq_ownership_analysis_available OFF)
 endif()
 option(UBIQUITTY_OWNERSHIP_ANALYSIS
-    "Check model-lock ownership with Clang's thread-safety analysis, as errors"
-    ${_ubq_ownership_analysis_default})
-# Clang's function-effect analysis (clang 20 and later) proves that a
-# function marked UBIQUITTY_NONBLOCKING takes no lock, waits on nothing and
-# allocates nothing; a frontend's per-tick calls carry the mark. An older
-# Clang lacks the flag, so it is asked for only where the compiler takes it.
-include(CheckCXXCompilerFlag)
-check_cxx_compiler_flag(-Wfunction-effects UBIQUITTY_HAS_FUNCTION_EFFECTS)
-set(_ubq_ownership_flags -Wthread-safety -Werror=thread-safety)
-if(UBIQUITTY_HAS_FUNCTION_EFFECTS)
-    list(APPEND _ubq_ownership_flags -Wfunction-effects -Werror=function-effects)
+    "Check model-lock ownership and nonblocking frame-path calls with Clang's analyses, as errors"
+    ${_ubq_ownership_analysis_available})
+if(UBIQUITTY_OWNERSHIP_ANALYSIS AND NOT _ubq_ownership_analysis_available)
+    message(FATAL_ERROR "UBIQUITTY_OWNERSHIP_ANALYSIS needs Clang's -Wthread-safety and -Wfunction-effects (Clang 20 or later), "
+        "which ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} lacks; without them the lock annotations and UBIQUITTY_NONBLOCKING prove nothing. "
+        "Use such a Clang, or configure with -DUBIQUITTY_OWNERSHIP_ANALYSIS=OFF.")
 endif()
+if(NOT UBIQUITTY_OWNERSHIP_ANALYSIS)
+    message(STATUS "Model-lock ownership analysis is off: this build proves neither the lock annotations nor UBIQUITTY_NONBLOCKING")
+endif()
+set(_ubq_ownership_flags -Wthread-safety -Werror=thread-safety -Wfunction-effects -Werror=function-effects)
 list(JOIN _ubq_ownership_flags ";" _ubq_ownership_flags)
 set(UBIQUITTY_OWNERSHIP_WARNINGS
     "$<$<AND:$<BOOL:${UBIQUITTY_OWNERSHIP_ANALYSIS}>,$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>>:${_ubq_ownership_flags}>")
