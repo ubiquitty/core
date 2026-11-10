@@ -451,6 +451,18 @@ DrainOutcome TerminalRuntime::drainAvailable(DrainHost& host)
     if (isIngestHeld())
         return outcome;
     m_drainPassActive.store(true, std::memory_order_relaxed);
+    // A decode in flight fences the parse: what the worker finished is
+    // integrated, and the bytes the fence held back are parsed, before anything
+    // more is read.
+    const DecodeFenceTurn fenceTurn = resolveDecodeFence(host);
+    if (fenceTurn.didChangeModel)
+        m_didCommandsTouchModel = true;
+    if (fenceTurn.isFenced) {
+        outcome.end = DrainPassEnd::DecodeFence;
+        finishDrainPass(host, outcome);
+        m_drainPassActive.store(false, std::memory_order_relaxed);
+        return outcome;
+    }
 
     // What this runtime adds to the shared read loop: the transfer watch on
     // every read, the clock the erase hold settles against, the 2026 counts,
@@ -489,6 +501,7 @@ DrainOutcome TerminalRuntime::drainAvailable(DrainHost& host)
         }
         void flushReplies() override UBIQUITTY_REQUIRES(modelLockRole) { runtime.flushReplies(); }
         void noteSyncClear() override UBIQUITTY_REQUIRES(modelLockRole) { runtime.noteSyncClearParsed(); }
+        void carryFencedBytes(std::span<const char> bytes) override { runtime.carryFencedBytes(bytes); }
         void publishMidReadSyncFrame(DrainHost& host) override UBIQUITTY_REQUIRES(modelLockRole)
         {
             runtime.publishMidReadBoundaryIfCoherent(host);
@@ -519,6 +532,129 @@ DrainOutcome TerminalRuntime::drainAvailable(DrainHost& host)
     finishDrainPass(host, outcome);
     m_drainPassActive.store(false, std::memory_order_relaxed);
     return outcome;
+}
+
+bool TerminalRuntime::isDecodeFenced() const
+{
+    // Lent, not read under the lock: the fence's counters are the ingest
+    // thread's alone, which raises them in the parse, lowers them in a drain
+    // and is the only thread that asks.
+    const Ubiquitty::Terminal* term = lendModelTerminal();
+    return term && term->asyncDecodes.isFenced();
+}
+
+void TerminalRuntime::noteDecodeFenceRaised()
+{
+    if (m_decodeFenceSinceMicros == 0)
+        m_decodeFenceSinceMicros = PAL::monotonicMicros() | 1u;
+    m_isDecodeFenceRaised.store(true, std::memory_order_release);
+}
+
+bool TerminalRuntime::waitOutDecodeFence()
+{
+    if (!isDecodeFenced())
+        return false;
+    Ubiquitty::waitForDecodesInFlight(*m_term);
+    return true;
+}
+
+void TerminalRuntime::carryFencedBytes(std::span<const char> bytes)
+{
+    m_fencedBytes.insert(m_fencedBytes.end(), bytes.begin(), bytes.end());
+    noteDecodeFenceRaised();
+}
+
+void TerminalRuntime::runDecodesOnWorker(DrainHost& host, TaskQueue::WakeFunction wake, void* wakeContext)
+{
+    if (!m_term)
+        return;
+    host.lockModel();
+    Ubiquitty::setDecodeExecution(*m_term, TaskQueue::Execution::Worker, wake, wakeContext);
+    host.unlockModel();
+}
+
+void TerminalRuntime::runDecodesInline(DrainHost& host)
+{
+    if (!m_term)
+        return;
+    host.lockModel();
+    // Waits out the decodes in flight and integrates them, so the bytes they
+    // fenced, parsed next with decodes inline, keep their order.
+    Ubiquitty::setDecodeExecution(*m_term, TaskQueue::Execution::Inline, nullptr, nullptr);
+    (void)parseFencedBytes(host);
+    flushReplies();
+    host.unlockModel();
+    m_decodeFenceSinceMicros = 0;
+    m_isDecodeFenceRaised.store(false, std::memory_order_release);
+}
+
+TerminalRuntime::DecodeFenceTurn TerminalRuntime::resolveDecodeFence(DrainHost& host)
+{
+    DecodeFenceTurn turn;
+    // Lent for the one load that skips the lock when no decode was ever in
+    // flight; see isDecodeFenced.
+    const Ubiquitty::Terminal* lent = lendModelTerminal();
+    if (!lent || (lent->asyncDecodes.inFlight == 0 && m_fencedBytes.empty()))
+        return turn;
+    host.lockModel();
+    auto& decodes = m_term->asyncDecodes;
+    if (decodes.inFlight != 0) {
+        const int inFlightBefore = decodes.inFlight;
+        Ubiquitty::drainAsyncDecodes(*m_term);
+        turn.didChangeModel = decodes.inFlight != inFlightBefore;
+        if (decodes.isFenced() && m_decodeFenceSinceMicros != 0
+            && PAL::monotonicMicros() - m_decodeFenceSinceMicros >= decodeFenceLimitMicroseconds)
+            Ubiquitty::abandonDecodesInFlight(*m_term);
+    }
+    if (!decodes.isFenced()) {
+        // The limit is each fence's own: a decode the held-back bytes submit
+        // starts a new one.
+        m_decodeFenceSinceMicros = 0;
+        turn.didChangeModel |= parseFencedBytes(host);
+    }
+    turn.isFenced = decodes.isFenced();
+    flushReplies();
+    host.unlockModel();
+    if (turn.isFenced)
+        noteDecodeFenceRaised();
+    else
+        m_isDecodeFenceRaised.store(false, std::memory_order_release);
+    return turn;
+}
+
+bool TerminalRuntime::parseFencedBytes(DrainHost& host)
+{
+    const auto& decodes = m_term->asyncDecodes;
+    const auto bite = static_cast<std::size_t>(std::max(1, effectiveModelLockBite()));
+    std::size_t parsed = 0;
+    while (parsed < m_fencedBytes.size() && !decodes.isFenced()) {
+        // A bite per acquisition, as a pass parses: a frontend waiting on the
+        // lock is handed it between bites.
+        if (parsed != 0) {
+            host.unlockModel();
+            host.lockModel();
+        }
+        const std::size_t biteEnd = std::min(m_fencedBytes.size(), parsed + bite);
+        while (parsed < biteEnd) {
+            const std::size_t remaining = biteEnd - parsed;
+            bool stoppedAtSyncClear = false;
+            const int consumed = Ubiquitty::processBytesUpToSyncClear(m_term.get(), std::string_view(m_fencedBytes.data() + parsed, remaining), &stoppedAtSyncClear);
+            const bool isFenced = decodes.isFenced();
+            parsed += (consumed > 0 || isFenced) ? static_cast<std::size_t>(std::max(consumed, 0)) : remaining; // guard: never spin
+            if (stoppedAtSyncClear)
+                noteSyncClearParsed();
+            if (isFenced)
+                break;
+            if (consumed > 0 && static_cast<std::size_t>(consumed) < remaining) {
+                if (stoppedAtSyncClear)
+                    publishMidReadBoundaryIfCoherent(host);
+                else
+                    flushReplies();
+            }
+        }
+    }
+    m_fencedBytes.erase(m_fencedBytes.begin(), m_fencedBytes.begin() + static_cast<std::ptrdiff_t>(parsed));
+    return parsed > 0;
 }
 
 void TerminalRuntime::noteDrainInput()
@@ -896,7 +1032,7 @@ void TerminalRuntime::finishDrainPass(DrainHost& host, DrainOutcome& outcome)
     // lets the render side present a flood without ever contending for it.
     const bool isSaturatedPass = outcome.end == DrainPassEnd::ByteBudget;
     const bool isTimedPass = outcome.end == DrainPassEnd::TimeBudget;
-    const bool isPendingPass = isTimedPass || outcome.end == DrainPassEnd::OwnerFence || outcome.end == DrainPassEnd::None;
+    const bool isPendingPass = isTimedPass || outcome.end == DrainPassEnd::OwnerFence || outcome.end == DrainPassEnd::DecodeFence || outcome.end == DrainPassEnd::None;
     const SettleContext context = isSaturatedPass ? SettleContext::SaturatedPass
         : isPendingPass                           ? SettleContext::ContinuingPass
                                                   : SettleContext::CaughtUp;

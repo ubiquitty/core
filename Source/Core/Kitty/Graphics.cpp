@@ -17,6 +17,7 @@
 #include "Core/Image/TerminalImageInternal.h"
 #include "Core/Screen/CellBlank.h"
 #include "Core/Terminal.h"
+#include "Core/TerminalOperations.h"
 #include "PAL/Capability.h"
 #include "PAL/PAL.h"
 #include "PAL/TaskQueue.h"
@@ -97,8 +98,15 @@ enum class TransmitDisplay : uint8_t {
 struct KittyPNGDecodeJob {
     Ubiquitty::Terminal* term;
     uint32_t terminalGeneration; // snapshot at submit; checked in completion
+    uint16_t decodeEpoch; // asyncDecodes.epoch at submit; an older one was given up on
     Ubiquitty::Kitty::GraphicsControl ctrl; // copy; original is on caller's stack
     TransmitDisplay transmitDisplay; // a=T installs a placement on completion; a=t transmits only
+    // A direct transport's base64 text, which the worker extracts into
+    // pngBytes; null when the parse thread resolved a file transport.
+    KittyBytes encodedPayload;
+    std::size_t encodedLength;
+    int maxPNGLength;
+    const char* extractFailure; // the reply when extraction failed on the worker
     KittyBytes pngBytes; // owned; freed when the job is destroyed
     int pngLength;
     // Worker fills these:
@@ -113,8 +121,13 @@ struct KittyPNGDecodeJob {
 struct KittyDirectInflateJob {
     Ubiquitty::Terminal* term;
     uint32_t terminalGeneration;
+    uint16_t decodeEpoch; // asyncDecodes.epoch at submit; an older one was given up on
     Ubiquitty::Kitty::GraphicsControl ctrl;
     TransmitDisplay transmitDisplay;
+    // The base64 text the worker decodes into `compressed`.
+    KittyBytes encodedPayload;
+    std::size_t encodedLength;
+    const char* extractFailure; // the reply when the decode failed on the worker
     KittyBytes compressed; // owned; freed when the job is destroyed
     int compressedLength;
     int expectedLength; // raw RGB(A) byte count
@@ -177,6 +190,23 @@ static std::expected<ExtractedBytes, PayloadDecodeFailure> kittyDecodePayload(st
 // Forward decls of file-scope helpers used by the worker + completion;
 // actual definitions appear later in this file.
 static std::optional<DecodedImage> kittyDecodePNGBytes(std::span<const unsigned char> pngBytes);
+static std::expected<ExtractedBytes, const char*> kittyExtractPayload(char compression, std::span<const char> payload, int maxLength);
+
+// A copy of a payload for a worker to decode, or null when it cannot be had.
+static KittyBytes kittyCopyPayload(std::span<const char> payload)
+{
+    if (payload.empty())
+        return {};
+    KittyBytes copy(static_cast<unsigned char*>(std::malloc(payload.size())));
+    if (copy)
+        std::memcpy(copy.get(), payload.data(), payload.size());
+    return copy;
+}
+
+static std::span<const char> kittyEncodedText(const KittyBytes& bytes, std::size_t length)
+{
+    return { reinterpret_cast<const char*>(bytes.get()), bytes ? length : 0 };
+}
 static Image::TerminalImage* kittyFindImage(Ubiquitty::Terminal& t, const Ubiquitty::Kitty::GraphicsControl* c);
 static void kittyApplyVirtualPlacement(Image::TerminalImage* image, const Ubiquitty::Kitty::GraphicsControl* c);
 static void kittyFillPlacement(Image::TerminalImagePlacement* p, Ubiquitty::Terminal& t, const Ubiquitty::Kitty::GraphicsControl* c, uint32_t imageID);
@@ -188,6 +218,15 @@ static void kittyRespond(Ubiquitty::Terminal& t, const Ubiquitty::Kitty::Graphic
 static void kittyDirectInflateWorker(void* p)
 {
     KittyDirectInflateJob* j = static_cast<KittyDirectInflateJob*>(p);
+    auto compressed = kittyDecodePayload(kittyEncodedText(j->encodedPayload, j->encodedLength));
+    j->encodedPayload.reset();
+    if (!compressed) {
+        j->extractFailure = compressed.error() == PayloadDecodeFailure::Allocation ? "ENOMEM:b64" : "EINVAL:bad payload";
+        j->succeeded = false;
+        return;
+    }
+    j->compressed = std::move(compressed->bytes);
+    j->compressedLength = compressed->length;
     if (j->expectedLength <= 0) {
         j->succeeded = false;
         return;
@@ -216,6 +255,14 @@ static void kittyDirectInflateCompletion(void* p)
     j->compressed.reset(); // input no longer needed once inflate finished
     if (!j->term || j->term->generation != j->terminalGeneration)
         return;
+    if (j->decodeEpoch != j->term->asyncDecodes.epoch) {
+        kittyRespond(*j->term, &j->ctrl, "EINVAL:decode timed out");
+        return;
+    }
+    if (j->extractFailure) {
+        kittyRespond(*j->term, &j->ctrl, j->extractFailure);
+        return;
+    }
     if (!j->succeeded || j->inflatedLength != j->expectedLength) {
         kittyRespond(*j->term, &j->ctrl, "EINVAL:payload size mismatch");
         return;
@@ -261,6 +308,17 @@ static void kittyDirectInflateCompletion(void* p)
 static void kittyPNGDecodeWorker(void* p)
 {
     KittyPNGDecodeJob* j = static_cast<KittyPNGDecodeJob*>(p);
+    if (j->encodedPayload) {
+        auto extracted = kittyExtractPayload(j->ctrl.compression, kittyEncodedText(j->encodedPayload, j->encodedLength), j->maxPNGLength);
+        j->encodedPayload.reset();
+        if (!extracted) {
+            j->extractFailure = extracted.error();
+            j->succeeded = false;
+            return;
+        }
+        j->pngBytes = std::move(extracted->bytes);
+        j->pngLength = extracted->length;
+    }
     std::optional<DecodedImage> decoded = kittyDecodePNGBytes({ j->pngBytes.get(), static_cast<size_t>(j->pngLength) });
     j->succeeded = decoded.has_value();
     if (!decoded) {
@@ -284,6 +342,14 @@ static void kittyPNGDecodeCompletion(void* p)
     // Terminal disposed / re-init'd between submit and completion: drop the pixels.
     if (!j->term || j->term->generation != j->terminalGeneration)
         return;
+    if (j->decodeEpoch != j->term->asyncDecodes.epoch) {
+        kittyRespond(*j->term, &j->ctrl, "EINVAL:decode timed out");
+        return;
+    }
+    if (j->extractFailure) {
+        kittyRespond(*j->term, &j->ctrl, j->extractFailure);
+        return;
+    }
     if (!j->succeeded) {
         kittyRespond(*j->term, &j->ctrl, "EINVAL:png decode failed");
         return;
@@ -1000,23 +1066,36 @@ static bool kittyStoreDirectImage(Ubiquitty::Terminal& t, const Ubiquitty::Kitty
     int pngPixelLength = 0;
     if (c->format == 100) {
         int maxPNGBytes = static_cast<int>(Ubiquitty::Image::maxDecodedImageBytes * 2UL + 4096UL);
-        // Transport resolution stays on the parse thread — t=f touches the fs.
-        auto extracted = kittyResolveTransport(t, c, payload, maxPNGBytes, TempFileUnlink::Consume);
-        if (!extracted) {
-            kittyRespond(t, c, extracted.error());
-            return false;
-        }
-        KittyBytes pngBytes = std::move(extracted->bytes); // auto-frees on any early return below
-        const int pngLength = extracted->length;
-        // Submit the PNG decode to the TaskQueue (worker runs inline at submit;
-        // next dispatch drain installs). Ownership of pngBytes transfers to the job.
         auto job = std::make_unique<KittyPNGDecodeJob>();
         job->term = &t;
         job->terminalGeneration = t.generation;
         job->ctrl = *c;
         job->transmitDisplay = transmitDisplay;
-        job->pngBytes = std::move(pngBytes);
-        job->pngLength = pngLength;
+        job->maxPNGLength = maxPNGBytes;
+        job->extractFailure = nullptr;
+        job->pngLength = 0;
+        if (c->transport == 'd' || c->transport == 0) {
+            // A direct transport's payload is the base64 text of the whole
+            // PNG, megabytes for a large image: the worker decodes it with the
+            // PNG, so the parse thread only copies it.
+            job->encodedPayload = kittyCopyPayload(payload);
+            job->encodedLength = payload.size();
+            if (!job->encodedPayload) {
+                kittyRespond(t, c, payload.empty() ? "EINVAL:invalid payload" : "ENOMEM:allocation failed");
+                return false;
+            }
+        } else {
+            // A file or shared-memory transport touches the filesystem, so it
+            // resolves on the parse thread.
+            auto extracted = kittyResolveTransport(t, c, payload, maxPNGBytes, TempFileUnlink::Consume);
+            if (!extracted) {
+                kittyRespond(t, c, extracted.error());
+                return false;
+            }
+            job->pngBytes = std::move(extracted->bytes);
+            job->pngLength = extracted->length;
+        }
+        job->decodeEpoch = t.asyncDecodes.epoch;
         Ubiquitty::TaskQueue* q = kittyEnsureDecodeQueue(t);
         if (!q) {
             kittyRespond(t, c, "ENOMEM:dispatch"); // job (+ pngBytes) auto-freed
@@ -1030,6 +1109,7 @@ static bool kittyStoreDirectImage(Ubiquitty::Terminal& t, const Ubiquitty::Kitty
             kittyRespond(t, c, "ENOMEM:dispatch");
             return false;
         }
+        Ubiquitty::noteDecodeSubmitted(t, *q);
         // Suppress -Wunused-variable for the locals the async path leaves unfilled.
         (void)image;
         (void)pixels;
@@ -1061,19 +1141,23 @@ static bool kittyStoreDirectImage(Ubiquitty::Terminal& t, const Ubiquitty::Kitty
     // Other transports (t=f) keep the direct path because the file read touches
     // the fs on the parse thread.
     if (c->compression == 'z' && (c->transport == 'd' || c->transport == 0)) {
-        auto compressed = kittyDecodePayload(payload);
-        if (!compressed) {
-            kittyRespond(t, c, compressed.error() == PayloadDecodeFailure::Allocation ? "ENOMEM:b64" : "EINVAL:bad payload");
-            return false;
-        }
+        // The base64 text decodes on the worker with the inflate; the parse
+        // thread only copies it.
         auto job = std::make_unique<KittyDirectInflateJob>();
         job->term = &t;
         job->terminalGeneration = t.generation;
         job->ctrl = *c;
         job->transmitDisplay = transmitDisplay;
-        job->compressed = std::move(compressed->bytes);
-        job->compressedLength = compressed->length;
+        job->encodedPayload = kittyCopyPayload(payload);
+        job->encodedLength = payload.size();
+        job->extractFailure = nullptr;
+        job->compressedLength = 0;
+        if (!job->encodedPayload) {
+            kittyRespond(t, c, payload.empty() ? "EINVAL:bad payload" : "ENOMEM:b64");
+            return false;
+        }
         job->expectedLength = static_cast<int>(expected);
+        job->decodeEpoch = t.asyncDecodes.epoch;
         Ubiquitty::TaskQueue* q = kittyEnsureInflateQueue(t);
         if (!q) {
             kittyRespond(t, c, "ENOMEM:dispatch"); // job (+ its buffers) auto-freed
@@ -1087,6 +1171,7 @@ static bool kittyStoreDirectImage(Ubiquitty::Terminal& t, const Ubiquitty::Kitty
             kittyRespond(t, c, "ENOMEM:dispatch");
             return false;
         }
+        Ubiquitty::noteDecodeSubmitted(t, *q);
         (void)image;
         (void)pixels;
         return true;
@@ -1704,9 +1789,9 @@ void dispatch(Ubiquitty::Terminal& t)
         return;
     }
     kittyProcessComplete(t, &ctrl, std::span<const char>(payload, static_cast<size_t>(payloadLength)));
-    // Drain completed decodes. The workers ran synchronously inside submit, so
-    // this delivers them in the same call stack as feed() — tests probing the grid
-    // right after feed() see the integrated state.
+    // Integrates the decodes that have completed. An inline decode always has,
+    // so a grid read right after feed() sees the image; a worker's decode that
+    // has not fences the parse until the owner integrates it.
     Ubiquitty::Kitty::drainAsyncDecodes(&t);
 }
 
@@ -1718,9 +1803,9 @@ void drainAsyncDecodes(Ubiquitty::Terminal* t)
     if (!t)
         return;
     if (t->asyncDecodes.kittyDecode && t->asyncDecodes.kittyDecode->pendingCount() > 0)
-        t->asyncDecodes.kittyDecode->drain(kittyPNGDecodeCompletion);
+        Ubiquitty::noteDecodesDrained(*t, *t->asyncDecodes.kittyDecode, t->asyncDecodes.kittyDecode->drain(kittyPNGDecodeCompletion));
     if (t->asyncDecodes.kittyInflate && t->asyncDecodes.kittyInflate->pendingCount() > 0)
-        t->asyncDecodes.kittyInflate->drain(kittyDirectInflateCompletion);
+        Ubiquitty::noteDecodesDrained(*t, *t->asyncDecodes.kittyInflate, t->asyncDecodes.kittyInflate->drain(kittyDirectInflateCompletion));
 }
 
 // Free every decode this Terminal submitted but never drained, without running a
@@ -1730,10 +1815,14 @@ void discardPendingDecodes(Ubiquitty::Terminal* t)
 {
     if (!t)
         return;
-    if (t->asyncDecodes.kittyDecode)
-        t->asyncDecodes.kittyDecode->drain([](void* p) { delete static_cast<KittyPNGDecodeJob*>(p); });
-    if (t->asyncDecodes.kittyInflate)
-        t->asyncDecodes.kittyInflate->drain([](void* p) { delete static_cast<KittyDirectInflateJob*>(p); });
+    if (t->asyncDecodes.kittyDecode) {
+        t->asyncDecodes.kittyDecode->waitUntilIdle();
+        Ubiquitty::noteDecodesDrained(*t, *t->asyncDecodes.kittyDecode, t->asyncDecodes.kittyDecode->drain([](void* p) { delete static_cast<KittyPNGDecodeJob*>(p); }));
+    }
+    if (t->asyncDecodes.kittyInflate) {
+        t->asyncDecodes.kittyInflate->waitUntilIdle();
+        Ubiquitty::noteDecodesDrained(*t, *t->asyncDecodes.kittyInflate, t->asyncDecodes.kittyInflate->drain([](void* p) { delete static_cast<KittyDirectInflateJob*>(p); }));
+    }
 }
 
 } // namespace Ubiquitty::Kitty

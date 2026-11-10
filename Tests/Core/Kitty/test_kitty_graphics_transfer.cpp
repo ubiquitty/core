@@ -28,6 +28,7 @@
 #include "Core/TerminalOperations.h"
 #include "KittyGraphicsFixture.h"
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <span>
@@ -85,6 +86,49 @@ TEST(testAPNGArrivesOnTheWireAndIntegratesAtTheNextDrain)
     CHECK(image->width == 4 && image->height == 3);
     CHECK_MSG(image->pixels != nullptr, "the decoded buffer is installed");
     CHECK_MSG(image->pixelLength == 4 * 3 * 4, "four bytes a pixel");
+}
+
+// On a worker, a decode fences the stopping parse: it ends right after the
+// image and consumes nothing more until the decode is integrated. A decode the
+// owner gives up on lifts the fence, so the bytes behind it parse without it,
+// and the image, once its decode ends, is answered as failed and never stored.
+TEST(testADecodeGivenUpOnLiftsTheFenceAndIsAnsweredAsFailed)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::resize(t, 10, 20, Ubiquitty::Modes::ReflowMode::Fixed);
+    Ubiquitty::hardReset(t);
+    Ubiquitty::setDecodeExecution(t, Ubiquitty::TaskQueue::Execution::Worker, nullptr, nullptr);
+
+    // A worker can finish a decode before the dispatch that submitted it
+    // drains, and then no fence forms: each attempt is a fresh image until one
+    // is still in flight when its dispatch ends.
+    const std::string payload = base64(makePNG(512, 512));
+    std::uint32_t fencedID = 0;
+    for (std::uint32_t id = 9; id < 9 + 16 && fencedID == 0; ++id) {
+        const std::string image = apc("a=T,f=100,i=" + std::to_string(id), payload);
+        const int consumed = Ubiquitty::processBytesUpToSyncClear(&t, image + "after");
+        if (t.asyncDecodes.isFenced()) {
+            CHECK_MSG(consumed == static_cast<int>(image.size()), "the parse stops right after the image");
+            fencedID = id;
+        } else {
+            CHECK_MSG(consumed == static_cast<int>(image.size() + 5), "a decode that ended within its dispatch fences nothing");
+        }
+    }
+    REQUIRE_MSG(fencedID != 0, "premise: a decode was still in flight when its dispatch ended");
+    CHECK_MSG(Ubiquitty::processBytesUpToSyncClear(&t, "after") == 0, "and consumes nothing while the decode is in flight");
+
+    Ubiquitty::abandonDecodesInFlight(t);
+    CHECK(!t.asyncDecodes.isFenced());
+    CHECK_EQ(Ubiquitty::processBytesUpToSyncClear(&t, "after"), 5);
+
+    Ubiquitty::waitForDecodesInFlight(t);
+    CHECK_MSG(imageWithID(t, fencedID) == nullptr, "an image given up on is never stored");
+    std::array<char, 4096> output {};
+    const int written = UbiquittyTest::drain(t, output);
+    const std::string replies(output.data(), static_cast<std::size_t>(written));
+    const std::string failed = "\x1b_Gi=" + std::to_string(fencedID) + ";EINVAL:decode timed out\x1b\\";
+    CHECK_MSG(replies.find(failed) != std::string::npos, replies.c_str());
+    Ubiquitty::setDecodeExecution(t, Ubiquitty::TaskQueue::Execution::Inline, nullptr, nullptr);
 }
 
 TEST(testAPayloadThatIsNotAnImageIsRefusedAndClaimsNothing)

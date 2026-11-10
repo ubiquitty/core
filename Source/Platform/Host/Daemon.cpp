@@ -6080,6 +6080,8 @@ Runtime::DrainPassResult Daemon::servicePTY(Session& s, int maxBytes)
         // A read that finds nothing settles the input written at least E
         // before it began, so the clock is read before the read, never after.
         void noteReadBegin() override { readBegan = daemon.m_monotonicMicroseconds(); }
+        // The daemon's terminals decode inline, so no parse is fenced.
+        void carryFencedBytes(std::span<const char>) override { assert(false && "a daemon terminal decodes inline"); }
         Daemon& daemon;
         Session& session;
         std::uint64_t readBegan = 0;

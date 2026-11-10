@@ -406,6 +406,10 @@ public:
             while (!bytes.empty()) {
                 const FeedResult result = m_runtime->feedChunkUpToSyncClear(bytes);
                 if (result.consumed <= 0) {
+                    // A feed arrives whole, so a decode its bytes fenced is
+                    // waited out under this hold rather than the rest dropped.
+                    if (m_runtime->waitOutDecodeFence())
+                        continue;
                     break;
                 }
                 didFeed = true;

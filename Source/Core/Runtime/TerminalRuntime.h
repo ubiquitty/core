@@ -24,6 +24,7 @@
 #include "Core/Title/WalkPacing.h"
 #include "PAL/BellMode.h"
 #include "PAL/Poll.h"
+#include "PAL/TaskQueue.h"
 #include "PAL/TerminalClients.h"
 #include "PAL/TerminalIdentity.h"
 #include <span>
@@ -1920,6 +1921,56 @@ public:
     /// the bytes stay in the kernel queue rather than reaching the model.
     [[nodiscard]] bool isIngestHeld() const { return !isLocalStreamEnabled() || isFileTransferHoldActive() || isOpeningHoldActive(); }
 
+    /// How long a decode may fence the parse before the owner gives up on it
+    /// and parses on without its image. Bounded from below by the slowest
+    /// decode the image quota admits on a loaded machine, tens to hundreds of
+    /// milliseconds, and from above by how long a pane's output may stand
+    /// still behind one image.
+    static constexpr std::uint32_t decodeFenceLimitMicroseconds = 2'000'000;
+
+    /// Moves this terminal's image decodes onto workers. The parse then stops
+    /// behind each decode until ``drainAvailable(_:)`` has integrated it, and
+    /// the worker calls `wake` when one finishes. Ingest thread, before it
+    /// parses.
+    ///
+    /// - Parameters:
+    ///   - host: The drain host whose model lock the switch takes.
+    ///   - wake: Called on a worker after each decode it finishes.
+    ///   - wakeContext: The wake's argument, outliving the decodes.
+    void runDecodesOnWorker(DrainHost& host, TaskQueue::WakeFunction wake, void* wakeContext);
+
+    /// Returns this terminal's image decodes to running inline, once those in
+    /// flight have finished and been integrated, and parses what their fence
+    /// held back. Ingest thread, when it stops parsing.
+    ///
+    /// - Parameter host: The drain host whose model lock the switch takes.
+    void runDecodesInline(DrainHost& host);
+
+    /// Whether a decode in flight stops the parse, so the stream's bytes wait
+    /// behind its image. Ingest thread.
+    [[nodiscard]] bool isDecodeFenced() const;
+
+    /// Whether a decode fences the parse, read off the ingest thread: the
+    /// flood reader stops filling its ring on it.
+    [[nodiscard]] bool isDecodeFenceRaised() const { return m_isDecodeFenceRaised.load(std::memory_order_acquire); }
+
+    /// Keeps bytes a decode fence stopped the parse in front of, to parse
+    /// before anything read after them. Ingest thread.
+    ///
+    /// - Parameter bytes: The unparsed bytes, in stream order.
+    void carryFencedBytes(std::span<const char> bytes);
+
+    /// Notes that a decode fences the parse, starting the fence's limit.
+    /// Ingest thread.
+    void noteDecodeFenceRaised();
+
+    /// Waits out a decode that fences the parse and integrates it, for a
+    /// caller whose bytes arrive whole and so cannot be held back. Caller
+    /// holds the model lock.
+    ///
+    /// - Returns: Whether a fence was waited out.
+    bool waitOutDecodeFence() UBIQUITTY_REQUIRES(modelLockRole);
+
     /// Feeds one raw chunk to the tap, for an ingest path that pumps its own
     /// bytes (the flood pipeline's ring bites bypass drainAvailable's read, so
     /// they must bring the tap along or the detector goes blind mid-burst).
@@ -1942,6 +1993,34 @@ public:
     }
 
 private:
+    /// What one turn at a decode fence did.
+    struct DecodeFenceTurn {
+        /// A decode still fences the parse.
+        bool isFenced = false;
+        /// The model changed: a decode was integrated, or held-back bytes
+        /// were parsed.
+        bool didChangeModel = false;
+    };
+
+    /// Integrates the decodes the workers have finished, gives up on one that
+    /// has fenced the parse past ``decodeFenceLimitMicroseconds``, and parses
+    /// the bytes the fence held back.
+    ///
+    /// Ingest thread, without the model lock.
+    ///
+    /// - Parameter host: The drain host whose model lock it takes.
+    /// - Returns: Whether a decode still fences the parse, and whether the
+    ///   model changed.
+    DecodeFenceTurn resolveDecodeFence(DrainHost& host);
+
+    /// Parses the bytes a fence held back, a bite per acquisition, until they
+    /// run out or a decode fences the parse again. Caller holds the model lock.
+    ///
+    /// - Parameter host: The drain host whose model lock it hands over
+    ///   between bites.
+    /// - Returns: Whether any byte was parsed.
+    bool parseFencedBytes(DrainHost& host) UBIQUITTY_REQUIRES(modelLockRole);
+
     /// Stamps the erase hold for a whole-screen erase not yet seen.
     ///
     /// Caller holds the model lock.
@@ -2259,6 +2338,11 @@ private:
     PanePublishHook m_panePublishHook = nullptr;
     void* m_panePublishContext = nullptr;
     std::atomic<bool> m_drainPassActive { false }; // ingest pumping bytes; render holds
+    // Bytes a decode fence stopped the parse in front of, and when the fence
+    // went up. Ingest thread.
+    std::vector<char> m_fencedBytes;
+    std::uint32_t m_decodeFenceSinceMicros = 0;
+    std::atomic<bool> m_isDecodeFenceRaised { false };
     std::atomic<bool> m_isDrainSaturated { false }; // the last pass filled; render reads the published frame
     std::atomic<bool> m_drainRidesBurst { true }; // false => collapse mid-burst backoff to 0
     std::atomic<bool> m_isPresented { true }; // presume presented until the frontend pushes an edge
