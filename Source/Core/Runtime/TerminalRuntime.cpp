@@ -2363,34 +2363,37 @@ void TerminalRuntime::setFocused(Ubiquitty::Modes::FocusState focus)
     republishSnapshot();
 }
 
-void TerminalRuntime::applyCommand(const Command& command)
+void TerminalRuntime::applyOwnerCommand(const OwnerCommand& command, std::span<const std::byte>)
 {
-    if (!isLocalStreamEnabled() && command.kind != CommandKind::SetPresentationFocus)
+    if (!isLocalStreamEnabled() && command.kind != OwnerCommandKind::SetPresentationFocus)
         return;
     switch (command.kind) {
-    case CommandKind::SetFocus: {
+    case OwnerCommandKind::SetFocus: {
         // Core's focusChanged is not idempotent — it emits DEC 1004 on every
         // call — so a no-op focus would re-report. Dedup against the last
         // applied state here.
-        const int want = command.flag ? 1 : 0;
+        const bool isFocused = command.argumentsAs<FocusArguments>().isFocused;
+        const int want = isFocused ? 1 : 0;
         if (want == m_lastFocusApplied)
             return;
-        setFocused(command.flag ? Ubiquitty::Modes::FocusState::Focused : Ubiquitty::Modes::FocusState::Unfocused);
+        setFocused(isFocused ? Ubiquitty::Modes::FocusState::Focused : Ubiquitty::Modes::FocusState::Unfocused);
         m_lastFocusApplied = want;
         break;
     }
-    case CommandKind::ResolveClipboardRead:
-        // The posted form of the frontend's clipboard answer: the completion
-        // touches the Terminal, and this switch already runs where the model
-        // lock is held — the whole reason the answer rides the ring rather
-        // than calling in from the UI thread.
-        completeClipboardRead(command.set.data(),
-            command.flag ? Ubiquitty::OSC::ClipboardReadDecision::Approved : Ubiquitty::OSC::ClipboardReadDecision::Refused);
+    case OwnerCommandKind::ResolveClipboardRead: {
+        // The completion touches the Terminal, so the frontend's answer
+        // reaches it on the conveyor rather than from the UI thread.
+        auto arguments = command.argumentsAs<ClipboardReadArguments>();
+        arguments.selectionSet.back() = '\0';
+        completeClipboardRead(arguments.selectionSet.data(),
+            arguments.isApproved ? Ubiquitty::OSC::ClipboardReadDecision::Approved : Ubiquitty::OSC::ClipboardReadDecision::Refused);
         break;
-    case CommandKind::SetPresentationFocus:
+    }
+    case OwnerCommandKind::SetPresentationFocus:
         if (m_term) {
-            m_term->windowFocused = command.flag;
-            if (command.flag)
+            const bool isFocused = command.argumentsAs<FocusArguments>().isFocused;
+            m_term->windowFocused = isFocused;
+            if (isFocused)
                 (void)Ubiquitty::markAttentionSeen(*m_term);
             republishSnapshot();
         }
@@ -2403,17 +2406,19 @@ void TerminalRuntime::applyCommand(const Command& command)
 
 bool TerminalRuntime::serviceFrontend(DrainHost& host)
 {
-    if (m_link.commands.empty() && !m_link.userInput.isPosted() && !host.hasFrontendWork())
+    if (m_link.conveyor.isEmpty() && !m_link.userInput.isPosted() && !host.hasFrontendWork())
         return false; // no lock taken when the frontend left nothing (the idle-tick common case)
     host.lockModel();
     // A display the input woke is delivered by the pass this asks for; an
     // activity tick alone republished the presentation and needs no pass.
     bool didApply = applyPostedUserInput(host);
-    Command command;
-    while (m_link.commands.pop(command)) {
-        applyCommand(command);
+    OwnerCommand command;
+    std::span<const std::byte> payload;
+    while (m_link.conveyor.pop(command, payload)) {
+        applyOwnerCommand(command, payload);
         didApply = true;
     }
+    m_link.conveyor.finishService();
     host.serviceFrontendLocked();
     host.unlockModel();
     if (didApply)

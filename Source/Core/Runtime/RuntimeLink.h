@@ -25,19 +25,23 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <deque>
+#include <memory>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 // The per-pane cross-thread seam between the off-main ingest/writer (owning
 // Ubiquitty::Terminal under the model lock) and the main-thread frontend. TWO
 // lock-free primitives, portable (no threading types beyond <atomic>):
 //   (R) SnapshotPublisher<T> — its one writer publishes a versioned snapshot;
 //       any reader reads it lock-free + tear-free (on the link, model->main).
-//   (W) CommandRing<T, N>    — main posts POD commands; the writer drains them
-//       under the lock it already holds (main->model).
+//   (W) OwnerConveyor        — main posts commands; the pane's owner applies
+//       them at its service points (main->model; below).
 //
 // SCOPE: one Ubiquitty::Terminal == one writer == one RuntimeLink. Carries only this
 // pane's parser/frame state (geometry, modes, cursor, scrollback). Window LAYOUT
@@ -526,6 +530,252 @@ private:
     std::atomic<std::size_t> m_consumed { 0 };
 };
 
+// (W) The frontend → owner half of a pane's seam: the frontend posts what it
+// wants done to the model, and the pane's owner applies it at a service point.
+// A frontend never writes the model itself (lockless-integration.md, L6).
+
+/// What a frontend asks a pane's owner to do. Each kind names the argument
+/// type its command carries.
+enum class OwnerCommandKind : std::uint8_t {
+    /// The program's view gained or lost focus; ``FocusArguments``.
+    SetFocus,
+    /// The frontend's answer to an OSC 52 clipboard read;
+    /// ``ClipboardReadArguments``.
+    ResolveClipboardRead,
+    /// A passive mirror's focus, which reports nothing to the program;
+    /// ``FocusArguments``.
+    SetPresentationFocus,
+};
+
+/// The arguments of ``OwnerCommandKind/SetFocus`` and
+/// ``OwnerCommandKind/SetPresentationFocus``.
+struct FocusArguments {
+    /// Whether the view is focused.
+    bool isFocused = false;
+};
+
+/// The arguments of ``OwnerCommandKind/ResolveClipboardRead``.
+struct ClipboardReadArguments {
+    /// Whether the person approved the read.
+    bool isApproved = false;
+    /// The selection set the request named, NUL-ended.
+    std::array<char, 16> selectionSet {};
+};
+
+/// One frontend → owner command: trivially copyable, one cache line, copied
+/// through the ring. A payload longer than the arguments rides in the arena.
+struct OwnerCommand {
+    /// What to do.
+    OwnerCommandKind kind {};
+    /// The bytes of payload the arena holds for this command; 0 for none.
+    std::uint32_t payloadBytes = 0;
+    /// Where the payload starts in the arena, as a position that only grows.
+    std::uint64_t payloadStart = 0;
+    /// The kind's argument type, as bytes.
+    std::array<std::byte, 48> arguments {};
+
+    /// Makes a command of a kind from its arguments.
+    ///
+    /// - Parameters:
+    ///   - kind: What to do.
+    ///   - arguments: The kind's arguments.
+    /// - Returns: The command, with no payload.
+    template<typename Arguments>
+    [[nodiscard]] static OwnerCommand make(OwnerCommandKind kind, const Arguments& arguments) noexcept
+    {
+        static_assert(std::is_trivially_copyable_v<Arguments> && sizeof(Arguments) <= sizeof(OwnerCommand::arguments));
+        OwnerCommand command;
+        command.kind = kind;
+        std::memcpy(command.arguments.data(), &arguments, sizeof(Arguments));
+        return command;
+    }
+
+    /// Reads the command's arguments as the type its kind names.
+    ///
+    /// - Returns: The arguments.
+    template<typename Arguments>
+    [[nodiscard]] Arguments argumentsAs() const noexcept
+    {
+        static_assert(std::is_trivially_copyable_v<Arguments> && sizeof(Arguments) <= sizeof(OwnerCommand::arguments));
+        Arguments arguments;
+        std::memcpy(&arguments, this->arguments.data(), sizeof(Arguments));
+        return arguments;
+    }
+};
+static_assert(sizeof(OwnerCommand) == 64 && std::is_trivially_copyable_v<OwnerCommand>);
+
+/// A pane's commands from its frontend to its owner: a ring of commands and a
+/// byte arena their payloads ride in, each with one producer and one consumer.
+///
+/// The frontend thread alone posts, and the pane's owner alone pops. A post
+/// never waits: it answers false when the ring or the arena is full, and the
+/// caller keeps the command (``ConveyorOverflow``). A popped command's payload
+/// stays readable until the owner's next pop or ``finishService()``.
+class OwnerConveyor {
+public:
+    /// Commands the ring holds.
+    static constexpr std::size_t commandCapacity = 256;
+    /// Bytes the payload arena holds.
+    static constexpr std::size_t arenaBytes = std::size_t { 256 } << 10;
+    /// The longest payload one command carries: a quarter of the arena, so a
+    /// payload waits behind at most three others.
+    static constexpr std::size_t maxPayloadBytes = arenaBytes / 4;
+
+    /// Makes an empty conveyor and its arena. A conveyor whose arena could
+    /// not be allocated posts commands with no payload only.
+    OwnerConveyor()
+        : m_arena(new (std::nothrow) std::byte[arenaBytes])
+    {
+    }
+    OwnerConveyor(const OwnerConveyor&) = delete;
+    OwnerConveyor& operator=(const OwnerConveyor&) = delete;
+
+    /// Posts a command and its payload. Frontend thread.
+    ///
+    /// - Parameters:
+    ///   - command: The command; its payload fields are set here.
+    ///   - payload: At most ``maxPayloadBytes`` bytes the owner reads with it.
+    /// - Returns: Whether the command was posted. False when the ring or the
+    ///   arena is full, the payload is longer than ``maxPayloadBytes``, or the
+    ///   arena could not be allocated; nothing was posted then.
+    [[nodiscard]] bool post(OwnerCommand command, std::span<const std::byte> payload = {}) noexcept UBIQUITTY_NONBLOCKING
+    {
+        command.payloadBytes = 0;
+        command.payloadStart = 0;
+        std::uint64_t start = m_arenaHead;
+        if (!payload.empty()) {
+            if (payload.size() > maxPayloadBytes || !m_arena)
+                return false;
+            const std::size_t offset = start % arenaBytes;
+            if (offset + payload.size() > arenaBytes)
+                start += arenaBytes - offset;
+            if (start + payload.size() - m_arenaTail.load(std::memory_order_acquire) > arenaBytes)
+                return false;
+            // Written into free space, and claimed only once the command is on
+            // the ring: a refused post leaves the arena as it was.
+            std::memcpy(m_arena.get() + start % arenaBytes, payload.data(), payload.size());
+            command.payloadBytes = static_cast<std::uint32_t>(payload.size());
+            command.payloadStart = start;
+        }
+        if (!m_commands.tryPush(std::move(command)))
+            return false;
+        if (!payload.empty())
+            m_arenaHead = start + payload.size();
+        return true;
+    }
+
+    /// Pops the oldest command. The owner's thread.
+    ///
+    /// Releases the payload of the command popped before it.
+    ///
+    /// - Parameters:
+    ///   - command: Receives the command.
+    ///   - payload: Receives its payload, readable until the next pop or
+    ///     ``finishService()``.
+    /// - Returns: Whether a command was popped.
+    [[nodiscard]] bool pop(OwnerCommand& command, std::span<const std::byte>& payload) noexcept
+    {
+        finishService();
+        if (!m_commands.tryPop(command))
+            return false;
+        payload = {};
+        if (command.payloadBytes) {
+            payload = { m_arena.get() + command.payloadStart % arenaBytes, command.payloadBytes };
+            m_heldPayloadEnd = command.payloadStart + command.payloadBytes;
+        }
+        return true;
+    }
+
+    /// Releases the payload of the last popped command. The owner's thread,
+    /// at the end of a service point.
+    void finishService() noexcept
+    {
+        if (m_heldPayloadEnd) {
+            m_arenaTail.store(m_heldPayloadEnd, std::memory_order_release);
+            m_heldPayloadEnd = 0;
+        }
+    }
+
+    /// Returns whether no command waits. Any thread.
+    ///
+    /// - Returns: Whether the ring is empty.
+    [[nodiscard]] bool isEmpty() const noexcept { return m_commands.isEmpty(); }
+
+private:
+    OwnerEventRing<OwnerCommand, commandCapacity> m_commands;
+    const std::unique_ptr<std::byte[]> m_arena;
+    std::uint64_t m_arenaHead = 0; // the frontend's
+    alignas(64) std::atomic<std::uint64_t> m_arenaTail { 0 }; // the owner's
+    std::uint64_t m_heldPayloadEnd = 0; // the owner's
+};
+
+/// The commands a frontend has posted that its pane's conveyor had no room
+/// for, kept in order on the frontend's side until it has room. A frontend
+/// that posts through this never waits on its owner and never reorders; it
+/// allocates only while it holds a command.
+class ConveyorOverflow {
+public:
+    /// Commands held at most.
+    static constexpr std::size_t maxCommands = 4096;
+    /// Payload bytes held at most.
+    static constexpr std::size_t maxPayloadBytes = std::size_t { 4 } << 20;
+
+    /// Posts a command behind every one held. Frontend thread.
+    ///
+    /// - Parameters:
+    ///   - conveyor: The pane's conveyor.
+    ///   - command: The command.
+    ///   - payload: Its payload.
+    /// - Returns: Whether the command was posted or held. False when the
+    ///   hold is full: the command is refused, and the caller says so.
+    [[nodiscard]] bool post(OwnerConveyor& conveyor, const OwnerCommand& command, std::span<const std::byte> payload = {}) noexcept
+    {
+        if (flush(conveyor) && conveyor.post(command, payload))
+            return true;
+        if (m_held.size() >= maxCommands || payload.size() > maxPayloadBytes - m_heldPayloadBytes)
+            return false;
+        Held held { command, {} };
+        if (!payload.empty()) {
+            held.payload.reserve(payload.size());
+            held.payload.assign(payload.begin(), payload.end());
+        }
+        m_heldPayloadBytes += payload.size();
+        m_held.push_back(std::move(held));
+        return true;
+    }
+
+    /// Moves held commands into the conveyor while it has room. Frontend
+    /// thread, at each post and at the owner's drain signal.
+    ///
+    /// - Parameter conveyor: The pane's conveyor.
+    /// - Returns: Whether nothing is held any more.
+    bool flush(OwnerConveyor& conveyor) noexcept
+    {
+        while (!m_held.empty()) {
+            const Held& held = m_held.front();
+            if (!conveyor.post(held.command, held.payload))
+                return false;
+            m_heldPayloadBytes -= held.payload.size();
+            m_held.pop_front();
+        }
+        return true;
+    }
+
+    /// Returns whether a command waits here for room.
+    ///
+    /// - Returns: Whether anything is held.
+    [[nodiscard]] bool isHolding() const noexcept { return !m_held.empty(); }
+
+private:
+    /// One command held with its own copy of its payload.
+    struct Held {
+        OwnerCommand command;
+        std::vector<std::byte> payload;
+    };
+    std::deque<Held> m_held;
+    std::size_t m_heldPayloadBytes = 0;
+};
+
 /// The newest user input's tick, which the frontend posts and the writer
 /// applies to the model on its next pass: the cursor's activity freeze and the
 /// CRT saver's idle clock.
@@ -560,27 +810,9 @@ private:
     std::atomic<std::uint32_t> m_tick { 0 };
 };
 
-// (W) A main->writer command. POD, ring-copyable. `kind` selects which scalar
-// arguments apply.
-enum class CommandKind : std::uint8_t {
-    SetFocus, // flag = focused
-    ResolveClipboardRead, // flag = approved, set = the selection set
-    SetPresentationFocus, // flag = focused; passive mirror, no program report
-};
-struct Command {
-    CommandKind kind {};
-    bool flag = false; // bool-ok: the ring's one generic slot — each kind names it (SetFocus/SetPresentationFocus: focused; ResolveClipboardRead: approved)
-    int arg0 = 0;
-    int arg1 = 0;
-    int arg2 = 0;
-    // ResolveClipboardRead: the selection set the request named, NUL-ended.
-    // Carried by value — the ring outlives any caller's view.
-    std::array<char, 16> set {};
-};
-
 // The per-pane seam instance the runtime owns and a frontend drives: one per
-// Ubiquitty::Terminal / pane. The writer publishes `reads` + drains `commands` under
-// the model lock; main reads `reads` + posts `commands`, both lock-free.
+// Ubiquitty::Terminal / pane. The writer publishes `reads` and its owner applies
+// `conveyor`; main reads `reads` and posts to `conveyor`, both lock-free.
 struct RuntimeLink {
     SnapshotPublisher<RuntimeSnapshot> reads; // (R) model -> main
     SnapshotPublisher<FramePresentationState> presentation; // (R) model -> frame clock
@@ -613,7 +845,7 @@ struct RuntimeLink {
     // have read, which `reads`, published at most at the sync-publish floor
     // during a burst, can be.
     SnapshotPublisher<ModeSnapshot> keyModes; // (R) model -> main
-    CommandRing<Command, 64> commands; // (W) main -> model
+    OwnerConveyor conveyor; // (W) main -> model
     UserInputSlot userInput; // (W) main -> model
 };
 

@@ -659,6 +659,7 @@ void TmuxControlHost::releaseDelivery()
     TmuxPane* pane = m_deliveryPane;
     const PaneID paneID = m_deliveryPaneID;
     const auto publication = publicationFor(paneID, *m_deliveryTerminal);
+    publication->publishKeyModes(*m_deliveryTerminal);
     const auto progress = notePaneChangeLocked(*publication, *m_deliveryTerminal, PaneChange::Output);
     pane->markSnapshotDue();
     m_deliveryPane = nullptr;

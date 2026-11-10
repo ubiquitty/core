@@ -1523,17 +1523,17 @@ public:
     /// - Parameter focus: The new state.
     void setFocused(Ubiquitty::Modes::FocusState focus) UBIQUITTY_REQUIRES(modelLockRole);
 
-    // --- commands (main -> writer) -----------------------------------------
-    // Apply one command main posted to the Terminal. TERM-WRITER (caller holds the
-    // lock); the no-ingest-loop fallback path calls it inline.
-    void applyCommand(const Command&) UBIQUITTY_REQUIRES(modelLockRole);
-    // Drain + apply every command queued in link().commands, and the input
-    // posted to link().userInput, under the host's lock. The ingest loop calls
-    // this each iteration; no-op + no lock when both are empty. Returns true
-    // when a queued command was consumed or the input woke the display, giving
-    // the platform a cheap gate for reply/snapshot flush work.
-    /// Does the frontend's work at the owner's turn: posted input and
-    /// commands applied, and the work the host's frontend left
+    /// Applies one command a frontend posted to the pane's owner.
+    ///
+    /// The owner's thread, holding the model; a pane with no running owner
+    /// applies on the posting thread, which is then its owner.
+    /// - Parameters:
+    ///   - command: The command.
+    ///   - payload: Its payload, as the conveyor hands it over.
+    void applyOwnerCommand(const OwnerCommand& command, std::span<const std::byte> payload) UBIQUITTY_REQUIRES(modelLockRole);
+
+    /// Does the frontend's work at the owner's turn: posted input, the
+    /// commands on `link().conveyor`, and the work the host's frontend left
     /// (``DrainHost::serviceFrontendLocked()``), under one hold of the model
     /// lock taken only when there is any.
     ///

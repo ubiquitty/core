@@ -465,12 +465,17 @@ public:
     /// Encodes one key press in this terminal's current modes.
     ///
     /// The snapshot `readSnapshot` returns can precede a parsed protocol reset
-    /// by several bites, so it never picks the bytes a key sends. A pane whose
-    /// ingest loop drains its own model encodes from the modes the drain
-    /// published at its last release of the model lock, which no model a
-    /// locked encode could read is newer than, and from the DECUDK table the
-    /// drain published before them. An adopted, remote or fed model has no
-    /// such drain, so it encodes from the locked model.
+    /// by several bites, so it never picks the bytes a key sends. A model
+    /// whose writer publishes the modes a key encodes in before each release
+    /// that changed them encodes from that publication, which no model a
+    /// locked encode could read is newer than: the ingest loop at each drain
+    /// release, with the DECUDK table it published before them; a remote
+    /// replica's frontend loop with each Sync change it republishes; and a
+    /// tmux host for its adopted pane at each delivery. A remote replica's
+    /// host encodes the key the program reads, and this encoding serves only
+    /// the echo and the observer. A fed model, whose feeder publishes nothing
+    /// at a release, and a programmed DECUDK table in a remote or adopted
+    /// model, which no writer publishes, encode from the locked model.
     ///
     /// - Parameters:
     ///   - press: What the frontend knows; see ``KeyPress``.
@@ -480,6 +485,12 @@ public:
     {
         if (isModelDrainedByIngestLoop())
             return Runtime::encodeKey(m_runtime->link().keyModes.read(), m_runtime->link(), press, output);
+        const bool isPublished = m_externalTerminal ? m_hostedPanePublication != nullptr : isRemoteReplica();
+        if (isPublished) {
+            const ModeSnapshot modes = m_externalTerminal ? m_hostedPanePublication->keyModes() : m_runtime->link().keyModes.read();
+            if (modes.userDefinedKeyCount == 0)
+                return Runtime::encodeKey(modes, press, output, nullptr);
+        }
         const ModelLockHold hold(*m_activeLock);
         Ubiquitty::Terminal* term = modelTerm();
         if (!term)
@@ -2819,10 +2830,9 @@ public:
     static constexpr std::size_t triggerQueueLimit = 64;
 
     /// Whether a trigger matched and its report is not yet taken.
-    [[nodiscard]] bool hasPendingTriggerMatch() const // bool-ok: the queue's own state, not a call-site constant UBIQUITTY_EXCLUDES(modelLockRole)
+    [[nodiscard]] bool hasPendingTriggerMatch() const // bool-ok: the queue's own state, not a call-site constant
     {
-        const ModelLockHold hold(*m_activeLock);
-        return !m_triggerMatches.empty();
+        return !m_triggerMatchRing.isEmpty();
     }
 
     /// The oldest trigger report that resolves to an act, removed from the
@@ -2841,13 +2851,8 @@ public:
     {
         for (;;) {
             TriggerMatch match;
-            {
-                const ModelLockHold hold(*m_activeLock);
-                if (m_triggerMatches.empty())
-                    return TriggerEffect {};
-                match = std::move(m_triggerMatches.front());
-                m_triggerMatches.erase(m_triggerMatches.begin());
-            }
+            if (!m_triggerMatchRing.tryPop(match))
+                return TriggerEffect {};
             TriggerEffect effect = resolveTriggerEffect(match.action, match.argument, match.matchedText, configuration);
             if (effect.kind != TriggerEffectKind::None)
                 return effect;
@@ -4725,10 +4730,8 @@ public:
         // The two links paneLink() routes between, named here so the call
         // binds to the final class rather than through PaneLink.
         if (m_remote && m_remote->core && !m_tmuxPrimaryStream) {
-            Command command;
-            command.kind = CommandKind::SetPresentationFocus;
-            command.flag = focus == Modes::FocusState::Focused;
-            postCommand(command);
+            postCommand(Runtime::OwnerCommand::make(Runtime::OwnerCommandKind::SetPresentationFocus,
+                Runtime::FocusArguments { .isFocused = focus == Modes::FocusState::Focused }));
             m_remote->core->setFocus(focus);
             return;
         }
@@ -4762,25 +4765,36 @@ public:
     /// The observer can read the model; no callback runs under the model lock.
     void observePaneLink(Session::PaneLinkObserver& observer) { m_paneLinkObserver = observer.weakPtr(); }
 
-    /// Posts one command for the ingest loop to apply under the model lock.
+    /// Posts one command for the pane's owner to apply at its next service
+    /// point.
     ///
-    /// Lock-free on the live path, so a caller never blocks on the model
-    /// lock the drain holds hot under a flood; the wake bounds pickup by one
-    /// loop iteration rather than an idle tick. A full ring and a stopped
-    /// loop both apply inline under the lock instead — a posted command may
-    /// not be dropped, and with no loop running nothing else would ever
-    /// drain the ring.
+    /// The frontend never waits on the owner: a conveyor with no room keeps
+    /// the command in order on this side (``ConveyorOverflow``), and only a
+    /// hold past its bound refuses it, which ``refusedOwnerCommandCount()``
+    /// counts. A pane whose ingest loop is not running has no other owner,
+    /// so the command applies here, on the thread that is then its owner.
     ///
-    /// - Parameter command: The command to apply.
-    void postCommand(const Command& command) UBIQUITTY_EXCLUDES(modelLockRole)
+    /// - Parameters:
+    ///   - command: The command.
+    ///   - payload: Its payload.
+    void postCommand(const Runtime::OwnerCommand& command, std::span<const std::byte> payload = {}) UBIQUITTY_EXCLUDES(modelLockRole)
     {
-        if (m_ingestThread.joinable() && m_runtime->link().commands.post(command)) {
-            m_loop.raiseWake();
+        if (!m_ingestThread.joinable()) {
+            const ModelLockHold hold(m_modelLock);
+            m_runtime->applyOwnerCommand(command, payload);
             return;
         }
-        const ModelLockHold hold(m_modelLock);
-        m_runtime->applyCommand(command);
+        if (!m_conveyorOverflow.post(m_runtime->link().conveyor, command, payload)) {
+            m_refusedOwnerCommandCount.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        m_loop.raiseWake();
     }
+
+    /// Returns how many commands a full conveyor and a full overflow refused.
+    ///
+    /// - Returns: The count since the session began.
+    [[nodiscard]] std::uint64_t refusedOwnerCommandCount() const noexcept { return m_refusedOwnerCommandCount.load(std::memory_order_relaxed); }
 
     /// Resizes the grid and the host window in the proven order.
     ///
@@ -6107,13 +6121,10 @@ public:
             }
             return;
         }
-        Command command;
-        command.kind = CommandKind::ResolveClipboardRead;
-        command.flag = decision == Ubiquitty::OSC::ClipboardReadDecision::Approved;
-        const std::size_t n = std::min(setSpec.size(), command.set.size() - 1);
-        std::memcpy(command.set.data(), setSpec.data(), n);
-        command.set[n] = 0;
-        postCommand(command);
+        Runtime::ClipboardReadArguments arguments { .isApproved = decision == Ubiquitty::OSC::ClipboardReadDecision::Approved };
+        const std::size_t n = std::min(setSpec.size(), arguments.selectionSet.size() - 1);
+        std::memcpy(arguments.selectionSet.data(), setSpec.data(), n);
+        postCommand(Runtime::OwnerCommand::make(Runtime::OwnerCommandKind::ResolveClipboardRead, arguments));
     }
 
     /// Keeps a heap client alive for the session's life.
@@ -9501,10 +9512,8 @@ private:
                 m_owner.republishModel();
                 return;
             }
-            Command command;
-            command.kind = CommandKind::SetFocus;
-            command.flag = focus == Ubiquitty::Modes::FocusState::Focused;
-            m_owner.postCommand(command);
+            m_owner.postCommand(Runtime::OwnerCommand::make(Runtime::OwnerCommandKind::SetFocus,
+                Runtime::FocusArguments { .isFocused = focus == Ubiquitty::Modes::FocusState::Focused }));
         }
 
         /// Ignores the view's depth: a local terminal holds all its own history.
@@ -10854,10 +10863,10 @@ private:
             if (!session || !doesTriggerActionDispatch(action))
                 return;
             session->assertModelLockHeld();
-            if (session->m_triggerMatches.size() >= triggerQueueLimit)
-                return; // the new one is dropped, as the notification queue drops its overrun
-            session->m_triggerMatches.push_back(
-                TriggerMatch { action, std::string(argument), std::string(matchedText) });
+            // The model's holder is the ring's one producer; a full ring drops
+            // the new report, as the notification queue drops its overrun.
+            if (!session->m_triggerMatchRing.tryPush(TriggerMatch { action, std::string(argument), std::string(matchedText) }))
+                return;
             // Raised here rather than in the drain's deliver hook, for the
             // reason the window queue gives: bytes also arrive through
             // `feedBytes`, and a report that reached the queue must be
@@ -10867,7 +10876,8 @@ private:
         }
     };
     BufferingTriggerClient m_triggerClient;
-    std::vector<TriggerMatch> m_triggerMatches UBIQUITTY_GUARDED_BY(modelLockRole);
+    // Produced by whoever holds the model, consumed by the frontend lock-free.
+    Runtime::OwnerEventRing<TriggerMatch, triggerQueueLimit> m_triggerMatchRing;
 
     // The frontend loop every hosting session posts to. Written once at
     // launch by ``enableHostedWindows``, before the factory is published with
@@ -14184,6 +14194,11 @@ private:
     /// - Returns: The presented terminal.
     [[nodiscard]] Ubiquitty::Terminal* modelTerm() UBIQUITTY_REQUIRES(modelLockRole) { return modelTermIdentity(); }
 
+    /// Whether this session presents a remote replica its own frontend loop
+    /// writes: Sync state applied on this thread, which republishes the
+    /// replica with each change. Frontend thread.
+    [[nodiscard]] bool isRemoteReplica() const { return m_remote && m_remote->core && !m_tmuxPrimaryStream; }
+
     /// Whether this session's ingest loop is running and drains the model it
     /// presents: the runtime's own, neither adopted nor a remote replica. Such
     /// a model's writer publishes at every release of the lock and applies
@@ -14370,6 +14385,10 @@ private:
     std::size_t m_drainSignalsInFlight = 0;
     void* m_drainSignalContext = nullptr;
     DrainSignal m_drainSignal = nullptr;
+    // The frontend's commands its pane's conveyor had no room for, in order.
+    // Frontend thread only.
+    Runtime::ConveyorOverflow m_conveyorOverflow;
+    std::atomic<std::uint64_t> m_refusedOwnerCommandCount { 0 };
     // Whether a drain signal has fired that no ``takeEventFlags`` has answered yet.
     std::atomic<bool> m_isDrainSignalArmed { false };
     // The reader thread's nesting depth of ``ModelReadScope``; that thread's alone.
