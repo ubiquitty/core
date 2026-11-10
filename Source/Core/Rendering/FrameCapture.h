@@ -611,6 +611,13 @@ public:
     /// somebody meant to register.
     [[nodiscard]] Vec4 linkColor() const { return m_frame->inputs().linkColor; }
 
+    /// Whether the captured frame draws a status row on its bottom row.
+    ///
+    /// Exposed for the same reason ``linkColor()`` is: a view that presents
+    /// the capture reads what the frame really drew, not the model it was
+    /// captured from.
+    [[nodiscard]] bool hasStatusRow() const { return m_frame->inputs().hasStatusLineOnBottomRow; }
+
     /// The record identity and lineage captured with the frame.
     [[nodiscard]] const FrameRecordHeader& recordHeader() const { return m_header; }
 
