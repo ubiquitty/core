@@ -81,7 +81,7 @@ class PushGateTests(unittest.TestCase):
     def environment(self, **extra):
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(("UBQ_", "UBIQUITTY_", "GIT_", "PLAN_", "NEEDS_"))}
-        env.update(MARKER=str(self.marker), UBQ_PREPUSH_PREREQUISITES="off", UBQ_BUILD_ROOT=str(self.directory / "build"))
+        env.update(MARKER=str(self.marker), UBQ_PREPUSH_PREREQUISITES="off", UBQ_PREPUSH_PTY_HEADROOM="0", UBQ_BUILD_ROOT=str(self.directory / "build"))
         env.update(extra)
         return env
 
@@ -263,6 +263,19 @@ class PushGateTests(unittest.TestCase):
         self.commit()
         ran, status, error = self.push(UBQ_PREPUSH_PREREQUISITES="build")
         self.assertEqual((ran, status), (self.EVERYTHING, 0), error)
+
+    def testAMachineOutOfPtysRefusesACodePushBeforeAnyGateRuns(self):
+        (self.repository / "Tests/test_x.cpp").write_text("// changed\n")
+        self.commit()
+        ran, status, error = self.push(UBQ_PREPUSH_PTY_HEADROOM="1000000")
+        self.assertEqual((ran, status), ([], 1))
+        self.assertIn("pseudo-terminals can be opened", error)
+
+    def testADocumentationOnlyPushNeedsNoPtys(self):
+        (self.repository / "README.md").write_text("changed\n")
+        self.commit()
+        ran, status, error = self.push(UBQ_PREPUSH_PTY_HEADROOM="1000000")
+        self.assertEqual((ran, status), (self.DOCUMENTATION_ONLY, 0), error)
 
     def testAMissingProductRefusesBeforeAnyGateRuns(self):
         (self.repository / "Tests/test_x.cpp").write_text("// changed\n")

@@ -277,6 +277,41 @@ export UBQ_SUBJECT_ROOT="$PWD"
 """
 
 
+class PtyHeadroomTests(unittest.TestCase):
+    @staticmethod
+    def opener(limit, opened):
+        def open_pair():
+            if len(opened) >= limit:
+                raise OSError(23, "out of pty devices")
+            pair = os.pipe()
+            opened.append(pair)
+            return pair
+        return open_pair
+
+    def testEnoughPtysPassAndAreReleased(self):
+        opened, out = [], io.StringIO()
+        self.assertTrue(preflight.pty_headroom(4, out, self.opener(99, opened)))
+        self.assertEqual(len(opened), 4)
+        for pair in opened:
+            for descriptor in pair:
+                with self.assertRaises(OSError):
+                    os.fstat(descriptor)
+        self.assertEqual(out.getvalue(), "")
+
+    def testTooFewPtysRefuseWithTheCountAndTheCause(self):
+        opened, out = [], io.StringIO()
+        self.assertFalse(preflight.pty_headroom(8, out, self.opener(3, opened)))
+        self.assertIn("only 3 of 8 pseudo-terminals", out.getvalue())
+        self.assertIn("login", out.getvalue())
+        for pair in opened:
+            for descriptor in pair:
+                with self.assertRaises(OSError):
+                    os.fstat(descriptor)
+
+    def testZeroTurnsTheCheckOff(self):
+        self.assertTrue(preflight.pty_headroom(0, io.StringIO(), self.opener(0, [])))
+
+
 class RunnerTests(unittest.TestCase):
     """The shell side: a plan records and runs nothing, and only the preflight can issue one."""
 
