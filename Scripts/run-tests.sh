@@ -3078,6 +3078,7 @@ if [ "$WITH_FUZZ" -eq 1 ]; then
     else
         ubq_fuzz_build fuzz_richtext "$FUZZ_RICHTEXT_LOG" \
             "$ROOT/Tests/Core/RichText/fuzz_richtext.cpp" \
+            "$ROOT/Source/Core/RichText/Document.cpp" \
             "$ROOT/Source/Core/RichText/RTFReader.cpp" \
             "$ROOT/Source/Core/Unicode/Encodings.cpp" \
             "$ROOT/Source/Core/Unicode/UTF8Decoder.cpp" \
