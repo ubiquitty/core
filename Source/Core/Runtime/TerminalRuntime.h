@@ -1275,6 +1275,16 @@ public:
     /// - Returns: True while the capture would show the erased screen.
     [[nodiscard]] bool isEraseRedrawArriving(const Ubiquitty::Terminal& terminal, std::uint32_t nowMicros) UBIQUITTY_REQUIRES(modelLockRole);
 
+    /// Returns the ticks until the redraw ``isEraseRedrawArriving`` found
+    /// arriving stops holding the live-resize capture on its own: the settle
+    /// after the program's last bytes, or the watchdog from the first ask
+    /// that found it, whichever ends first. A redraw parsed whole ends the
+    /// hold sooner. Any thread; it waits on nothing.
+    ///
+    /// - Parameter nowMicros: Now, in monotonic microseconds.
+    /// - Returns: At least 1 while a redraw is held as arriving, 0 otherwise.
+    [[nodiscard]] std::uint32_t eraseRedrawTicksRemaining(std::uint32_t nowMicros) const noexcept UBIQUITTY_NONBLOCKING;
+
     /// Records the redraw behind the newest whole-screen erase as parsed
     /// whole: the transport stayed empty for the quiet interval after its
     /// last byte (``noteEraseRedrawQuiet(_:)``), a burst ended, or the stream

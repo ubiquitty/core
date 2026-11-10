@@ -752,7 +752,7 @@ private:
             presentCapture(*frame, selection, supply.selection.count);
             return;
         case FrameRoute::LiveRead:
-            readLive(selection, [&](Terminal& terminal) UBIQUITTY_REQUIRES(Ubiquitty::modelLockRole) { return m_session.liveReadDecline(terminal, demand); });
+            readLive(selection, [&](Terminal& terminal) UBIQUITTY_REQUIRES(Ubiquitty::modelLockRole) { return m_session.liveReadDecline(terminal, demand).decline; });
             return;
         case FrameRoute::Declined:
             decline(supply.decline);

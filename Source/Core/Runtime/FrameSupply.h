@@ -98,6 +98,23 @@ struct FrameSupply {
     Selection::CaptureSpans selection {};
     /// Where the selection begins and ends on a captured frame.
     Selection::ViewportEnds selectionEnds {};
+    /// Ticks until the view asks again on its own, from now: on
+    /// ``FrameDecline::HeldByPresentation``, the hold's budget, at least 1.
+    /// Zero on every other answer, where what ends the hold wakes the view:
+    /// the delivery or release hook that admits a held frame, and the
+    /// publication of an awaited capture.
+    std::uint32_t askAgainTicks = 0;
+};
+
+/// The live read's own answer, under the model lock, after
+/// ``FrameRoute::LiveRead``.
+struct LiveReadAnswer {
+    /// Why the read presents nothing, or ``FrameDecline::None``.
+    FrameDecline decline = FrameDecline::None;
+    /// Ticks until the view asks again on its own, from the demand's tick:
+    /// the budget of the hold that declined the read, at least 1. Zero when
+    /// the read presents.
+    std::uint32_t askAgainTicks = 0;
 };
 
 } // namespace Ubiquitty::Runtime

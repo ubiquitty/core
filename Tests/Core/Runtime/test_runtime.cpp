@@ -5208,10 +5208,12 @@ TEST(aResizeCaptureHoldsAnEraseUntilTheTransportGoesQuietAfterItsRedraw)
     REQUIRE(terminal != nullptr);
     std::uint32_t now = Ubiquitty::PAL::monotonicMicros();
     CHECK_MSG(!rt.isEraseRedrawArriving(*terminal, now), "nothing is arriving before an erase");
+    CHECK_MSG(rt.eraseRedrawTicksRemaining(now) == 0, "and nothing holds the capture");
 
     constexpr std::string_view erase = "\x1b[H\x1b[2Jfirst row";
     (void)rt.feedChunkUpToSyncClear(erase);
     CHECK_MSG(rt.isEraseRedrawArriving(*terminal, now), "a capture inside the pass that parsed the erase holds it");
+    CHECK_MSG(rt.eraseRedrawTicksRemaining(now) == 1, "for its settle, inside one tick");
     rt.finishExternalDrainPass(host, static_cast<int>(erase.size()), DrainPassEnd::TimeBudget);
     CHECK_MSG(rt.isEraseRedrawArriving(*terminal, now + 1000), "a pass that spent its time budget has not caught up with the redraw");
 
@@ -5228,6 +5230,7 @@ TEST(aResizeCaptureHoldsAnEraseUntilTheTransportGoesQuietAfterItsRedraw)
     CHECK_MSG(rt.shouldWithholdPresentationAfterErase(now + 1000), "an ordinary present still waits for the settle");
     CHECK_MSG(!rt.isEraseRedrawArriving(*terminal, now + 1000), "the resize capture shows the redraw once the transport has gone quiet after it");
     CHECK(!rt.eraseRedrawQuietDueInMicros(now).has_value());
+    CHECK_MSG(rt.eraseRedrawTicksRemaining(now + 1000) == 0, "and holds it no longer");
 
     // The next erase is held again, until its own redraw has been parsed.
     (void)rt.feedChunkUpToSyncClear(erase);
@@ -5340,7 +5343,9 @@ TEST(aResizeCaptureHoldIsBoundedByTheSettleAndItsOwnWatchdog)
         rt.finishExternalDrainPass(host, static_cast<int>(erase.size()), DrainPassEnd::TimeBudget);
         const std::uint32_t erasedAt = Ubiquitty::PAL::monotonicMicros();
         CHECK_MSG(rt.isEraseRedrawArriving(*terminal, erasedAt + 5000), "a redraw that stops short is held through the settle");
+        CHECK_MSG(rt.eraseRedrawTicksRemaining(erasedAt + 5000) == 1, "which ends inside one tick");
         CHECK_MSG(!rt.isEraseRedrawArriving(*terminal, erasedAt + 6000), "and shown once the bytes have been quiet for it");
+        CHECK_MSG(rt.eraseRedrawTicksRemaining(erasedAt + 6000) == 0, "when nothing holds it any longer");
         rt.close();
     }
     {
