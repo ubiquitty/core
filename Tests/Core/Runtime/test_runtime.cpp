@@ -1734,7 +1734,7 @@ TEST(aConfirmingPassRepublishesNothing)
     focus.kind = CommandKind::SetFocus;
     focus.flag = false;
     CHECK(rt.link().commands.post(focus));
-    CHECK(rt.applyPendingCommands(host));
+    CHECK(rt.serviceFrontend(host));
     const DrainOutcome afterCommand = rt.drainAvailable(host);
     CHECK(afterCommand.bytesDrained == 0);
     CHECK_MSG(rt.link().reads.version() > versionAfterBurst, "a command's effects publish through a byteless pass");
@@ -7310,7 +7310,7 @@ TEST(aFocusedPaneHasHadItsLatchedAttentionSeen)
         command.kind = CommandKind::SetFocus;
         command.flag = isFocused;
         CHECK(runtime.link().commands.post(command));
-        CHECK(runtime.applyPendingCommands(host));
+        CHECK(runtime.serviceFrontend(host));
     };
 
     pipe->toRead = "\a\x1b]9;the build finished\a";

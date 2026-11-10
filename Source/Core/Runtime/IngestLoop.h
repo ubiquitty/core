@@ -375,7 +375,7 @@ private:
             // outside drainAvailable's own acquire (the mutex is
             // non-recursive) so main never blocks on the lock to drive the
             // model. No-op and no lock when the queue is empty.
-            const bool didApplyCommand = m_runtime.applyPendingCommands(m_host);
+            const bool didApplyCommand = m_runtime.serviceFrontend(m_host);
             m_runtime.drainPendingWrite(); // flush queued outbound (paste backpressure)
             const bool didDrain = shouldDrain || didApplyCommand;
             if (didDrain) {
@@ -983,7 +983,7 @@ private:
             passStartMicros = now;
             if (end != DrainPassEnd::WouldBlock)
                 budgetStartMicros = now;
-            m_runtime.applyPendingCommands(m_host);
+            m_runtime.serviceFrontend(m_host);
             m_runtime.drainPendingWrite();
         };
         const auto duePassEnd = [&] {

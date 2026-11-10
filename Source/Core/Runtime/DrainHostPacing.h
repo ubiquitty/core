@@ -67,6 +67,37 @@ public:
     ///   caller and outliving this host's use of it.
     void retargetModelLock(ModelLock& modelLock) { m_modelLock = &modelLock; }
 
+    /// The frontend-work hooks' shapes: whether the frontend left work, read
+    /// without the model lock, and the work, done under it.
+    using FrontendWorkProbe = bool (*)(const void* context);
+    /// See ``FrontendWorkProbe``.
+    using FrontendService = void (*)(void* context);
+
+    /// Installs the frontend-work hooks the owner's turn calls.
+    ///
+    /// - Parameters:
+    ///   - probe: Whether the frontend left work, or null for never.
+    ///   - service: The work, under the model lock.
+    ///   - context: Handed back to both verbatim.
+    void setFrontendService(FrontendWorkProbe probe, FrontendService service, void* context)
+    {
+        m_frontendWorkProbe = probe;
+        m_frontendService = service;
+        m_frontendServiceContext = context;
+    }
+
+    /// Returns whether the frontend left work for the owner's turn.
+    ///
+    /// - Returns: The probe's answer.
+    [[nodiscard]] bool hasFrontendWork() const override { return m_frontendWorkProbe && m_frontendWorkProbe(m_frontendServiceContext); }
+
+    /// Does the frontend's work under the model lock.
+    void serviceFrontendLocked() override UBIQUITTY_REQUIRES(modelLockRole)
+    {
+        if (m_frontendService)
+            m_frontendService(m_frontendServiceContext);
+    }
+
     /// Installs the publish hook the throttle guards.
     ///
     /// - Parameters:
@@ -221,6 +252,9 @@ private:
     std::atomic<std::uint64_t> m_donationMicros { 0 };
     PublishHook m_publishHook = nullptr;
     void* m_publishContext = nullptr;
+    FrontendWorkProbe m_frontendWorkProbe = nullptr;
+    FrontendService m_frontendService = nullptr;
+    void* m_frontendServiceContext = nullptr;
     std::atomic<std::uint32_t> m_publishMinIntervalMicros { syncPublishMinIntervalFloorMicros };
     std::atomic<bool> m_isDrainPassPresented { false };
     // Both writer-thread-only; no atomic needed. Separate because a copy and an
