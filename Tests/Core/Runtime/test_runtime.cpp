@@ -5058,6 +5058,29 @@ TEST(aCaptureBeforeTheErasingPassEndsArmsTheHold)
     rt.close();
 }
 
+// A second of silence with no frontend asking leaves the first erase's hold
+// stored. The silence settled it, so the next erase is held for its own
+// redraw rather than joining a hold whose watchdog ran out long before.
+TEST(anEraseAfterAQuietSpellNoFrontendSawIsHeld)
+{
+    TerminalRuntime rt;
+    rt.init(parameters80x24());
+    REQUIRE(attachPipe(rt) != nullptr);
+    CountingDrainHost host;
+    const char erase[] = "\x1b[2J";
+    Ubiquitty::PAL::s_fakeMicroseconds = 1'000'000;
+    (void)rt.feedChunkUpToSyncClear({ erase, literalLength(erase) });
+    rt.finishExternalDrainPass(host, static_cast<int>(literalLength(erase)), DrainPassEnd::WouldBlock);
+    Ubiquitty::PAL::s_fakeMicroseconds += 1'000'000;
+    (void)rt.feedChunkUpToSyncClear({ erase, literalLength(erase) });
+    rt.finishExternalDrainPass(host, static_cast<int>(literalLength(erase)), DrainPassEnd::WouldBlock);
+    const std::uint32_t now = Ubiquitty::PAL::monotonicMicros() + 1000;
+    CHECK_MSG(rt.shouldWithholdPresentationAfterErase(now), "the second erase holds the present while its redraw can still be arriving");
+    CHECK(rt.eraseHoldMicrosRemaining(now) > 0);
+    CHECK_MSG(!rt.shouldWithholdPresentationAfterErase(now + 20000), "until its own bytes have been quiet for the settle");
+    rt.close();
+}
+
 // The ingest thread stamps bytes while a presenter holds a `now` it read a
 // moment earlier; a stamp after that `now` is no time at all, not seventy
 // minutes of quiet that release the hold mid-redraw.

@@ -8,6 +8,7 @@
 #include "Core/OSC/Dispatch.h"
 #include "Core/Protocol/Sync/Records.h"
 #include "Core/Runtime/DrainPass.h"
+#include "Core/Runtime/EraseHold.h"
 #include "Core/Runtime/FrameCoherence.h"
 #include "Core/Runtime/FrameDriver.h"
 #include "Core/Runtime/ModeSnapshot.h"
@@ -1770,6 +1771,14 @@ private:
     ///   - nowMicros: The stamp, in monotonic microseconds.
     void armEraseHoldIfUnseen(const Ubiquitty::Terminal& terminal, std::uint32_t nowMicros);
 
+    /// Stamps the program's newest bytes, the clock the erase hold settles
+    /// against, and releases a hold the pause before them settled.
+    ///
+    /// The thread that reads the program's bytes.
+    ///
+    /// - Parameter nowMicros: When the bytes arrived, in monotonic microseconds.
+    void noteBytesArrived(std::uint32_t nowMicros);
+
     enum class LocalStreamOwnership : std::uint8_t {
         Local,
         Frozen,
@@ -1953,11 +1962,10 @@ private:
     // ingest thread alone: the process sample opens it and the loop's tick
     // consumes it.
     WindowSizeReassert m_windowSizeReassert;
-    // The erase hold: the ingest thread stamps, a frontend asks.
-    // The ingest thread stamps after its pass and a capture under the model
-    // lock stamps an erase the pass has not reached yet (armEraseHoldIfUnseen).
-    std::atomic<std::uint32_t> m_seenEraseGeneration { 0 };
-    std::atomic<std::uint32_t> m_eraseHoldStartMicros { 0 };
+    // The erase hold: the ingest thread arms it after its pass, a capture under
+    // the model lock arms an erase the pass has not reached yet
+    // (armEraseHoldIfUnseen), and a frontend releases it.
+    EraseHold m_eraseHold;
     // The erase whose redraw has been parsed whole: stamped under the model
     // lock when a drain pass catches up with its program, the stream ends, or
     // a feed carries its own erase.
