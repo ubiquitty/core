@@ -2998,8 +2998,9 @@ TEST(aBufferTooSmallForTheFramesSpansLearnsHowManyItNeeds)
 
 // A view that moves its selection after the drain captured a frame draws,
 // over that frame, the selection it holds rather than the one the frame
-// resolved: what the live read draws over the terminal the frame froze. A
-// view that moved nothing is not ahead of its frame, and draws the frame's.
+// resolved: what the live read draws over the terminal the frame froze, from
+// takeFrame itself and from a refill. A view that moved nothing is not ahead
+// of its frame, and draws the frame's.
 TEST(aViewThatMovedItsSelectionAfterTheCaptureDrawsItsOwnOverTheFrame)
 {
     FloodedPane pane(24, 80);
@@ -3034,7 +3035,15 @@ TEST(aViewThatMovedItsSelectionAfterTheCaptureDrawsItsOwnOverTheFrame)
     CHECK(supply.selection.isViewAhead);
     CHECK(!supply.selection.didAdopt);
     spans.resize(static_cast<std::size_t>(supply.selection.count));
-    CHECK(spans != live.spans);
+    CHECK(spans == live.spans);
+
+    // The frame's own resolution is where the selection stood.
+    DrawnSelection framesOwn;
+    framesOwn.spans.resize(static_cast<std::size_t>(Selection::viewportSpanCapacity(24, 80)));
+    const Selection::CaptureSpans frames = pane.fixture.session->selectionOverCapture(&pane.selection, *frame, framesOwn.spans, framesOwn.ends);
+    framesOwn.spans.resize(static_cast<std::size_t>(frames.count));
+    CHECK(frames.isViewAhead);
+    CHECK(framesOwn.spans != live.spans);
 
     const Selection::Session before = pane.selection;
     DrawnSelection own;
