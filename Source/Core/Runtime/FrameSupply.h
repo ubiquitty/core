@@ -37,8 +37,8 @@ struct FrameDemand {
     Selection::ViewportSpans selectionSpans {};
     /// Whether the view is in a live resize. A resize does not wait for quiet
     /// output: only an open synchronized update and the redraw behind a
-    /// whole-screen erase hold its frame, and both are judged under the live
-    /// read's lock.
+    /// whole-screen erase still arriving hold its frame, and the owner serves
+    /// the view's demand by that rule alone.
     bool isResizing = false;
     /// Whether the view's last presented frame drew search matches. A
     /// captured frame is built without the search tiers, so such a view reads
@@ -74,15 +74,17 @@ enum class FrameDecline : std::uint8_t {
     /// erase is still arriving. The view keeps the frame owed and asks again
     /// when the hold's budget is spent.
     HeldByPresentation,
-    /// The drain is saturated and published its newest capture inside the
-    /// last publish window, so its next capture is due before a live read
-    /// could do better.
+    /// No capture waits, and the owner has been asked for one, or a saturated
+    /// drain's next is due inside the publish window. Its publication wakes
+    /// the view.
     AwaitingCapture,
     /// Under the live read's lock: a synchronized update opened, or the
     /// screen was erased, after the published check.
     BlockOpenUnderLock,
-    /// Under a live resize's lock: the redraw behind the newest whole-screen
-    /// erase has not been parsed whole.
+    /// The view is being resized, and the redraw behind the newest
+    /// whole-screen erase has not been parsed whole. The view asks again when
+    /// the hold's budget is spent, unless a capture's publication wakes it
+    /// first.
     RedrawArriving,
     /// The view's demand for a frame has gone unserved for
     /// ``FrameLane::ownerStallMicros`` and the owner has taken no turn since
@@ -104,7 +106,8 @@ struct FrameSupply {
     /// Where the selection begins and ends on a captured frame.
     Selection::ViewportEnds selectionEnds {};
     /// Ticks until the view asks again on its own, from now: on
-    /// ``FrameDecline::HeldByPresentation``, the hold's budget, at least 1.
+    /// ``FrameDecline::HeldByPresentation`` and
+    /// ``FrameDecline::RedrawArriving``, the hold's budget, at least 1.
     /// Zero on every other answer, where what ends the hold wakes the view:
     /// the delivery or release hook that admits a held frame, and the
     /// publication of an awaited capture.

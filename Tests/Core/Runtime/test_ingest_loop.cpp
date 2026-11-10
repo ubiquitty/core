@@ -1562,6 +1562,46 @@ TEST(testAnOpenUpdateInAFloodIsJudgedFromWhatTheLoopPublished)
     session.stopIngest();
 }
 
+// A view being resized over an update left open in a flood is held from the
+// mark the loop published while another thread holds the model, and the loop,
+// asked for a frame by the resize's rule, stamps the update at its next turn.
+TEST(testAResizeOverAnOpenUpdateIsJudgedFromWhatTheLoopPublished)
+{
+    SessionHandle handle;
+    TerminalSession& session = *handle.session;
+    session.start(24, 80);
+    session.setSyncFrameCaptureGeometry({});
+    const std::string flood = "\033[?2026h" + floodStream();
+    REQUIRE(adoptPrefilledStream(session, flood));
+    REQUIRE(session.startIngest());
+    bool isOpenInAFlood = false;
+    for (int waited = 0; waited < 5000 && !isOpenInAFlood; ++waited) {
+        isOpenInAFlood = session.readSnapshot().syncHoldActive && session.isDrainSaturated();
+        if (!isOpenInAFlood)
+            ::usleep(1000);
+    }
+    REQUIRE(isOpenInAFlood);
+    Ubiquitty::Runtime::FrameSupply supply;
+    CHECK(returnsWhileTheModelIsHeld(session, [&] {
+        // A capture published before the update opened is taken first.
+        for (int ask = 0; ask < 4; ++ask) {
+            releaseFrameCapture(session.takeFrame({ .nowTicks = Ubiquitty::PAL::monotonicTicks(), .isResizing = true }, supply));
+            if (supply.route != Ubiquitty::Runtime::FrameRoute::Captured)
+                break;
+        }
+    }));
+    CHECK(supply.decline == Ubiquitty::Runtime::FrameDecline::HeldByPresentation);
+    CHECK(supply.askAgainTicks >= 1);
+    std::uint32_t stamp = 0;
+    for (int waited = 0; waited < 5000 && stamp == 0; ++waited) {
+        stamp = session.readSnapshot().syncHoldTouchTicks;
+        if (stamp == 0)
+            ::usleep(1000);
+    }
+    CHECK_MSG(stamp != 0, "the loop stamped the update at the turn the resize asked for");
+    session.stopIngest();
+}
+
 // A key on a screen the CRT saver blanked wakes it through the loop, with no
 // output behind it: the loop applies the posted input, publishes the screen
 // shown and tells the frontend to draw.

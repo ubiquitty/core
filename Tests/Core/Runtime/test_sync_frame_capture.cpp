@@ -3013,7 +3013,8 @@ TEST(aViewKeepingSearchLiveReadsTheModelAndLeavesTheCaptureWaiting)
 }
 
 // With no capture waiting, a frame the coherence rule holds is declined for
-// the rule, and a view being resized does not wait for quiet output.
+// the rule, and a view being resized does not wait for quiet output: the
+// owner's next turn captures the model the rule still holds.
 TEST(aFrameTheRuleHoldsIsDeclinedUnlessTheViewIsResizing)
 {
     SessionFixture fixture(24, 80);
@@ -3035,10 +3036,67 @@ TEST(aFrameTheRuleHoldsIsDeclinedUnlessTheViewIsResizing)
     CHECK(fixture.session->shouldWithholdFrame(Ticks(0)));
 
     const FrameAsk resizing = askForFrame(*fixture.session, { .isResizing = true });
-    CHECK(resizing.supply.route == Runtime::FrameRoute::LiveRead);
+    CHECK(resizing.supply.route == Runtime::FrameRoute::Declined);
+    CHECK(resizing.supply.decline == Runtime::FrameDecline::AwaitingCapture);
+    CHECK(resizing.supply.askAgainTicks == 0);
     fixture.session->lockForRead();
     CHECK(fixture.session->liveReadDecline(*fixture.session->terminal(), { .isResizing = true }).decline == Runtime::FrameDecline::None);
     fixture.session->unlockForRead();
+
+    static_cast<void>(fixture.session->serviceFrontend());
+    REQUIRE(fixture.session->isFrameHeld());
+    const FrameAsk served = askForFrame(*fixture.session, { .isResizing = true });
+    CHECK_MSG(served.supply.route == Runtime::FrameRoute::Captured, "the owner's turn served the resize the rule still holds");
+    CHECK(served.frame != nullptr);
+}
+
+// A view that stops resizing asks by the coherence rule again: the owner's
+// turn holds its demand while the rule holds the frame.
+TEST(aDemandRaisedAfterTheResizeIsHeldForTheRule)
+{
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    fixture.session->setSyncFrameCaptureGeometry(testGeometry());
+    fixture.drainSyncFrame("ready");
+    REQUIRE(TakenFrame(fixture.session->takeSyncFrame()));
+    fixture.stream->toRead += "plain output the rule holds for quiet";
+    openPublishWindow();
+    static_cast<void>(fixture.session->drain());
+    REQUIRE(fixture.session->isFrameHeld());
+
+    REQUIRE(askForFrame(*fixture.session, { .isResizing = true }).supply.decline == Runtime::FrameDecline::AwaitingCapture);
+    REQUIRE(askForFrame(*fixture.session, {}).supply.decline == Runtime::FrameDecline::HeldByCoherence);
+    static_cast<void>(fixture.session->serviceFrontend());
+    CHECK_MSG(!TakenFrame(fixture.session->takeSyncFrame()), "the newest demand's rule holds the frame");
+}
+
+// A resizing view's demand is held while the redraw behind a whole-screen
+// erase is still arriving: the owner's turn finds it so, the view is told when
+// to ask again, and the turn after the program's bytes went quiet captures
+// the redraw.
+TEST(aResizeIsHeldWhileAnErasesRedrawIsArriving)
+{
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    fixture.session->setSyncFrameCaptureGeometry(testGeometry());
+    fixture.drainSyncFrame("ready");
+    REQUIRE(TakenFrame(fixture.session->takeSyncFrame()));
+    fixture.stream->toRead += "\x1b[H\x1b[2Jfirst row";
+    static_cast<void>(fixture.session->drain());
+    static_cast<void>(TakenFrame(fixture.session->takeSyncFrame()));
+
+    REQUIRE(askForFrame(*fixture.session, { .isResizing = true }).supply.decline == Runtime::FrameDecline::AwaitingCapture);
+    static_cast<void>(fixture.session->serviceFrontend());
+    CHECK_MSG(!TakenFrame(fixture.session->takeSyncFrame()), "the turn keeps the erased screen off the glass");
+    const FrameAsk arriving = askForFrame(*fixture.session, { .isResizing = true });
+    CHECK(arriving.supply.route == Runtime::FrameRoute::Declined);
+    CHECK(arriving.supply.decline == Runtime::FrameDecline::RedrawArriving);
+    CHECK(arriving.supply.askAgainTicks >= 1);
+
+    PAL::s_testMicroseconds += Runtime::eraseHoldSettleMicros;
+    static_cast<void>(fixture.session->serviceFrontend());
+    const FrameAsk served = askForFrame(*fixture.session, { .isResizing = true });
+    CHECK_MSG(served.supply.route == Runtime::FrameRoute::Captured, "the turn after the bytes went quiet shows the redraw");
 }
 
 // An open synchronized update holds a saturated drain's frame for the block,
@@ -3060,6 +3118,7 @@ TEST(anOpenSynchronizedUpdateHoldsTheTickAndTheLiveRead)
 
     const FrameAsk resizing = askForFrame(*pane.fixture.session, { .isResizing = true });
     REQUIRE(resizing.supply.route != Runtime::FrameRoute::Captured);
+    CHECK(resizing.supply.decline == Runtime::FrameDecline::HeldByPresentation);
     pane.fixture.session->lockForRead();
     CHECK(pane.fixture.session->liveReadDecline(*pane.terminal, { .isResizing = true }).decline == Runtime::FrameDecline::BlockOpenUnderLock);
     CHECK(pane.fixture.session->liveReadDecline(*pane.terminal, {}).decline == Runtime::FrameDecline::BlockOpenUnderLock);
@@ -3095,6 +3154,9 @@ TEST(aHeldTickSaysWhenTheUpdatesBudgetRunsOut)
     const FrameAsk held = askForFrame(*pane.fixture.session, { .nowTicks = later });
     CHECK(held.supply.decline == Runtime::FrameDecline::HeldByPresentation);
     CHECK_EQ(held.supply.askAgainTicks, budget);
+    const FrameAsk heldResizing = askForFrame(*pane.fixture.session, { .nowTicks = later, .isResizing = true });
+    CHECK(heldResizing.supply.decline == Runtime::FrameDecline::HeldByPresentation);
+    CHECK_EQ(heldResizing.supply.askAgainTicks, budget);
 
     pane.fixture.session->lockForRead();
     const Runtime::LiveReadAnswer underLock = pane.fixture.session->liveReadDecline(*pane.terminal, { .nowTicks = later });
@@ -3199,4 +3261,5 @@ TEST(takingAFrameNeverWaitsForTheModelLockOutsideAnOpenBlock)
     CHECK_MSG(didFinish, "every tick answered while the drain held the model lock");
     REQUIRE(routes.size() == 4u);
     CHECK(routes[0] == Runtime::FrameRoute::Captured);
+    CHECK_MSG(routes[3] == Runtime::FrameRoute::Declined, "a resizing view awaits the owner's capture");
 }
