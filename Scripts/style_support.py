@@ -16,6 +16,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -153,8 +154,24 @@ class Run:
         return finished.returncode, finished.stdout.decode("utf-8", "replace")
 
     def gate(self, name, command, ok="all", bad="all", message=None):
-        """Run one gate through the verdict cache and report it."""
-        status, output = self.cache.run(name, self.resolve(command))
+        """Run one gate through the verdict cache and report it.
+
+        A gate that a signal ended gave no verdict: every gate prints one line
+        whichever way it decides, and a process killed before it flushed leaves
+        an empty section that reads as a failure with nothing to act on. It is
+        named as killed, by which signal, and run once more; a second death is
+        the failure. A gate that exits non-zero having printed nothing says so,
+        with its status, rather than leaving the section blank.
+        """
+        resolved = self.resolve(command)
+        status, output = self.cache.run(name, resolved)
+        if status < 0:
+            self.emit(killed_by(name, status) + "; running it once more")
+            status, output = self.cache.run(name, resolved)
+            if status < 0:
+                output = killed_by(name, status) + " again; no verdict"
+        elif status != 0 and not (output or b"").strip():
+            output = f"{name}: exited with status {status} and printed nothing"
         self.report(output, ok if status == 0 else bad)
         if status != 0:
             self.fail(message or None)
@@ -176,6 +193,15 @@ class Run:
             self.report("ok (this branch changes no file this reads)", ok)
             return 0
         return self.gate(name, command + subset, ok, bad)
+
+
+def killed_by(name, status):
+    """The line naming the signal that ended a gate, from subprocess's negative status."""
+    try:
+        signame = signal.Signals(-status).name
+    except ValueError:
+        signame = f"signal {-status}"
+    return f"{name}: killed by {signame} before it gave a verdict"
 
 
 def tracked(run, *patterns):

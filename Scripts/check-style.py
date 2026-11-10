@@ -27,15 +27,18 @@ tree.
 """
 
 
+import contextlib
 import fnmatch
 import glob
 import importlib.util
+import io
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import types
 
@@ -1469,6 +1472,33 @@ def _self_test():
     dangling = [row["gate"] for row in rows if not commandExists(row["command"])]
     check(f"every table row names a script that is there{'' if not dangling else f' ({dangling})'}",
           not dangling)
+
+    # A gate a signal ends gave no verdict, and its empty section must not read
+    # as a failure with nothing in it: the death is named, the gate runs once
+    # more, and a second death fails naming both. A gate that fails silently
+    # says so with its status. Driven through Run.gate with throwaway gates.
+    with tempfile.TemporaryDirectory() as scratch:
+        marker = os.path.join(scratch, "ran-once")
+        killedOnce = ["python3", "-c", "import os, signal, sys\n"
+                      f"if not os.path.exists({marker!r}):\n"
+                      f"    open({marker!r}, 'w').close(); os.kill(os.getpid(), signal.SIGKILL)\n"
+                      "print('throwaway: ok (second run)')"]
+        alwaysKilled = ["python3", "-c", "import os, signal; os.kill(os.getpid(), signal.SIGTERM)"]
+        silent = ["python3", "-c", "raise SystemExit(3)"]
+        probe = Run(None)
+        probe.cache.enabled = False
+        with contextlib.redirect_stdout(io.StringIO()) as shown:
+            recovered = probe.gate("throwaway", killedOnce)
+            twice = probe.gate("throwaway", alwaysKilled)
+            quiet = probe.gate("throwaway", silent)
+        printed = shown.getvalue()
+        check("a gate killed once is named and run again, and its second verdict stands",
+              recovered == 0 and "throwaway: killed by SIGKILL before it gave a verdict; running it once more" in printed
+              and "throwaway: ok (second run)" in printed)
+        check("a gate killed twice fails naming the signal",
+              twice != 0 and "throwaway: killed by SIGTERM before it gave a verdict again; no verdict" in printed)
+        check("a gate that fails silently says so with its status",
+              quiet == 3 and "throwaway: exited with status 3 and printed nothing" in printed)
 
     if failures:
         print(f"{GATE} --self-test: {len(failures)} claim(s) the runner does "
