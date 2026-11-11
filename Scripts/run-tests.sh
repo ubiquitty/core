@@ -5613,9 +5613,10 @@ if wanted input_mode_flip && command -v cmake >/dev/null 2>&1; then
 fi
 
 # input_settled_echo — a real program reads a key, sleeps 30 ms and echoes it;
-# no frame the daemon sends reports the key settled before it holds the echo,
-# and the key does settle (Docs/sync.md §6.7). Friend seam, same QUIC-OFF host
-# build as two_client_pacing.
+# no frame the daemon sends reports a key echoed within E settled before it
+# holds the echo, none reports a key settled sooner than E, and every key
+# settles (Docs/sync.md §6.7). Friend seam, same QUIC-OFF host build as
+# two_client_pacing.
 if wanted input_settled_echo && command -v cmake >/dev/null 2>&1; then
     echo "=== input_settled_echo ==="
     RAN=$((RAN + 1))
