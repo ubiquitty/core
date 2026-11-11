@@ -47,8 +47,8 @@ from pathlib import Path
 import sys
 state = Path(os.environ["DOCKER_TEST_STATE"])
 args = sys.argv[1:]
-if args == ["info"]:
-    pass
+if args[0] == "info":
+    print("[]")
 elif args[:2] == ["image", "inspect"]:
     if not state.exists():
         sys.exit(1)
