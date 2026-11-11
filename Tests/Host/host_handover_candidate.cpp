@@ -36,9 +36,15 @@ struct HandoverAccess {
         session.placement = { surface, workspace.layout.surface(surface)->tabs[0].id, workspace.paneFor(session.id) };
         session.screenSource = std::make_unique<Sync::PaneSource>(*session.term, Sync::ID128 { session.id, daemon.m_daemonInstanceID });
     }
+    // The daemon steps its quiesce at the later of the instant it is given and
+    // its own clock, so the freeze starts this far ahead of that clock: a
+    // loaded machine that stalls past the natural window (100 ms) between two
+    // steps would otherwise move the pane on by the real clock and not this one.
+    static constexpr std::uint64_t clockLeadMicroseconds = 60'000'000;
+
     static bool freeze(Daemon& daemon)
     {
-        const auto now = ScreenPlaneAccess::now();
+        const auto now = ScreenPlaneAccess::now() + clockLeadMicroseconds;
         if (!daemon.beginHandoverQuiesce(now))
             return false;
         daemon.serviceHandoverQuiesce(now);
