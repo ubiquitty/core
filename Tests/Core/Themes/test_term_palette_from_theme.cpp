@@ -97,8 +97,7 @@ TEST(testAnIndexNamingNoThemeChangesNothing)
     CHECK_MSG(!applyThemeToTerminal(terminal, Ubiquitty::Themes::count()),
         "one past the last theme names no theme");
 
-    CHECK_MSG(std::memcmp(&terminal.palette, &before, sizeof(before)) == 0,
-        "a refused apply leaves the palette exactly as it was");
+    CHECK_MSG(terminal.palette == before, "a refused apply leaves the palette exactly as it was");
 }
 
 TEST(testApplyingTakesTheBaselineWithIt)
@@ -113,8 +112,7 @@ TEST(testApplyingTakesTheBaselineWithIt)
     CHECK(applyThemeToTerminal(terminal, 0));
     // The baseline is what OSC 104/110-119 restore to. Left stale, a reset would
     // return the terminal to whatever theme was applied before this one.
-    CHECK_MSG(std::memcmp(&terminal.paletteBaseline, &terminal.palette, sizeof(terminal.palette)) == 0,
-        "the baseline is the palette that was just applied");
+    CHECK_MSG(terminal.paletteBaseline == terminal.palette, "the baseline is the palette that was just applied");
 }
 
 TEST(testApplyingAThemeLeavesTheCubeAlone)
