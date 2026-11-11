@@ -19,7 +19,9 @@ class SplitCatalogTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.base = Path(self.directory.name)
+        # Resolved, as the loader resolves the roots it is given: a temporary
+        # directory on macOS is reached through the /var symlink to /private/var.
+        self.base = Path(self.directory.name).resolve()
         self.core, self.kit, self.app = (self.base / name for name in ("core", "kit", "app"))
         for root, role in ((self.core, "core"), (self.kit, "kit"), (self.app, "app")):
             (root / "Scripts").mkdir(parents=True)
