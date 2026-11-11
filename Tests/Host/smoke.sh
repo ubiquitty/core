@@ -24,6 +24,8 @@
 #
 # Env:
 #   UBIQUITTY_HOST_BIN   path to ubiquitty-host (default: shared build root/host)
+#   UBIQUITTY_SMOKE_CLIENT a built ubq-host-smoke-client to run; without one
+#                         the client is built in UBIQUITTY_SMOKE_BUILD
 #   UBIQUITTY_SMOKE_BUILD Core CMake build directory for smoke_client
 #   UBIQUITTY_SMOKE_TMPDIR short temp root for Unix socket paths (default /tmp)
 #
@@ -38,7 +40,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$ROOT/Scripts/build-root.sh"
 HOST_BIN="${UBIQUITTY_HOST_BIN:-$UBQ_BUILD_ROOT/host/ubiquitty-host}"
 OUT="${UBIQUITTY_SMOKE_BUILD:-$UBQ_BUILD_ROOT/host-smoke}"
-CLIENT="$OUT/Tests/ubq-host-smoke-client"
+CLIENT="${UBIQUITTY_SMOKE_CLIENT:-$OUT/Tests/ubq-host-smoke-client}"
 
 fail() { echo "smoke: FAIL: $*" >&2; exit 1; }
 
@@ -57,12 +59,16 @@ printf '%s\n' "$host_version" \
 
 # The Core target supplies its generated headers and transitive dependencies.
 # The smoke client must link that same graph to exercise the real deserializer.
-echo "smoke: building smoke_client"
-cmake -S "$ROOT" -B "$OUT" -G Ninja \
-    -DUBIQUITTY_FRONTEND=Core -DUBIQUITTY_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug \
-    || fail "smoke_client configuration failed"
-cmake --build "$OUT" --target ubq-host-smoke-client -j "${UBQ_BUILD_JOBS:-4}" \
-    || fail "smoke_client did not compile"
+if [ -n "${UBIQUITTY_SMOKE_CLIENT:-}" ]; then
+    [ -x "$CLIENT" ] || fail "no smoke client at $CLIENT"
+else
+    echo "smoke: building smoke_client"
+    cmake -S "$ROOT" -B "$OUT" -G Ninja \
+        -DUBIQUITTY_FRONTEND=Core -DUBIQUITTY_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug \
+        || fail "smoke_client configuration failed"
+    cmake --build "$OUT" --target ubq-host-smoke-client -j "${UBQ_BUILD_JOBS:-4}" \
+        || fail "smoke_client did not compile"
+fi
 
 # --- isolated control dir ----------------------------------------------
 SMOKE_TMPDIR="${UBIQUITTY_SMOKE_TMPDIR:-/tmp}"

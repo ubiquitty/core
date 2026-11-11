@@ -3358,19 +3358,22 @@ fi
 
 # host_smoke — a session outlives its client: the built daemon is attached,
 # typed into, left and attached again through Tests/Host/smoke_client.cpp, and
-# a command's line rides its typed completion. The smoke builds its client in the
-# unit tests' tree, which is configured as it configures it. Skipped where
-# cmake is absent or the host cannot be built.
+# a command's line rides its typed completion. The client is the unit tests'
+# tree's ubq-host-smoke-client, which ctest's build fixture has built, so no
+# stanza builds a Core of its own for it. Skipped where cmake is absent or the
+# host cannot be built.
 if wanted host_smoke && command -v cmake >/dev/null 2>&1; then
     echo "=== host_smoke ==="
     if [ ! -f "$ROOT/Tests/Host/smoke.sh" ] || [ ! -f "$ROOT/Tests/Host/smoke_client.cpp" ]; then
         build_broken "host_smoke: the smoke or its client is missing from Tests/Host"
-    elif HOST_BINARY="$(ubq_host_binary "$OUT/host-smoke-host-build.log")"; then
-        RAN=$((RAN + 1))
-        ubq_run_bounded 600 env UBIQUITTY_HOST_BIN="$HOST_BINARY" UBIQUITTY_SMOKE_BUILD="$CTEST_BUILD_DIR" UBQ_BUILD_JOBS="$BUILD_JOBS" \
-            bash "$ROOT/Tests/Host/smoke.sh" || exit 1
-    else
+    elif ! HOST_BINARY="$(ubq_host_binary "$OUT/host-smoke-host-build.log")"; then
         build_broken "host_smoke Host build failed (see $OUT/host-smoke-host-build.log)"
+    elif ! ubq_build_test ubq-host-smoke-client "$OUT/ubq-host-smoke-client" "$OUT/host-smoke-client-build.log"; then
+        build_broken "host_smoke: the smoke client did not build (see $OUT/host-smoke-client-build.log)"
+    else
+        RAN=$((RAN + 1))
+        ubq_run_bounded 600 env UBIQUITTY_HOST_BIN="$HOST_BINARY" UBIQUITTY_SMOKE_CLIENT="$OUT/ubq-host-smoke-client" \
+            bash "$ROOT/Tests/Host/smoke.sh" || exit 1
     fi
 fi
 
@@ -3382,12 +3385,14 @@ if wanted host_soak && command -v cmake >/dev/null 2>&1; then
     echo "=== host_soak ==="
     if [ ! -f "$ROOT/Tests/Host/soak.sh" ] || [ ! -f "$ROOT/Tests/Host/smoke_client.cpp" ]; then
         build_broken "host_soak: the soak or its client is missing from Tests/Host"
-    elif HOST_BINARY="$(ubq_host_binary "$OUT/host-soak-host-build.log")"; then
-        RAN=$((RAN + 1))
-        ubq_run_bounded 900 env UBIQUITTY_HOST_BIN="$HOST_BINARY" UBIQUITTY_SMOKE_BUILD="$CTEST_BUILD_DIR" UBQ_BUILD_JOBS="$BUILD_JOBS" \
-            bash "$ROOT/Tests/Host/soak.sh" || exit 1
-    else
+    elif ! HOST_BINARY="$(ubq_host_binary "$OUT/host-soak-host-build.log")"; then
         build_broken "host_soak Host build failed (see $OUT/host-soak-host-build.log)"
+    elif ! ubq_build_test ubq-host-smoke-client "$OUT/ubq-host-smoke-client" "$OUT/host-soak-client-build.log"; then
+        build_broken "host_soak: the smoke client did not build (see $OUT/host-soak-client-build.log)"
+    else
+        RAN=$((RAN + 1))
+        ubq_run_bounded 900 env UBIQUITTY_HOST_BIN="$HOST_BINARY" UBIQUITTY_SMOKE_CLIENT="$OUT/ubq-host-smoke-client" \
+            bash "$ROOT/Tests/Host/soak.sh" || exit 1
     fi
 fi
 
