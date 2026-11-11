@@ -55,15 +55,16 @@ mode == "host" || mode == "agent" || mode == "quic" {
     next
 }
 
+# Every available stanza with the shape, once each, in declaration order.
 mode == "shape" {
     declaration = stanzaName($0)
     if (declaration != "") {
         name = declaration
         if (!stanzaIsAvailable($0, platform) || name ~ /_fixture$/) { name = ""; next }
-        if (want == "@inline" && $0 ~ /^[ \t]*build_and_run /) { print name; exit }
+        if (want == "@inline" && $0 ~ /^[ \t]*build_and_run /) { print name; name = "" }
         next
     }
-    if (name != "" && want != "@inline" && $0 ~ want) { print name; exit }
+    if (name != "" && want != "@inline" && $0 ~ want) { print name; name = "" }
 }
 
 END {
