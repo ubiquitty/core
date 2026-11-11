@@ -3460,6 +3460,19 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         self.assertEqual(rows[1]["subject"], str(self.kit))
         self.assertEqual(rows[1]["kit"], str(self.kit))
 
+    def test_a_consumer_sanitizes_cores_suite_from_cores_tree(self):
+        self.tool(self.core, "Scripts/run-sanitized-tests.sh", "core-sanitizers")
+        for subject, kit in ((self.kit, self.kit), (self.app, self.kit)):
+            with self.subTest(subject=subject.name):
+                self.log.unlink(missing_ok=True)
+                context = source_roots(subject, core=self.core, kit=kit, environment={})
+                stage = batteries.source_stages("linux", context, ("sanitizers",))[0]
+                self.assertEqual(batteries.execute_stage(stage, self.environment(context)), 0)
+                rows = [json.loads(line) for line in self.log.read_text().splitlines()]
+                self.assertEqual([row["label"] for row in rows], ["core-sanitizers"])
+                self.assertEqual((rows[0]["subject"], rows[0]["core"]), (str(self.core), str(self.core)))
+                self.assertFalse(rows[0]["kit"])
+
     def test_consumer_owned_driver_is_not_replaced_with_the_shared_implementation(self):
         self.tool(self.app, "Scripts/run-tests.sh", "app-tests")
         context = source_roots(self.app, environment={})
