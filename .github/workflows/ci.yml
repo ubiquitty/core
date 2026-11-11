@@ -163,8 +163,11 @@ jobs:
           - group: gcc
             stages: --only setup --only quic --only host-tests --only portable-build --only portable-snapshots --only host-glibc --only agent-smokes --only host-musl
             families: ""
+          # The Linux pgo stage is not hosted (Stage.hosted): its profile is
+          # stamped with the image it was trained in, which this runner never
+          # has.
           - group: clang
-            stages: --only setup --only quic --only fuzz --only pgo --only sanitizers
+            stages: --only setup --only quic --only fuzz --only sanitizers
             families: ""
           # The host, ubq and the test tree built with Clang, then every tree
           # checked to have compiled with UBIQUITTY_OWNERSHIP_ANALYSIS on; a
