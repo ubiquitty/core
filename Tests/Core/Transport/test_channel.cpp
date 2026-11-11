@@ -152,6 +152,87 @@ TEST(subprocessDiagnosticsRemainBoundedAndSeparate)
     channel.stop();
 }
 
+// A channel whose output has already ended behind a pipe of diagnostics, which
+// is what a child that failed after a long stderr stream leaves for the loop's
+// first wake after it exits: both are ready at once, and the stream ends with
+// the cause.
+class EndedBehindDiagnosticsChannel final : public PollChannel {
+public:
+    explicit EndedBehindDiagnosticsChannel(std::string diagnostics)
+        : PollChannel(daemonOrigin("local"))
+        , m_diagnostics(std::move(diagnostics))
+    {
+    }
+
+    ~EndedBehindDiagnosticsChannel() override { stop(); }
+
+    std::string description() const override { return "ended behind diagnostics"; }
+
+    // Read after onClose, which the I/O thread delivers after openTransport.
+    std::size_t queuedDiagnosticBytes() const { return m_queuedDiagnosticBytes; }
+
+protected:
+    bool openTransport(std::unique_ptr<Ubiquitty::PAL::PollableByteStream>& readStream,
+        std::unique_ptr<Ubiquitty::PAL::PollableByteStream>& writeStream, std::string& error) override
+    {
+        int diagnosticPipe[2] = { -1, -1 };
+        if (::pipe(diagnosticPipe) != 0) {
+            error = "pipe failed";
+            return false;
+        }
+        // One write into the empty pipe, so a kernel that grows a pipe for a
+        // large write grows it before anything is queued.
+        ::fcntl(diagnosticPipe[1], F_SETFL, ::fcntl(diagnosticPipe[1], F_GETFL) | O_NONBLOCK);
+        while (m_queuedDiagnosticBytes < m_diagnostics.size()) {
+            const ssize_t written = ::write(diagnosticPipe[1], m_diagnostics.data() + m_queuedDiagnosticBytes, m_diagnostics.size() - m_queuedDiagnosticBytes);
+            if (written <= 0)
+                break;
+            m_queuedDiagnosticBytes += static_cast<std::size_t>(written);
+        }
+        ::close(diagnosticPipe[1]);
+        setDiagnosticStream(Ubiquitty::PAL::adoptByteStream(diagnosticPipe[0], Ubiquitty::PAL::ReadinessWaitStrategy::ProbeBeforeWait));
+
+        int pair[2] = { -1, -1 };
+        if (::socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) {
+            error = "socketpair failed";
+            return false;
+        }
+        ::close(pair[1]);
+        readStream = Ubiquitty::PAL::adoptByteStream(pair[0], Ubiquitty::PAL::ReadinessWaitStrategy::WaitFirst);
+        if (!readStream) {
+            error = "could not adopt the socketpair endpoint";
+            return false;
+        }
+        writeStream = readStream->duplicateAsPollableStream();
+        if (!writeStream) {
+            error = "could not duplicate the socketpair endpoint";
+            readStream.reset();
+            return false;
+        }
+        return true;
+    }
+
+private:
+    std::string m_diagnostics;
+    std::size_t m_queuedDiagnosticBytes = 0;
+};
+
+TEST(aCloseReasonEndsWithTheCauseBehindAFullDiagnosticPipe)
+{
+    std::string diagnostics;
+    while (diagnostics.size() < 48 * 1024)
+        diagnostics += "debug1: a verbose line from a client before it gives up\n";
+    diagnostics += "Permission denied (publickey).";
+    EndedBehindDiagnosticsChannel channel(diagnostics);
+    Collector collector;
+    CHECK(channel.start(&collector));
+    CHECK(collector.waitClosed(5000));
+    CHECK_MSG(channel.queuedDiagnosticBytes() == diagnostics.size(), "the pipe held every diagnostic before the loop woke");
+    CHECK(collector.closeReason().ends_with("Permission denied (publickey)."));
+    CHECK(collector.closeReason().size() <= 4200);
+    channel.stop();
+}
+
 // ---- SubprocessChannel: a child that exits drops the channel ----
 TEST(test_subprocess_drop)
 {
