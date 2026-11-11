@@ -24,9 +24,12 @@
 
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <span>
 #include <string>
@@ -63,6 +66,36 @@ bool openBound(BoundSocket& out)
     return ::fcntl(out.descriptor, F_SETFL, ::fcntl(out.descriptor, F_GETFL, 0) | O_NONBLOCK) == 0;
 }
 
+// Reads through the fill until `wanted` datagrams have arrived, waiting for the
+// socket to become readable between fills rather than spinning a fixed number
+// of reads: a sent datagram is not always readable on the loopback when the send
+// returns, and how soon it is is not these cases' question. The deadline only
+// bounds a case whose datagrams never arrive.
+//
+// - Returns: The count each fill that returned datagrams returned.
+std::vector<int> drainDatagrams(int descriptor, std::size_t wanted, std::vector<std::string>& received)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    std::vector<int> fills;
+    while (received.size() < wanted) {
+        DatagramBatch batch;
+        const int count = fillDatagramBatch(descriptor, batch);
+        if (count < 0) {
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+            if (remaining <= 0)
+                break;
+            pollfd entry { descriptor, POLLIN, 0 };
+            if (::poll(&entry, 1, static_cast<int>(remaining)) < 0 && errno != EINTR)
+                break;
+            continue;
+        }
+        fills.push_back(count);
+        for (int slot = 0; slot < count && slot < datagramBatchSize; ++slot)
+            received.emplace_back(reinterpret_cast<const char*>(batch.storage[slot].data()), batch.length[slot]);
+    }
+    return fills;
+}
+
 } // namespace
 
 TEST(datagramBatchReadsWhatWasQueued)
@@ -89,17 +122,11 @@ TEST(datagramBatchReadsWhatWasQueued)
 
     // Drain through the fill, however many calls that takes.
     std::vector<std::string> received;
-    int fills = 0;
-    for (int attempt = 0; attempt < 64 && static_cast<int>(received.size()) < queued; ++attempt) {
-        DatagramBatch batch;
-        const int count = fillDatagramBatch(receiver.descriptor, batch);
-        if (count < 0)
-            continue; // the send has not landed yet; loopback is not instant
-        ++fills;
+    const std::vector<int> counts = drainDatagrams(receiver.descriptor, queued, received);
+    const int fills = static_cast<int>(counts.size());
+    for (const int count : counts) {
         CHECK(count > 0); // zero would leave a caller's drain loop with two exits
         CHECK(count <= datagramBatchSize);
-        for (int slot = 0; slot < count; ++slot)
-            received.emplace_back(reinterpret_cast<const char*>(batch.storage[slot].data()), batch.length[slot]);
     }
 
     // Every datagram, in order, whole.
@@ -170,14 +197,7 @@ TEST(datagramSendBatchDeliversWhatWasQueued)
 
     // Every packet arrived, in order, whole.
     std::vector<std::string> received;
-    for (int attempt = 0; attempt < 64 && static_cast<int>(received.size()) < queued; ++attempt) {
-        DatagramBatch inbound;
-        const int count = fillDatagramBatch(receiver.descriptor, inbound);
-        if (count < 0)
-            continue;
-        for (int slot = 0; slot < count; ++slot)
-            received.emplace_back(reinterpret_cast<const char*>(inbound.storage[slot].data()), inbound.length[slot]);
-    }
+    drainDatagrams(receiver.descriptor, queued, received);
     CHECK(received.size() == sent.size());
     for (std::size_t index = 0; index < received.size() && index < sent.size(); ++index) {
         CHECK(received[index].size() == sent[index].size());
