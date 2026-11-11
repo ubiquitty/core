@@ -43,10 +43,10 @@ shape() { # <description> <stanza>
 # prints the stanza it used, which is what lets a reader tell the two apart —
 # and a representative that rots produces a red row about nothing at all.
 #
-# `first_stanza_of` reports the first stanza matching a shape, tracking the
-# enclosing stanza name so a match inside a body is attributed to the stanza it
-# is in rather than to the last one declared.
-first_stanza_of() { # <awk pattern matching a line inside the body>
+# `stanzas_of` reports every stanza matching a shape, in declaration order,
+# tracking the enclosing stanza name so a match inside a body is attributed to
+# the stanza it is in rather than to the last one declared.
+stanzas_of() { # <awk pattern matching a line inside the body>
     local declared=(Scripts/run-tests.sh) file
     for file in Scripts/run-tests-stanzas-*.sh; do
         [ -f "$file" ] && declared+=("$file")
@@ -56,7 +56,30 @@ first_stanza_of() { # <awk pattern matching a line inside the body>
         "${declared[@]}"
 }
 
-echo "test-driver-shapes: one stanza per build route"
+# The stanzas the suite runs under the timing lock, read from the registration
+# itself so the two cannot drift: a test named in a set_tests_properties call
+# whose RESOURCE_LOCK holds `timing`, and a stanza whose
+# shell_<stanza>_RESOURCE_LOCK does. Such a stanza bounds the wall clock and
+# runs alone in the suite; run here beside the rest, a red row would be about
+# its timing and not its route, so it is never a route's example.
+timing_locked_stanzas() {
+    local sources=() file
+    while IFS= read -r file; do
+        sources+=("$file")
+    done < <(find Tests Scripts/cmake \( -name CMakeLists.txt -o -name '*.cmake' \) -type f 2>/dev/null | sort)
+    [ "${#sources[@]}" -gt 0 ] || return 0
+    cat "${sources[@]}" | tr '\n' ' ' \
+        | grep -oE 'set_tests_properties\([^)]*\)|(set|list)\([^)]*shell_[A-Za-z0-9_]+_RESOURCE_LOCK[^)]*\)' \
+        | awk -f Scripts/stanza-timing-locks.awk | sort -u
+}
+
+LIST_ROUTES=0
+[ "${1:-}" = "--routes" ] && LIST_ROUTES=1
+TIMING_LOCKED=" $(timing_locked_stanzas | tr '\n' ' ') "
+
+if [ "$LIST_ROUTES" -eq 0 ]; then
+    echo "test-driver-shapes: one stanza per build route"
+fi
 SHAPES=0
 
 # A shape with no stanza left is an error, not a skip. Deriving from an empty
@@ -72,13 +95,34 @@ for pair in \
     SHAPES=$((SHAPES + 1))
     what="${pair%%:*}"
     pattern="${pair#*:}"
-    stanza="$(first_stanza_of "$pattern")"
+    stanza=""
+    locked=""
+    while IFS= read -r candidate; do
+        [ -n "$candidate" ] || continue
+        if [[ "$TIMING_LOCKED" == *" $candidate "* ]]; then
+            locked+="${locked:+ }$candidate"
+            continue
+        fi
+        stanza="$candidate"
+        break
+    done < <(stanzas_of "$pattern")
     # The inline route is the driver's helper for a stanza that names its sources
     # on one line. Its stanzas are the other repositories' (their own files under
     # Scripts/run-tests-stanzas-*.sh), so a checkout without them has no example
     # of the route to build, and says so rather than passing it.
     if [ -z "$stanza" ] && [ "$what" = "inline" ] && ! ls Scripts/run-tests-stanzas-*.sh >/dev/null 2>&1; then
         echo "test-driver-shapes: SKIPPED — no stanza of this checkout builds inline; the route's examples are in the stanza files of the repositories that hold them" >&2
+        continue
+    fi
+    if [ -z "$stanza" ] && [ -n "$locked" ]; then
+        if [ "$LIST_ROUTES" -eq 1 ]; then
+            echo "$what UNPROVEN"
+        else
+            echo "  FAILED   the $what route is unproven: every stanza with its shape" >&2
+            echo "           runs under the timing lock ($locked), and none of them" >&2
+            echo "           can prove the route beside the rest of the suite." >&2
+        fi
+        FAILURES=$((FAILURES + 1))
         continue
     fi
     if [ -z "$stanza" ]; then
@@ -89,8 +133,18 @@ for pair in \
         FAILURES=$((FAILURES + 1))
         continue
     fi
+    if [ "$LIST_ROUTES" -eq 1 ]; then
+        echo "$what $stanza"
+        continue
+    fi
     shape "$what" "$stanza"
 done
+
+# --routes names each route's example, or UNPROVEN, without running any.
+if [ "$LIST_ROUTES" -eq 1 ]; then
+    [ "$FAILURES" -eq 0 ]
+    exit
+fi
 
 echo
 if [ "$FAILURES" -ne 0 ]; then
