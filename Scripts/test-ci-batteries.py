@@ -3512,6 +3512,8 @@ class SourceCompositionBatteryTests(unittest.TestCase):
 
     def ci_image_fixture(self):
         script = self.install_shared_shell_helper("ci-linux-image.sh")
+        # The image carries the pinned clang-format, read from the Core's pin file.
+        shutil.copyfile(batteries.ROOT / "Scripts/clang-format-pin", self.core / "Scripts/clang-format-pin")
         recipe = self.core / "Scripts/run-linux.sh"
         recipe.write_text('#!/bin/sh\n[ "$UBIQUITTY_LINUX_ROOT" = "$UBQ_TESTS_ROOT" ] || exit 93\nprintf "FROM fixture\\n"\n')
         recipe.chmod(0o755)
