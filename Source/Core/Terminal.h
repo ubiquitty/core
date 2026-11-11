@@ -1870,8 +1870,10 @@ inline void setAnswerbackString(Ubiquitty::Terminal& term, std::string_view valu
 
 // A Terminal is per pane and per host session, so its size is per-session
 // memory. The ceiling makes re-inlining bulk storage a compile error; the
-// headers named below carry the reasoning for their own share.
-static_assert(sizeof(Ubiquitty::Terminal) <= 176 * 1024,
+// headers named below carry the reasoning for their own share. It sits about
+// a kibibyte above the largest layout a supported toolchain gives (GCC's
+// libstdc++), so a field or two fits under it and an inlined array does not.
+static_assert(sizeof(Ubiquitty::Terminal) <= 177 * 1024,
     "sizeof(Terminal) crossed its ceiling — see Core/Attributes/Hyperlinks.h, "
     "Core/Rendering/StatusRow.h, Core/VT/SoftFont.h and Core/VT/UserDefinedKeys.h "
     "for why bulk storage is held by pointer");
