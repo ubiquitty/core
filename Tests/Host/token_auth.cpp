@@ -513,8 +513,24 @@ int main(int argc, char** argv)
             fail("could not make the token store unreadable");
             break;
         }
+        // Mode bits stop only a reader that cannot override them; root in a
+        // CI container still reads a mode-0 file. For such a reader a FIFO
+        // takes the store's place, which no reader takes for a store.
+        const std::string setAsidePath = tokensPath + ".set-aside";
+        std::FILE* probe = std::fopen(tokensPath.c_str(), "r");
+        const bool isReadableDespiteMode = probe != nullptr;
+        if (probe)
+            std::fclose(probe);
+        if (isReadableDespiteMode && (::rename(tokensPath.c_str(), setAsidePath.c_str()) != 0 || ::mkfifo(tokensPath.c_str(), 0600) != 0)) {
+            fail("could not put a FIFO in the token store's place");
+            break;
+        }
         (void)sendInput(unreadable, "true\r");
         const bool didEndUnreadable = receivesBye(unreadable, Sync::ByeReason::TokenRevoked, 3000);
+        if (isReadableDespiteMode) {
+            (void)::unlink(tokensPath.c_str());
+            (void)::rename(setAsidePath.c_str(), tokensPath.c_str());
+        }
         (void)::chmod(tokensPath.c_str(), 0600);
         if (!didEndUnreadable) {
             fail("a store that cannot be read should end every live token-bound connection");
