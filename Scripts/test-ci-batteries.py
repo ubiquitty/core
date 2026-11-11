@@ -279,6 +279,14 @@ class BatteryTests(unittest.TestCase):
         with patch.object(batteries.subprocess, "check_output", return_value="/apple"):
             apple = batteries.platform_environment("apple", {"RUNNER_TEMP": "/temporary"})
         self.assertEqual(apple["UBQ_TEST_FAIL_FAST"], "1")
+        # A hosted Mac takes the pinned clang-format from its tool cache; a
+        # maintainer's Mac, with no tool cache, keeps its own PATH.
+        self.assertEqual(apple.get("PATH"), None)
+        pin = (batteries.ROOT / "Scripts/clang-format-pin").read_text(encoding="utf-8").strip()
+        with patch.object(batteries.subprocess, "check_output", return_value="/apple"):
+            hosted = batteries.platform_environment("apple", {"RUNNER_TEMP": "/temporary", "RUNNER_TOOL_CACHE": "/tools",
+                                                              "PATH": "/bin"})
+        self.assertEqual(hosted["PATH"], f"/tools/clang-format-{pin}/bin" + os.pathsep + "/bin")
 
     def test_linux_vulkan_is_lavapipe_unless_the_machine_names_its_own_driver(self):
         base = {"RUNNER_WORKSPACE": "/runner", "RUNNER_TEMP": "/temporary",

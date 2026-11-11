@@ -104,6 +104,24 @@ fi
 ./Scripts/install-hooks.sh
 '''
 
+# The pinned clang-format for a battery whose subject may be the Kit or the app,
+# which carry neither the pin file nor ci-toolchain.sh: check-style's format
+# section and the library-roots consumer run it on a hosted Mac, where nothing
+# else installs it. platform_environment puts the venv first on PATH. A Mac
+# with no runner tool cache is a maintainer's, which keeps the pinned
+# clang-format its hooks already require.
+APPLE_CLANG_FORMAT_SETUP = r'''
+if [ -n "${RUNNER_TOOL_CACHE:-}" ]; then
+    pin="$(tr -d '[:space:]' < "$UBQ_CORE_ROOT/Scripts/clang-format-pin")"
+    venv="$RUNNER_TOOL_CACHE/clang-format-$pin"
+    if ! "$venv/bin/clang-format" --version 2>/dev/null | grep -q "version $pin\\."; then
+        python3 -m venv "$venv"
+        "$venv/bin/pip" install --quiet --disable-pip-version-check "clang-format==$pin.*"
+    fi
+    "$venv/bin/clang-format" --version
+fi
+'''
+
 LINUX_SETUP = r'''
 tools=(cmake ninja g++ make pkg-config)
 if [ "$UBQ_CI_CODE" = true ]; then tools+=(clang llvm-profdata); fi
@@ -214,7 +232,7 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
         )
     if platform == "apple":
         return (
-            Stage("setup", "Apple tools and hooks", "command -v ninja >/dev/null 2>&1 || brew install ninja\ncommand -v go >/dev/null 2>&1 || brew install go\ncommand -v tmux >/dev/null 2>&1 || brew install tmux\ncommand -v chafa >/dev/null 2>&1 || brew install chafa\n./Scripts/install-hooks.sh"),
+            Stage("setup", "Apple tools and hooks", APPLE_CLANG_FORMAT_SETUP + "command -v ninja >/dev/null 2>&1 || brew install ninja\ncommand -v go >/dev/null 2>&1 || brew install go\ncommand -v tmux >/dev/null 2>&1 || brew install tmux\ncommand -v chafa >/dev/null 2>&1 || brew install chafa\n./Scripts/install-hooks.sh"),
             Stage("swift-format", "Swift formatting", "./Scripts/format-code.sh --check --swift-only"),
             Stage("xcode", "Xcode workspace generation", "./Scripts/generate-xcode-workspace.sh", "cmake", repositories=("app",)),
             Stage("quic", "QUIC dependencies", './Scripts/ensure-quic-deps.sh "$UBIQUITTY_QUIC_PREFIX"', "code"),
@@ -310,10 +328,11 @@ def platform_environment(platform, environment, context=None):
     result["UBQ_RESULT_DIR"] = str(result_directory(platform, result))
     result["UBQ_EVENT_LOG"] = str(Path(result["UBQ_RESULT_DIR"]) / "events.jsonl")
     result["UBQ_BATTERY"] = platform
-    if platform == "preflight":
+    if platform == "preflight" or (platform == "apple" and result.get("RUNNER_TOOL_CACHE")):
         owner = context.core if context else ROOT
         pin = (owner / "Scripts/clang-format-pin").read_text(encoding="utf-8").strip()
         result["PATH"] = str(Path(result["RUNNER_TOOL_CACHE"]) / f"clang-format-{pin}/bin") + os.pathsep + result.get("PATH", "")
+    if platform == "preflight":
         return result
     result["UBQ_TEST_FAIL_FAST"] = "1"
     result["CCACHE_STATSLOG"] = str(Path(result["RUNNER_TEMP"]) / "ccache-stats.log")
