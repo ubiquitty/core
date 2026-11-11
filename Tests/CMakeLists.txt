@@ -562,6 +562,15 @@ if(TEST test_sync_handles)
     set_tests_properties(test_sync_handles PROPERTIES TIMEOUT 300)
 endif()
 
+# test_sync_corpus_oracle replays every Sync corpus entry through a whole
+# loopback link on a simulated clock, so nothing it asserts reads wall time. It
+# takes about 11 seconds alone on hub (Linux Debug, CPU-bound) and ran past the
+# shared 60-second bound on the hosted three-core macOS runner beside the rest
+# of the suite. It takes test_sync_handles' bound for the same reason.
+if(TEST test_sync_corpus_oracle)
+    set_tests_properties(test_sync_corpus_oracle PROPERTIES TIMEOUT 300)
+endif()
+
 # test_flood_start bounds how soon the drain captures a flood's first frame on
 # the wall clock, so it runs with no other test competing for the cores.
 if(TEST test_flood_start)
