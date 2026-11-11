@@ -318,9 +318,14 @@ int main(int argc, char** argv)
         didInject = true;
     }
 
+    // The transfer finishing and the client reading the stranger's datagrams
+    // are independent events: its loop reads them whenever they arrive, so the
+    // refusal is waited for as the transfer is, not read the moment the
+    // transfer is done. A filter that never fires still leaves the count at 0.
     int rc = 1;
     for (int i = 0; i < 500; ++i) { // isDaemonReady to ~5s
-        if (done.load()) {
+        const bool isRefusalSeen = !didInject || Ubiquitty::Transport::LocalEndpointAccess::foreignDatagramsDropped(client) > 0;
+        if (done.load() && isRefusalSeen) {
             rc = 0;
             break;
         }
