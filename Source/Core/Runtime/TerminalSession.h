@@ -6836,10 +6836,12 @@ public:
     ///    waits for it: ``FrameDecline::AwaitingCapture``, woken by its
     ///    publication. Any other pane has no turn but its caller's, so the
     ///    asking thread serves the demand itself, before step 3, and takes
-    ///    what it captured (``serveFrameDemandHere``).
+    ///    what it captured (``serveFrameDemandHere``); one it could not serve
+    ///    now, its model held by another thread, is declined
+    ///    ``FrameDecline::AwaitingCapture`` and asked again next tick, since
+    ///    nothing else will wake the view.
     /// 6. Otherwise the view reads the model: ``FrameRoute::LiveRead``. A view
-    ///    keeping search live, one whose captures are not armed, and one of a
-    ///    pane no loop drains whose model another thread holds still do.
+    ///    keeping search live and one whose captures are not armed still do.
     ///
     /// Reads published state only, with two exceptions: while a synchronized
     /// update is open in a remote replica or a fed pane, step 3 judges the
@@ -6894,6 +6896,11 @@ public:
         }
         if (!demand.keepsSearchLive && (shouldSkipLiveReadForSaturation() || (isLaneServed && hasOwnerLoop))) {
             supply.decline = isOwnerStalled() ? FrameDecline::OwnerStalled : FrameDecline::AwaitingCapture;
+            return nullptr;
+        }
+        if (!demand.keepsSearchLive && isLaneServed) {
+            supply.decline = FrameDecline::AwaitingCapture;
+            supply.askAgainTicks = 1;
             return nullptr;
         }
         supply.route = FrameRoute::LiveRead;

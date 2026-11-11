@@ -3398,9 +3398,10 @@ TEST(aHeldTickSaysWhenTheUpdatesBudgetRunsOut)
 }
 
 // A saturated drain's tick that finds the slot empty inside the publish window,
-// while the drain holds the model on its own thread, awaits the next capture;
-// past the window, a pane no ingest loop drains reads the model, as a view
-// drawing search matches does.
+// while the drain holds the model on its own thread, awaits the next capture,
+// which wakes the view; past the window, a pane no ingest loop drains, which
+// nothing else will serve, asks again next tick. A view drawing search matches
+// reads the model.
 TEST(aSaturatedTickInsideThePublishWindowAwaitsTheNextCapture)
 {
     FloodedPane pane(6, 20);
@@ -3411,7 +3412,7 @@ TEST(aSaturatedTickInsideThePublishWindowAwaitsTheNextCapture)
     struct Asks {
         Runtime::FrameSupply awaiting;
         Runtime::FrameRoute searching = Runtime::FrameRoute::Declined;
-        Runtime::FrameRoute late = Runtime::FrameRoute::Declined;
+        Runtime::FrameSupply late;
     };
     TerminalSession& session = *pane.fixture.session;
     session.lockForRead();
@@ -3420,7 +3421,7 @@ TEST(aSaturatedTickInsideThePublishWindowAwaitsTheNextCapture)
         asks.awaiting = askForFrame(session, {}).supply;
         asks.searching = askForFrame(session, { .keepsSearchLive = true }).supply.route;
         PAL::s_testMicroseconds += publishWindowMicroseconds;
-        asks.late = askForFrame(session, {}).supply.route;
+        asks.late = askForFrame(session, {}).supply;
         return asks;
     });
     const bool didFinish = asking.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
@@ -3431,7 +3432,35 @@ TEST(aSaturatedTickInsideThePublishWindowAwaitsTheNextCapture)
     CHECK(asks.awaiting.decline == Runtime::FrameDecline::AwaitingCapture);
     CHECK_MSG(asks.awaiting.askAgainTicks == 0, "the capture's publication wakes the view, so it waits out no budget");
     CHECK(asks.searching == Runtime::FrameRoute::LiveRead);
-    CHECK(asks.late == Runtime::FrameRoute::LiveRead);
+    CHECK(asks.late.route == Runtime::FrameRoute::Declined);
+    CHECK(asks.late.decline == Runtime::FrameDecline::AwaitingCapture);
+    CHECK_EQ(asks.late.askAgainTicks, 1u);
+}
+
+// A pane no ingest loop drains, whose model another thread holds when its
+// view asks, is declined and asked again next tick rather than read: the
+// asking thread cannot serve it now and nothing else will. The next ask,
+// with the model free, is served.
+TEST(aFedPaneWhoseModelIsHeldElsewhereAsksAgainNextTick)
+{
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    TerminalSession& session = *fixture.session;
+    session.setSyncFrameCaptureGeometry(testGeometry());
+    fixture.drainSyncFrame("shown");
+    REQUIRE(TakenFrame(session.takeSyncFrame()));
+
+    session.lockForRead();
+    auto asking = std::async(std::launch::async, [&session] { return askForFrame(session, {}).supply; });
+    const bool didFinish = asking.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    session.unlockForRead();
+    const Runtime::FrameSupply held = asking.get();
+    REQUIRE(didFinish);
+    CHECK(held.route == Runtime::FrameRoute::Declined);
+    CHECK(held.decline == Runtime::FrameDecline::AwaitingCapture);
+    CHECK_EQ(held.askAgainTicks, 1u);
+
+    CHECK(askForFrame(session, {}).supply.route == Runtime::FrameRoute::Captured);
 }
 
 // A view that asks for a frame over a screen nothing changes, as one whose
