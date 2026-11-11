@@ -194,7 +194,6 @@ int main(int argc, char** argv)
     // Valid at the handshake and lapsed a few seconds into the connection, which
     // is the only way to see expiry bind a live connection rather than a Greet.
     const std::string lapsingToken = "lapsing-token-lapsing-token-lapsing";
-    const std::uint64_t lapsesAt = static_cast<std::uint64_t>(::time(nullptr)) + 3;
     // Revoked by a program the daemon will not take a reload request from.
     const std::string strandedToken = "stranded-token-stranded-token-stranded";
     // Holds standing consent until another owner withdraws it from the store.
@@ -207,16 +206,14 @@ int main(int argc, char** argv)
     const std::uint8_t fullScope = scopeObserve | scopeDrive | scopeNewSession;
     const std::uint8_t observeScope = scopeObserve | scopeNewSession; // no drive
     const std::uint8_t attachOnlyScope = scopeObserve; // no drive, no new-session
+    const std::string tokensPath = macHome + "/tokens";
     {
-        std::string tokensPath = macHome + "/tokens";
         FILE* file = std::fopen(tokensPath.c_str(), "w");
         if (!file)
             return 1;
         std::fprintf(file, "%s %u 0 full\n", Ubiquitty::Crypto::sha256Hex(fullToken).c_str(), static_cast<unsigned>(fullScope));
         std::fprintf(file, "%s %u 0 observe\n", Ubiquitty::Crypto::sha256Hex(observeToken).c_str(), static_cast<unsigned>(observeScope));
         std::fprintf(file, "%s %u 0 attach\n", Ubiquitty::Crypto::sha256Hex(attachOnlyToken).c_str(), static_cast<unsigned>(attachOnlyScope));
-        std::fprintf(file, "%s %u %llu lapsing\n", Ubiquitty::Crypto::sha256Hex(lapsingToken).c_str(), static_cast<unsigned>(fullScope),
-            static_cast<unsigned long long>(lapsesAt));
         std::fprintf(file, "%s %u 0 stranded\n", Ubiquitty::Crypto::sha256Hex(strandedToken).c_str(), static_cast<unsigned>(fullScope));
         std::fprintf(file, "%s %u 0 standing\n", Ubiquitty::Crypto::sha256Hex(standingToken).c_str(), static_cast<unsigned>(observeScope));
         std::fprintf(file, "%s %u 0 pasting\n", Ubiquitty::Crypto::sha256Hex(pastingToken).c_str(), static_cast<unsigned>(fullScope));
@@ -337,6 +334,25 @@ int main(int argc, char** argv)
         // store does not change when a record lapses, so nothing but the
         // connection's own deadline notices; without it this client keeps its
         // full scope for as long as it stays connected.
+        //
+        // The record is written here rather than seeded, so its life is counted
+        // from this handshake and not from before the daemon started: whole
+        // seconds plus four outlast the 3 s the Welcome is given, however long
+        // the start and the legs before took.
+        {
+            const std::uint64_t lapsesAt = static_cast<std::uint64_t>(::time(nullptr)) + 4;
+            FILE* file = std::fopen(tokensPath.c_str(), "a");
+            if (!file) {
+                fail("could not open the token store to add the lapsing token");
+                break;
+            }
+            std::fprintf(file, "%s %u %llu lapsing\n", Ubiquitty::Crypto::sha256Hex(lapsingToken).c_str(), static_cast<unsigned>(fullScope),
+                static_cast<unsigned long long>(lapsesAt));
+            if (std::fclose(file) != 0) {
+                fail("could not add the lapsing token to the store");
+                break;
+            }
+        }
         Connection lapsing;
         lapsing.fileDescriptor = connectDaemon(sockPath);
         if (lapsing.fileDescriptor < 0) {
@@ -467,7 +483,6 @@ int main(int argc, char** argv)
         // A line no writer produces: its expiry is not a number. The record
         // beside it may be the one a revocation removed, so the daemon must
         // not keep any token-bound authority on the strength of the rest.
-        const std::string tokensPath = macHome + "/tokens";
         Connection corrupt;
         corrupt.fileDescriptor = connectDaemon(sockPath);
         if (corrupt.fileDescriptor < 0 || !greetAgent(corrupt, 0, corruptToken) || !waitFor(corrupt, Sync::FrameKind::Welcome, body, 3000)) {
