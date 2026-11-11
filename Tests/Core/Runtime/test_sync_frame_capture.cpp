@@ -996,6 +996,71 @@ TEST(aStyleOnlyRegistrationStartsANewLineage)
     }
 }
 
+// A still is a capture of the model as it stands that takes nothing from the
+// lane: it records every row in the registered style, the frame waiting for
+// the view still waits, and the next capture plans against the frame the view
+// took. With no geometry registered there is no still.
+TEST(aStillCaptureTakesNothingFromTheLane)
+{
+    SessionFixture fx(24, 80);
+    REQUIRE(fx.isReady);
+    CHECK_MSG(TakenFrame(fx.session->captureStill()) == nullptr, "no still without a registered geometry");
+    const SyncFrameCaptureGeometry geometry = testGeometry();
+    fx.session->setSyncFrameCaptureGeometry(geometry);
+    fx.drainSyncFrame("a");
+    REQUIRE(TakenFrame(fx.session->takeSyncFrame()));
+    fx.drainSyncFrame("\x1b[2;1Hb");
+
+    const TakenFrame still { fx.session->captureStill() };
+    REQUIRE(still != nullptr);
+    CHECK(still->isFullFrame());
+    CHECK(still->dirtyRowCount() == still->rows());
+    CHECK(still->uniforms().defaultBackground.x == geometry.style.uniformDefaultBackground.x);
+
+    const TakenFrame waiting { fx.session->takeSyncFrame() };
+    REQUIRE_MSG(waiting != nullptr, "the frame waiting for the view still waits");
+    CHECK(waiting->recordKind() == FrameRecordKind::Delta);
+    fx.drainSyncFrame("\x1b[3;1Hc");
+    const TakenFrame next { fx.session->takeSyncFrame() };
+    REQUIRE(next != nullptr);
+    CHECK_MSG(next->recordKind() == FrameRecordKind::Delta, "the next capture plans against the frame the view took");
+    CHECK(next->baseSequence() == waiting->sequence());
+}
+
+// A still is drawn for a view whose lane is not presented, as a probe or a
+// hidden tab's render is, and for a pane an embedder feeds with no transport
+// or loop: each is a Full record of the model as it stands.
+TEST(aStillCaptureServesAnUnpresentedLaneAndAFedPane)
+{
+    SessionFixture fx(24, 80);
+    REQUIRE(fx.isReady);
+    fx.session->setSyncFramePresentation(Ubiquitty::Runtime::PanePresentation::Hidden);
+    fx.session->setSyncFrameCaptureGeometry(testGeometry());
+    fx.stream->toRead += "hidden text";
+    static_cast<void>(fx.session->drain());
+    {
+        const TakenFrame still { fx.session->captureStill() };
+        REQUIRE_MSG(still != nullptr, "an unpresented lane with a registered geometry gets a still");
+        CHECK(still->recordKind() == FrameRecordKind::Full);
+        CHECK(still->dirtyRowCount() == still->rows());
+    }
+
+    TerminalSession* fed = TerminalSession::make();
+    REQUIRE(fed != nullptr);
+    fed->start(24, 80);
+    constexpr std::string_view text = "fed text";
+    fed->feedBytes({ text.data(), text.size() });
+    fed->setSyncFrameCaptureGeometry(testGeometry());
+    {
+        const TakenFrame still { fed->captureStill() };
+        REQUIRE_MSG(still != nullptr, "a fed pane gets a still");
+        CHECK(still->recordKind() == FrameRecordKind::Full);
+        CHECK(still->rows() == 24);
+    }
+    fed->close();
+    releaseTerminalSession(fed);
+}
+
 TEST(boundaryRecordsCarryMonotonicIdentityAndEpochs)
 {
     SessionFixture fx(24, 80);

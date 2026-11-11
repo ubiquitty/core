@@ -6806,6 +6806,49 @@ public:
         return capture;
     }
 
+    /// A capture of the model as it stands, for a still: a picture, a
+    /// snapshot or a detached render of a view that has no presented frame
+    /// to draw.
+    ///
+    /// Built under the model lock, which it may wait for, so it belongs off
+    /// the display tick. It reads the view's registered geometry, style and
+    /// selection hand-off as the lane's captures do and records every row,
+    /// but it never enters the lane: no frame the view would take is
+    /// consumed, no demand is raised or served, and the lineage the next
+    /// capture plans against does not advance (a registration it folds drops
+    /// the baseline as the next capture would have). The view draws its
+    /// selection over the still with ``viewSelectionOverCapture``.
+    ///
+    /// - Returns: The capture, with a reference the caller owns, or null with
+    ///   no geometry registered, no model, or no memory for it.
+    [[nodiscard]] Rendering::FrameCapture* captureStill() UBIQUITTY_RETURNS_RETAINED UBIQUITTY_EXCLUDES(modelLockRole)
+    {
+        if (m_registeredViewGeneration.load(std::memory_order_relaxed) == 0)
+            return nullptr;
+        Rendering::FrameCapture* capture = Rendering::FrameCapture::make();
+        if (!capture)
+            return nullptr;
+        bool didCapture = false;
+        {
+            const ModelLockHold hold(*m_activeLock);
+            foldCaptureRegistrations();
+            if (Ubiquitty::Terminal* term = modelTerm()) {
+                Rendering::TerminalSnapshotOptions options;
+                assembleCaptureOptions(*term, options);
+                options.richTextSelectionCount = resolveSelectionForCapture(*term, options.viewOffset, m_stillSelection);
+                options.richTextSelections = Ubiquitty::Selection::BlockSelections(m_syncBlockSelections);
+                didCapture = capture->capture(*term, options, m_syncCaptureGeometry.metrics, m_syncCaptureGeometry.glyphSlot);
+                if (didCapture)
+                    capture->captureTube(*term);
+            }
+        }
+        if (!didCapture) {
+            releaseFrameCapture(capture);
+            return nullptr;
+        }
+        return capture;
+    }
+
     /// The frame a view presents at one display tick, and the route it takes
     /// to the glass.
     ///
@@ -10005,38 +10048,17 @@ private:
         return { .decline = withhold.isHeld ? FrameDecline::HeldByPresentation : FrameDecline::None, .askAgainTicks = budget };
     }
 
-    /// Captures the completed boundary frame into the slot's free buffer.
+    /// Fills the options a capture of `terminal` is steered by: the
+    /// registered placement, style, raster and link facts, the blink phase,
+    /// cursor and bell envelope at this tick, the hovered run, and the status
+    /// row. Caller holds the model lock and has folded the registrations.
     ///
-    /// Runs inside the publish hook, on the ingest thread under the model
-    /// lock, so the frame it copies is the frame the boundary completed. A
-    /// boundary that arrives while a pending frame waits captures over it —
-    /// the pending buffer is read by nobody, and newest-wins is
-    /// ``takeSyncFrameReady``'s own coalescing contract. The drive's buffer is
-    /// never the target, so the frame a caller holds is stable until its next
-    /// drain.
-    void captureSyncFrame() UBIQUITTY_REQUIRES(modelLockRole)
+    /// - Parameters:
+    ///   - terminal: The model the capture reads, borrowed under the lock.
+    ///   - options: Receives the options.
+    void assembleCaptureOptions(Ubiquitty::Terminal& terminal, Rendering::TerminalSnapshotOptions& options) UBIQUITTY_REQUIRES(modelLockRole)
     {
-        if (!m_isSyncCaptureArmed.load(std::memory_order_acquire) || !m_isSyncFramePresented.load(std::memory_order_relaxed))
-            return;
-        // Read before the model is: every demand raised before this capture
-        // sees the model it shows.
-        const std::uint64_t servedDemand = m_frameLane.demandSequence();
-        foldCaptureRegistrations();
-        Ubiquitty::Terminal* term = modelTerm();
-        if (!term)
-            return;
-        m_syncCaptureAttemptCount.fetch_add(1, std::memory_order_relaxed);
-
-        const std::optional<FrameLane::Target> target = m_frameLane.claimTarget();
-        if (!target) {
-            m_syncFrameNoSlotCount.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-        // Options assembled here, at the boundary, from the registered scalars:
-        // the borrowed span tiers stay absent, because a registered span dies
-        // before the boundary it would steer. The sync guarantee is about grid
-        // content; the view-state tiers are the drive's present-time business.
-        Rendering::TerminalSnapshotOptions options;
+        Ubiquitty::Terminal* term = &terminal;
         // A view scrolled back holds its rows while output arrives, and the
         // frame shows the rows the view does. The cells, the damage planned
         // for them and the selection resolved over them read one resolved
@@ -10102,6 +10124,41 @@ private:
             options.statusRowCells = m_statusRowScratch.data();
             options.statusRowColumns = term->columns;
         }
+    }
+
+    /// Captures the completed boundary frame into the slot's free buffer.
+    ///
+    /// Runs inside the publish hook, on the ingest thread under the model
+    /// lock, so the frame it copies is the frame the boundary completed. A
+    /// boundary that arrives while a pending frame waits captures over it —
+    /// the pending buffer is read by nobody, and newest-wins is
+    /// ``takeSyncFrameReady``'s own coalescing contract. The drive's buffer is
+    /// never the target, so the frame a caller holds is stable until its next
+    /// drain.
+    void captureSyncFrame() UBIQUITTY_REQUIRES(modelLockRole)
+    {
+        if (!m_isSyncCaptureArmed.load(std::memory_order_acquire) || !m_isSyncFramePresented.load(std::memory_order_relaxed))
+            return;
+        // Read before the model is: every demand raised before this capture
+        // sees the model it shows.
+        const std::uint64_t servedDemand = m_frameLane.demandSequence();
+        foldCaptureRegistrations();
+        Ubiquitty::Terminal* term = modelTerm();
+        if (!term)
+            return;
+        m_syncCaptureAttemptCount.fetch_add(1, std::memory_order_relaxed);
+
+        const std::optional<FrameLane::Target> target = m_frameLane.claimTarget();
+        if (!target) {
+            m_syncFrameNoSlotCount.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        // Options assembled here, at the boundary, from the registered scalars:
+        // the borrowed span tiers stay absent, because a registered span dies
+        // before the boundary it would steer. The sync guarantee is about grid
+        // content; the view-state tiers are the drive's present-time business.
+        Rendering::TerminalSnapshotOptions options;
+        assembleCaptureOptions(*term, options);
         // The boundary capture plans its damage as the live route does: a frame
         // that changed one row records a Delta whose mask names it, and the
         // render Loads the retained grid for the rest. The plan's eligibility
@@ -13931,6 +13988,9 @@ private:
     /// The drain's copy of the hand-off, carried from capture to capture; the
     /// ingest thread's, under the model lock.
     Ubiquitty::Selection::PublishedSelection m_selectionAtCapture UBIQUITTY_GUARDED_BY(modelLockRole);
+    /// The selection a still resolves, which nothing reads: a still bakes the
+    /// rich-text cuts it yields and the view resolves its own spans.
+    Ubiquitty::Selection::CapturedSelection m_stillSelection UBIQUITTY_GUARDED_BY(modelLockRole);
     /// The hand-off's publication the drain last read; the ingest thread's,
     /// under the model lock.
     std::uint64_t m_selectionForCapturesVersionSeen UBIQUITTY_GUARDED_BY(modelLockRole) = 0;
