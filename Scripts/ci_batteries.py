@@ -270,7 +270,6 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
             Stage("forks", "Built symbol forks", './Scripts/check-forks.sh "$UBQ_BUILD_ROOT/macos"', repositories=("app",),
                   requires=("macos-build",)),
             Stage("snapshots", "Portable and Apple snapshot regressions", "./Scripts/run-tests.sh snapshots"),
-            Stage("host-tests", "Apple test suite", "SNAPSHOT=skip ./Scripts/run-tests.sh", "code"),
             Stage("ios-build", "iOS simulator app and UI bundle", "./Scripts/build-ios.sh --sdk iphonesimulator --ui-tests", "code", repositories=("app",)),
             Stage("ios-smokes", "iOS smokes", "./Scripts/run-ios-smokes.sh", "code", repositories=("app",),
                   requires=("ios-build",)),
@@ -278,6 +277,10 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
             Stage("ios-protected-file", "iOS protected file", "./Scripts/run-ios-protected-file-tests.sh", "code", repositories=("kit", "app")),
             Stage("ios-ui", "iOS UI tests", "./Scripts/run-ios-ui-tests.sh", "code", repositories=("app",),
                   requires=("ios-build",)),
+            # Last: the longest stage, so a failing host test does not leave the
+            # shorter stages before it, the iOS protected-file case among them,
+            # unexecuted.
+            Stage("host-tests", "Apple test suite", "SNAPSHOT=skip ./Scripts/run-tests.sh", "code"),
         )
     raise ValueError(f"unknown battery: {platform}")
 
