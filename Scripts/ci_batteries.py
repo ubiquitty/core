@@ -74,6 +74,11 @@ class Stage:
     # sources: a subset that selects this stage selects them too, since a group
     # runs on a runner of its own.
     requires: tuple[str, ...] = ()
+    # False for a stage that passes only where its input was made, which a
+    # hosted runner never is: the Linux pgo stage reads a profile stamped with
+    # the ID of the image it was trained in, and a hosted runner builds its own
+    # image from the same recipe. A hosted workflow lists every other stage.
+    hosted: bool = True
 
 
 STYLE_SETUP = r'''
@@ -209,7 +214,7 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
                   'export PATH="${UBQ_PGO_LLVM:+$UBQ_PGO_LLVM:}$PATH"\n'
                   "python3 ./Scripts/check-profile-orphans.py\n"
                   "UBIQUITTY_PGO=REQUIRE python3 ./Scripts/check-pgo-applies.py --recorded-budget",
-                  "code", "clang"),
+                  "code", "clang", hosted=False),
             Stage("portable-build", "Portable snapshot build", "./Scripts/build-core-snapshot.sh"),
             Stage("portable-snapshots", "Portable reference catalog", "python3 Tests/Snapshots/run.py --backend portable --quiet",
                   requires=("portable-build",)),
