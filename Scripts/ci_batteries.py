@@ -563,7 +563,9 @@ fi'''
             'SNAPSHOT=skip UBQ_TESTS_ROOT=' + shlex.quote(str(context.subject))
             + ' UBQ_BUILD_ROOT="$UBQ_BUILD_ROOT/subject" ' + shlex.quote(str(subject_driver))
         )
-    if stage.key in ("fuzz", "agent-smokes") and context.subject != context.core:
+    # Core's harnesses, sanitized suite and agent tools, built from Core's tree:
+    # a consumer's own top-level project names no Core frontend to configure.
+    if stage.key in ("fuzz", "sanitizers", "agent-smokes") and context.subject != context.core:
         core_driver = context.core / "Scripts/run-tests.sh"
         command = command.replace("./Scripts/run-tests.sh", shlex.quote(str(core_driver)))
         command = 'export UBQ_TESTS_ROOT="$UBQ_CORE_ROOT"\nunset UBQ_KIT_ROOT UBIQUITTY_KIT_SOURCE_DIR\n' + command
