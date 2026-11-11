@@ -94,11 +94,10 @@ ENV UBQ_REQUIRED_TOOLS="emacs nvim lrzsz"
 ENV UBQ_SSH_SMOKE_REQUIRED=1'
 # The pinned clang-format, which check-style.py's format section and the style
 # gates read in every battery, not only the preflight that installs its own.
-# The pin is read into the recipe, so a pin change is a new image.
+# A container installs it when it starts rather than the recipe carrying it:
+# the Linux PGO profile's provenance names the recipe and the image, so a tool
+# no compile reads must not make a new release image.
 clangFormatPin="$(tr -d '[:space:]' < "$CORE_ROOT/Scripts/clang-format-pin")"
-recipe+="
-RUN python3 -m venv /opt/clang-format && /opt/clang-format/bin/pip install --quiet --disable-pip-version-check 'clang-format==$clangFormatPin.*'
-ENV PATH=/opt/clang-format/bin:\$PATH"
 
 # Tagged by the recipe's digest, as run-linux.sh tags its own image, so a
 # changed package list builds a new image rather than reusing an older one.
@@ -274,6 +273,23 @@ while IFS= read -r name; do
     passed+=(-e "$name")
 done < <(compgen -e | grep -E '^(GITHUB_|RUNNER_|ACTIONS_|UBQ_|UBIQUITTY_|CCACHE_|CI$|CC$|CXX$|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)$)')
 
+# The clang-format venv lives in the runner's tool cache, which every container
+# of a run mounts, and is installed under a lock so concurrent containers
+# install it once.
+entry='venv="$RUNNER_TOOL_CACHE/clang-format-$UBQ_CLANG_FORMAT_PIN"
+exec 9>"$venv.lock"
+flock 9
+if ! "$venv/bin/clang-format" --version 2>/dev/null | grep -q "version $UBQ_CLANG_FORMAT_PIN\."; then
+    rm -rf "$venv"
+    if ! { python3 -m venv "$venv" && "$venv/bin/pip" install --quiet --disable-pip-version-check "clang-format==$UBQ_CLANG_FORMAT_PIN.*"; } >&2; then
+        echo "ci-linux-image: could not install clang-format $UBQ_CLANG_FORMAT_PIN" >&2
+        exit 1
+    fi
+fi
+exec 9>&-
+export PATH="$venv/bin:$PATH"
+exec "$@"'
+
 # The compiler cache lives beside the checkout, where the CI workflow restores
 # and saves it between runs; under root's home in the container it would start
 # empty on every run. 2G keeps it inside the repository's Actions cache
@@ -295,5 +311,6 @@ docker run --rm --init \
     -e "CCACHE_MAXSIZE=${CCACHE_MAXSIZE:-2G}" \
     -e "UBQ_CI_LINUX_IMAGE_ID=$image_id" \
     -e "UBQ_CI_LINUX_RECIPE=$digest" \
+    -e "UBQ_CLANG_FORMAT_PIN=$clangFormatPin" \
     -w "$ROOT" \
-    "$image" "$@"
+    "$image" /bin/bash -c "$entry" ci-linux-image "$@"
