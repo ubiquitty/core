@@ -3333,7 +3333,7 @@ class EveryWorkflowTests(unittest.TestCase):
                         self.assertEqual(words[::2], ["--only"] * (len(words) // 2))
                         self.assertIn("setup", words[1::2])
                         covered.update(words[1::2])
-                    expected = {stage.key for stage in batteries.source_stages(platform, TEST_SOURCES)}
+                    expected = {stage.key for stage in batteries.source_stages(platform, TEST_SOURCES) if stage.hosted}
                     self.assertEqual(covered, expected)
 
     @unittest.skipUnless(WORKFLOW, "pass --workflow to validate the live workflow contract")
@@ -3520,7 +3520,7 @@ class SourceCompositionBatteryTests(unittest.TestCase):
 
     def ci_image_fixture(self):
         script = self.install_shared_shell_helper("ci-linux-image.sh")
-        # The image carries the pinned clang-format, read from the Core's pin file.
+        # A container installs the pinned clang-format, read from the Core's pin file.
         shutil.copyfile(batteries.ROOT / "Scripts/clang-format-pin", self.core / "Scripts/clang-format-pin")
         recipe = self.core / "Scripts/run-linux.sh"
         recipe.write_text('#!/bin/sh\n[ "$UBIQUITTY_LINUX_ROOT" = "$UBQ_TESTS_ROOT" ] || exit 93\nprintf "FROM fixture\\n"\n')
