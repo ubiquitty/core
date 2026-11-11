@@ -92,6 +92,13 @@ ENV UBQ_ACTIONLINT=/usr/local/bin/actionlint
 # apostrophe here would end the single-quoted recipe.
 ENV UBQ_REQUIRED_TOOLS="emacs nvim lrzsz"
 ENV UBQ_SSH_SMOKE_REQUIRED=1'
+# The pinned clang-format, which check-style.py's format section and the style
+# gates read in every battery, not only the preflight that installs its own.
+# The pin is read into the recipe, so a pin change is a new image.
+clangFormatPin="$(tr -d '[:space:]' < "$CORE_ROOT/Scripts/clang-format-pin")"
+recipe+="
+RUN python3 -m venv /opt/clang-format && /opt/clang-format/bin/pip install --quiet --disable-pip-version-check 'clang-format==$clangFormatPin.*'
+ENV PATH=/opt/clang-format/bin:\$PATH"
 
 # Tagged by the recipe's digest, as run-linux.sh tags its own image, so a
 # changed package list builds a new image rather than reusing an older one.
