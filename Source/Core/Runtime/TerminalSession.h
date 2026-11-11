@@ -6919,10 +6919,10 @@ public:
     /// 5. With none waiting, a presented view whose captures are armed has
     ///    asked the owner for one (``FrameLane::raiseDemand``), served by the
     ///    rule step 3 judged it by at the next frame the coherence rule admits
-    ///    or the owner's next turn. Of a pane its ingest loop drains, the view
-    ///    waits for it: ``FrameDecline::AwaitingCapture``, woken by its
-    ///    publication. Any other pane has no turn but its caller's, so the
-    ///    asking thread serves the demand itself, before step 3, and takes
+    ///    or the owner's next turn. A resizing view tries to serve its demand
+    ///    immediately, before the next geometry supersedes this step. A pane
+    ///    no loop drains has no turn but its caller's, so its asking thread
+    ///    also serves the demand itself, before step 3, and takes
     ///    what it captured (``serveFrameDemandHere``); one it could not serve
     ///    now, its model held by another thread, is declined
     ///    ``FrameDecline::AwaitingCapture`` and asked again next tick, since
@@ -6932,8 +6932,8 @@ public:
     ///
     /// Reads published state only, with two exceptions: while a synchronized
     /// update is open in a remote replica or a fed pane, step 3 judges the
-    /// block under the model lock, and a pane no loop drains is served under
-    /// a model lock its caller finds free.
+    /// block under the model lock, and a resize or a pane no loop drains is
+    /// served under a model lock its caller finds free.
     ///
     /// - Parameters:
     ///   - demand: The view's facts at this tick.
@@ -6964,12 +6964,15 @@ public:
         if (isLaneServed) {
             const FrameLane::DemandRule rule = demand.isResizing ? FrameLane::DemandRule::Resize : FrameLane::DemandRule::Coherence;
             static_cast<void>(m_frameLane.raiseDemand(PAL::monotonicMicros(), rule));
-            if (hasOwnerLoop)
-                m_loop.raiseWake();
-            else if (serveFrameDemandHere()) {
+            // A resize registers geometry and asks in the same display turn.
+            // Its next step retires any capture left waiting at that geometry,
+            // so a free model serves this step before the owner is woken.
+            if ((!hasOwnerLoop || demand.isResizing) && serveFrameDemandHere()) {
                 if (Rendering::FrameCapture* capture = takeWaitingCapture())
                     return capture;
             }
+            if (hasOwnerLoop)
+                m_loop.raiseWake();
         }
         // A resize whose captures are not armed is judged by the live read,
         // under its lock.
@@ -10283,9 +10286,9 @@ private:
     }
 
     /// Serves the view's demand on the asking thread, for a pane no ingest
-    /// loop drains: a fed pane, whose caller drives it, or one whose model
-    /// another session's thread writes. Nothing else takes a turn for it, so
-    /// a demand left to an owner would wait forever.
+    /// loop drains or for a resize step whose geometry must present now.
+    /// A fed pane's caller drives it; an adopted pane's other session owns
+    /// its turns. A resize step takes a turn only while the model is free.
     ///
     /// Never waits: a model lock another thread holds is that thread's turn,
     /// and a pass it ends serves the demand at the frame the rule admits.

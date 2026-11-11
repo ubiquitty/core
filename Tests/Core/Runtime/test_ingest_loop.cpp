@@ -1728,6 +1728,32 @@ TEST(testAViewScrollingAnIdlePaneGetsAFrameAtEachPosition)
     CHECK_MSG(flick == 90, std::format("eight rows a frame: {} of 90 frames were a capture at the scrolled position", flick).c_str());
 }
 
+// A resize's geometry and its frame are asked in the same display turn. The
+// next step supersedes the geometry, so a capture left for that step is late.
+TEST(testAResizingViewGetsAFrameAtEachGeometry)
+{
+    LoopSession loop;
+    REQUIRE(loop.isRunning);
+    TerminalSession& session = loop.session();
+    REQUIRE(loop.write("resize frame"));
+    int served = 0;
+    for (int step = 1; step <= 30; ++step) {
+        const int rows = 24 + step;
+        const int columns = 80 + step;
+        session.resize(rows, columns, TerminalSession::ResizeGesture::Interactive, Ubiquitty::Modes::AnchorMode::Top);
+        SyncFrameCaptureGeometry geometry = captureGeometry();
+        geometry.viewportSizeInPixels = { static_cast<float>(columns * 8), static_cast<float>(rows * 16) };
+        session.setSyncFrameCaptureGeometry(geometry);
+        FrameSupply supply;
+        Ubiquitty::Rendering::FrameCapture* frame = session.takeFrame({ .nowTicks = Ubiquitty::PAL::monotonicTicks(), .isResizing = true }, supply);
+        if (supply.route == FrameRoute::Captured && frame && frame->rows() == rows && frame->columns() == columns)
+            ++served;
+        releaseFrameCapture(frame);
+        std::this_thread::sleep_for(std::chrono::microseconds(16'667));
+    }
+    CHECK_MSG(served == 30, std::format("{} of 30 resize steps presented their own geometry", served).c_str());
+}
+
 // A view revealed over a loop's pane whose lane has never captured, with no
 // output at all, asks once; the loop, woken by the ask, captures the first
 // frame at its next turn, with nothing more asked of it.
