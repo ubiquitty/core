@@ -17,7 +17,12 @@
 //     void readView(const std::function<void(const Ubiquitty::Session::PaneView&)>&);
 //
 // `readView` holds whatever lock the model needs while the reader runs, as
-// the view's contract asks of its caller. The checks:
+// the view's contract asks of its caller. A fixture whose program runs beyond
+// the link may also say what that side holds, for a failure to report:
+//
+//     std::string describeProgramSide();                  // optional
+//
+// The checks:
 //
 //   1. An attached link is Live and not stalled, on a clock that does not run
 //      backwards.
@@ -50,6 +55,7 @@
 #include "Core/Session/PaneLinkEvents.h"
 #include "Core/Terminal.h"
 
+#include <algorithm>
 #include <array>
 #include <concepts>
 #include <cstddef>
@@ -113,6 +119,30 @@ inline std::string paneViewText(const Ubiquitty::Session::PaneView& view)
     return text;
 }
 
+/// The rows of a view's text that carry anything, trailing blanks dropped,
+/// joined on one line.
+///
+/// - Parameter text: The view's text, one line per row.
+/// - Returns: The rows that are not blank, separated by " | ".
+inline std::string paneViewRows(std::string_view text)
+{
+    std::string rows;
+    std::size_t start = 0;
+    while (start < text.size()) {
+        const std::size_t end = std::min(text.find('\n', start), text.size());
+        std::string_view row = text.substr(start, end - start);
+        while (!row.empty() && row.back() == ' ')
+            row.remove_suffix(1);
+        if (!row.empty()) {
+            if (!rows.empty())
+                rows += " | ";
+            rows += row;
+        }
+        start = end + 1;
+    }
+    return rows;
+}
+
 /// Checks one link against the contract every `PaneLink` keeps.
 ///
 /// - Parameters:
@@ -172,12 +202,27 @@ void checkPaneLinkConformance(Fixture& fixture, std::string_view name)
     if (recorder.frames.empty())
         return;
 
+    // A view lacking an echo is reported with what it shows instead, the
+    // frames its observer was told, and what the program's side holds where
+    // the fixture can say: an echo held there and missing here is a delivery
+    // the link lost, and one missing from both never reached the program's
+    // screen.
+    const auto echoFailure = [&](std::string_view what) {
+        std::string viewText;
+        fixture.readView([&](const Session::PaneView& view) { viewText = paneViewText(view); });
+        std::string message = failure(what) + "; the view shows [" + paneViewRows(viewText) + "]; its observer was told "
+            + std::to_string(recorder.frames.size()) + " frame(s), the newest at generation " + std::to_string(recorder.frames.back().generation);
+        if constexpr (requires { { fixture.describeProgramSide() } -> std::convertible_to<std::string>; })
+            message += "; " + fixture.describeProgramSide();
+        return message;
+    };
+
     // 4. Raw input that writes nothing is refused; input reaches the program,
     // and its echo comes back as a newer frame.
     CHECK_MSG(!send(link, {}), failure("the link admitted raw input with no bytes").c_str());
     constexpr std::string_view typed = "pane-link-conformance";
     CHECK_MSG(send(link, typed), failure("the link refused input").c_str());
-    CHECK_MSG(fixture.runUntil([&] { return shows(typed); }), failure("the program's echo of the input never reached the view").c_str());
+    CHECK_MSG(fixture.runUntil([&] { return shows(typed); }), echoFailure("the program's echo of the input never reached the view").c_str());
     CHECK_MSG(fixture.runUntil(isToldNewer(1)) && recorder.frames.back().generation > recorder.frames.front().generation,
         failure("the observer was not told of the echo's newer frame").c_str());
 
@@ -190,7 +235,7 @@ void checkPaneLinkConformance(Fixture& fixture, std::string_view name)
     link.pollEvents(link.clockMicroseconds());
     CHECK_MSG(recorder.frames.size() == framesWhileShown, failure("an observer was told of a frame while the view was Dormant").c_str());
     link.setView(Sync::ViewState::Live);
-    CHECK_MSG(fixture.runUntil([&] { return shows(hidden); }), failure("shown again, the view did not catch up with what the program wrote while it was Dormant").c_str());
+    CHECK_MSG(fixture.runUntil([&] { return shows(hidden); }), echoFailure("shown again, the view did not catch up with what the program wrote while it was Dormant").c_str());
     CHECK_MSG(fixture.runUntil(isToldNewer(framesWhileShown)), failure("shown again, the observer was not told of the newest frame").c_str());
 
     // 6. A RecordsOnly view is told of no frame, not even one its terminal
@@ -198,7 +243,7 @@ void checkPaneLinkConformance(Fixture& fixture, std::string_view name)
     // and no poll tells of it before the view leaves Live.
     constexpr std::string_view untold = "untold";
     CHECK_MSG(send(link, untold), failure("the link refused input").c_str());
-    CHECK_MSG(fixture.runUntil([&] { return shows(untold); }), failure("the program's echo of the input never reached the view").c_str());
+    CHECK_MSG(fixture.runUntil([&] { return shows(untold); }), echoFailure("the program's echo of the input never reached the view").c_str());
     link.setView(Sync::ViewState::RecordsOnly);
     const std::size_t framesBeforeRecords = recorder.frames.size();
     link.pollEvents(link.clockMicroseconds());
@@ -209,7 +254,7 @@ void checkPaneLinkConformance(Fixture& fixture, std::string_view name)
     link.pollEvents(link.clockMicroseconds());
     CHECK_MSG(recorder.frames.size() == framesBeforeRecords, failure("an observer was told of a frame while the view was RecordsOnly").c_str());
     link.setView(Sync::ViewState::Live);
-    CHECK_MSG(fixture.runUntil([&] { return shows(unseen); }), failure("shown again, the view did not catch up with what the program wrote while it was RecordsOnly").c_str());
+    CHECK_MSG(fixture.runUntil([&] { return shows(unseen); }), echoFailure("shown again, the view did not catch up with what the program wrote while it was RecordsOnly").c_str());
     CHECK_MSG(fixture.runUntil(isToldNewer(framesBeforeRecords)), failure("shown again after RecordsOnly, the observer was not told of the newest frame").c_str());
 
     // 7. History wants: one valid range is admitted, and malformed wants are not.
