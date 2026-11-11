@@ -194,6 +194,7 @@ int main(int argc, char** argv)
     }
     CHECK_MSG(wasEchoedWithinSettle, "the program echoed none of the keys within E");
 
-    std::printf("input_settled_echo: a key echoed within E settled only with its echo in the picture\n");
+    if (wasEchoedWithinSettle)
+        std::printf("input_settled_echo: a key echoed within E settled only with its echo in the picture\n");
     return finish();
 }
