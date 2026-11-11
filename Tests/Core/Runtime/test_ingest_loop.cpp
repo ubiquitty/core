@@ -1670,6 +1670,64 @@ SyncFrameCaptureGeometry captureGeometry()
 
 } // namespace
 
+namespace {
+
+// Scrolls a view over a loop's idle pane `rowsPerFrame` rows a frame for
+// `frames` frames, and counts the frames at which the view's ask was answered
+// with a capture at the position it scrolled to. `scroll` moves the view.
+template<typename Scroll>
+int framesServedAtTheScrolledPosition(LoopSession& loop, int rowsPerFrame, int frames, Scroll&& scroll)
+{
+    TerminalSession& session = loop.session();
+    std::string history;
+    for (int line = 0; line < rowsPerFrame * frames + 40; ++line)
+        history += std::format("line {}\r\n", line);
+    if (!loop.write(history))
+        return -1;
+    session.setSyncFrameCaptureGeometry(captureGeometry());
+    bool isFirstShown = false;
+    for (int waited = 0; waited < 2000 && !isFirstShown; ++waited) {
+        FrameSupply supply;
+        Ubiquitty::Rendering::FrameCapture* frame = session.takeFrame({ .nowTicks = Ubiquitty::PAL::monotonicTicks() }, supply);
+        isFirstShown = supply.route == FrameRoute::Captured;
+        releaseFrameCapture(frame);
+        if (!isFirstShown)
+            ::usleep(1000);
+    }
+    if (!isFirstShown)
+        return -1;
+    int served = 0;
+    for (int frameIndex = 1; frameIndex <= frames; ++frameIndex) {
+        const int step = frameIndex * rowsPerFrame;
+        scroll(session, step);
+        std::this_thread::sleep_for(std::chrono::microseconds(16'667));
+        FrameSupply supply;
+        Ubiquitty::Rendering::FrameCapture* frame = session.takeFrame({ .nowTicks = Ubiquitty::PAL::monotonicTicks() }, supply);
+        if (supply.route == FrameRoute::Captured && frame && frame->viewOffset() == step)
+            ++served;
+        releaseFrameCapture(frame);
+    }
+    return served;
+}
+
+} // namespace
+
+// A view scrolling the history of a loop's idle pane is answered, at every
+// frame, with a capture at the position it scrolled to: the scroll asks the
+// owner for a frame at once, and it retires no frame the view would take.
+TEST(testAViewScrollingAnIdlePaneGetsAFrameAtEachPosition)
+{
+    LoopSession loop;
+    REQUIRE(loop.isRunning);
+    const auto scroll = [](TerminalSession& session, int step) { session.setSyncFrameViewOffset(step, Ubiquitty::Input::ViewportHold::Follow, {}); };
+    const int slow = framesServedAtTheScrolledPosition(loop, 1, 30, scroll);
+    CHECK_MSG(slow == 30, std::format("a row a frame: {} of 30 frames were a capture at the scrolled position", slow).c_str());
+    LoopSession flicked;
+    REQUIRE(flicked.isRunning);
+    const int flick = framesServedAtTheScrolledPosition(flicked, 8, 90, scroll);
+    CHECK_MSG(flick == 90, std::format("eight rows a frame: {} of 90 frames were a capture at the scrolled position", flick).c_str());
+}
+
 // A view revealed over a loop's pane whose lane has never captured, with no
 // output at all, asks once; the loop, woken by the ask, captures the first
 // frame at its next turn, with nothing more asked of it.

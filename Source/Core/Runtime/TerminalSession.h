@@ -6715,7 +6715,8 @@ public:
         const bool isArmed = m_frameLane.arm();
         const std::uint64_t generation = m_registeredViewGeneration.load(std::memory_order_relaxed) + 1;
         m_registeredViewGeneration.store(generation, std::memory_order_relaxed);
-        m_geometryRegister.publish({ .geometry = geometry, .generation = generation });
+        const std::uint64_t sequence = m_viewRegistrationSequence.fetch_add(1, std::memory_order_relaxed) + 1;
+        m_geometryRegister.publish({ .geometry = geometry, .generation = generation, .sequence = sequence });
         // New geometry, new lineage: the next frame on either route plans
         // Full (the fold that adopts the registration drops the baseline with
         // it), every row is owed, and a pending frame, which carries the old
@@ -6724,6 +6725,38 @@ public:
         oweAllSyncRows();
         m_isSyncCaptureArmed.store(isArmed, std::memory_order_release);
         m_host.setDrainPassPresentation(isArmed && m_isSyncFramePresented.load(std::memory_order_relaxed) ? PanePresentation::Presented : PanePresentation::Hidden);
+    }
+
+    /// Moves the view's scroll position for the captures, without the model
+    /// lock and without a registration of the whole geometry.
+    ///
+    /// A scroll changes which rows a frame shows and nothing about how they
+    /// are placed, so the frame waiting for the view stays presentable and no
+    /// generation begins: a view that registered its geometry once per scroll
+    /// step retired every capture made for the step before, and while it kept
+    /// scrolling it presented none. The view's demand for a frame at the new
+    /// position is raised at once, and the owner is woken, so a capture at it
+    /// is on its way before the view next asks; a pane no ingest loop drains
+    /// is served here, under a model lock its caller finds free. Whoever next
+    /// holds the lock takes the position in (``foldCaptureRegistrations``),
+    /// unless the view registered its whole geometry after it.
+    ///
+    /// - Parameters:
+    ///   - viewOffset: The rows the view is scrolled back.
+    ///   - viewportHold: Whether the view holds its rows while output arrives
+    ///     or follows the tail.
+    ///   - viewHistory: The history the held offset was read against.
+    void setSyncFrameViewOffset(int viewOffset, Input::ViewportHold viewportHold, const Screen::HistoryFacts& viewHistory) UBIQUITTY_EXCLUDES(modelLockRole)
+    {
+        const std::uint64_t sequence = m_viewRegistrationSequence.fetch_add(1, std::memory_order_relaxed) + 1;
+        m_viewOffsetRegister.publish({ .viewOffset = viewOffset, .viewHistory = viewHistory, .isViewOffsetHeld = viewportHold == Input::ViewportHold::Hold, .sequence = sequence });
+        if (!m_isSyncCaptureArmed.load(std::memory_order_acquire) || !m_isSyncFramePresented.load(std::memory_order_relaxed))
+            return;
+        static_cast<void>(m_frameLane.raiseDemand(PAL::monotonicMicros(), FrameLane::DemandRule::Coherence));
+        if (m_ingestThread.joinable())
+            m_loop.raiseWake();
+        else
+            static_cast<void>(serveFrameDemandHere());
     }
 
     /// Enables local renderer captures while its surface can present them.
@@ -10361,10 +10394,26 @@ private:
         SyncFrameCaptureGeometry geometry {};
         /// The registration's generation, which the captures made under it carry.
         std::uint64_t generation = 0;
+        /// Its place among the view's registrations, scroll positions included.
+        std::uint64_t sequence = 0;
+    };
+
+    /// A scroll position the view registered on its own.
+    struct ViewOffsetRegistration {
+        /// The rows the view is scrolled back.
+        int viewOffset = 0;
+        /// The history the held offset was read against.
+        Screen::HistoryFacts viewHistory {};
+        /// Whether the view holds its rows while output arrives.
+        bool isViewOffsetHeld = false;
+        /// Its place among the view's registrations; a whole geometry
+        /// registered after it carries its own offset and wins.
+        std::uint64_t sequence = 0;
     };
 
     /// Takes in what the view registered since the last fold: the geometry
-    /// and its generation, the hovered run, and a dropped baseline. Called by
+    /// and its generation, a scroll position registered after it, the
+    /// hovered run, and a dropped baseline. Called by
     /// whoever holds the model lock to capture or to plan a frame, first.
     void foldCaptureRegistrations() UBIQUITTY_REQUIRES(modelLockRole)
     {
@@ -10374,9 +10423,20 @@ private:
             const GeometryRegistration registration = m_geometryRegister.read();
             m_syncCaptureGeometry = registration.geometry;
             m_syncViewGeneration = registration.generation;
+            m_syncGeometrySequence = registration.sequence;
             // In the same fold, so no frame is planned under the new
             // registration against a baseline drawn under the old one.
             m_retainedBaseline = {};
+        }
+        const std::uint64_t viewOffsetVersion = m_viewOffsetRegister.version();
+        if (viewOffsetVersion != m_viewOffsetVersionFolded) {
+            m_viewOffsetVersionFolded = viewOffsetVersion;
+            const ViewOffsetRegistration position = m_viewOffsetRegister.read();
+            if (position.sequence > m_syncGeometrySequence) {
+                m_syncCaptureGeometry.viewOffset = position.viewOffset;
+                m_syncCaptureGeometry.viewHistory = position.viewHistory;
+                m_syncCaptureGeometry.isViewOffsetHeld = position.isViewOffsetHeld;
+            }
         }
         const std::uint64_t hoverVersion = m_hoverRegister.version();
         if (hoverVersion != m_hoverVersionFolded) {
@@ -10394,11 +10454,16 @@ private:
     // folded under the model lock by ``foldCaptureRegistrations``.
     SnapshotPublisher<GeometryRegistration> m_geometryRegister;
     SnapshotPublisher<Rendering::FrameHoverLink> m_hoverRegister;
+    SnapshotPublisher<ViewOffsetRegistration> m_viewOffsetRegister;
+    // The view's count of its registrations, geometry and scroll alike.
+    std::atomic<std::uint64_t> m_viewRegistrationSequence { 0 };
     std::atomic<std::uint64_t> m_baselineResetRequests { 0 };
     // The newest registration's generation, the view's own count: a capture
     // made under an older one is not taken.
     std::atomic<std::uint64_t> m_registeredViewGeneration { 0 };
     std::uint64_t m_geometryVersionFolded UBIQUITTY_GUARDED_BY(modelLockRole) = 0;
+    std::uint64_t m_viewOffsetVersionFolded UBIQUITTY_GUARDED_BY(modelLockRole) = 0;
+    std::uint64_t m_syncGeometrySequence UBIQUITTY_GUARDED_BY(modelLockRole) = 0;
     std::uint64_t m_hoverVersionFolded UBIQUITTY_GUARDED_BY(modelLockRole) = 0;
     std::uint64_t m_baselineResetsFolded UBIQUITTY_GUARDED_BY(modelLockRole) = 0;
 
