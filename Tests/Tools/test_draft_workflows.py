@@ -143,11 +143,72 @@ class Workflow:
         return bool(expression(scalar(mapping(self.fields["concurrency"], 2)["cancel-in-progress"]), invocation))
 
 
+class ImageWrapperTests(unittest.TestCase):
+    """Core's CI image wrapper, which every repository's workflow runs."""
+
+    def test_the_image_wrapper_runs_the_command_directly_off_hosted_runners(self):
+        wrapper = ROOT / "Scripts/ci-linux-image.sh"
+        for value in ("false", ""):
+            environment = {key: item for key, item in os.environ.items() if key != "UBQ_CI_LINUX_IMAGE"}
+            if value:
+                environment["UBQ_CI_LINUX_IMAGE"] = value
+            ran = subprocess.run([str(wrapper), "printf", "direct"], env=environment,
+                                 capture_output=True, text=True, check=True)
+            self.assertEqual(ran.stdout, "direct", value)
+
+    def test_the_image_wrapper_reuses_a_cached_archive_and_saves_what_it_builds(self):
+        wrapper = ROOT / "Scripts/ci-linux-image.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            stubs = directory / "bin"
+            stubs.mkdir()
+            docker = stubs / "docker"
+            docker.write_text(
+                "#!/bin/sh\n"
+                'echo "$1" >> "$DOCKER_LOG"\n'
+                'case "$1" in\n'
+                '  info) echo "[]" ;;\n'
+                '  image) [ -f "$DOCKER_STATE" ] ;;\n'
+                '  load|build) touch "$DOCKER_STATE" ;;\n'
+                '  save) echo image > "$3" ;;\n'
+                "esac\n")
+            docker.chmod(0o755)
+            log, state, archive = directory / "docker.log", directory / "image", directory / "image.tar"
+            environment = {**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}",
+                           "UBQ_CI_LINUX_IMAGE": "true", "UBQ_CI_IMAGE_ARCHIVE": str(archive),
+                           "DOCKER_LOG": str(log), "DOCKER_STATE": str(state),
+                           "RUNNER_WORKSPACE": str(directory), "RUNNER_TEMP": str(directory),
+                           "RUNNER_TOOL_CACHE": str(directory)}
+
+            def calls():
+                subprocess.run([str(wrapper), "true"], env=environment, check=True, capture_output=True)
+                # Only the calls that decide the image; run-linux.sh asks the
+                # daemon about itself on the way to its recipe.
+                made = [call for call in log.read_text().split() if call in ("image", "load", "build", "save", "run")]
+                log.unlink()
+                return made
+
+            # Nothing cached: the image is built, saved for the next run, and
+            # its identity read from the image that now exists.
+            self.assertEqual(calls(), ["image", "image", "build", "save", "image", "run"])
+            self.assertTrue(archive.is_file())
+            # A fresh runner with the archive restored loads it and builds nothing.
+            state.unlink()
+            self.assertEqual(calls(), ["image", "load", "image", "image", "run"])
+            digest = subprocess.run([str(wrapper), "--recipe-digest"], env=environment,
+                                    capture_output=True, text=True, check=True).stdout.strip()
+            self.assertNotIn("build", log.read_text().split())
+            self.assertRegex(digest, r"^[0-9a-f]{12}$")
+
+
 class DraftWorkflowTests(unittest.TestCase):
     def setUp(self):
-        # The product's CI workflow ships with the app repository.
-        if not (ROOT / ".github/workflows/ci.yml").exists():
-            self.skipTest("the product workflow is not in this repository")
+        # The draft and cancellation policy these cases hold is the app's CI
+        # workflow's. Core's and the Kit's workflows are not held to it, so
+        # their presence here is not this case's subject.
+        role = ROOT / "Scripts/repository.txt"
+        if not role.exists() or role.read_text(encoding="utf-8").strip() != "app":
+            self.skipTest("the app's workflow policy has no subject outside the app repository")
         self.workflows = {}
         for path in sorted((ROOT / ".github/workflows").iterdir()):
             if path.suffix not in (".yml", ".yaml"):
@@ -239,59 +300,6 @@ class DraftWorkflowTests(unittest.TestCase):
         for name, job in ci.jobs.items():
             with self.subTest(job=name):
                 self.assertNotIn("UBQ_HOSTED_RUNNERS", job.get("env", "") + job.get("steps", ""))
-
-    def test_the_image_wrapper_runs_the_command_directly_off_hosted_runners(self):
-        wrapper = ROOT / "Scripts/ci-linux-image.sh"
-        for value in ("false", ""):
-            environment = {key: item for key, item in os.environ.items() if key != "UBQ_CI_LINUX_IMAGE"}
-            if value:
-                environment["UBQ_CI_LINUX_IMAGE"] = value
-            ran = subprocess.run([str(wrapper), "printf", "direct"], env=environment,
-                                 capture_output=True, text=True, check=True)
-            self.assertEqual(ran.stdout, "direct", value)
-
-    def test_the_image_wrapper_reuses_a_cached_archive_and_saves_what_it_builds(self):
-        wrapper = ROOT / "Scripts/ci-linux-image.sh"
-        with tempfile.TemporaryDirectory() as directory:
-            directory = Path(directory)
-            stubs = directory / "bin"
-            stubs.mkdir()
-            docker = stubs / "docker"
-            docker.write_text(
-                "#!/bin/sh\n"
-                'echo "$1" >> "$DOCKER_LOG"\n'
-                'case "$1" in\n'
-                '  image) [ -f "$DOCKER_STATE" ] ;;\n'
-                '  load|build) touch "$DOCKER_STATE" ;;\n'
-                '  save) echo image > "$3" ;;\n'
-                "esac\n")
-            docker.chmod(0o755)
-            log, state, archive = directory / "docker.log", directory / "image", directory / "image.tar"
-            environment = {**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}",
-                           "UBQ_CI_LINUX_IMAGE": "true", "UBQ_CI_IMAGE_ARCHIVE": str(archive),
-                           "DOCKER_LOG": str(log), "DOCKER_STATE": str(state),
-                           "RUNNER_WORKSPACE": str(directory), "RUNNER_TEMP": str(directory),
-                           "RUNNER_TOOL_CACHE": str(directory)}
-
-            def calls():
-                subprocess.run([str(wrapper), "true"], env=environment, check=True, capture_output=True)
-                # Only the calls that decide the image; run-linux.sh asks the
-                # daemon about itself on the way to its recipe.
-                made = [call for call in log.read_text().split() if call in ("image", "load", "build", "save", "run")]
-                log.unlink()
-                return made
-
-            # Nothing cached: the image is built, saved for the next run, and
-            # its identity read from the image that now exists.
-            self.assertEqual(calls(), ["image", "image", "build", "save", "image", "run"])
-            self.assertTrue(archive.is_file())
-            # A fresh runner with the archive restored loads it and builds nothing.
-            state.unlink()
-            self.assertEqual(calls(), ["image", "load", "image", "image", "run"])
-            digest = subprocess.run([str(wrapper), "--recipe-digest"], env=environment,
-                                    capture_output=True, text=True, check=True).stdout.strip()
-            self.assertNotIn("build", log.read_text().split())
-            self.assertRegex(digest, r"^[0-9a-f]{12}$")
 
     def test_non_pr_triggers_and_existing_concurrency_semantics_are_preserved(self):
         ci = self.workflows["ci.yml"]
