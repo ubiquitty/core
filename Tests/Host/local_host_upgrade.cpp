@@ -1192,6 +1192,22 @@ void remoteUpdateKeepsLiveSessions(const std::string& built, RemoteHolderPlaceme
         CHECK_MSG(retry && Session::readHostInstallOutput(*retry, *retry).kind == Session::HostInstallOutcomeKind::HandoverPending,
             "retrying a refused update remains pending without stopping a session");
         CHECK_MSG(!waitForExit(process, 100), "a refusing predecessor keeps running");
+        // This client acknowledges nothing the host sends, so the host drops
+        // its connection as silent 30 s after it began to wait for one
+        // (lostSilenceMicroseconds), which two installs on a loaded machine
+        // outlast. A dropped client's session stays, so the client resumes its
+        // attachment on the holder, as an app does, and reads the shell there.
+        const auto attachment = first.connection->welcome->attachmentID;
+        const auto secret = first.connection->welcome->resumeSecret;
+        const auto nextInput = first.connection->nextInputSeq;
+        ::close(first.connection->fileDescriptor);
+        first.connection->fileDescriptor = -1;
+        const auto resumed = greetPinned(first, holderPath, machine.home, leaf, request,
+            Sync::ResumeRequest { .attachmentID = attachment, .resumeSecret = secret, .panes = {} });
+        CHECK_MSG(resumed && resumed->attachmentID == attachment && resumed->selection.sessionID == first.sessionID,
+            "the client resumes its attachment and session on the holder that refused");
+        first.connection->nextInputSeq = nextInput;
+        CHECK_MSG(Ubiquitty::HostTest::waitForPane(*first.connection, 5000), "the resumed client receives its pane");
         CHECK_MSG(Ubiquitty::HostTest::sendInput(*first.connection, "[ \"$UBQ_UPGRADE_PID\" = \"$$\" ] && echo still-same-sh\"\"ell\r")
                 && first.waitForText("still-same-shell"),
             "a refused update preserves the original shell and its PTY");
