@@ -213,8 +213,12 @@ enum class SecondTurn : std::uint8_t {
     Unobserved,
 };
 
-// Pairs of waiters the claim case tries.
+// Trials of the claim case in which the drain takes the lock back while the
+// second waiter still waits: the scenario the case examines. A loaded machine
+// often serves the second waiter first, so trials run until this many form.
 constexpr int claimTrials = 8;
+// How long the claim case may try for its trials to form.
+constexpr auto claimTrialBound = std::chrono::seconds(30);
 
 // Two threads wait behind the drain, and the drain hands the lock to whichever
 // takes it. Once that one lets go and the drain takes the lock back, the other
@@ -239,9 +243,10 @@ SecondTurn secondWaitersTurn()
     while (askingCount.load(std::memory_order_acquire) < 2) {
         std::this_thread::yield();
     }
-    // Long enough for both to find the lock held and count themselves, on any
-    // machine that runs a thread within this long of its asking.
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    // Both count themselves before they block; the release comes only after.
+    while (lock.waiterCountForTest() < 2) {
+        std::this_thread::yield();
+    }
     (void)lock.unlockForDrain();
     int firstHolder = -1;
     while ((firstHolder = holder.load(std::memory_order_acquire)) < 0) {
@@ -273,7 +278,8 @@ TEST(aWaitersClaimOutlivesAnotherWaitersTurn)
     int offered = 0;
     int unwanted = 0;
     int unobserved = 0;
-    for (int trial = 0; trial < claimTrials; ++trial) {
+    const auto deadline = std::chrono::steady_clock::now() + claimTrialBound;
+    while (offered + unwanted < claimTrials && std::chrono::steady_clock::now() < deadline) {
         switch (secondWaitersTurn()) {
         case SecondTurn::Offered:
             ++offered;
@@ -286,12 +292,14 @@ TEST(aWaitersClaimOutlivesAnotherWaitersTurn)
             break;
         }
     }
-    char message[160];
+    char message[192];
     std::snprintf(message, sizeof(message), "%d trials: second waiter offered the lock %d times, found uncounted %d times, served before a release %d times",
-        claimTrials, offered, unwanted, unobserved);
+        offered + unwanted + unobserved, offered, unwanted, unobserved);
     std::printf("%s\n", message);
     CHECK_MSG(unwanted == 0, message);
-    CHECK_MSG(offered > 0, message);
+    // The premise: the drain took the lock back before the second waiter in
+    // as many trials as the case examines.
+    CHECK_MSG(offered + unwanted >= claimTrials, message);
 }
 
 TEST(aDrainReacquiringItsOwnLockHandsNothingOff)

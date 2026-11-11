@@ -110,6 +110,9 @@ set(test_gated_file_read_EXTRA_SOURCES Source/Platform/POSIX/GatedFileRead.cpp
 # PAL::schedulerYield, so these need the real clock: a fake that advances a
 # microsecond per call turns the handoff band into an iteration count.
 set(test_model_lock_EXTRA_SOURCES Source/Platform/POSIX/SystemPAL.cpp Tests/Core/ModelLockArchiveCopy.cpp)
+# The claim case releases only once both its waiters are counted, which it
+# reads through the lock's test hook.
+set(test_model_lock_EXTRA_DEFINES UBIQUITTY_ENABLE_TEST_HOOKS=1)
 # Built as a frontend's Core archive is, optimised and with NDEBUG, beside the
 # test's own translation unit, which keeps assertions as a frontend's C++
 # interop does: the lock's holder must not depend on which copy took it.
