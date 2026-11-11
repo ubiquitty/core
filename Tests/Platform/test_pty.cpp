@@ -4037,8 +4037,14 @@ TEST(aLoginPaneHandedOverInItsStartWindowSurvivesItsHost)
 {
     const std::string user = loginUser();
     REQUIRE(!user.empty());
+    struct HandedOverPane {
+        std::string marker;
+        std::unique_ptr<PAL::Stream> receiver;
+    };
     int index = 0;
     for (const useconds_t delay : { 0u, 1000u, 5000u, 20000u }) {
+        std::vector<HandedOverPane> panes;
+        panes.reserve(5);
         for (int trial = 0; trial < 5; ++trial, ++index) {
             const std::string marker = uniqueMarker("handover", index);
             auto stream = openArguments({ "/usr/bin/login", "-pfl", user, "/bin/sh", "-c", "sleep 1000; : " + marker });
@@ -4049,14 +4055,18 @@ TEST(aLoginPaneHandedOverInItsStartWindowSurvivesItsHost)
             REQUIRE(receiver);
             ::usleep(delay);
             stream.reset();
-            // The watcher was told to leave rather than left to see the host's end close, so the
-            // shell the daemon now owns is still running a while later.
-            ::usleep(1'500'000);
-            CHECK(processesCarrying(marker) >= 2);
-            receiver.reset();
+            panes.push_back({ marker, std::move(receiver) });
+        }
+        // Each transferred pane stays alive for at least this interval. The
+        // five trials overlap their hold instead of adding five intervals to
+        // the suite's deadline; every startup delay and trial is still checked.
+        ::usleep(1'500'000);
+        for (HandedOverPane& pane : panes) {
+            CHECK(processesCarrying(pane.marker) >= 2);
+            pane.receiver.reset();
             // Only this test's own marker is signalled, to leave nothing behind.
-            (void)std::system(("pkill -KILL -f '" + marker + "'").c_str());
-            CHECK(noProcessCarriesWithin(marker, 10));
+            (void)std::system(("pkill -KILL -f '" + pane.marker + "'").c_str());
+            CHECK(noProcessCarriesWithin(pane.marker, 10));
         }
     }
 }

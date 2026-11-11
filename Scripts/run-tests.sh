@@ -682,7 +682,10 @@ CTEST_COVERED="$CTEST_BUILD_DIR/ctest-covered.txt"
 # answers before the list is opened.
 CTEST_COVERED_CONSULTED=0
 
-ubq_record_own_stanzas "$(ubq_list_stanzas)"
+# Only a consumer needs the ownership table that excludes Core's stanzas.
+if [ "$ROOT" != "$CORE_ROOT" ]; then
+    ubq_record_own_stanzas "$(ubq_list_stanzas)"
+fi
 
 # Every source path this script names, checked before the first compile.
 #
