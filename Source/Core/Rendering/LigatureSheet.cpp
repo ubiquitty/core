@@ -134,9 +134,9 @@ LigatureSheet::LigatureSheet(int marginXInPixels, GlyphRasterizer* rasterizer, S
     m_capacity = decision.plan.capacity;
     m_sheetWidthInPixels = m_columns * m_slotWidthInPixels;
     m_sheetHeightInPixels = decision.plan.rows * m_slotHeightInPixels;
-    m_coverage.assign(static_cast<std::size_t>(m_sheetWidthInPixels) * static_cast<std::size_t>(m_sheetHeightInPixels), 0);
-    m_slotScratch.assign(static_cast<std::size_t>(m_slotWidthInPixels) * static_cast<std::size_t>(m_slotHeightInPixels), 0);
-    m_slotDidSubstitute.assign(static_cast<std::size_t>(m_capacity), 0);
+    m_coverage.resize(static_cast<std::size_t>(m_sheetWidthInPixels) * static_cast<std::size_t>(m_sheetHeightInPixels));
+    m_slotScratch.resize(static_cast<std::size_t>(m_slotWidthInPixels) * static_cast<std::size_t>(m_slotHeightInPixels));
+    m_slotDidSubstitute.resize(static_cast<std::size_t>(m_capacity));
     m_cache.enableOwnedInkRecords(stripSlotCells, m_slotWidthInPixels);
     // A face with no shaper draws no ligature, and saying so here is what makes
     // the caller leave rows unligatured rather than draw them wrongly. A face
