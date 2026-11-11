@@ -256,7 +256,12 @@ bool waitFor(Condition condition, int budgetMilliseconds)
     return condition();
 }
 
-/// Whether any visible row of a stopped session's model carries `text`.
+/// Whether any visible row of the session's model carries `text`, read under
+/// the model lock, so a reader still running may be asked.
+///
+/// A line typed into the PTY comes back twice: the terminal's echo of it at
+/// once, and the shell's answer later. Draining any bytes after typing proves
+/// only the first, so a case waits here for the answer it asserts.
 bool screenContains(TerminalSession& session, const std::string& text)
 {
     const Ubiquitty::ModelLockHold hold(*session.modelLockPointer());
@@ -472,16 +477,15 @@ TEST(aSharedSessionHasOneReaderAndResumesItsOwnStreamOnReclaim)
     CHECK_MSG(!session->isRemoteAttached(), "the reclaim left the thin client attached");
     CHECK(session->remoteState() == Ubiquitty::Session::State::Idle);
     CHECK_EQ(factory.createCount, carriersBeforeReclaim);
-    CHECK_MSG(waitFor([&] { return session->takeDrainedBytes() > 0; }, 5000),
-        "the resumed reader drained nothing the shell wrote while shared");
+    CHECK_MSG(waitFor([&] { return screenContains(*session, "echoed-while-shared"); }, 5000),
+        "the line the shell answered while shared never reached the screen");
     typeIntoMaster(*session, "after-reclaim");
-    CHECK_MSG(waitFor([&] { return session->takeDrainedBytes() > 0; }, 5000), "the resumed reader stopped reading");
+    CHECK_MSG(waitFor([&] { return screenContains(*session, "echoed-after-reclaim"); }, 5000),
+        "the shell stopped answering after the reclaim");
 
     // The shell that answers is the one that was shared: still this process's
     // child, still running, and shareable again.
     session->stopIngest();
-    CHECK_MSG(screenContains(*session, "echoed-while-shared"), "the line the shell answered while shared never reached the screen");
-    CHECK_MSG(screenContains(*session, "echoed-after-reclaim"), "the shell stopped answering after the reclaim");
     CHECK_MSG(session->isShareableLocalSession(), "the reclaimed shell is gone or no longer this process's");
 
     Ubiquitty::PAL::UnixFileDescriptor retainedMaster(::dup(session->fileDescriptor()));
@@ -696,9 +700,8 @@ TEST(aRefusedHandoffLeavesTheSessionLocalAndReading)
     CHECK_MSG(factory.createCount == 0, "a refused share still attached a thin client");
 
     typeIntoMaster(*session, "after-refusal");
-    CHECK_MSG(waitFor([&] { return session->takeDrainedBytes() > 0; }, 5000), "a refused share left the reader stopped");
+    CHECK_MSG(waitFor([&] { return screenContains(*session, "echoed-after-refusal"); }, 5000), "a refused share left the reader stopped");
     session->stopIngest();
-    CHECK(screenContains(*session, "echoed-after-refusal"));
 
     session->close();
     releaseTerminalSession(session);
