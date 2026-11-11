@@ -866,6 +866,16 @@ else()
     ubiquitty_schedule_shell_stanzas(DRIVER "${_ubq_shell_driver}")
 endif()
 
+# input_settled_echo reaches a verdict only for a key its program echoes within
+# the settle timer E, and beside the rest of the suite on a small runner the
+# program misses E on every key. It runs alone, as the wall-clock unit tests
+# do, keeping the scheduler's locks; a run that still misses E fails on that
+# premise.
+if(TEST shell_input_settled_echo)
+    set_tests_properties(shell_input_settled_echo PROPERTIES RUN_SERIAL TRUE)
+    set_property(TEST shell_input_settled_echo APPEND PROPERTY RESOURCE_LOCK timing)
+endif()
+
 # ----------------------------------------------------------------------
 # Dev tools that are not tests: flood benchmarks, a fuzz-corpus generator, a
 # PTY-replay client. They have no pass/fail behaviour, so they are compiled and
