@@ -517,6 +517,13 @@ class BatteryTests(unittest.TestCase):
         self.assertEqual(environment["UBQ_RESULT_DIR"], "/temporary/ubiquitty-ci/preflight")
         self.assertEqual(environment["UBQ_EVENT_LOG"], "/temporary/ubiquitty-ci/preflight/events.jsonl")
 
+    def test_local_apple_battery_keeps_scratch_in_its_run_root_without_runner_temp(self):
+        with patch.object(batteries.subprocess, "check_output", return_value="/apple"):
+            environment = batteries.platform_environment("apple", {"UBQ_CI_ROOT": "/run/local"})
+        self.assertEqual(environment["CCACHE_STATSLOG"], "/run/local/ccache-stats.log")
+        self.assertEqual(environment["UBIQUITTY_SNAPSHOT_FAILURE_DIR"], "/run/local/ubiquitty-regression-fail")
+        self.assertEqual(environment["UBQ_EVENT_LOG"], "/run/local/apple/events.jsonl")
+
     def test_batteries_under_different_roots_keep_their_artifacts_apart(self):
         # With one fixed root, two batteries on one machine share events.jsonl
         # and the stage logs, and the second's report reads whatever the first

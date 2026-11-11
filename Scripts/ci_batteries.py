@@ -346,8 +346,9 @@ def platform_environment(platform, environment, context=None):
     if platform == "preflight":
         return result
     result["UBQ_TEST_FAIL_FAST"] = "1"
-    result["CCACHE_STATSLOG"] = str(Path(result["RUNNER_TEMP"]) / "ccache-stats.log")
-    result["UBIQUITTY_SNAPSHOT_FAILURE_DIR"] = str(Path(result["RUNNER_TEMP"]) / "ubiquitty-regression-fail")
+    temporary = Path(result.get("RUNNER_TEMP") or result["UBQ_CI_ROOT"])
+    result["CCACHE_STATSLOG"] = str(temporary / "ccache-stats.log")
+    result["UBIQUITTY_SNAPSHOT_FAILURE_DIR"] = str(temporary / "ubiquitty-regression-fail")
     if platform == "linux":
         result["UBQ_BUILD_ROOT"] = str(Path(result["RUNNER_WORKSPACE"]) / "build")
         result["CC"], result["CXX"] = "gcc", "g++"
