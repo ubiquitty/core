@@ -414,5 +414,7 @@ for benchmark in build-perf-bench.sh run-bench.sh; do
     contains "$benchmark names its required profile" "UBIQUITTY_PGO=REQUIRE" "$output"
 done
 
-report "test-build-scripts-pgo" "builders forward PGO, select profiles by target, preserve explicit overrides and private training outputs, and report quiet failures"
-python3 "$ROOT/Scripts/test-pgo-toolchain.py" || exit 1
+python3 "$ROOT/Scripts/test-pgo-toolchain.py"
+check "the Linux profile's toolchain provenance tests pass" "0" "$?"
+
+report "test-build-scripts-pgo" "builders forward PGO, select profiles by target, preserve explicit overrides and private training outputs, hold a Linux profile to its image, and report quiet failures"
