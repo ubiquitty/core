@@ -67,9 +67,8 @@ public:
             return;
         m_core.emplace(m_terminal.get(), &m_dispatcher, &m_factory, &m_observer);
         m_core->start(0, 80, 24);
-        m_isReady = Harness::pumpUntil(m_dispatcher, 10s, [this] { return m_core->acknowledged() && m_observer.screens > 0; });
-        // The shell's prompt arrives after the first picture.
-        settle();
+        m_isReady = Harness::pumpUntil(m_dispatcher, 10s, [this] { return m_core->acknowledged() && m_observer.screens > 0; })
+            && shellRunsWhatItIsSent();
     }
 
     /// Whether the daemon started and the link attached.
@@ -88,6 +87,28 @@ public:
     void settle()
     {
         (void)Harness::pumpUntil(m_dispatcher, 500ms, [] { return false; });
+    }
+
+    /// Whether the daemon's shell runs a line sent through the link.
+    ///
+    /// The probe is sent again each second rather than once: a line that
+    /// reaches the terminal before the shell claims it is echoed by the line
+    /// discipline and then discarded, and a shell started through login, as
+    /// on macOS, claims it late on a loaded machine. The echo of the line does
+    /// not carry the text its output does: the shell joins the two halves.
+    ///
+    /// - Returns: Whether the probe's output reached the view within 30 s.
+    bool shellRunsWhatItIsSent()
+    {
+        constexpr std::string_view probe = "printf '%s%s\\n' shell- awake\n";
+        const auto shows = [this] { return UbiquittyTest::paneViewText(m_core->view()).find("shell-awake") != std::string::npos; };
+        const auto deadline = std::chrono::steady_clock::now() + 30s;
+        while (std::chrono::steady_clock::now() < deadline) {
+            (void)m_core->send(Session::PaneInput { .intent = Session::PaneInput::Raw {}, .localEncoding = std::span<const char>(probe.data(), probe.size()) });
+            if (Harness::pumpUntil(m_dispatcher, 1s, shows))
+                return true;
+        }
+        return false;
     }
 
     /// Reads the view; the core's terminal is written only on this thread.
@@ -123,7 +144,7 @@ private:
 void theRemoteLinkKeepsThePaneLinkContractAgainstADaemon(const std::string& hostBinary)
 {
     DaemonLinkFixture fixture(hostBinary);
-    REQUIRE_MSG(fixture.isReady(), "premise: the link did not attach to the daemon");
+    REQUIRE_MSG(fixture.isReady(), "premise: the link did not attach to the daemon, or its shell never ran a line");
     UbiquittyTest::checkPaneLinkConformance(fixture, "remote link over a daemon");
 
     // 1. The viewport the link reports sizes the host's pane. The line the
