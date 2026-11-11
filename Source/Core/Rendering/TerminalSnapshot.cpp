@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 namespace Ubiquitty::Rendering {
 
@@ -185,8 +186,10 @@ std::vector<std::uint8_t> renderTerminalSnapshotRGBA(const Terminal& terminal, c
     // A caller that renders every frame owns its renderer, so the glyph cache
     // it was given carries across frames instead of being allocated, zeroed and
     // refilled per call. The local one is for the one-shot callers.
-    SoftwareRenderer localRenderer(rasterizer);
-    SoftwareRenderer& renderer = ownedRenderer ? *ownedRenderer : localRenderer;
+    std::optional<SoftwareRenderer> localRenderer;
+    if (!ownedRenderer)
+        localRenderer.emplace(rasterizer);
+    SoftwareRenderer& renderer = ownedRenderer ? *ownedRenderer : *localRenderer;
 
     TerminalFrameInputs frame;
     // An empty slot geometry, stated rather than defaulted: zero by omission is
