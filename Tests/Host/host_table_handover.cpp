@@ -63,9 +63,15 @@ struct HandoverAccess {
         daemon.m_events.append({ .kind = Ubiquitty::Session::EventKind::TitleChanged, .sessionID = session.id, .text = "retained event" });
         daemon.m_everHadSession = true;
     }
+    // The daemon steps its quiesce at the later of the instant it is given and
+    // its own clock, so the freeze starts this far ahead of that clock: a
+    // loaded machine that stalls past the natural window (100 ms) between two
+    // steps would otherwise move the pane on by the real clock and not this one.
+    static constexpr std::uint64_t clockLeadMicroseconds = 60'000'000;
+
     static bool freeze(Daemon& daemon)
     {
-        const auto now = ScreenPlaneAccess::now();
+        const auto now = ScreenPlaneAccess::now() + clockLeadMicroseconds;
         if (!daemon.beginHandoverQuiesce(now))
             return false;
         daemon.serviceHandoverQuiesce(now);
