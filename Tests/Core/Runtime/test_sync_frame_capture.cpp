@@ -565,7 +565,7 @@ TEST(aBlockTheHeldFrameTimerExpiresIsPublishedClosed)
     withSessionModel(*fixture.session, [](Terminal& terminal) { terminal.modes.shouldSaveCRT = false; });
     fixture.session->setSyncFrameCaptureGeometry(testGeometry());
     fixture.drainSyncFrame("before");
-    static_cast<void>(fixture.session->takeSyncFrame());
+    static_cast<void>(TakenFrame(fixture.session->takeSyncFrame()));
 
     Ubiquitty::PAL::s_testTicks = 100;
     fixture.stream->toRead += "\x1b[?2026h\x1b[Hafter";
@@ -638,7 +638,7 @@ TEST(aBlockTheHeldFrameTimerExpiresReleasesItsFrameWithItsColors)
     withSessionModel(*fixture.session, [](Terminal& terminal) { terminal.modes.shouldSaveCRT = false; });
     fixture.session->setSyncFrameCaptureGeometry(testGeometry());
     fixture.drainSyncFrame("before");
-    static_cast<void>(fixture.session->takeSyncFrame());
+    static_cast<void>(TakenFrame(fixture.session->takeSyncFrame()));
     const std::uint64_t epochBefore = fixture.session->readCoherentColors().paletteEpoch;
 
     Ubiquitty::PAL::s_testTicks = 100;
@@ -2997,7 +2997,7 @@ TEST(anOpenSynchronizedUpdateHoldsTheTickAndTheLiveRead)
     REQUIRE(pane.terminal->modes.syncOutput);
     REQUIRE(pane.fixture.session->isDrainSaturated());
     REQUIRE(pane.fixture.session->readSnapshot().syncHoldActive);
-    static_cast<void>(pane.fixture.session->takeSyncFrame());
+    static_cast<void>(TakenFrame(pane.fixture.session->takeSyncFrame()));
 
     const FrameAsk held = askForFrame(*pane.fixture.session, {});
     CHECK(held.supply.route == Runtime::FrameRoute::Declined);
@@ -3025,7 +3025,7 @@ TEST(aHeldTickSaysWhenTheUpdatesBudgetRunsOut)
     static_cast<void>(pane.fixture.session->drain());
     REQUIRE(pane.terminal->modes.syncOutput);
     REQUIRE(pane.fixture.session->isDrainSaturated());
-    static_cast<void>(pane.fixture.session->takeSyncFrame());
+    static_cast<void>(TakenFrame(pane.fixture.session->takeSyncFrame()));
 
     const FrameAsk first = askForFrame(*pane.fixture.session, { .nowTicks = PAL::monotonicTicks() });
     REQUIRE(first.supply.decline == Runtime::FrameDecline::HeldByPresentation);
