@@ -682,10 +682,7 @@ CTEST_COVERED="$CTEST_BUILD_DIR/ctest-covered.txt"
 # answers before the list is opened.
 CTEST_COVERED_CONSULTED=0
 
-# The stanzas of the checkout under test, which `wanted` holds a driver run from
-# a repository carrying this one to.
-# shellcheck disable=SC2034  # wanted, in run-tests-lib.sh, reads it
-UBQ_OWN_STANZAS="$(ubq_list_stanzas)"
+ubq_record_own_stanzas "$(ubq_list_stanzas)"
 
 # Every source path this script names, checked before the first compile.
 #
