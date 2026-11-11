@@ -2075,13 +2075,14 @@ exit "$WEB_CONFIGURE_STATUS"
 class LinuxSmokeFailFastTests(unittest.TestCase):
     source_repositories = ("app",)
 
-    def run_smokes(self, directory, fail_fast, status="17", failure_token=False):
+    def run_smokes(self, directory, fail_fast, status="17", failure_token=False, *,
+                   modes=("a", "b", "c"), failing="b", vulkan_driver=None):
         root = Path(directory)
         scripts = root / "Scripts"
         scripts.mkdir()
         source = root / "Source/Platform/Linux"
         source.mkdir(parents=True)
-        (source / "main.cpp").write_text('\n'.join(f'if (mode == "--smoke-{name}") {{}}' for name in ("a", "b", "c")))
+        (source / "main.cpp").write_text('\n'.join(f'if (mode == "--smoke-{name}") {{}}' for name in modes))
         shutil.copyfile(test_file("Scripts/run-linux-smokes.sh"), scripts / "run-linux-smokes.sh")
         carry_library_resolver(scripts)
         core_scripts = root / "Libraries/ubiquitty-core/Scripts"
@@ -2095,7 +2096,7 @@ class LinuxSmokeFailFastTests(unittest.TestCase):
         binary = root / "fake binary"
         binary.write_text("""#!/bin/bash
 printf '%s\\n' "$1" >> "$SMOKE_EVENTS"
-if [ "$1" = --smoke-b ]; then
+if [ "$1" = "--smoke-$SMOKE_FAILING_MODE" ]; then
     echo "diagnostic from the selected smoke"
     [ "$SMOKE_FAILURE_TOKEN" = 1 ] && echo "FAIL: reported by the smoke"
     exit "$SMOKE_EXIT_STATUS"
@@ -2107,9 +2108,12 @@ echo "PASS: smoke completed"
         environment = dict(os.environ, UBQ_BUILD_ROOT=str(root / "build"),
                            UBIQUITTY_CORE_SOURCE_DIR=str(core_scripts.parent),
                            PATH=str(tools) + os.pathsep + os.environ.get("PATH", ""),
-                           SMOKE_EVENTS=str(events), SMOKE_EXIT_STATUS=status,
+                           SMOKE_EVENTS=str(events), SMOKE_EXIT_STATUS=status, SMOKE_FAILING_MODE=failing,
                            SMOKE_FAILURE_TOKEN="1" if failure_token else "0", SMOKE_TIMEOUT="9")
         environment.pop("UBQ_TEST_FAIL_FAST", None)
+        environment.pop("VK_ICD_FILENAMES", None)
+        if vulkan_driver is not None:
+            environment["VK_ICD_FILENAMES"] = vulkan_driver
         for name in LIBRARY_ROOT_VARIABLES:
             environment.pop(name, None)
         if fail_fast is not None:
@@ -2150,6 +2154,35 @@ echo "PASS: smoke completed"
             self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
             self.assertEqual(events, ["--smoke-a", "--smoke-b", "--smoke-c"])
             self.assertIn("3 passed, 0 failed, 0 unexecuted", checked.stdout)
+
+    LAVAPIPE_MANIFESTS = ("/usr/share/vulkan/icd.d/lvp_icd.json", "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json")
+
+    def run_exporter_smoke(self, directory, mode, status, vulkan_driver):
+        return self.run_smokes(directory, "1", status, modes=("a", mode, "z"), failing=mode,
+                               vulkan_driver=vulkan_driver)
+
+    def test_listed_mode_without_an_exporter_is_skipped_and_counted_under_lavapipe(self):
+        for manifest in self.LAVAPIPE_MANIFESTS:
+            with self.subTest(manifest=manifest), tempfile.TemporaryDirectory() as directory:
+                checked, events, binary = self.run_exporter_smoke(directory, "dmabuf-import-failure", "77", manifest)
+                self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+                self.assertEqual(events, ["--smoke-a", "--smoke-dmabuf-import-failure", "--smoke-z"])
+                self.assertIn("SKIPPED --smoke-dmabuf-import-failure (lavapipe cannot export dma-buf;"
+                              " runs where UBQ_CI_LINUX_VULKAN=native)", checked.stdout)
+                self.assertIn("2 passed, 0 failed, 0 unexecuted, 1 skipped on lavapipe", checked.stdout)
+
+    def test_skip_is_refused_off_lavapipe_for_unlisted_modes_and_for_other_statuses(self):
+        for mode, status, manifest in (("dmabuf-import-failure", "77", None),
+                                       ("dmabuf-import-failure", "77", "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json"),
+                                       ("b", "77", self.LAVAPIPE_MANIFESTS[0]),
+                                       ("dmabuf-import-failure", "1", self.LAVAPIPE_MANIFESTS[0])):
+            with self.subTest(mode=mode, status=status, manifest=manifest), tempfile.TemporaryDirectory() as directory:
+                checked, events, binary = self.run_exporter_smoke(directory, mode, status, manifest)
+                self.assertEqual(checked.returncode, 1, checked.stdout + checked.stderr)
+                self.assertEqual(events, ["--smoke-a", f"--smoke-{mode}"])
+                self.assertIn(f"FAIL  --smoke-{mode} (rc={status})", checked.stdout)
+                self.assertNotIn("SKIPPED", checked.stdout)
+                self.assertIn("1 passed, 1 failed, 1 unexecuted, 0 skipped on lavapipe", checked.stdout)
 
 
 class UIScenarioResultTests(unittest.TestCase):
