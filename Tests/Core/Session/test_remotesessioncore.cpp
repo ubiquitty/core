@@ -5207,6 +5207,11 @@ TEST(clipboardRoutingChangesEstablishedConnectionWithoutReconnect)
     RecordingObserver observer;
     UbiquittyTest::HostScreen host(7, 17);
     RemoteSessionCore core(term.get(), &dispatcher, &factory, &observer);
+    // The client's clock stands still. A receive leaves an acknowledgement owed,
+    // and the tick that ends the same delivery sends it once the ack interval
+    // (4 ms at least) has passed on this clock: a machine that stalls inside
+    // the delivery would send that Ack, a frame the counts here do not expect.
+    core.setClock([] { return std::uint64_t { 1'000'000 }; });
     core.start(0, 80, 24);
     pumpConnect(factory.last(), dispatcher);
     CHECK(!core.canChangeClipboardServing());
