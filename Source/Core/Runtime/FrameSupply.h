@@ -107,10 +107,12 @@ struct FrameSupply {
     Selection::ViewportEnds selectionEnds {};
     /// Ticks until the view asks again on its own, from now: on
     /// ``FrameDecline::HeldByPresentation`` and
-    /// ``FrameDecline::RedrawArriving``, the hold's budget, at least 1.
-    /// Zero on every other answer, where what ends the hold wakes the view:
-    /// the delivery or release hook that admits a held frame, and the
-    /// publication of an awaited capture.
+    /// ``FrameDecline::RedrawArriving``, the hold's budget, at least 1; on
+    /// ``FrameDecline::AwaitingCapture`` for a pane no ingest loop drains,
+    /// whose model another thread held at the ask, 1, since nothing else will
+    /// serve it. Zero on every other answer, where what ends the hold wakes
+    /// the view: the delivery or release hook that admits a held frame, and
+    /// the publication of an awaited capture.
     std::uint32_t askAgainTicks = 0;
 };
 
