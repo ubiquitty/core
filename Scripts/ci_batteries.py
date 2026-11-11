@@ -75,9 +75,12 @@ class Stage:
     # runs on a runner of its own.
     requires: tuple[str, ...] = ()
     # False for a stage that passes only where its input was made, which a
-    # hosted runner never is: the Linux pgo stage reads a profile stamped with
+    # hosted runner never is. The Linux pgo stage reads a profile stamped with
     # the ID of the image it was trained in, and a hosted runner builds its own
-    # image from the same recipe. A hosted workflow lists every other stage.
+    # image from the same recipe. The Linux-native snapshot goldens are minted on
+    # hub, whose system fallback faces the CI image does not have, until the
+    # snapshots fall back only to shipped and fixture faces. A hosted workflow
+    # lists every other stage.
     hosted: bool = True
 
 
@@ -227,7 +230,7 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
             Stage("linux-smokes", "Linux headless smoke battery", "xvfb-run -a ./Scripts/run-linux-smokes.sh", "xvfb", repositories=("app",),
                   requires=("linux-build",)),
             Stage("linux-snapshots", "Linux-native snapshots", "xvfb-run -a python3 Tests/Snapshots/run.py --backend linux --quiet", "xvfb", repositories=("app",),
-                  requires=("linux-build",)),
+                  requires=("linux-build",), hosted=False),
             Stage("linux-determinism", "Linux-native snapshot determinism", "xvfb-run -a python3 Tests/Snapshots/run.py --backend linux --twice linux_native_text", "xvfb", repositories=("app",),
                   requires=("linux-build",)),
             Stage("wasm-tools", "Emscripten 6.0.9", WASM_SETUP, toolchain="wasm"),
@@ -405,6 +408,20 @@ def retained_gcc_drivers(environment, identify=gcc_identity):
     return retained
 
 
+# The snapshot cases a hosted Mac cannot draw, each with its reason and the
+# date it was recorded, in the grammar of Tests/Snapshots/exempt-<backend>.txt.
+# A hosted macOS image carries no SF Pro: it is Apple's separate download, not
+# part of macOS, and its licence rules out installing it on a runner. A
+# maintainer's Mac that has it still compares these cases.
+HOSTED_SNAPSHOT_EXEMPTIONS = {
+    f"case:{name}:coretext:{backend}": (
+        "SF Pro is not installed on hosted macOS runners and its licence rules out "
+        "installing it, so the case's SF Pro resolves to another face there (2026-11-11)")
+    for name in ("decdwl_width_axis_sf_pro", "osc66_proportional_double_sf_pro", "proportional_runs_sf_pro")
+    for backend in ("macos", "swift")
+}
+
+
 def stage_environment(stage, platform, environment):
     result = dict(environment)
     result["UBQ_STAGE_KEY"] = stage.key
@@ -412,6 +429,13 @@ def stage_environment(stage, platform, environment):
     # Package recipes live in this manifest rather than the workflow. Their
     # digest joins the tool-version stamp so changing a recipe reinstalls it.
     result["UBQ_CI_SETUP_KEY"] = hashlib.sha256(stage.command.encode()).hexdigest()[:16]
+    if (platform == "apple" and stage.key in ("snapshots", "swift-renderer")
+            and result.get("RUNNER_ENVIRONMENT") == "github-hosted"):
+        exemptions = Path(result.get("UBQ_RESULT_DIR") or result["RUNNER_TEMP"]) / "hosted-snapshot-exemptions.txt"
+        exemptions.parent.mkdir(parents=True, exist_ok=True)
+        exemptions.write_text("".join(f"{identifier}  {reason}\n" for identifier, reason in sorted(HOSTED_SNAPSHOT_EXEMPTIONS.items())),
+                              encoding="utf-8")
+        result["UBQ_SNAPSHOT_RUNNER_EXEMPTIONS"] = str(exemptions)
     if platform == "linux" and stage.toolchain != "native":
         if stage.toolchain == "gcc":
             result["UBQ_BUILD_ROOT"] = str(Path(result["RUNNER_WORKSPACE"]) / "build-gcc")

@@ -2058,11 +2058,19 @@ def exempt_identifiers(backend):
     and without a pixel ceiling, because nothing is measured: the case is not
     run on that backend at all, and a run reports it as EXEMPT. An absent file
     exempts nothing.
+
+    A runner that lacks what a case needs names further exemptions, in the same
+    grammar, in the file UBQ_SNAPSHOT_RUNNER_EXEMPTIONS names: Scripts/
+    ci_batteries.py writes it for a hosted Mac, which has no SF Pro.
     """
+    identifiers = set()
     path = snapshot_path(f"exempt-{backend}.txt") if SOURCE_FILES else ROOT / "Tests" / "Snapshots" / f"exempt-{backend}.txt"
-    if not path.exists():
-        return set()
-    return set(exempt_entries(path))
+    if path.exists():
+        identifiers |= set(exempt_entries(path))
+    runner = os.environ.get("UBQ_SNAPSHOT_RUNNER_EXEMPTIONS")
+    if runner:
+        identifiers |= set(exempt_entries(Path(runner)))
+    return identifiers
 
 
 EXEMPT_REASONS = {}

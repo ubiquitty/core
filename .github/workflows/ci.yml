@@ -700,18 +700,18 @@ jobs:
           path: ${{ runner.temp }}/ubq-ci-linux-image.tar
           key: ci-linux-image-${{ steps.image.outputs.digest }}
       # The GTK frontend built against this Core and driven by its headless
-      # smoke battery and native snapshots under Xvfb, as the app's Linux
-      # battery runs them.
+      # smoke battery under Xvfb, as the app's Linux battery runs it. The native
+      # snapshots are not hosted (Stage.hosted): their goldens are minted on hub.
       - name: App's Linux stages
         working-directory: app
         env:
           UBQ_CI_IMAGE_ARCHIVE: ${{ runner.temp }}/ubq-ci-linux-image.tar
           UBQ_CI_LINUX_IMAGE: "true"
-        run: '"$CORE_CHECKOUT/Scripts/ci-linux-image.sh" --source-root "$APP_CHECKOUT" python3 "$CORE_CHECKOUT/Scripts/ci_batteries.py" run linux --source-root "$APP_CHECKOUT" --only setup --only frontend-tools --only quic --only linux-build --only linux-smokes --only linux-snapshots'
+        run: '"$CORE_CHECKOUT/Scripts/ci-linux-image.sh" --source-root "$APP_CHECKOUT" python3 "$CORE_CHECKOUT/Scripts/ci_batteries.py" run linux --source-root "$APP_CHECKOUT" --only setup --only frontend-tools --only quic --only linux-build --only linux-smokes'
       - name: Report the app's Linux stages
         if: always()
         working-directory: app
-        run: python3 "$CORE_CHECKOUT/Scripts/ci_batteries.py" report linux --source-root "$APP_CHECKOUT" --only setup --only frontend-tools --only quic --only linux-build --only linux-smokes --only linux-snapshots
+        run: python3 "$CORE_CHECKOUT/Scripts/ci_batteries.py" report linux --source-root "$APP_CHECKOUT" --only setup --only frontend-tools --only quic --only linux-build --only linux-smokes
       - name: Print the failed stage logs
         if: failure()
         run: |
