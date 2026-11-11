@@ -76,12 +76,14 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <fcntl.h>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <iterator>
 #include <optional>
 #include <string>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -312,6 +314,20 @@ Sync::Greet controlGreeting(Sync::ID128 instance)
     greeting.facts.viewportRows = 24;
     greeting.facts.viewportColumns = 80;
     return greeting;
+}
+
+/// Whether no host holds the start lock beside a socket: the lock a host
+/// takes before it listens and holds until it exits, and the next start of
+/// that socket needs.
+bool isStartLockFree(const std::string& socket)
+{
+    const int lock = ::open((socket + ".lock").c_str(), O_RDWR | O_CLOEXEC);
+    if (lock < 0)
+        return errno == ENOENT;
+    const bool isFree = ::flock(lock, LOCK_EX | LOCK_NB) == 0;
+    // Closing the descriptor releases the lock this probe took.
+    ::close(lock);
+    return isFree;
 }
 
 /// The process the kernel names as serving a socket this user's process
@@ -1084,6 +1100,16 @@ void answersAnIdleStopOnlyWhenItCan(const std::string& built)
             ::usleep(10'000);
         }
         CHECK_MSG(isGone, "a host asked to stop as its socket first answers stops");
+        // A host stops answering before it exits, and holds its start lock
+        // until it has: the next start waits for the lock, as an upgrade
+        // waits for the host it retires (retireIdleBundledHost).
+        bool isReleased = false;
+        for (int attempt = 0; attempt < 500 && !isReleased; ++attempt) {
+            isReleased = isStartLockFree(socket);
+            if (!isReleased)
+                ::usleep(10'000);
+        }
+        CHECK_MSG(isReleased, "a host that stopped releases its start lock");
     }
     const std::string log = fileText(logPathFor(machine.home, leaf));
     const auto occurrences = [&log](std::string_view words) {
