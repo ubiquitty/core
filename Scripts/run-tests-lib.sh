@@ -7,20 +7,44 @@
 # Sourced by Scripts/run-tests.sh of every repository that has a driver. A stanza
 # is written against these helpers (`wanted`, `ubq_skip`, `ubq_skip_unless_required`,
 # `ubq_build_test`) and the driver's state: FILTERS, FILTERS_MATCHED, FUZZ_ONLY,
-# SKIP_CTEST_COVERED, UBQ_OWN_STANZAS (optional), ROOT and CORE_ROOT (with it), CTEST_COVERED, CTEST_COVERED_CONSULTED, CTEST_BUILD_DIR,
+# SKIP_CTEST_COVERED, the stanzas ubq_record_own_stanzas recorded (optional), ROOT and CORE_ROOT (with them), CTEST_COVERED, CTEST_COVERED_CONSULTED, CTEST_BUILD_DIR,
 # BUILD_JOBS, SKIPPED, SKIPPED_REASONS, and ubq_configure_ctest_tree, which the
 # driver defines for the tree it configures.
 #
 # shellcheck disable=SC2034  # state the sourcing driver reads
+
+# The variable that marks a stanza name as the checkout's own. A name is
+# [a-zA-Z0-9_-]; escaping `_` before spelling `-` keeps two names from sharing
+# one variable.
+ubq_own_stanza_variable() { # <name>
+    local escaped="${1//_/_u}"
+    UBQ_OWN_STANZA_VARIABLE="ubq_own_stanza_${escaped//-/_h}"
+}
+
+# ubq_record_own_stanzas <names> — the stanzas, one per line, of the checkout
+# under test, which `wanted` holds a driver run from a repository carrying this
+# one to. Each is a variable of its own rather than a line in one string, so a
+# stanza's question costs the same whatever the inventory's size; bash 3.2 has
+# no associative array.
+ubq_record_own_stanzas() {
+    local name
+    UBQ_OWN_STANZAS_RECORDED=1
+    while IFS= read -r name; do
+        case "$name" in ''|*[!a-zA-Z_0-9-]*) continue ;; esac
+        ubq_own_stanza_variable "$name"
+        printf -v "$UBQ_OWN_STANZA_VARIABLE" '%s' 1
+    done <<< "$1"
+}
 
 # wanted <name> — true when no filter was given or the name matches.
 # A name CTest already ran is skipped here. An explicit filter always wins, so
 # `run-tests.sh test_host_tools` runs that shell recipe outside CMake.
 wanted() {
     # A stanza of ubiquitty-core is not the checkout under test's to run when the
-    # driver serves another repository (the driver sets UBQ_OWN_STANZAS there).
-    if [ -n "${UBQ_OWN_STANZAS:-}" ] && [ "${ROOT:-}" != "${CORE_ROOT:-}" ]; then
-        case $'\n'"$UBQ_OWN_STANZAS"$'\n' in *$'\n'"$1"$'\n'*) ;; *) return 1 ;; esac
+    # driver serves another repository (ubq_record_own_stanzas recorded them).
+    if [ -n "${UBQ_OWN_STANZAS_RECORDED:-}" ] && [ "${ROOT:-}" != "${CORE_ROOT:-}" ]; then
+        ubq_own_stanza_variable "$1"
+        [ -n "${!UBQ_OWN_STANZA_VARIABLE:-}" ] || return 1
     fi
     # --fuzz-only declines every stanza. The fuzz section reads WITH_FUZZ rather
     # than this, so it still runs; what it stops is the suite running a second
