@@ -133,8 +133,10 @@ protected:
 
 private:
     void ioLoop();
-    /// Drains a bounded batch of stderr and retains the most recent diagnostic bytes.
-    void drainDiagnostics();
+    /// Reads stderr until it would block or end, retaining the most recent bytes.
+    ///
+    /// - Parameter maxReads: The most reads this call makes.
+    void drainDiagnostics(unsigned maxReads);
     /// Writes what is queued, holding `m_outMutex` only around the queue.
     ///
     /// The write loop runs unlocked. `send` is the per-keystroke path for every

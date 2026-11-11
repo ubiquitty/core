@@ -34,6 +34,17 @@ constexpr std::size_t maxPendingOut = guaranteedOutboundFrameBytes;
 constexpr std::size_t outboundChunkBytes = 64u * 1024u;
 constexpr std::size_t readChunk = 64u * 1024u;
 
+// Diagnostics are read a kilobyte at a time and only the most recent are kept.
+constexpr std::size_t diagnosticReadBytes = 1024;
+constexpr std::size_t retainedDiagnosticBytes = 4096;
+// A wake reads a bounded batch, so stderr that keeps arriving cannot starve
+// input.
+constexpr unsigned diagnosticReadsPerWake = 16;
+// The close reads at least what a pipe can hold (1 MiB is Linux's default
+// pipe-max-size), because a failing child's last diagnostic is the cause of the
+// close. The bound stops a child that keeps writing after its output ended.
+constexpr unsigned diagnosticReadsAtClose = 1024;
+
 } // namespace
 
 PollChannel::PollChannel(Transport::Origin origin)
@@ -220,7 +231,7 @@ void PollChannel::emitCloseOnce(Health terminal, const std::string& reason)
     m_health.store(terminal, std::memory_order_release);
     if (m_closeEmitted.exchange(true, std::memory_order_acq_rel))
         return;
-    drainDiagnostics();
+    drainDiagnostics(diagnosticReadsAtClose);
     if (!m_stopRequested.load(std::memory_order_acquire) && m_observer)
         m_observer->onClose(m_diagnostics.empty() ? reason : reason + std::string(closeDiagnosticSeparator) + m_diagnostics);
 }
@@ -277,16 +288,15 @@ void PollChannel::flushPending()
         emitCloseOnce(closeHealth, closeReason);
 }
 
-void PollChannel::drainDiagnostics()
+void PollChannel::drainDiagnostics(unsigned maxReads)
 {
-    std::array<char, 1024> buffer;
-    // Bound each drain as well as retained bytes so noisy stderr cannot starve input.
-    for (unsigned iteration = 0; m_diagnosticStream && iteration < 16; ++iteration) {
+    std::array<char, diagnosticReadBytes> buffer;
+    for (unsigned iteration = 0; m_diagnosticStream && iteration < maxReads; ++iteration) {
         const int count = m_diagnosticStream->read(buffer);
         if (count > 0) {
             m_diagnostics.append(buffer.data(), static_cast<std::size_t>(count));
-            if (m_diagnostics.size() > 4096)
-                m_diagnostics.erase(0, m_diagnostics.size() - 4096);
+            if (m_diagnostics.size() > retainedDiagnosticBytes)
+                m_diagnostics.erase(0, m_diagnostics.size() - retainedDiagnosticBytes);
         } else {
             if (count != static_cast<int>(PAL::StreamStatus::Again))
                 m_diagnosticStream.reset();
@@ -363,7 +373,7 @@ void PollChannel::ioLoop()
             waker->drain();
 
         if (diagnosticIndex < count && watches[diagnosticIndex].result != PAL::Ready::None)
-            drainDiagnostics();
+            drainDiagnostics(diagnosticReadsPerWake);
 
         // Outbound first, so a flood of inbound never starves replies.
         if (wantWrite && PAL::contains(watches[2].result, PAL::Ready::Writable | PAL::Ready::Error | PAL::Ready::HangUp)) {
