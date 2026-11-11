@@ -105,10 +105,39 @@ public:
         const auto deadline = std::chrono::steady_clock::now() + 30s;
         while (std::chrono::steady_clock::now() < deadline) {
             (void)m_core->send(Session::PaneInput { .intent = Session::PaneInput::Raw {}, .localEncoding = std::span<const char>(probe.data(), probe.size()) });
+            ++m_awakeProbeCount;
             if (Harness::pumpUntil(m_dispatcher, 1s, shows))
                 return true;
         }
         return false;
+    }
+
+    /// The program's side, for a failure: how many probes the shell was sent
+    /// before it answered, and the screen the host holds.
+    ///
+    /// The screen is read by a second client attached fresh to the same
+    /// session, which is sent the whole picture, so it shows what the host
+    /// holds whatever this link's incremental delivery did.
+    ///
+    /// - Returns: The description.
+    std::string describeProgramSide()
+    {
+        std::string screen = "nothing: a second client did not attach";
+        ScreenCount observer;
+        auto terminal = std::make_unique<Ubiquitty::Terminal>();
+        Ubiquitty::resize(*terminal, m_terminal->rows, m_terminal->columns);
+        {
+            Session::RemoteSessionCore second(terminal.get(), &m_dispatcher, &m_factory, &observer);
+            second.start(m_core->sessionID(), m_terminal->columns, m_terminal->rows);
+            if (Harness::pumpUntil(m_dispatcher, 10s, [&] { return second.acknowledged() && observer.screens > 0; })) {
+                settle();
+                screen = UbiquittyTest::paneViewRows(UbiquittyTest::paneViewText(second.view()));
+            }
+            second.stop();
+            m_dispatcher.pump();
+        }
+        return "the shell answered after " + std::to_string(m_awakeProbeCount) + " awake probe(s); the host's screen, read by a fresh client, shows ["
+            + screen + "]";
     }
 
     /// Reads the view; the core's terminal is written only on this thread.
@@ -132,6 +161,7 @@ private:
     Harness::AttachChannelFactory m_factory;
     ScreenCount m_observer;
     std::unique_ptr<Ubiquitty::Terminal> m_terminal = std::make_unique<Ubiquitty::Terminal>();
+    int m_awakeProbeCount = 0;
     bool m_isReady = false;
     // Destroyed first: it holds the dispatcher, the factory and the terminal.
     std::optional<Session::RemoteSessionCore> m_core;
