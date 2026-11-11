@@ -3319,6 +3319,20 @@ class EveryWorkflowTests(unittest.TestCase):
                 self.assertIn("Scripts/pre-push-gates.sh", step)
 
     @unittest.skipUnless(WORKFLOW, "pass --workflow to validate the live workflow contract")
+    def test_a_hosted_mac_exempts_the_cases_it_cannot_draw_and_names_why(self):
+        stage = next(stage for stage in batteries.stages("apple") if stage.key == "snapshots")
+        with tempfile.TemporaryDirectory() as directory:
+            base = {"RUNNER_TEMP": directory, "UBQ_RESULT_DIR": directory}
+            self.assertNotIn("UBQ_SNAPSHOT_RUNNER_EXEMPTIONS", batteries.stage_environment(stage, "apple", base))
+            hosted = batteries.stage_environment(stage, "apple", {**base, "RUNNER_ENVIRONMENT": "github-hosted"})
+            lines = Path(hosted["UBQ_SNAPSHOT_RUNNER_EXEMPTIONS"]).read_text(encoding="utf-8").splitlines()
+        self.assertEqual({line.split(None, 1)[0] for line in lines}, set(batteries.HOSTED_SNAPSHOT_EXEMPTIONS))
+        for line in lines:
+            # The grammar of Tests/Snapshots/exempt-<backend>.txt: an identifier,
+            # then a reason that ends with the date it was recorded.
+            self.assertRegex(line, r"^case:\S+:coretext:(macos|swift)  \S.* \(\d{4}-\d{2}-\d{2}\)$")
+        self.assertTrue(all("sf_pro" in identifier for identifier in batteries.HOSTED_SNAPSHOT_EXEMPTIONS))
+
     def test_a_battery_split_into_groups_runs_every_stage_of_its_manifest(self):
         for name, job in self.jobs().items():
             for platform in ("linux", "apple"):
