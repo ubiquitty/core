@@ -838,6 +838,11 @@ function(ubq_schedule_run_tests_stanzas driver)
     set(shell_quic_deps_fixture_TIMEOUT 900)
     set(shell_host_quic_fixture_FIXTURES_SETUP ubq_host_quic_fixture)
     set(shell_host_quic_fixture_TIMEOUT 900)
+    # The soak's thousand attaches each start a relay and a client, so it is
+    # CPU-bound and takes as long as the cores the rest of the suite leaves
+    # it. It asserts no timing, only resident growth and a clean exit, so its
+    # bound guards against a hang, and it is the stanza's own in run-tests.sh.
+    set(shell_host_soak_TIMEOUT 900)
 
     ubiquitty_schedule_shell_stanzas(DRIVER ${driver} STANZAS ${_stanzas})
 endfunction()
