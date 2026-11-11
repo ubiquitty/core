@@ -204,6 +204,13 @@ public:
     ///
     /// - Returns: The count, which only grows, wrapping at 2^32.
     [[nodiscard]] std::uint32_t acquisitionCountForTest() const noexcept { return m_acquisitionCount.load(std::memory_order_acquire); }
+
+    /// The threads counted as waiting for the lock now, for a test that must
+    /// know its waiters are counted before the drain releases.
+    ///
+    /// - Returns: The count, which a waiter taking the lock or a new one
+    ///   counting may change as soon as it is read.
+    [[nodiscard]] std::uint32_t waiterCountForTest() const noexcept { return m_waiterCount.load(std::memory_order_seq_cst); }
 #endif
 
     /// Returns on the thread that holds this lock; where Core is built with
