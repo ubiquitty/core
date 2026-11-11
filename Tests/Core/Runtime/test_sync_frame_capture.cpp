@@ -300,6 +300,30 @@ TEST(hiddenRendererSkipsBoundaryCaptures)
     CHECK(TakenFrame(fixture.session->takeSyncFrame()));
 }
 
+TEST(aCaptureKeepsTheViewsSubpixelGlyphPreference)
+{
+    SessionFixture fixture(4, 20);
+    REQUIRE(fixture.isReady);
+    for (const bool shouldUseSubpixelGlyphs : { false, true, false }) {
+        SyncFrameCaptureGeometry geometry = testGeometry();
+        geometry.shouldUseSubpixelGlyphs = shouldUseSubpixelGlyphs;
+        fixture.session->setSyncFrameCaptureGeometry(geometry);
+        fixture.drainSyncFrame("\033[Hsubpixel preference");
+        const TakenFrame frame { fixture.session->takeSyncFrame() };
+        REQUIRE(frame);
+        FakeAtlas atlas;
+        std::array<CellInstance, 80> cells;
+        std::array<GlyphInstance, 80> glyphs;
+        InstanceBuffers buffers;
+        buffers.cells = cells.data();
+        buffers.cellCapacity = cells.size();
+        buffers.glyphs = glyphs.data();
+        buffers.glyphCapacity = glyphs.size();
+        const InstanceCounts counts = frame->build(UbiquittyTest::glyphBackendFor(atlas), buffers);
+        CHECK_MSG((counts.glyphs > 0) == shouldUseSubpixelGlyphs, "the capture changed the view's subpixel glyph choice");
+    }
+}
+
 // A view registers its geometry, a presentation edge and the hovered run while
 // a drain holds the model lock, and none of them waits for it: each is
 // published, and the next capture takes it in under the lock it holds.

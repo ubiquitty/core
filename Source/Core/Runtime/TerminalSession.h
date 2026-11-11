@@ -218,6 +218,8 @@ struct SyncFrameCaptureGeometry {
     float cursorMixAlpha = 1.0f;
     /// Whether the glyph under a block cursor takes the contrasting grey.
     bool shouldCursorInvertText = true;
+    /// Whether glyphs use the separate subpixel instance stream.
+    bool shouldUseSubpixelGlyphs = true;
     /// Where the grid's top-left sits within the drawable, in device pixels.
     FloatPoint originInPixels {};
     /// The rasterizer's metrics, so decorations draw at the glyphs' geometry.
@@ -10116,6 +10118,7 @@ private:
         options.isFocused = m_syncCaptureGeometry.isFocused;
         options.cursorMixAlpha = m_syncCaptureGeometry.cursorMixAlpha;
         options.shouldCursorInvertText = m_syncCaptureGeometry.shouldCursorInvertText;
+        options.shouldUseSubpixelGlyphs = m_syncCaptureGeometry.shouldUseSubpixelGlyphs;
         options.originInPixels = m_syncCaptureGeometry.originInPixels;
         options.viewportSizeInPixels = m_syncCaptureGeometry.viewportSizeInPixels;
         options.cellHeightPoints = m_syncCaptureGeometry.cellHeightPoints;
