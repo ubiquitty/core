@@ -28,6 +28,7 @@
 // records what it was given: the handoff is the platform's, and the daemon's
 // side of both steps is Tests/Host/adopt_session.cpp's.
 
+#include "Core/Preferences/Preferences.h"
 #include "Core/Protocol/Control/Reclaim.h"
 #include "Core/Protocol/Local/Handoff.h"
 #include "Core/Protocol/Sync/Consent.h"
@@ -660,7 +661,10 @@ TEST(aPlainTmuxClientCanBeHandedToTheLocalHost)
     discardPostedWork();
     const std::string socketName = "ubq-share-" + std::to_string(::getpid());
     const std::string command = "tmux -L " + socketName + " -f /dev/null new-session -s handoff";
-    TerminalSession* session = TerminalSession::make();
+    // The isolated test home has no user-installed terminal descriptions.
+    Ubiquitty::Preferences::Values configuration;
+    configuration.termIdentifier = "xterm-256color";
+    TerminalSession* session = TerminalSession::make(configuration);
     REQUIRE(session != nullptr);
     session->start(24, 80);
     REQUIRE(session->launchShellCommand(command));

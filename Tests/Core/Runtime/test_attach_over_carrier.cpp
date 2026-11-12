@@ -3369,15 +3369,21 @@ TEST(aScrollPastTheBackfillWantsTheGapOnceAndFillsIt)
     for (int line = 0; line < 3'000; ++line)
         lines += "history-" + std::to_string(line) + "\r\n";
     processBytes(&host.terminal(), lines);
-    const auto exchange = [&] {
-        for (int turn = 0; turn < 64; ++turn) {
+    const auto exchange = [&](int expectedRows) {
+        // Client acknowledgements follow its real clock, so service both ends
+        // until the requested rows arrive instead of counting tight-loop turns.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        for (int turn = 0; std::chrono::steady_clock::now() < deadline; ++turn) {
             REQUIRE(factory.lastChannel);
             host.receive(factory.lastChannel->sent);
             factory.lastChannel->receive(turn == 0 ? host.publish() : host.flush());
             pumpPostedWork();
+            if (session->readSnapshot().history.retainedRows >= expectedRows)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     };
-    exchange();
+    exchange(static_cast<int>(Sync::defaultBackfillDepthLines));
     const int backfilled = session->readSnapshot().history.retainedRows;
     CHECK_EQ(backfilled, static_cast<int>(Sync::defaultBackfillDepthLines));
     const std::string oldest = oldestHistoryRow(*session);
@@ -3404,7 +3410,7 @@ TEST(aScrollPastTheBackfillWantsTheGapOnceAndFillsIt)
     CHECK(viewportWantsOnCarrier(factory.lastChannel->sent, afterWant).empty());
 
     // The host sends them, and they land above the rows the view had.
-    exchange();
+    exchange(backfilled + 48);
     CHECK_EQ(session->readSnapshot().history.retainedRows, backfilled + 48);
     CHECK_STR_EQ(oldestHistoryRow(*session), "history-" + std::to_string(oldestLine - 48));
 
