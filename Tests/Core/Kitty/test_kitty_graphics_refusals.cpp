@@ -65,6 +65,7 @@
 #include "TerminalFixture.h"
 
 #include "Core/Image/TerminalImage.h"
+#include "Core/Kitty/Graphics.h"
 #include "Core/Terminal.h"
 #include "Core/TerminalOperations.h"
 #include "KittyGraphicsFixture.h"
@@ -635,6 +636,49 @@ public:
 };
 
 } // namespace
+
+TEST(fileTransportPathsHaveABoundedDecodedLength)
+{
+    RecordingFileReader reader;
+    reader.declaresTemporaryFiles = true;
+    Ubiquitty::Terminal terminal;
+    freshTerminal(terminal);
+    terminal.fileReadClient = &reader;
+
+    std::string path = "/tmp/tty-graphics-protocol-";
+    path.append(4096 - path.size(), 'a');
+    for (const char* action : { "a=q", "a=T" }) {
+        for (const char* transport : { "t=f", "t=t" }) {
+            const std::string keys = std::string(action) + ",f=24,s=1,v=1,i=1," + transport;
+            const int previousCalls = reader.calls;
+            feed(terminal, apc(keys, base64Text(path)));
+            const std::string atLimit = outcome(replyStatus(terminal));
+            CHECK_CSTR_EQ(atLimit.c_str(), "EBADF:file transport failed");
+            CHECK_EQ(reader.calls, previousCalls + 1);
+            CHECK(reader.lastPath == path);
+
+            feed(terminal, apc(keys, base64Text(path + "a")));
+            const std::string beyondLimit = outcome(replyStatus(terminal));
+            CHECK_CSTR_EQ(beyondLimit.c_str(), "ENAMETOOLONG:file path too long");
+            CHECK_EQ(reader.calls, previousCalls + 1);
+        }
+    }
+
+    // A valid bounded name still reaches the permission gate. The path limit
+    // does not replace authorization, even when the transport is supported.
+    DenyingButAudiblePolicy policy;
+    terminal.capabilityPolicy = &policy;
+    const int previousCalls = reader.calls;
+    feed(terminal, apc("a=T,f=24,s=1,v=1,i=1,t=f", base64Text(path)));
+    const std::string denied = outcome(replyStatus(terminal));
+    CHECK_CSTR_EQ(denied.c_str(), "EPERM:capability denied");
+    CHECK_EQ(reader.calls, previousCalls);
+    feed(terminal, apc("a=T,f=24,s=1,v=1,i=1,t=f", base64Text(path + "a")));
+    const std::string deniedBeyondLimit = outcome(replyStatus(terminal));
+    CHECK_CSTR_EQ(deniedBeyondLimit.c_str(), "ENAMETOOLONG:file path too long");
+    CHECK_EQ(reader.calls, previousCalls);
+    terminal.capabilityPolicy = nullptr;
+}
 
 // The directory a shell reports is not a root for the file transport. OSC 7 is
 // program output, and a remote host behind ssh writes one as easily as the

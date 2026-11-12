@@ -161,6 +161,7 @@ HostedPaneFacts TmuxControlHost::paneFacts(int paneID)
     facts.lockAddress = render.lockAddress;
     facts.inputClientAddress = reinterpret_cast<std::uintptr_t>(&m_seams.primary->integration.tmux);
     facts.inputStreamAddress = reinterpret_cast<std::uintptr_t>(m_seams.stream);
+    facts.filesystemLocation = m_seams.filesystemLocation;
     facts.columns = static_cast<int>(render.columns);
     facts.rows = static_cast<int>(render.rows);
     return facts;

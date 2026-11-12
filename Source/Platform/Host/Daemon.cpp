@@ -753,7 +753,10 @@ bool resolveConfinedFile(const std::string& requestedPath, const std::string& cw
     // A proper descendant only — require a '/' boundary so a sibling directory
     // sharing the cwd's string prefix (e.g. "/home/user2" vs "/home/user")
     // can't pass confinement.
-    const bool isInsideCwd = pathString.starts_with(cwdString) && pathString.size() > cwdString.size() && pathString[cwdString.size()] == '/';
+    // The root already ends at the separator; every other directory needs the
+    // next separator to distinguish descendants from similarly named siblings.
+    const bool isInsideCwd = pathString.starts_with(cwdString) && pathString.size() > cwdString.size()
+        && (cwdString == "/" || pathString[cwdString.size()] == '/');
     if (!isInsideCwd) {
         outStatus = Protocol::Sync::FileDataStatus::OutsideConfinement;
         return false;

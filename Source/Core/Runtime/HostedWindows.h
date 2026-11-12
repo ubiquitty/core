@@ -44,6 +44,14 @@ namespace Ubiquitty::Runtime {
 
 class HostedPanePublication;
 
+/// Where a backend's file paths name files, as its owner established.
+/// Program output and capability origins cannot establish this provenance.
+enum class FilesystemLocation : std::uint8_t {
+    Unknown,
+    ThisMachine,
+    AnotherMachine,
+};
+
 /// Identifies a hosted session separately from its reconnect authority.
 struct HostedSessionReference {
     Protocol::Tmux::SessionReference tmux;
@@ -105,6 +113,8 @@ struct HostedPaneFacts {
     std::uintptr_t inputClientAddress = 0;
     /// The channel the pane's input rides.
     std::uintptr_t inputStreamAddress = 0;
+    /// The filesystem the owning backend reaches; unknown never authorizes local I/O.
+    FilesystemLocation filesystemLocation = FilesystemLocation::Unknown;
     /// The pane's grid, the source's authority.
     int columns = 0;
     int rows = 0;
@@ -129,6 +139,8 @@ struct HostedWindowSeams {
     PAL::ByteStream* stream = nullptr;
     /// The configuration the hosted panes' terminals are born under.
     const Preferences::Values* configuration = nullptr;
+    /// Filesystem provenance established by the launcher or local process table.
+    FilesystemLocation filesystemLocation = FilesystemLocation::Unknown;
     /// Waits for a newly launched client to authenticate and enter control mode.
     HostedControlState initialControlState = HostedControlState::Established;
     /// Handed back to the two calls below.

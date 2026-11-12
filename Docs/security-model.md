@@ -136,6 +136,12 @@ serves, keeps that host's decision. A client never runs a command or opens a
 URL because a host said so; links open only from the person's click, under
 the client's own link rules.
 
+File paths belong to the backend's filesystem, independently of its driver
+origin. Native file drags and local file links require a backend established
+as this machine by its launcher or authenticated local carrier. Remote tmux
+panes and streams whose location is unknown cannot name the client's files;
+a file offer's machine label cannot grant that access.
+
 **A web page reaches nothing in a shipped build.** No shipped binary
 listens for HTTP or WebSocket. The development bridge,
 `Scripts/web-proxy.py`, admits an upgrade only when it names the bridge's

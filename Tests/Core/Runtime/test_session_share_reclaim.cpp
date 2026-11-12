@@ -437,6 +437,7 @@ TEST(aSharedSessionHasOneReaderAndResumesItsOwnStreamOnReclaim)
     CHECK_MSG(session->sharedSessionID() == 42, "a shared session does not name the id the daemon adopted it under");
     CHECK_MSG(session->sharedBridgeCommand().empty(), "a share over the embedder's carrier named a bridge of its own");
     CHECK_MSG(session->isRemoteAttached(), "a shared session is not the adopted session's thin client");
+    CHECK(session->isFilesystemLocal());
     CHECK_MSG(!session->isShareableLocalSession(), "a shared session offers to be shared again");
 
     // One reader: the shell answers a line typed into its PTY, and nothing on
@@ -768,6 +769,7 @@ TEST(aSessionWithNothingToHandOverIsNotShared)
     mirror->start(24, 80);
     StubFactory mirrorFactory;
     REQUIRE(mirror->attachRemoteOverCarrier(mirrorFactory.address(), 0, queueingLoop()));
+    CHECK(!mirror->isFilesystemLocal());
     CHECK(!mirror->isShareableLocalSession());
     CHECK(!mirror->isReclaimableSharedSession());
     CHECK(!mirror->requestReclaim());

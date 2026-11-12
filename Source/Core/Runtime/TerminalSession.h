@@ -1150,6 +1150,7 @@ public:
         m_hostedPaneThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
         m_hostedPaneSource = source;
         m_hostedPaneID = paneID;
+        m_hostedPaneFilesystemLocation = facts.filesystemLocation;
         {
             const ModelLockHold hold(*m_activeLock);
             auto publication = source->panePublicationHandle(paneID, *terminal);
@@ -1557,6 +1558,27 @@ public:
     ///
     /// - Returns: Whether ``attachRemote`` holds the model.
     [[nodiscard]] bool isRemoteAttached() const { return m_remote != nullptr; }
+
+    /// Whether this backend's file paths can name files on this machine.
+    ///
+    /// Filesystem provenance comes from the launcher or authenticated local
+    /// carrier, independently of the origin controlling the terminal. An
+    /// embedder's stream or an unplaced hosted backend remains unknown.
+    ///
+    /// - Returns: Whether native local-file operations are appropriate.
+    [[nodiscard]] bool isFilesystemLocal() const
+    {
+        if (m_hostedPaneSource) {
+            assertOnHostedPaneThread();
+            return m_hostedPaneFilesystemLocation == FilesystemLocation::ThisMachine;
+        }
+        if (m_externalTerminal)
+            return false;
+        if (m_remote)
+            return m_remote->core && m_remote->core->hostLocation() == Protocol::Sync::HostLocation::ThisMachine;
+        return m_filesystemLocation == FilesystemLocation::ThisMachine && m_tmuxSSHHost.empty()
+            && !m_runtime->remoteTarget().isRemote();
+    }
 
     /// Whether a current authenticated attachment other than this one owns
     /// the remote pane's geometry. Local and unacknowledged sessions return false.
@@ -5673,6 +5695,7 @@ public:
         m_sharing.reset();
         stopIngest();
         m_runtime->close();
+        m_filesystemLocation = FilesystemLocation::Unknown;
         return {};
     }
 
@@ -5809,7 +5832,10 @@ public:
             if (!m_runtime->prepareAdoption())
                 return std::unexpected(std::move(stream));
         }
-        return m_runtime->adoptStream(std::move(stream));
+        auto adoption = m_runtime->adoptStream(std::move(stream));
+        if (adoption)
+            m_filesystemLocation = FilesystemLocation::Unknown;
+        return adoption;
     }
 
     /// Launches an already-resolved command on a fresh local PTY.
@@ -9223,6 +9249,7 @@ private:
         if (!terminal) {
             m_hostedPaneSource = nullptr;
             m_hostedPaneID = -1;
+            m_hostedPaneFilesystemLocation = FilesystemLocation::Unknown;
             m_hostedPaneThread.store(std::thread::id {}, std::memory_order_relaxed);
         }
         {
@@ -10997,6 +11024,7 @@ private:
     // report; null for every other session.
     HostedWindowSource* m_hostedPaneSource = nullptr;
     int m_hostedPaneID = -1;
+    FilesystemLocation m_hostedPaneFilesystemLocation = FilesystemLocation::Unknown;
     std::shared_ptr<const HostedPanePublication> m_hostedPanePublication;
     /// The thread that routed the hosting source, the frontend's. The source,
     /// its pane and its publication handle are set and read there alone,
@@ -14318,7 +14346,10 @@ private:
         case TerminalRuntime::LaunchReadiness::Ready:
             break;
         }
-        return m_runtime->openLaunchStream(command, Preferences::terminalIdentity(m_configuration));
+        if (!m_runtime->openLaunchStream(command, Preferences::terminalIdentity(m_configuration)))
+            return false;
+        m_filesystemLocation = FilesystemLocation::ThisMachine;
+        return true;
     }
 
     /// Returns on a thread that holds the active model lock; in a build with
@@ -14459,6 +14490,11 @@ private:
         seams.primaryLock = &m_modelLock;
         seams.stream = stream;
         seams.configuration = &m_configuration;
+        if (!m_tmuxSSHHost.empty())
+            seams.filesystemLocation = FilesystemLocation::AnotherMachine;
+        else if (m_filesystemLocation == FilesystemLocation::ThisMachine
+            && ((m_relaunchCommand && m_relaunchCommand->tmuxControlHost()) || m_runtime->isForegroundControlModeTmux()))
+            seams.filesystemLocation = FilesystemLocation::ThisMachine;
         seams.initialControlState = initialControlState;
         seams.sessionContext = this;
         seams.wakeIngest = [](void* context) { static_cast<TerminalSession*>(context)->wakeIngest(); };
@@ -14545,6 +14581,7 @@ private:
     // session, and every preference read below goes through it rather than
     // the process-wide accessor.
     std::optional<LaunchCommand> m_relaunchCommand;
+    FilesystemLocation m_filesystemLocation = FilesystemLocation::Unknown;
     const Preferences::Values& m_configuration;
     std::mutex m_drainSignalMutex;
     std::condition_variable m_drainSignalIdle;

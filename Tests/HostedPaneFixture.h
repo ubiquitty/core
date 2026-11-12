@@ -38,7 +38,8 @@ public:
     ///   - columns: The window's columns.
     ///   - layout: A tmux layout naming its panes by number, `%1` among them;
     ///     empty for one pane filling the window.
-    explicit HostedPaneFixture(int rows = 24, int columns = 80, std::string_view layout = {})
+    ///   - filesystemLocation: The carrier owner's filesystem provenance.
+    explicit HostedPaneFixture(int rows = 24, int columns = 80, std::string_view layout = {}, Ubiquitty::Runtime::FilesystemLocation filesystemLocation = Ubiquitty::Runtime::FilesystemLocation::Unknown)
         : m_primary(std::make_unique<Ubiquitty::Terminal>())
     {
         Ubiquitty::resize(*m_primary, 24, 80);
@@ -46,6 +47,7 @@ public:
         seams.primary = m_primary.get();
         seams.primaryLock = &m_primaryLock;
         seams.stream = &m_stream;
+        seams.filesystemLocation = filesystemLocation;
         seams.sessionContext = this;
         seams.clockMicroseconds = [](void* context) { return static_cast<HostedPaneFixture*>(context)->m_nowMicroseconds; };
         seams.clockTicks = [](void* context) { return Ubiquitty::Ticks(static_cast<HostedPaneFixture*>(context)->m_nowTicks); };

@@ -29,13 +29,13 @@ namespace UbiquittyKit {
 // Edit here (single source) when either surface changes per the policy.
 inline constexpr int kitVersionMajor = 2;
 inline constexpr int kitVersionMinor = 0;
-inline constexpr int kitVersionPatch = 1;
+inline constexpr int kitVersionPatch = 2;
 
 // Monotonic packed form for ordered comparison: major*10000 + minor*100 + patch.
 inline constexpr int kitVersion = kitVersionMajor * 10000 + kitVersionMinor * 100 + kitVersionPatch;
 
 // Human-readable "x.y.z". A literal — keep it in lock-step with the ints above.
-inline constexpr const char* kitVersionString = "2.0.1";
+inline constexpr const char* kitVersionString = "2.0.2";
 
 } // namespace UbiquittyKit
 

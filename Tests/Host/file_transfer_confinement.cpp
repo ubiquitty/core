@@ -400,6 +400,33 @@ int main(int argc, char** argv)
             fail("an empty regular file is not a successful empty Result");
             break;
         }
+
+        // A shell actually at / may read its descendants. Observe the report
+        // emitted after cd before asking, so the request cannot race the move.
+        (void)sendInput(client, "cd / && printf '\\033]7;file://localhost/\\007'\n");
+        if (!waitForAnnouncedDirectory(client, "/", 5000)) {
+            fail("the shell never entered and announced the filesystem root");
+            break;
+        }
+        if (!fileReader.send(10, insideFile) || !waitForFileData(fileReader, 10, status, data, 3000)
+            || status != statusOK || data != "hello world") {
+            fail("a file under the shell's actual root cwd was not served");
+            break;
+        }
+        if (!fileReader.send(11, "/") || !waitForFileData(fileReader, 11, status, data, 3000)
+            || status != statusOutsideConfinement || !data.empty()) {
+            fail("the confinement root itself was not refused as a non-descendant");
+            break;
+        }
+        const std::string returnToWorkdir = "cd " + workdir
+            + " && printf '\\033]7;file://localhost" + workdir + "\\007'\n";
+        (void)sendInput(client, returnToWorkdir);
+        if (!waitForAnnouncedDirectory(client, workdir, 5000)
+            || !fileReader.send(12, outsideFile) || !waitForFileData(fileReader, 12, status, data, 3000)
+            || status != statusOutsideConfinement || !data.empty()) {
+            fail("returning from / did not restore the shell's narrower confinement");
+            break;
+        }
         // Unknown and retired kinds are rejected by the canonical ingress,
         // never retained as a second numeric carrier beside a typed Result.
         if (client.hasFailed || client.admission != FixtureAdmission::Granted) {
@@ -416,7 +443,7 @@ int main(int argc, char** argv)
                     "OutsideConfinement past a '..' escape, NotRegular for a directory, NotFound "
                     "for a missing path, NotRegular for a FIFO without blocking the daemon, "
                     "OutsideConfinement for a root the session's own OSC 7 named), and exact "
-                    "4 MiB bulk/over-limit/empty results pass without FILE_DATA\n");
+                    "4 MiB bulk/over-limit/empty results and an actual root cwd pass without FILE_DATA\n");
 
     ::kill(daemon, SIGTERM);
     for (int i = 0; i < 50; ++i) {

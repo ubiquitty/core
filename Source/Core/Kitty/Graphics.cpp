@@ -25,6 +25,7 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -37,6 +38,9 @@
 #include <vector>
 
 namespace Ubiquitty::Kitty {
+
+// Decoded path bytes, excluding a terminator; checked before path allocation.
+static constexpr std::size_t maxFilePathBytes = 4096;
 
 // Async PNG decode pipeline. The decode is submitted to a process-global
 // TaskQueue; each job carries the Terminal* it belongs to, and completion installs
@@ -954,6 +958,8 @@ static std::expected<ExtractedBytes, const char*> kittyExtractFromFile(Ubiquitty
     const std::size_t pathCapacity = Ubiquitty::Codec::base64DecodedCapacity(encodedPath);
     if (!pathCapacity)
         return std::unexpected(fileTransportFailed);
+    if (pathCapacity > Ubiquitty::Kitty::maxFilePathBytes)
+        return std::unexpected("ENAMETOOLONG:file path too long");
     OwnedCharBuffer path(static_cast<char*>(std::malloc(pathCapacity)));
     if (!path)
         return std::unexpected(fileTransportFailed);
