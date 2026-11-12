@@ -682,7 +682,7 @@ function(ubiquitty_schedule_shell_stanzas)
             PROCESSORS ${_ubq_stanza_jobs}
             SKIP_REGULAR_EXPRESSION "${_ubq_stanza_skip}"
             TIMEOUT ${_ubq_stanza_timeout})
-        foreach(_ubq_property IN ITEMS FIXTURES_SETUP RESOURCE_LOCK SKIP_RETURN_CODE)
+        foreach(_ubq_property IN ITEMS FIXTURES_SETUP RESOURCE_LOCK RUN_SERIAL SKIP_RETURN_CODE)
             if(DEFINED ${_ubq_entry}_${_ubq_property})
                 set_tests_properties(${_ubq_entry} PROPERTIES
                     ${_ubq_property} "${${_ubq_entry}_${_ubq_property}}")

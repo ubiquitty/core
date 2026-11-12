@@ -120,6 +120,28 @@ class ShellIntegration(unittest.TestCase):
                 self.assertIn("\x1b]133;D;130\x07\x1b[7 q\x1b]133;A\x07", output)
                 self.assertLess(output.index("\x1b[0 q"), output.index("\x1b[7 q"))
 
+    def test_bash_arms_after_every_existing_prompt_array_entry(self):
+        executable = shutil.which("bash")
+        if executable is None:
+            self.skipTest("bash is not installed")
+        script = (
+            "PROMPT_COMMAND=('printf \"PROMPT_ONE\\n\"' 'printf \"PROMPT_TWO\\n\"'); "
+            'source "$UBIQUITTY_INTEGRATION_DIR/bash.sh"\n'
+            "printf 'RUN_OUTPUT\\n'\n"
+            "exit\n"
+        )
+        environment = {"HOME": str(self.directory), "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                       "TERM": "dumb", "UBIQUITTY_INTEGRATION_DIR": str(SCRIPTS)}
+        result = subprocess.run([executable, "--norc", "--noprofile", "-i"], input=script,
+                                env=environment, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first_prompt, command = result.stdout.split("PROMPT_TWO\n", 1)
+        mark = "\x1b]133;C\x07"
+        self.assertIn("PROMPT_ONE\n", first_prompt)
+        self.assertNotIn(mark, first_prompt, "a prompt hook is not a user command")
+        self.assertLess(command.index(mark), command.index("RUN_OUTPUT\n"))
+        self.assertEqual(result.stdout.count(mark), 2, "one start for printf and one for exit")
+
     def test_zsh_prompt_hooks_can_override_the_restored_cursor(self):
         output = self.run_shell("zsh", """
             custom_prompt() { printf '\\e[5 q'; }

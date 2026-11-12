@@ -105,5 +105,14 @@ __ubiquitty_arm() {
 }
 
 trap '__ubiquitty_preexec' DEBUG
-# Chain rather than overwrite — preserve a user's PROMPT_COMMAND.
-PROMPT_COMMAND="__ubiquitty_precmd${PROMPT_COMMAND:+; $PROMPT_COMMAND}; __ubiquitty_arm"
+# A scalar assignment keeps the other elements of a PROMPT_COMMAND array.
+# Those hooks would run after the arm and consume the next command's C mark.
+# Flatten every entry in order, then arm after them, also on older Bash that
+# executes only the first array element. Newlines preserve trailing comments.
+__ubiquitty_prompt_commands=__ubiquitty_precmd
+for __ubiquitty_prompt_command in "${PROMPT_COMMAND[@]}"; do
+    __ubiquitty_prompt_commands+=$'\n'"$__ubiquitty_prompt_command"
+done
+__ubiquitty_prompt_commands+=$'\n__ubiquitty_arm'
+PROMPT_COMMAND=("$__ubiquitty_prompt_commands")
+unset __ubiquitty_prompt_commands __ubiquitty_prompt_command
