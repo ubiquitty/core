@@ -22,8 +22,10 @@
 #include "PAL/UnixFileDescriptor.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -32,11 +34,17 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <thread>
 #include <type_traits>
 #include <unistd.h>
 #include <vector>
+
+#if UBIQUITTY_COVERAGE_INSTRUMENTED
+extern "C" int __llvm_profile_write_file(void);
+#endif
 
 UBIQUITTY_KIT_REQUIRE(2, 0, 0);
 
@@ -783,6 +791,38 @@ public:
     }
 };
 
+/// Observes the lifetime abort without creating an expected-crash report.
+template<typename Body>
+bool policyDestructionAbortsInAChild(Body body)
+{
+    constexpr int abortExitStatus = 86;
+    const pid_t child = ::fork();
+    if (child == 0) {
+        const ::rlimit noCore { 0, 0 };
+        static_cast<void>(::setrlimit(RLIMIT_CORE, &noCore));
+        std::signal(SIGALRM, SIG_DFL);
+        ::alarm(5);
+        // Override the harness's fatal-signal handler. Exiting from SIGABRT
+        // proves the guard fired without asking the OS to report a crash.
+        std::signal(SIGABRT, [](int) {
+#if UBIQUITTY_COVERAGE_INSTRUMENTED
+            __llvm_profile_write_file();
+#endif
+            ::_exit(abortExitStatus);
+        });
+        body();
+        ::_exit(0);
+    }
+    if (child < 0)
+        return false;
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = ::waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    return waited == child && WIFEXITED(status) && WEXITSTATUS(status) == abortExitStatus;
+}
+
 } // namespace
 
 TEST(kitSessionInstallsItsEffectPolicyBeforeInitialOutput)
@@ -816,6 +856,32 @@ TEST(kitSessionInstallsItsEffectPolicyBeforeInitialOutput)
     CHECK(terminal.capabilityPolicy.isInstalled(&policy));
     Ubiquitty::processBytes(&terminal, "\033]1337;StealFocus\007");
     CHECK_EQ(window.focusSteals, 0);
+}
+
+TEST(kitBorrowedPolicyCannotDieBeforeItsTerminalEvenAfterSessionTeardown)
+{
+    auto policy = std::make_unique<Ubiquitty::RestrictiveCapabilityPolicy>();
+    Ubiquitty::Terminal terminal;
+    InlineDispatcher dispatcher;
+    RecordingObserver observer;
+    InitialOutputProbe probe;
+    auto session = UbiquittyKit::Session::createDirect(terminal,
+        UbiquittyKit::Session::EffectPolicy::withPolicy(*policy, Ubiquitty::CapabilityOrigin::Remote),
+        dispatcher, observer, std::make_unique<InitialOutputChannel>(probe, ""), nullptr);
+    REQUIRE(session);
+    session.reset();
+    CHECK(terminal.capabilityPolicy.isInstalled(policy.get()));
+
+    // Only the attempted destruction happens in the child: the real factory
+    // and session teardown ran above, leaving the terminal's borrowed policy.
+    CHECK(policyDestructionAbortsInAChild([&] { policy.reset(); }));
+
+    // The parent's copy remains live. Releasing the terminal's reference makes
+    // the same destruction valid without requiring the terminal to die first.
+    terminal.capabilityPolicy = nullptr;
+    policy.reset();
+    CHECK(!policy);
+    CHECK(!terminal.capabilityPolicy.installed());
 }
 
 TEST(kitExplicitLocalDefaultsAllowEffectsWithoutGrantingFileReads)

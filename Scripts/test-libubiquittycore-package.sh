@@ -76,4 +76,73 @@ cmake -S "$ROOT/Samples/find-package-consumer" -B "$WORK/consumer" \
 cmake --build "$WORK/consumer" --parallel "$BUILD_JOBS" >/dev/null
 "$WORK/consumer/package-consumer"
 
-echo "package test: PASS — relocated Core/Kit package, current headers, consumer runtime, no QUIC/TLS"
+echo "== public Core and Kit version guards against the relocated prefix =="
+mkdir "$WORK/version-probes"
+cat > "$WORK/version-probes/CMakeLists.txt" <<'CMAKE'
+cmake_minimum_required(VERSION 3.13)
+project(ubiquitty-core-version-probes LANGUAGES CXX)
+find_package(UbiquittyCore REQUIRED)
+foreach(probe IN ITEMS compatible equal too-new kit-compatible kit-too-new)
+    add_library(version-${probe} OBJECT ${probe}.cpp)
+    if(probe MATCHES "^kit-")
+        target_link_libraries(version-${probe} PRIVATE Ubiquitty::ubiquitty-kit)
+    else()
+        target_link_libraries(version-${probe} PRIVATE Ubiquitty::ubiquitty-core)
+    endif()
+    set_target_properties(version-${probe} PROPERTIES
+        CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_compile_options(version-${probe} PRIVATE -fno-exceptions -fno-rtti)
+endforeach()
+CMAKE
+cat > "$WORK/version-probes/compatible.cpp" <<'CPP'
+#define UBIQUITTY_CORE_REQUIRE 0x010300
+#include "UbiquittyCore/UbiquittyCore.h"
+static_assert(UBIQUITTY_CORE_VERSION_HEX >= UBIQUITTY_CORE_REQUIRE);
+CPP
+cat > "$WORK/version-probes/equal.cpp" <<'CPP'
+#define UBIQUITTY_CORE_REQUIRE UBIQUITTY_CORE_VERSION_HEX
+#include "UbiquittyCore/UbiquittyCore.h"
+static_assert(UBIQUITTY_CORE_VERSION_HEX == UBIQUITTY_CORE_REQUIRE);
+CPP
+cat > "$WORK/version-probes/too-new.cpp" <<'CPP'
+#define UBIQUITTY_CORE_REQUIRE (UBIQUITTY_CORE_VERSION_HEX + 1)
+#include "UbiquittyCore/UbiquittyCore.h"
+CPP
+cat > "$WORK/version-probes/kit-compatible.cpp" <<'CPP'
+#include "UbiquittyKit/UbiquittyKit.h"
+UBIQUITTY_KIT_REQUIRE(2, 0, 0);
+CPP
+cat > "$WORK/version-probes/kit-too-new.cpp" <<'CPP'
+#include "UbiquittyKit/UbiquittyKit.h"
+UBIQUITTY_KIT_REQUIRE(::UbiquittyKit::kitVersionMajor, ::UbiquittyKit::kitVersionMinor,
+    ::UbiquittyKit::kitVersionPatch + 1);
+CPP
+cmake -S "$WORK/version-probes" -B "$WORK/version-probes-build" \
+    -DUbiquittyCore_DIR="$PREFIX/$LIBDIR/cmake/UbiquittyCore" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF \
+    -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=OFF >/dev/null
+cmake --build "$WORK/version-probes-build" --target version-compatible version-equal version-kit-compatible \
+    --parallel "$BUILD_JOBS" >/dev/null
+if cmake --build "$WORK/version-probes-build" --target version-too-new \
+        >"$WORK/version-too-new.log" 2>&1; then
+    echo "FAIL: Core accepted a consumer requiring a newer public API" >&2
+    exit 1
+fi
+if ! grep -Fq "libUbiquittyCore is older than the version this consumer requires" "$WORK/version-too-new.log"; then
+    cat "$WORK/version-too-new.log" >&2
+    echo "FAIL: the newer-version probe failed for a reason other than the public guard" >&2
+    exit 1
+fi
+if cmake --build "$WORK/version-probes-build" --target version-kit-too-new \
+        >"$WORK/version-kit-too-new.log" 2>&1; then
+    echo "FAIL: Kit accepted a consumer requiring a newer public API" >&2
+    exit 1
+fi
+if ! grep -Fq "UbiquittyKit is older than the version this consumer requires" "$WORK/version-kit-too-new.log"; then
+    cat "$WORK/version-kit-too-new.log" >&2
+    echo "FAIL: the newer-version probe failed for a reason other than the Kit guard" >&2
+    exit 1
+fi
+
+echo "package test: PASS — relocated Core/Kit package, current headers, consumer runtime, version guard, no QUIC/TLS"

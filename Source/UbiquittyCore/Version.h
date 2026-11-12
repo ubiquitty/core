@@ -32,17 +32,22 @@ namespace Ubiquitty {
 // supported surface changes per the policy above.
 inline constexpr int coreVersionMajor = 1;
 inline constexpr int coreVersionMinor = 3;
-inline constexpr int coreVersionPatch = 0;
+inline constexpr int coreVersionPatch = 1;
 
 // Monotonic packed form for ordered comparison: major*10000 + minor*100 + patch.
 inline constexpr int coreVersion = coreVersionMajor * 10000 + coreVersionMinor * 100 + coreVersionPatch;
 
 // Human-readable "x.y.z". A literal — keep it in lock-step with the ints above.
-inline constexpr const char* coreVersionString = "1.3.0";
+inline constexpr const char* coreVersionString = "1.3.1";
 
 } // namespace Ubiquitty
 
 // Compile-time minimum-version guard. A consumer writes
-//   #define UBIQUITTY_CORE_REQUIRE 0x000100   // 0.1.0, BCD nibbles M.m.p
+//   #define UBIQUITTY_CORE_REQUIRE 0x010301   // 1.3.1, one byte per component
 // before including the umbrella to assert the header is at least that version.
-#define UBIQUITTY_CORE_VERSION_HEX ((Ubiquitty::coreVersionMajor << 16) | (Ubiquitty::coreVersionMinor << 8) | Ubiquitty::coreVersionPatch)
+#define UBIQUITTY_CORE_VERSION_HEX ((::Ubiquitty::coreVersionMajor << 16) | (::Ubiquitty::coreVersionMinor << 8) | ::Ubiquitty::coreVersionPatch)
+
+#ifdef UBIQUITTY_CORE_REQUIRE
+static_assert(UBIQUITTY_CORE_VERSION_HEX >= (UBIQUITTY_CORE_REQUIRE),
+    "libUbiquittyCore is older than the version this consumer requires");
+#endif
