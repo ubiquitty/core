@@ -1806,10 +1806,11 @@ def chapter_unicode(s):
             sgr(53), "overline", RESET)
     s.write(label(14, "styles"), BOLD, "bold", RESET, "  ", DIM, "faint", RESET, "  ", ITALIC, "italic", RESET, "  ", sgr(9), "struck", RESET,
             "  ", sgr(7), " inverse ", RESET, "  x", sgr(73), "2", sgr(75), "  H", sgr(74), "2", sgr(75), "O")
-    seg = lambda colour, text: bg(*colour) + text
-    s.write(label(15, "powerline"), fg(40, 40, 60), seg((40, 40, 60), " ~/hello "), bg(90, 110, 200), fg(40, 40, 60), "", fg(255, 255, 255),
-            " main ", bg(60, 160, 100), fg(90, 110, 200), "", fg(20, 40, 20), " ✓ ", RESET, fg(60, 160, 100), "", RESET,
-            "   ", DIM, "cell-aligned separators", RESET)
+    arrow = chr(0xE0B0)
+    s.write(label(15, "powerline"), bg(40, 40, 60), fg(220, 225, 240), " ~/hello ",
+            bg(90, 110, 200), fg(40, 40, 60), arrow, fg(255, 255, 255), " main ",
+            bg(60, 160, 100), fg(90, 110, 200), arrow, fg(15, 35, 22), " ✓ ",
+            RESET, fg(60, 160, 100), arrow, RESET, "   ", DIM, "cell-aligned separators", RESET)
     s.pause(1.0)
     s.write(label(18, "braille"))
     frames = 12 if s.reduced else 48
