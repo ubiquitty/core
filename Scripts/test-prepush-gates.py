@@ -463,8 +463,8 @@ class GateFileTests(unittest.TestCase):
         scratch = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, scratch)
         file = scratch / "gates.sh"
-        file.write_text('core_gate_x() {\n    run "a" ./Scripts/a.sh\n    ssh hub true\n    local x=1\n}\n')
-        self.assertEqual(unscanned_statements(file), [(3, "ssh hub true")])
+        file.write_text('core_gate_x() {\n    run "a" ./Scripts/a.sh\n    ssh buildhost.example true\n    local x=1\n}\n')
+        self.assertEqual(unscanned_statements(file), [(3, "ssh buildhost.example true")])
 
 
 if __name__ == "__main__":

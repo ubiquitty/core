@@ -78,7 +78,7 @@ class Stage:
     # hosted runner never is. The Linux pgo stage reads a profile stamped with
     # the ID of the image it was trained in, and a hosted runner builds its own
     # image from the same recipe. The Linux-native snapshot goldens are minted on
-    # hub, whose system fallback faces the CI image does not have, until the
+    # a native Linux trainer, whose system fallback faces CI lacks, until the
     # snapshots fall back only to shipped and fixture faces. A hosted workflow
     # lists every other stage.
     hosted: bool = True
