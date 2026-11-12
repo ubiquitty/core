@@ -541,7 +541,8 @@ TEST(testSyncAbusePaletteFactsStorm)
 {
     std::vector<uint8_t> wire;
     for (int i = 0; i < 500; ++i) {
-        Protocol::Sync::ThemePalette theme;
+        Protocol::Sync::ThemePalette theme {};
+        theme.live.seedDefaults();
         theme.live.indexed[1] = { static_cast<uint8_t>(i), static_cast<uint8_t>(i * 3), static_cast<uint8_t>(i * 7) };
         theme.live.defaultBackground = { static_cast<uint8_t>(i / 2), 0, 0 };
         theme.baseline = theme.live;

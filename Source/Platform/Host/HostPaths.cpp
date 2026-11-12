@@ -274,11 +274,12 @@ bool isListenerHeldAt(const char* path)
     if (filledBytes <= 0)
         return true;
     processes.resize(static_cast<std::size_t>(filledBytes) / sizeof(pid_t));
-    const auto isUnreadable = [] { return errno != ESRCH && errno != EPERM; };
+    const auto isUnreadable = [] { return errno != 0 && errno != ESRCH && errno != EPERM; };
     std::vector<proc_fdinfo> descriptors;
     for (const pid_t process : processes) {
         if (process <= 0)
             continue;
+        errno = 0;
         const int bytes = ::proc_pidinfo(process, PROC_PIDLISTFDS, 0, nullptr, 0);
         if (bytes <= 0) {
             if (isUnreadable())
@@ -286,6 +287,9 @@ bool isListenerHeldAt(const char* path)
             continue;
         }
         descriptors.resize(static_cast<std::size_t>(bytes) / sizeof(proc_fdinfo) + 16);
+        // A successful read can return zero descriptors without touching
+        // errno. Do not mistake a prior refusal for an unreadable process.
+        errno = 0;
         const int read = ::proc_pidinfo(process, PROC_PIDLISTFDS, 0, descriptors.data(), static_cast<int>(descriptors.size() * sizeof(proc_fdinfo)));
         if (read <= 0) {
             if (isUnreadable())

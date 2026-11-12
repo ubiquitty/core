@@ -19,10 +19,12 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static unsigned modeOf(const std::string& path)
@@ -363,12 +365,51 @@ int main()
                 ::close(client);
             }
             CHECK(isFull); // premise: the backlog is full and a connect fails
+#if defined(__APPLE__)
+            // A live process with no descriptors is a successful empty kernel
+            // read. A refusal left in errno must not make it an unknown
+            // listener after the real listener below closes.
+            int ready[2] { -1, -1 };
+            const int descriptorLimit = ::getdtablesize();
+            CHECK(::pipe(ready) == 0);
+            pid_t descriptorlessProcess = -1;
+            if (ready[0] >= 0) {
+                descriptorlessProcess = ::fork();
+                CHECK(descriptorlessProcess >= 0);
+                if (descriptorlessProcess == 0) {
+                    for (int descriptor = 0; descriptor < descriptorLimit; ++descriptor) {
+                        if (descriptor != ready[1])
+                            ::close(descriptor);
+                    }
+                    ::close(ready[1]);
+                    ::sleep(10);
+                    ::_exit(0);
+                }
+                ::close(ready[1]);
+                if (descriptorlessProcess > 0) {
+                    char byte;
+                    ssize_t count;
+                    do {
+                        count = ::read(ready[0], &byte, 1);
+                    } while (count < 0 && errno == EINTR);
+                    CHECK(count == 0);
+                }
+                ::close(ready[0]);
+            }
+#endif
             CHECK(Ubiquitty::Host::isSocketPathServed(busy.c_str()));
             for (const int client : queued)
                 ::close(client);
             if (listener >= 0)
                 ::close(listener);
             CHECK(!Ubiquitty::Host::isSocketPathServed(busy.c_str()));
+#if defined(__APPLE__)
+            if (descriptorlessProcess > 0) {
+                ::kill(descriptorlessProcess, SIGTERM);
+                while (::waitpid(descriptorlessProcess, nullptr, 0) < 0 && errno == EINTR) {
+                }
+            }
+#endif
             ::unlink(busy.c_str());
             CHECK(!Ubiquitty::Host::isSocketPathServed(busy.c_str()));
         }
