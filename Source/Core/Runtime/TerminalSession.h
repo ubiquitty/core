@@ -212,6 +212,8 @@ struct SyncFrameCaptureGeometry {
     bool isViewOffsetHeld = false;
     /// Whether the frame draws a cursor at all.
     bool drawCursor = true;
+    /// Whether the frame draws the password badge instead of a native view.
+    bool shouldDrawPasswordLock = false;
     /// Whether the surface holds keyboard focus.
     bool isFocused = true;
     /// The cursor's cross-fade weight at registration time.
@@ -265,8 +267,14 @@ struct SyncFrameCaptureGeometry {
     /// hover would outlive the pointer position it recorded, and a boundary
     /// frame drawing an unhovered link is the lesser drift.
     bool shouldUnderlineLinks = false;
+    /// Whether link kinds are resolved from the captured terminal's links.
+    bool shouldResolveLinkKindsFromSource = false;
     /// The VT underline code link rules draw with, when they draw.
     std::uint8_t linkUnderlineStyle = Rendering::defaultLinkUnderlineStyle;
+    /// The VT underline code file links draw with.
+    std::uint8_t linkUnderlineStyleFile = Rendering::defaultLinkUnderlineStyleFile;
+    /// The VT underline code mailto links draw with.
+    std::uint8_t linkUnderlineStyleMailto = Rendering::defaultLinkUnderlineStyleMailto;
     /// Link foreground, straight RGBA.
     Rendering::Vec4 linkColor { 0.0f, 0.0f, 0.0f, 1.0f };
     /// Hovered-link foreground, straight RGBA.
@@ -6865,11 +6873,14 @@ public:
     /// the baseline as the next capture would have). The view draws its
     /// selection over the still with ``viewSelectionOverCapture``.
     ///
+    /// Tek stills carry the tube alone and need no text-grid registration.
+    ///
     /// - Returns: The capture, with a reference the caller owns, or null with
-    ///   no geometry registered, no model, or no memory for it.
+    ///   no text geometry outside Tek mode, no model, or no memory for it.
     [[nodiscard]] Rendering::FrameCapture* captureStill() UBIQUITTY_RETURNS_RETAINED UBIQUITTY_EXCLUDES(modelLockRole)
     {
-        if (m_registeredViewGeneration.load(std::memory_order_relaxed) == 0)
+        const bool hasRegisteredGeometry = m_registeredViewGeneration.load(std::memory_order_relaxed) != 0;
+        if (!hasRegisteredGeometry && !readSnapshot().isTekModeActive)
             return nullptr;
         Rendering::FrameCapture* capture = Rendering::FrameCapture::make();
         if (!capture)
@@ -6879,13 +6890,18 @@ public:
             const ModelLockHold hold(*m_activeLock);
             foldCaptureRegistrations();
             if (Ubiquitty::Terminal* term = modelTerm()) {
-                Rendering::TerminalSnapshotOptions options;
-                assembleCaptureOptions(*term, options);
-                options.richTextSelectionCount = resolveSelectionForCapture(*term, options.viewOffset, m_stillSelection);
-                options.richTextSelections = Ubiquitty::Selection::BlockSelections(m_syncBlockSelections);
-                didCapture = capture->capture(*term, options, m_syncCaptureGeometry.metrics, m_syncCaptureGeometry.glyphSlot);
-                if (didCapture)
+                if (term->isTekModeActive) {
                     capture->captureTube(*term);
+                    didCapture = true;
+                } else if (hasRegisteredGeometry) {
+                    Rendering::TerminalSnapshotOptions options;
+                    assembleCaptureOptions(*term, options);
+                    options.richTextSelectionCount = resolveSelectionForCapture(*term, options.viewOffset, m_stillSelection);
+                    options.richTextSelections = Ubiquitty::Selection::BlockSelections(m_syncBlockSelections);
+                    didCapture = capture->capture(*term, options, m_syncCaptureGeometry.metrics, m_syncCaptureGeometry.glyphSlot);
+                    if (didCapture)
+                        capture->captureTube(*term);
+                }
             }
         }
         if (!didCapture) {
@@ -10119,6 +10135,7 @@ private:
             : std::nullopt;
         options.viewOffset = Ubiquitty::Selection::frameViewOffset(*term, m_syncCaptureGeometry.viewOffset, heldAgainst);
         options.drawCursor = m_syncCaptureGeometry.drawCursor;
+        options.shouldDrawPasswordLock = m_syncCaptureGeometry.shouldDrawPasswordLock;
         options.isFocused = m_syncCaptureGeometry.isFocused;
         options.cursorMixAlpha = m_syncCaptureGeometry.cursorMixAlpha;
         options.shouldCursorInvertText = m_syncCaptureGeometry.shouldCursorInvertText;
@@ -10156,7 +10173,10 @@ private:
         // flash would fade in jumps rather than run out.
         options.bellFlashAlpha = bellFlashAlphaAt(options.blinkTicks);
         options.shouldUnderlineLinks = m_syncCaptureGeometry.shouldUnderlineLinks;
+        options.shouldResolveLinkKindsFromSource = m_syncCaptureGeometry.shouldResolveLinkKindsFromSource;
         options.linkUnderlineStyle = m_syncCaptureGeometry.linkUnderlineStyle;
+        options.linkUnderlineStyleFile = m_syncCaptureGeometry.linkUnderlineStyleFile;
+        options.linkUnderlineStyleMailto = m_syncCaptureGeometry.linkUnderlineStyleMailto;
         options.linkColor = m_syncCaptureGeometry.linkColor;
         options.linkHoverColor = m_syncCaptureGeometry.linkHoverColor;
         // The run under the pointer, converted against the scroll position

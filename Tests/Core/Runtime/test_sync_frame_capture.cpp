@@ -1023,7 +1023,7 @@ TEST(aStyleOnlyRegistrationStartsANewLineage)
 // A still is a capture of the model as it stands that takes nothing from the
 // lane: it records every row in the registered style, the frame waiting for
 // the view still waits, and the next capture plans against the frame the view
-// took. With no geometry registered there is no still.
+// took. A text still needs a registered geometry.
 TEST(aStillCaptureTakesNothingFromTheLane)
 {
     SessionFixture fx(24, 80);
@@ -1054,6 +1054,114 @@ TEST(aStillCaptureTakesNothingFromTheLane)
 // A still is drawn for a view whose lane is not presented, as a probe or a
 // hidden tab's render is, and for a pane an embedder feeds with no transport
 // or loop: each is a Full record of the model as it stands.
+TEST(aTekStillNeedsNoTextGridRegistration)
+{
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    constexpr std::string_view initial = "\x1b[?38hTUBE";
+    fixture.session->feedBytes({ initial.data(), initial.size() });
+    const TakenFrame still { fixture.session->captureStill() };
+    REQUIRE_MSG(still != nullptr, "a cold Tek surface can capture its tube before a text frame");
+    CHECK(still->isTekFrame());
+    CHECK_EQ(still->tekPrimitives().size(), 4u);
+
+    constexpr std::string_view appended = "X";
+    fixture.session->feedBytes({ appended.data(), appended.size() });
+    const TakenFrame next { fixture.session->captureStill() };
+    REQUIRE(next != nullptr);
+    CHECK_EQ(next->tekPrimitives().size(), 5u);
+    CHECK_EQ(still->tekPrimitives().size(), 4u);
+    CHECK(TakenFrame(fixture.session->takeSyncFrame()) == nullptr);
+
+    constexpr std::string_view exitTek = "\x1b\x03";
+    fixture.session->feedBytes({ exitTek.data(), exitTek.size() });
+    CHECK(TakenFrame(fixture.session->captureStill()) == nullptr);
+}
+
+TEST(registeredCapturesKeepTheLinkKindsAndTheirRules)
+{
+    enum class LinkKindPolicy {
+        Uniform,
+        PerKind
+    };
+    const auto rules = [](LinkKindPolicy kindPolicy, std::uint8_t fileStyle, std::uint8_t mailtoStyle) {
+        SessionFixture fixture(6, 24);
+        if (!fixture.isReady) {
+            CHECK_MSG(false, "frame fixture refused its stream");
+            return std::vector<DecorationInstance> {};
+        }
+        SyncFrameCaptureGeometry geometry = testGeometry();
+        geometry.shouldUnderlineLinks = true;
+        geometry.shouldResolveLinkKindsFromSource = kindPolicy == LinkKindPolicy::PerKind;
+        geometry.linkUnderlineStyleFile = fileStyle;
+        geometry.linkUnderlineStyleMailto = mailtoStyle;
+        fixture.session->setSyncFrameCaptureGeometry(geometry);
+        fixture.drainSyncFrame("\x1b]8;;https://example.com\x1b\\url\x1b]8;;\x1b\\\r\n"
+                               "\x1b]8;;file:///etc/hosts\x1b\\path\x1b]8;;\x1b\\\r\n"
+                               "\x1b]8;;mailto:a@b.com\x1b\\mail\x1b]8;;\x1b\\");
+        const TakenFrame frame { fixture.session->takeSyncFrame() };
+        if (!frame) {
+            CHECK_MSG(false, "the link frame was not captured");
+            return std::vector<DecorationInstance> {};
+        }
+        FakeAtlas atlas;
+        std::vector<DecorationInstance> decorations(6 * 24 * 8);
+        InstanceBuffers buffers;
+        buffers.decorations = decorations.data();
+        buffers.decorationCapacity = decorations.size();
+        const InstanceCounts counts = frame->build(UbiquittyTest::glyphBackendFor(atlas), buffers);
+        decorations.resize(std::min(counts.decorations, decorations.size()));
+        return decorations;
+    };
+    const auto plain = rules(LinkKindPolicy::Uniform, defaultLinkUnderlineStyleFile, defaultLinkUnderlineStyleMailto);
+    const auto perKind = rules(LinkKindPolicy::PerKind, defaultLinkUnderlineStyleFile, defaultLinkUnderlineStyleMailto);
+    const auto swapped = rules(LinkKindPolicy::PerKind, defaultLinkUnderlineStyleMailto, defaultLinkUnderlineStyleFile);
+    REQUIRE(!plain.empty());
+    REQUIRE(!perKind.empty());
+    REQUIRE(!swapped.empty());
+    CHECK(!std::ranges::equal(std::as_bytes(std::span(plain)), std::as_bytes(std::span(perKind))));
+    CHECK(!std::ranges::equal(std::as_bytes(std::span(perKind)), std::as_bytes(std::span(swapped))));
+}
+
+TEST(registeredStillsKeepThePasswordBadgePolicy)
+{
+    enum class PasswordBadgePolicy {
+        Hidden,
+        Drawn
+    };
+    const auto overlays = [](PasswordBadgePolicy badgePolicy) {
+        const auto closeSession = [](TerminalSession* session) {
+            if (session) {
+                session->close();
+                releaseTerminalSession(session);
+            }
+        };
+        Ubiquitty::Preferences::Values configuration;
+        configuration.passwordDetect = true;
+        const std::unique_ptr<TerminalSession, decltype(closeSession)> session(TerminalSession::make(configuration), closeSession);
+        if (!session) {
+            CHECK_MSG(false, "the prompt session could not be made");
+            return std::size_t { 0 };
+        }
+        session->start(5, 40);
+        SyncFrameCaptureGeometry geometry = testGeometry();
+        geometry.shouldDrawPasswordLock = badgePolicy == PasswordBadgePolicy::Drawn;
+        session->setSyncFrameCaptureGeometry(geometry);
+        constexpr std::string_view prompt = "\x1b[?7401hPassword: ";
+        session->feedBytes({ prompt.data(), prompt.size() });
+        CHECK(withSessionModel(*session, [](Terminal& terminal) { return terminal.passwordPromptActive; }));
+        const TakenFrame frame { session->captureStill() };
+        if (!frame) {
+            CHECK_MSG(false, "the prompt frame was not captured");
+            return std::size_t { 0 };
+        }
+        FakeAtlas atlas;
+        return frame->build(UbiquittyTest::glyphBackendFor(atlas), {}).overlays;
+    };
+    const auto withoutBadge = overlays(PasswordBadgePolicy::Hidden);
+    CHECK(overlays(PasswordBadgePolicy::Drawn) > withoutBadge);
+}
+
 TEST(aStillCaptureServesAnUnpresentedLaneAndAFedPane)
 {
     SessionFixture fx(24, 80);
