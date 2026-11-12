@@ -32,13 +32,13 @@ namespace Ubiquitty {
 // supported surface changes per the policy above.
 inline constexpr int coreVersionMajor = 1;
 inline constexpr int coreVersionMinor = 3;
-inline constexpr int coreVersionPatch = 1;
+inline constexpr int coreVersionPatch = 2;
 
 // Monotonic packed form for ordered comparison: major*10000 + minor*100 + patch.
 inline constexpr int coreVersion = coreVersionMajor * 10000 + coreVersionMinor * 100 + coreVersionPatch;
 
 // Human-readable "x.y.z". A literal — keep it in lock-step with the ints above.
-inline constexpr const char* coreVersionString = "1.3.1";
+inline constexpr const char* coreVersionString = "1.3.2";
 
 } // namespace Ubiquitty
 

@@ -23,6 +23,7 @@
 #include "Core/Rendering/OverlaySpanGather.h"
 #include "Core/RichText/BlockStore.h"
 #include "Core/Runtime/TerminalSession.h"
+#include "Core/Screen/LogicalPosition.h"
 #include "Core/Screen/Scrollback.h"
 #include "Core/Selection/SelectionOverCapture.h"
 #include "Core/Selection/TerminalSelection.h"
@@ -3162,7 +3163,251 @@ FrameAsk askForFrame(TerminalSession& session, Runtime::FrameDemand demand)
     return ask;
 }
 
+std::vector<CellInstance> wholeFrameCells(const FrameCapture& capture)
+{
+    FakeAtlas atlas;
+    const std::size_t capacity = static_cast<std::size_t>(capture.rows()) * capture.columns();
+    std::vector<CellInstance> cells(capacity);
+    std::vector<DecorationInstance> decorations(capacity * 8);
+    InstanceBuffers buffers;
+    buffers.cells = cells.data();
+    buffers.cellCapacity = cells.size();
+    buffers.decorations = decorations.data();
+    buffers.decorationCapacity = decorations.size();
+    const InstanceCounts counts = capture.build(UbiquittyTest::glyphBackendFor(atlas), buffers, BuildScope::Whole);
+    cells.resize(std::min(counts.cells, cells.size()));
+    return cells;
+}
+
+SyncFrameCaptureGeometry hoverGeometry()
+{
+    SyncFrameCaptureGeometry geometry = testGeometry();
+    geometry.drawCursor = false;
+    geometry.shouldUnderlineLinks = true;
+    geometry.linkColor = { 0.0f, 0.3f, 0.9f, 1.0f };
+    geometry.linkHoverColor = { 1.0f, 0.4f, 0.0f, 1.0f };
+    return geometry;
+}
+
+FrameHoverLink firstRowHover()
+{
+    FrameHoverLink hover;
+    hover.isActive = true;
+    hover.rowAbsoluteFirst = 0;
+    hover.rowAbsoluteLast = 0;
+    hover.columnFirst = 0;
+    hover.columnLast = 3;
+    return hover;
+}
+
+std::vector<CellInstance> applyDamagedCells(const FrameCapture& delta, std::vector<CellInstance> retained)
+{
+    std::erase_if(retained, [&](const CellInstance& cell) {
+        return delta.isRowDirty(static_cast<int>(cell.gridPosition.y));
+    });
+    const std::vector<CellInstance> replacement = builtCells(delta);
+    retained.insert(retained.end(), replacement.begin(), replacement.end());
+    std::ranges::sort(retained, [](const CellInstance& left, const CellInstance& right) {
+        return left.gridPosition.y < right.gridPosition.y
+            || (left.gridPosition.y == right.gridPosition.y && left.gridPosition.x < right.gridPosition.x);
+    });
+    return retained;
+}
+
+void releaseFrameHeldForQuiet(TerminalSession&);
+
+void checkEndingHoverAcrossCaptureSlots(Screen::Buffer screen)
+{
+    SessionFixture fixture(4, 20);
+    REQUIRE(fixture.isReady);
+    fixture.session->setSyncFrameCaptureGeometry(hoverGeometry());
+    const std::string text = "\033]8;;https://example.invalid/one\033\\LINK\033]8;;\033\\ tail\r\nunchanged row";
+    fixture.drainSyncFrame((screen == Screen::Buffer::Alternate ? "\033[?1049h" : "") + text);
+    PAL::s_testMicroseconds += Runtime::eraseHoldSettleMicros;
+    releaseFrameHeldForQuiet(*fixture.session);
+    // Retaining this third capture leaves only two slots to alternate. It is
+    // never modified, even while those two present changing hover state.
+    const TakenFrame pinned(fixture.session->takeSyncFrame());
+    REQUIRE(pinned);
+
+    FrameAsk resting = askForFrame(*fixture.session, {});
+    REQUIRE(resting.frame);
+    const FrameCapture* restingSlot = resting.frame.get();
+    const std::uint64_t modelGeneration = resting.frame->modelGeneration();
+    const std::uint64_t restingSequence = resting.frame->sequence();
+    const std::vector<CellInstance> reference = wholeFrameCells(*resting.frame);
+    REQUIRE(!reference.empty());
+
+    fixture.session->setSyncFrameHoverLink(firstRowHover());
+    FrameAsk hovered = askForFrame(*fixture.session, {});
+    REQUIRE(hovered.frame);
+    CHECK(hovered.frame.get() != restingSlot);
+    CHECK_EQ(hovered.frame->baseSequence(), restingSequence);
+    CHECK_EQ(hovered.frame->modelGeneration(), modelGeneration);
+    std::vector<CellInstance> retained = wholeFrameCells(*hovered.frame);
+    CHECK_MSG(!sameInstanceBytes(reference, retained), "the presented frame must actually emphasize the link");
+    resting.frame.reset();
+
+    fixture.session->setSyncFrameHoverLink({});
+    FrameAsk cleared = askForFrame(*fixture.session, {});
+    REQUIRE(cleared.frame);
+    CHECK_MSG(cleared.frame.get() == restingSlot, "the cleared frame must reuse the slot whose last hover was inactive");
+    CHECK(cleared.frame->recordKind() == FrameRecordKind::Delta);
+    CHECK_EQ(cleared.frame->baseSequence(), hovered.frame->sequence());
+    CHECK_EQ(cleared.frame->modelGeneration(), modelGeneration);
+    CHECK_MSG(cleared.frame->isRowDirty(0), "ending hover must repaint the row emphasized by the previously presented slot");
+    CHECK_MSG(!cleared.frame->isRowDirty(1), "unchanged rows must remain reusable for a presentation-only change");
+    CHECK(sameInstanceBytes(reference, wholeFrameCells(*cleared.frame)));
+
+    // Apply only the rows this Delta actually rebuilds, as a retained target
+    // does. A correct whole capture is insufficient if its mask paints none
+    // of the pixels that still show the preceding slot's hover.
+    retained = applyDamagedCells(*cleared.frame, std::move(retained));
+    CHECK_MSG(sameInstanceBytes(reference, retained), "applying the unhover Delta must reconstruct the full resting frame");
+}
+
 } // namespace
+
+TEST(endingHoverAcrossCaptureSlotsRestoresThePrimaryScreen)
+{
+    checkEndingHoverAcrossCaptureSlots(Screen::Buffer::Primary);
+}
+
+TEST(endingHoverAcrossCaptureSlotsRestoresTheAlternateScreen)
+{
+    checkEndingHoverAcrossCaptureSlots(Screen::Buffer::Alternate);
+}
+
+TEST(aSecondTickAfterTakingAPendingHoveredFrameCapturesTheClearedHoverWithoutOutput)
+{
+    for (const bool isAlternateScreen : { false, true }) {
+        SessionFixture fixture(4, 20);
+        REQUIRE(fixture.isReady);
+        fixture.session->setSyncFrameCaptureGeometry(hoverGeometry());
+        const std::string text = "\033]8;;https://example.invalid/one\033\\LINK\033]8;;\033\\ tail";
+        fixture.drainSyncFrame((isAlternateScreen ? "\033[?1049h" : "") + text);
+        PAL::s_testMicroseconds += Runtime::eraseHoldSettleMicros;
+        releaseFrameHeldForQuiet(*fixture.session);
+        TakenFrame resting(fixture.session->takeSyncFrame());
+        REQUIRE(resting);
+        const std::vector<CellInstance> reference = wholeFrameCells(*resting);
+        resting.reset();
+
+        fixture.session->setSyncFrameHoverLink(firstRowHover());
+        fixture.drainSyncFrame("");
+        PAL::s_testMicroseconds += Runtime::eraseHoldSettleMicros;
+        releaseFrameHeldForQuiet(*fixture.session);
+        fixture.session->setSyncFrameHoverLink({});
+        // A taken capture asks the native drive for another display tick.
+        // Exercise that second ask rather than treating the pending capture
+        // alone as proof that no corrected frame can ever be presented.
+        FrameAsk pending = askForFrame(*fixture.session, {});
+        REQUIRE(pending.frame);
+        FrameAsk corrected = askForFrame(*fixture.session, {});
+        REQUIRE(corrected.frame);
+        CHECK(corrected.supply.route == Runtime::FrameRoute::Captured);
+        CHECK(corrected.frame->sequence() > pending.frame->sequence());
+        CHECK_EQ(corrected.frame->modelGeneration(), pending.frame->modelGeneration());
+        CHECK(sameInstanceBytes(reference, wholeFrameCells(*corrected.frame)));
+    }
+}
+
+TEST(aBoundaryClearingHoverRepaintsTheRowEmphasizedByALiveFrame)
+{
+    for (const bool isAlternateScreen : { false, true }) {
+        SessionFixture fixture(4, 20);
+        REQUIRE(fixture.isReady);
+        fixture.session->setSyncFrameCaptureGeometry(hoverGeometry());
+        const std::string text = "\033]8;;https://example.invalid/one\033\\LINK\033]8;;\033\\ tail\r\nunchanged row";
+        fixture.drainSyncFrame((isAlternateScreen ? "\033[?1049h" : "") + text);
+        PAL::s_testMicroseconds += Runtime::eraseHoldSettleMicros;
+        releaseFrameHeldForQuiet(*fixture.session);
+        TakenFrame resting(fixture.session->takeSyncFrame());
+        REQUIRE(resting);
+        const std::vector<CellInstance> reference = wholeFrameCells(*resting);
+        resting.reset();
+
+        fixture.session->setSyncFrameHoverLink(firstRowHover());
+        {
+            const ModelLockHold hold(*fixture.session->modelLockPointer());
+            Terminal* terminal = fixture.session->terminal();
+            REQUIRE(terminal);
+            RetainedFrameRequest request;
+            request.rows = 4;
+            request.columns = 20;
+            request.cellHeightInPixels = 16;
+            request.textureHeightInPixels = 64;
+            request.isTargetMatching = true;
+            std::array<std::uint8_t, 4> dirtyRows {};
+            const RetainedFramePlan plan = fixture.session->planRetainedFrame(*terminal, request, RowDirtySpan(dirtyRows));
+            CHECK(plan.shouldLoadRetainedTarget);
+            CHECK_MSG(dirtyRows[0] != 0, "the live frame's newly hovered row is part of the shared presentation damage");
+            CHECK(dirtyRows[1] == 0);
+        }
+        const TakenFrame live(fixture.session->captureStill());
+        REQUIRE(live);
+        std::vector<CellInstance> retained = wholeFrameCells(*live);
+        CHECK(!sameInstanceBytes(reference, retained));
+
+        fixture.session->setSyncFrameHoverLink({});
+        FrameAsk cleared = askForFrame(*fixture.session, {});
+        REQUIRE(cleared.frame);
+        CHECK(cleared.frame->recordKind() == FrameRecordKind::Delta);
+        CHECK_MSG(cleared.frame->isRowDirty(0), "a boundary frame clearing the live route's hover must repaint its row");
+        CHECK(!cleared.frame->isRowDirty(1));
+        retained = applyDamagedCells(*cleared.frame, std::move(retained));
+        CHECK(sameInstanceBytes(reference, retained));
+    }
+}
+
+TEST(aSupersededHoverMoveStillOwesTheRowThatWasEmphasizedOnScreen)
+{
+    for (const bool isAlternateScreen : { false, true }) {
+        SessionFixture fixture(4, 20);
+        REQUIRE(fixture.isReady);
+        fixture.session->setSyncFrameCaptureGeometry(hoverGeometry());
+        const std::string text = "\033]8;;https://example.invalid/one\033\\LINK\033]8;;\033\\ tail\r\n"
+                                 "\033]8;;https://example.invalid/two\033\\NEXT\033]8;;\033\\ tail";
+        fixture.drainSyncFrame((isAlternateScreen ? "\033[?1049h" : "") + text);
+        PAL::s_testMicroseconds += Runtime::eraseHoldSettleMicros;
+        releaseFrameHeldForQuiet(*fixture.session);
+        TakenFrame pinned(fixture.session->takeSyncFrame());
+        REQUIRE(pinned);
+        FrameAsk resting = askForFrame(*fixture.session, {});
+        REQUIRE(resting.frame);
+        const std::vector<CellInstance> reference = wholeFrameCells(*resting.frame);
+        fixture.session->setSyncFrameHoverLink(firstRowHover());
+        FrameAsk hovered = askForFrame(*fixture.session, {});
+        REQUIRE(hovered.frame);
+        std::vector<CellInstance> retained = wholeFrameCells(*hovered.frame);
+        CHECK(!sameInstanceBytes(reference, retained));
+        resting.frame.reset();
+
+        FrameHoverLink moved = firstRowHover();
+        moved.rowAbsoluteFirst = 1;
+        moved.rowAbsoluteLast = 1;
+        fixture.session->setSyncFrameHoverLink(moved);
+        const std::uint64_t publicationsBeforeMove = fixture.session->syncFramePublicationCount();
+        fixture.drainSyncFrame("\033[1;1H");
+        CHECK(fixture.session->syncFramePublicationCount() > publicationsBeforeMove);
+        // The move was published but never presented. Free the third slot so
+        // the clearing capture can supersede it while the shown hover is held.
+        pinned.reset();
+        fixture.session->setSyncFrameHoverLink({});
+        const std::uint64_t publicationsBeforeClear = fixture.session->syncFramePublicationCount();
+        fixture.drainSyncFrame("\033[1;2H");
+        CHECK(fixture.session->syncFramePublicationCount() > publicationsBeforeClear);
+        const TakenFrame cleared(fixture.session->takeSyncFrame());
+        REQUIRE(cleared);
+        CHECK(cleared->recordKind() == FrameRecordKind::Delta);
+        CHECK(cleared->baseSequence() > hovered.frame->sequence());
+        CHECK_MSG(cleared->isRowDirty(0), "the superseded move must carry the row still hovered on the retained target");
+        CHECK(cleared->isRowDirty(1));
+        CHECK(!cleared->isRowDirty(2));
+        retained = applyDamagedCells(*cleared, std::move(retained));
+        CHECK(sameInstanceBytes(reference, retained));
+    }
+}
 
 // A capture says whether it draws a status row, so a view reads it from the
 // frame it presents rather than from the model: none before the program asks

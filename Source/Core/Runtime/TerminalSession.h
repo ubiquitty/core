@@ -5064,7 +5064,10 @@ public:
         foldCaptureRegistrations();
         if (m_frameLane.retireReady())
             m_retainedBaseline = {};
-        return Rendering::planRetainedFrame(terminal, m_retainedBaseline, request, rowDirty);
+        Rendering::RetainedFramePlan plan = Rendering::planRetainedFrame(terminal, m_retainedBaseline, request, rowDirty);
+        if (!plan.refresh.rowDirty.empty())
+            includeRetainedHoverDamage(terminal, request.viewOffset, plan.damage, rowDirty);
+        return plan;
     }
 
     /// Plans a skipped grid frame against that same shared baseline -- the
@@ -10263,6 +10266,7 @@ private:
             damage = plan.damage;
             refresh = plan.refresh;
             isDelta = plan.damage.canReuse;
+            includeRetainedHoverDamage(*term, options.viewOffset, damage, m_syncRowDirty);
             // Owed rows are named where the capture that owed them drew them.
             // A scroll since has moved those rows, so a capture that scrolls
             // over a debt cannot say where it now stands, and records Full.
@@ -14113,6 +14117,59 @@ private:
     /// The baseline the boundary captures' deltas are recorded against, under
     /// the model lock.
     Rendering::RetainedFrameBaseline m_retainedBaseline UBIQUITTY_GUARDED_BY(modelLockRole);
+    /// Records the hover publication and visible rows in the retained lineage.
+    struct RetainedHoverPresentation {
+        bool isActive = false;
+        std::uint64_t registrationVersion = 0;
+        int rowFirst = 0;
+        int rowLast = -1;
+
+        bool operator==(const RetainedHoverPresentation&) const = default;
+    };
+    RetainedHoverPresentation m_retainedHoverPresentation UBIQUITTY_GUARDED_BY(modelLockRole);
+
+    /// Adds hover presentation changes against the shared retained lineage,
+    /// rather than the private history of whichever capture slot is reused.
+    ///
+    /// - Parameters:
+    ///   - terminal: The live model, under the model lock.
+    ///   - viewOffset: The viewport offset requested for this frame.
+    ///   - damage: The reuse verdict and scroll that transport retained pixels.
+    ///   - rowDirty: The plan's writable row mask, extended for hover changes.
+    void includeRetainedHoverDamage(const Ubiquitty::Terminal& terminal, int viewOffset,
+        const Rendering::FrameDamage& damage, std::span<std::uint8_t> rowDirty) UBIQUITTY_REQUIRES(modelLockRole)
+    {
+        const bool isActive = m_syncCaptureGeometry.shouldUnderlineLinks && m_syncFrameHover.isActive;
+        if ((!isActive && !m_retainedHoverPresentation.isActive) || rowDirty.empty())
+            return;
+
+        const int firstAbsoluteRow = Screen::scrollbackCount(&terminal) - Screen::resolvedViewOffset(&terminal, viewOffset);
+        const RetainedHoverPresentation next {
+            isActive,
+            m_hoverVersionFolded,
+            m_syncFrameHover.rowAbsoluteFirst - firstAbsoluteRow,
+            m_syncFrameHover.rowAbsoluteLast - firstAbsoluteRow,
+        };
+        if (damage.canReuse && (next != m_retainedHoverPresentation || damage.scrollDelta != 0)) {
+            const int rowCount = static_cast<int>(rowDirty.size());
+            if (m_retainedHoverPresentation.isActive) {
+                for (int row = std::max(m_retainedHoverPresentation.rowFirst, 0);
+                    row <= std::min(m_retainedHoverPresentation.rowLast, rowCount - 1); ++row) {
+                    int transportedRow = row;
+                    if (row >= damage.scrollTop && row <= damage.scrollBottom)
+                        transportedRow -= damage.scrollDelta;
+                    if (transportedRow >= 0 && transportedRow < rowCount)
+                        rowDirty[static_cast<std::size_t>(transportedRow)] = 1;
+                }
+            }
+            if (next.isActive) {
+                for (int row = std::max(next.rowFirst, 0); row <= std::min(next.rowLast, rowCount - 1); ++row)
+                    rowDirty[static_cast<std::size_t>(row)] = 1;
+            }
+        }
+        m_retainedHoverPresentation = next;
+    }
+
     /// The capture's row-dirty mask scratch; the ingest thread's, under the
     /// model lock.
     std::vector<std::uint8_t> m_syncRowDirty UBIQUITTY_GUARDED_BY(modelLockRole);
