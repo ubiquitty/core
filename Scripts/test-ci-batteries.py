@@ -3308,7 +3308,7 @@ class WorkflowTests(unittest.TestCase):
         if prefix:
             for job in jobs.values():
                 self.assertEqual(job.count("submodules: recursive"), job.count("uses: actions/checkout@"))
-            self.assertEqual(text.count(f"hashFiles('{prefix}Scripts/fetch-quic-deps.sh')"), 2)
+            self.assertEqual(text.count(f"hashFiles('{prefix}Scripts/fetch-quic-deps.sh')"), 1)
         # A sweep that stands down for a failed tip fails too, so the failure
         # is what the next sweep reads back from it.
         self.assertRegex(jobs["preflight"], r"name: Keep this tip's failed verdict\n"
