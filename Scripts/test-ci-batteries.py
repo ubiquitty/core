@@ -3426,7 +3426,10 @@ def run_suite(run_tests):
 
 class SourceCompositionBatteryTests(unittest.TestCase):
     def setUp(self):
-        scratch = tempfile.TemporaryDirectory(prefix="ubq-battery-composition-")
+        # The fake SELinux daemon rejects system trees. macOS's default
+        # temporary directory is under /private/var, so use project data in
+        # /tmp to model the writable Linux workspace these fixtures exercise.
+        scratch = tempfile.TemporaryDirectory(prefix="ubq-battery-composition-", dir="/tmp")
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name).resolve()
         self.app = self.root / "app with spaces"
