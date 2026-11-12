@@ -28,10 +28,26 @@ class CTestActivity:
         r"^\s*[0-9]+/[0-9]+\s+Test\s+#[0-9]+:\s+(\S+).*?"
         r"(?:Passed|\*\*\*.+?)\s+[0-9.]+\s+sec\s*$")
 
-    def __init__(self, total):
+    def __init__(self, total, build=None):
         self.total = total
         self.completed = 0
         self.active = []
+        self.build = build
+
+    def build_progress(self):
+        if self.build is None or "ubq_build" not in self.active:
+            return ""
+        path = self.build / "Testing/Temporary/ubq-build.log"
+        try:
+            with path.open("rb") as stream:
+                stream.seek(0, os.SEEK_END)
+                stream.seek(max(0, stream.tell() - 4096))
+                lines = stream.read().decode("utf-8", errors="replace").splitlines()
+            latest = next((line.strip() for line in reversed(lines) if line.strip()), "")
+            idle = max(0, int(time.time() - path.stat().st_mtime))
+        except OSError:
+            return "; compile fixture starting"
+        return f"; build: {latest[:240] or 'waiting for compiler output'}; output age {idle}s"
 
     def __call__(self, line):
         started = self.start_pattern.match(line)
@@ -54,7 +70,7 @@ class CTestActivity:
         if len(self.active) > 3:
             active += f" (+{len(self.active) - 3} more)"
         suffix = f"; active {active}" if active else "; waiting for CTest"
-        return f"{self.completed}/{self.total} completed{suffix}"
+        return f"{self.completed}/{self.total} completed{suffix}{self.build_progress()}"
 
 
 def selection_arguments(arguments):
@@ -299,7 +315,7 @@ def main(argv=None):
                         command=" ".join(shlex.quote(str(argument)) for argument in command),
                         exitStatus=73, logPath=str(log_path), junitPath=str(junit_path))
         return 73
-    activity = CTestActivity(len(discovered))
+    activity = CTestActivity(len(discovered), options.build)
     result = reporter.run_process(
         command, label=f"{len(discovered)} tests in {options.build.name}",
         cwd=options.build, environment=environment, log_path=str(log_path),

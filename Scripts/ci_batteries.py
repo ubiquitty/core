@@ -132,19 +132,27 @@ fi
 
 LINUX_SETUP = r'''
 tools=(cmake ninja g++ make pkg-config)
+appTools=false
+if [ "$UBQ_TESTS_ROOT" != "$UBQ_CORE_ROOT" ] && [ "$UBQ_TESTS_ROOT" != "${UBQ_KIT_ROOT:-}" ]; then
+    appTools=true
+    tools+=(node)
+fi
 if [ "$UBQ_CI_CODE" = true ]; then tools+=(clang llvm-profdata); fi
 if ! ./Scripts/ci-toolchain.sh check "battery-linux-$UBQ_CI_SETUP_KEY" "${tools[@]}"; then
     if command -v apt-get >/dev/null 2>&1; then
         packages=(build-essential cmake ninja-build pkg-config)
+        if [ "$appTools" = true ]; then packages+=(nodejs); fi
         if [ "$UBQ_CI_CODE" = true ]; then packages+=(clang llvm); fi
         sudo apt-get update
         sudo apt-get install -y "${packages[@]}"
     elif command -v dnf >/dev/null 2>&1; then
         packages=(gcc gcc-c++ make cmake ninja-build pkgconf-pkg-config)
+        if [ "$appTools" = true ]; then packages+=(nodejs); fi
         if [ "$UBQ_CI_CODE" = true ]; then packages+=(clang llvm); fi
         sudo dnf install -y "${packages[@]}"
     elif command -v pacman >/dev/null 2>&1; then
         packages=(base-devel cmake ninja pkgconf)
+        if [ "$appTools" = true ]; then packages+=(nodejs); fi
         if [ "$UBQ_CI_CODE" = true ]; then packages+=(clang llvm); fi
         sudo pacman -Sy --noconfirm "${packages[@]}"
     else

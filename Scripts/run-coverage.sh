@@ -68,12 +68,14 @@ CTEST_JOBS="${CTEST_JOBS:-8}"
 GAPS=0
 FLOOR=""
 FILE_FLOORS=0
+NATIVE_ONLY=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --html)  HTML=1 ;;
         --gaps)  GAPS=1 ;;
         --check) shift; FLOOR="${1:-}" ;;
         --check-file-floors) FILE_FLOORS=1 ;;
+        --native-only) NATIVE_ONLY=1 ;;
         *) echo "run-coverage.sh: unknown flag: $1" >&2; exit 2 ;;
     esac
     shift
@@ -92,8 +94,17 @@ LLVMCOV="$(xcrun --find llvm-cov 2>/dev/null || echo llvm-cov)"
 # index are both calibrated against.
 sourceOptions=("-DUBIQUITTY_CORE_SOURCE_DIR=$CORE_ROOT")
 [ -z "$KIT_ROOT" ] || sourceOptions+=("-DUBIQUITTY_KIT_SOURCE_DIR=$KIT_ROOT")
+FRONTEND=Core
+if [ "$ROOT" = "$KIT_ROOT" ]; then
+    FRONTEND=Linux
+fi
+if [ "$NATIVE_ONLY" = 1 ]; then
+    sourceOptions+=("-DUBIQUITTY_CTEST_SHELL_REMAINDER=OFF")
+else
+    sourceOptions+=("-DUBIQUITTY_CTEST_SHELL_REMAINDER=ON")
+fi
 cmake -S "$ROOT" -B "$BUILD" -G Ninja \
-    -DUBIQUITTY_FRONTEND=Core -DCMAKE_BUILD_TYPE=Debug \
+    -DUBIQUITTY_FRONTEND="$FRONTEND" -DCMAKE_BUILD_TYPE=Debug \
     -DUBIQUITTY_BUILD_TESTS=ON -DUBIQUITTY_COVERAGE=ON -DUBIQUITTY_TEST_PCH=OFF \
     "${sourceOptions[@]}" \
     -DUBIQUITTY_TEST_TIMEOUT=300 \
@@ -213,6 +224,20 @@ fi
 # denominator — re2/simdutf/wuffs/yyjson internals would otherwise flood the
 # report at 0% and the changed-line gate would demand coverage of vendored lines.
 IGNORE='(Tests/|/compat/|BuildHostTests/|ThirdParty/)'
+if [ "$ROOT" = "$KIT_ROOT" ]; then
+    # Dependency coverage cannot inflate a Kit verdict. Include every built
+    # Kit library's mappings, including functions no test linked or exercised.
+    dependencyPattern="$(python3 -c 'import re, sys; print(re.escape(sys.argv[1]) + "/")' "$CORE_ROOT")"
+    IGNORE="(Tests/|/compat/|BuildHostTests/|ThirdParty/|$dependencyPattern)"
+    for name in FreeType GTK GTKPAL Software Vulkan; do
+        library="$BUILD/libUbiquittyKit$name.a"
+        if [ ! -f "$library" ]; then
+            echo "run-coverage: missing Kit library coverage input: $library" >&2
+            exit 1
+        fi
+        OBJECTS+=(-object "$library")
+    done
+fi
 
 "$LLVMCOV" report "${OBJECTS[@]}" -instr-profile="$OUT/merged.profdata" \
     -ignore-filename-regex="$IGNORE" 2>&1 | tee "$OUT/summary.txt" >/dev/null
@@ -259,14 +284,16 @@ fi
 # The per-test profiles are only readable while they are still on disk, and the
 # next coverage run deletes them. Turning them into the index here means the
 # index is never older than the lcov beside it.
-"$CORE_ROOT/Scripts/build-coverage-index.sh" || \
-    echo "run-coverage: the covering-test index could not be built (coverage itself is fine)" >&2
+if [ "$ROOT" = "$CORE_ROOT" ]; then
+    "$CORE_ROOT/Scripts/build-coverage-index.sh" || \
+        echo "run-coverage: the covering-test index could not be built (coverage itself is fine)" >&2
+fi
 
 # How far the committed copy had fallen behind, said by the only run that can
 # know. This rebuilds the tracked file in place, so the two copies exist
 # together for exactly this long; afterwards a reader can see that the index is
 # old but not what adopting it would have changed.
-if ! git -C "$CORE_ROOT" diff --quiet -- Tests/coverage/covering-tests.tsv 2>/dev/null; then
+if [ "$ROOT" = "$CORE_ROOT" ] && ! git -C "$CORE_ROOT" diff --quiet -- Tests/coverage/covering-tests.tsv 2>/dev/null; then
     echo "index : rebuilt, and the committed copy differs"
     echo "  committed: $(git -C "$CORE_ROOT" show HEAD:Tests/coverage/covering-tests.tsv 2>/dev/null | head -1)"
     echo "  rebuilt:   $(head -1 "$CORE_ROOT/Tests/coverage/covering-tests.tsv")"
@@ -382,14 +409,19 @@ echo "  shell tier: ${SHELL_ENTRIES} entry/entries, ${SHELL_PROFILES} profile(s)
 UNCOMPILED=$(git -C "$ROOT" ls-files \
     'Source/Platform/macOS/*.mm' 'Source/Platform/macOS/*.cpp' \
     'Source/Platform/Linux/*.cpp' 2>/dev/null | grep -c . || true)
-if [ "${UNCOMPILED:-0}" -gt 0 ]; then
+if [ "$ROOT" = "$KIT_ROOT" ]; then
+    echo "  subject: Kit native Linux tests and all five built Kit libraries."
+    echo "  Core dependencies and Apple/Swift implementations are outside this denominator."
+elif [ "${UNCOMPILED:-0}" -gt 0 ]; then
     echo "  subject: the configured Core and dependent test targets. ${UNCOMPILED} frontend"
     echo "  implementation file(s) exist under Source/Platform/{macOS,Linux}; files not"
     echo "  linked by those targets remain outside this report's denominator."
 fi
 echo "report: $OUT/summary.txt"
 echo "lcov  : $OUT/coverage.lcov"
-[ -f "$CORE_ROOT/Tests/coverage/covering-tests.tsv" ] && echo "index : $CORE_ROOT/Tests/coverage/covering-tests.tsv"
+if [ "$ROOT" = "$CORE_ROOT" ] && [ -f "$CORE_ROOT/Tests/coverage/covering-tests.tsv" ]; then
+    echo "index : $CORE_ROOT/Tests/coverage/covering-tests.tsv"
+fi
 [ "${HTML:-0}" = "1" ] && echo "html  : $OUT/html/index.html"
 
 if [ -n "$FLOOR" ]; then
@@ -405,7 +437,11 @@ fi
 if [ "$FILE_FLOORS" = "1" ]; then
     floorArguments=(--source-root "$ROOT" --core-source-root "$CORE_ROOT")
     [ -z "$KIT_ROOT" ] || floorArguments+=(--kit-source-root "$KIT_ROOT")
-    "$CORE_ROOT/Scripts/check-coverage-floor.sh" "${floorArguments[@]}" || exit 1
+    if [ "$ROOT" = "$KIT_ROOT" ]; then
+        "$ROOT/Scripts/check-coverage-floor.sh" || exit 1
+    else
+        "$CORE_ROOT/Scripts/check-coverage-floor.sh" "${floorArguments[@]}" || exit 1
+    fi
 fi
 
 exit "$TESTS_OK"

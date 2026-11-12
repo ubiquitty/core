@@ -98,7 +98,8 @@ def concluded(indexed, name, conclusions):
 
 def is_full_checkpoint(jobs):
     indexed = indexed_jobs(jobs)
-    if not all(concluded(indexed, name, ("success",)) for name in JOBS):
+    if (any(job.get("conclusion") not in ("success", "skipped") for job in jobs)
+            or not all(concluded(indexed, name, ("success",)) for name in JOBS)):
         return False
     return all(any(step.get("name") == marker and step.get("conclusion") == "success"
                    for step in job.get("steps", []))
@@ -111,8 +112,10 @@ PASSED = "all required batteries succeeded or were outside change reach"
 
 def tip_verdict(jobs):
     indexed = indexed_jobs(jobs)
-    if any(job.get("conclusion") == "failure" for group in indexed.values() for job in group):
+    if any(job.get("conclusion") == "failure" for job in jobs):
         return FAILED
+    if any(job.get("conclusion") not in ("success", "skipped") for job in jobs):
+        return ""
     if (concluded(indexed, "CI preflight", ("success",))
             and all(concluded(indexed, name, ("success", "skipped")) for name in FULL_MARKERS)):
         return PASSED

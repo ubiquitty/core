@@ -29,9 +29,18 @@ if(NOT _result EQUAL 0 OR NOT _jobs MATCHES "^[1-9][0-9]*$")
     message(FATAL_ERROR "build fixture: ${JOBS_SCRIPT} gave no job count: '${_jobs}'")
 endif()
 
+# CTest captures successful test output, including Ninja's progress. Keep a live
+# copy for the heartbeat reader so a cold compile does not look like a hung test.
+file(MAKE_DIRECTORY "${BUILD_DIR}/Testing/Temporary")
+set(_build_log "${BUILD_DIR}/Testing/Temporary/ubq-build.log")
+message(STATUS "build fixture: ${_jobs} parallel jobs; live output: ${_build_log}")
 execute_process(
     COMMAND "${CMAKE_COMMAND}" --build "${BUILD_DIR}" --parallel "${_jobs}"
+    OUTPUT_FILE "${_build_log}"
+    ERROR_FILE "${_build_log}"
     RESULT_VARIABLE _result)
+file(READ "${_build_log}" _output)
+message("${_output}")
 if(NOT _result EQUAL 0)
     message(FATAL_ERROR "build fixture: the build failed (above)")
 endif()

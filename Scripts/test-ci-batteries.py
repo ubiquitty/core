@@ -1396,6 +1396,20 @@ run_ctest_suite() { return "$UBQ_TEST_CTEST_STATUS"; }
 
 
 class CTestReportingTests(unittest.TestCase):
+    def test_build_progress_is_live_bounded_and_only_shown_for_the_fixture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            build = Path(directory)
+            log = build / "Testing/Temporary/ubq-build.log"
+            log.parent.mkdir(parents=True)
+            log.write_text("old diagnostic\n" * 2000 + "[71/900] Building CXX object VT.cpp.o\n")
+            activity = ctest_reporting.CTestActivity(2, build)
+            self.assertNotIn("Building CXX", activity.finish())
+            self.assertIn("[71/900]", activity("Start 1: ubq_build"))
+            log.write_text("[84/900] Linking CXX executable test_vt\n")
+            self.assertIn("[84/900]", activity.finish())
+            self.assertNotIn("old diagnostic", activity.finish())
+            self.assertNotIn("build:", activity("1/2 Test #1: ubq_build ... Passed 3.00 sec"))
+
     def test_file_only_gate_failure_has_no_invented_line(self):
         reporter = ctest_reporting.Reporter("ctest", {})
         self.assertEqual(
@@ -2882,6 +2896,18 @@ class ReachTests(unittest.TestCase):
         self.assertFalse(reach.is_full_checkpoint(full_jobs() + [full_jobs()[0]]))
         self.assertFalse(reach.is_full_checkpoint([{"name": "Host tests", "conclusion": "success"}]))
 
+    def test_extra_required_jobs_cannot_be_hidden_by_successful_batteries(self):
+        for name in ("Coverage floor", "Linux host build (glibc-arm64)"):
+            for conclusion in ("failure", "cancelled", "timed_out", None):
+                with self.subTest(name=name, conclusion=conclusion):
+                    jobs = full_jobs() + [{"name": name, "conclusion": conclusion}]
+                    self.assertFalse(reach.is_full_checkpoint(jobs))
+                    self.assertEqual(reach.tip_verdict(jobs), reach.FAILED if conclusion == "failure" else "")
+            for conclusion in ("success", "skipped"):
+                jobs = full_jobs() + [{"name": name, "conclusion": conclusion}]
+                self.assertTrue(reach.is_full_checkpoint(jobs))
+                self.assertEqual(reach.tip_verdict(jobs), reach.PASSED)
+
     def test_a_battery_split_into_groups_is_complete_only_when_every_group_is(self):
         def split():
             jobs = [job for job in full_jobs() if job["name"] != "Linux battery"]
@@ -3046,6 +3072,25 @@ class WorkflowScriptPathTests(unittest.TestCase):
 
     SCRIPT_PATH = re.compile(r"(?<![\w/.-])(?:\./)?((?:Libraries/ubiquitty-kit/Libraries/ubiquitty-core/|"
                              r"Libraries/(?:ubiquitty-core|ubiquitty-kit)/)?(?:Scripts|Tests|Tools)/[\w./-]+\.(?:sh|py|mjs))\b")
+
+    def test_owned_arm_and_coverage_jobs_are_required_and_cached(self):
+        jobs = workflow_jobs((TEST_SOURCES.subject / ".github/workflows/ci.yml").read_text())
+        if TEST_SOURCES.repositories == ("app",):
+            self.assertNotIn("coverage", jobs)
+            self.assertNotIn("host-linux-arm64", jobs)
+            return
+        for name in ("host-linux-arm64", "coverage"):
+            job = jobs[name]
+            self.assertIn("if: needs.preflight.outputs.linux == 'true'", job)
+            self.assertNotIn("if: ${{ false }}", job)
+            self.assertNotIn("continue-on-error: true\n    steps:", job)
+            self.assertIn("ccache-v2-${{ runner.os }}-${{ runner.arch }}-", job)
+            self.assertIn("ci-linux-image-${{ runner.arch }}-", job)
+            self.assertIn(name, jobs["ci"].split("needs:", 1)[1].splitlines()[0])
+        self.assertIn("runs-on: ubuntu-24.04-arm", jobs["host-linux-arm64"])
+        self.assertIn("--check-file-floors", jobs["coverage"])
+        for name in ("linux", "apple", "coverage", "host-linux-arm64"):
+            self.assertIn("Compiler cache hit rate", jobs[name])
 
     def test_every_script_a_workflow_names_exists(self):
         root = TEST_SOURCES.subject
@@ -3228,10 +3273,10 @@ class WorkflowTests(unittest.TestCase):
             self.assertTrue(fork_runners(drafts.expression, literal), literal)
 
     @unittest.skipUnless(WORKFLOW, "pass --workflow to validate the live workflow contract")
-    def test_workflow_runs_every_battery_and_preserves_optional_jobs(self):
+    def test_workflow_runs_every_app_battery_without_library_jobs(self):
         text = Path(WORKFLOW).read_text()
         jobs = workflow_jobs(text)
-        self.assertEqual(set(jobs), {"preflight", "linux", "apple", "host-linux-arm64", "coverage", "ci"})
+        self.assertEqual(set(jobs), {"preflight", "linux", "apple", "ci"})
         prefix = "Libraries/ubiquitty-kit/Libraries/ubiquitty-core/" if TEST_SOURCES.repositories == ("app",) else ""
         source = ' --source-root "$GITHUB_WORKSPACE"' if prefix else ""
         for platform in ("preflight", "linux", "apple"):
@@ -3254,7 +3299,7 @@ class WorkflowTests(unittest.TestCase):
                 # digest, and is saved back whether or not a gate failed.
                 self.assertIn(f'run: echo "digest=$(./{prefix}Scripts/ci-linux-image.sh{source} --recipe-digest)" >> "$GITHUB_OUTPUT"', job)
                 self.assertIn("UBQ_CI_IMAGE_ARCHIVE: ${{ runner.temp }}/ubq-ci-linux-image.tar", job)
-                self.assertEqual(job.count("key: ci-linux-image-${{ steps.image.outputs.digest }}"), 2)
+                self.assertEqual(job.count("key: ci-linux-image-${{ runner.arch }}-${{ steps.image.outputs.digest }}"), 2)
                 self.assertIn("name: Save the CI image\n        if: always() &&", job)
             self.assertIn("name: Print the failed stage logs\n        if: failure()", job)
             self.assertIn(f"$RUNNER_TEMP/ubiquitty-ci/{platform}", job)
@@ -3291,12 +3336,6 @@ class WorkflowTests(unittest.TestCase):
         # The UI scenarios run on a hosted runner only when a run by hand asks.
         self.assertIn("UBQ_CI_UI_SCENARIOS: ${{ github.event_name == 'workflow_dispatch' && inputs.ui_scenarios && 'true' || 'false' }}",
                       jobs["apple"])
-        hosted = jobs["host-linux-arm64"]
-        self.assertIn("if: ${{ false }}", hosted)
-        self.assertIn("continue-on-error: true", hosted)
-        self.assertIn("runs-on: ubuntu-24.04-arm", hosted)
-        self.assertIn(f"./{prefix}Scripts/build-host.sh --release", hosted)
-        self.assertIn("if: ${{ false }}", jobs["coverage"])
 
 
 def workflow_jobs(text):
@@ -3757,7 +3796,7 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         self.tool(self.bin, "cmake", "coverage-configure")
         with open(self.bin / "cmake", "a") as output:
             output.write("raise SystemExit(27)\n")
-        for subject in (self.app, self.core):
+        for subject in (self.app, self.core, self.kit):
             with self.subTest(subject=subject):
                 self.log.unlink(missing_ok=True)
                 context = source_roots(subject, environment={})
@@ -3770,6 +3809,8 @@ class SourceCompositionBatteryTests(unittest.TestCase):
                 self.assertEqual(row["arguments"][row["arguments"].index("-S") + 1], str(subject))
                 self.assertIn("-DUBIQUITTY_COVERAGE=ON", row["arguments"])
                 self.assertIn("-DUBIQUITTY_TEST_PCH=OFF", row["arguments"])
+                frontend = "Linux" if subject == self.kit else "Core"
+                self.assertIn(f"-DUBIQUITTY_FRONTEND={frontend}", row["arguments"])
                 self.assertIn(f"-DUBIQUITTY_CORE_SOURCE_DIR={self.core}", row["arguments"])
 
     def test_coverage_floor_refuses_stale_app_or_core_inputs_without_changing_floors(self):
