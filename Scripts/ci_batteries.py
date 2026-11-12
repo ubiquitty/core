@@ -127,6 +127,9 @@ if [ -n "${RUNNER_TOOL_CACHE:-}" ]; then
         "$venv/bin/pip" install --quiet --disable-pip-version-check "clang-format==$pin.*"
     fi
     "$venv/bin/clang-format" --version
+    if [ -n "${GITHUB_PATH:-}" ]; then
+        printf '%s\n' "$venv/bin" >> "$GITHUB_PATH"
+    fi
 fi
 '''
 
