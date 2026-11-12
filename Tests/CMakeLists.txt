@@ -559,7 +559,10 @@ ubiquitty_add_host_tests(
 # hosted ubuntu-24.04 runner beside the rest of the suite. It takes its own
 # bound for the reason above.
 if(TEST test_sync_handles)
+    # The instrumented frame allocations and serialization run without
+    # competing test processes under the same timeout.
     set_tests_properties(test_sync_handles PROPERTIES TIMEOUT 300)
+    set_property(TEST test_sync_handles PROPERTY RUN_SERIAL TRUE)
 endif()
 
 # test_sync_corpus_oracle replays every Sync corpus entry through a whole
