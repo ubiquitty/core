@@ -32,11 +32,11 @@ struct SnapshotConfigurationFlags {
     double backgroundImageOpacity = 1.0; // --bg-image-opacity <0..1>
     Rendering::BackgroundImageMode backgroundImageMode = Rendering::BackgroundImageMode::Fill; // --bg-image-mode
     bool shouldGlowTekVectors = false; // --tek-glow
-    // --tek-color-mode 1, with --tek-beam and --tek-bg read only under it:
-    // the tube's custom colour path, which the macOS driver also writes whole.
-    bool isTekColorModeCustom = false;
-    std::uint32_t tekBeamColor = 0x33FF66u;
-    std::uint32_t tekBackgroundColor = 0x0A0A0Au;
+    // --tek-color-mode 0|1; absent leaves the document's mode in place.
+    // --tek-beam and --tek-bg are read only under custom mode.
+    std::optional<bool> isTekColorModeCustom;
+    std::uint32_t tekBeamColor = 0x66DD94u;
+    std::uint32_t tekBackgroundColor = 0x051603u;
     std::optional<double> paddingX; // --padding-x <points>, left and right
     std::optional<double> paddingY; // --padding-y <points>, top and bottom
 };
@@ -173,9 +173,11 @@ template<typename NextWord>
     if (flags.shouldGlowTekVectors)
         state(Key::TekGlowVectors, Value::ofBool(SerializeKind::Bool, true));
     if (flags.isTekColorModeCustom) {
-        state(Key::TekColorMode, Value::ofInteger(SerializeKind::Int, 1));
-        state(Key::TekBeamColor, Value::ofText(SerializeKind::String, hex(flags.tekBeamColor)));
-        state(Key::TekBackgroundColor, Value::ofText(SerializeKind::String, hex(flags.tekBackgroundColor)));
+        state(Key::TekColorMode, Value::ofInteger(SerializeKind::Int, *flags.isTekColorModeCustom ? 1 : 0));
+        if (*flags.isTekColorModeCustom) {
+            state(Key::TekBeamColor, Value::ofText(SerializeKind::String, hex(flags.tekBeamColor)));
+            state(Key::TekBackgroundColor, Value::ofText(SerializeKind::String, hex(flags.tekBackgroundColor)));
+        }
     }
     if (flags.paddingX) {
         state(Key::AppearancePaddingLeft, Value::ofNumber(SerializeKind::Double, *flags.paddingX));

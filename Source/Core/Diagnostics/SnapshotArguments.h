@@ -55,17 +55,18 @@ struct SnapshotArguments {
     bool isUnfocused = false;
     int viewOffset = 0; // scroll the viewport up by N rows before rendering
     bool haveViewOffset = false;
-    bool shouldGlowTekVectors = false; // --tek-glow: additive bloom on Tek 4014 vectors (lit-CRT look)
+    bool shouldGlowTekVectors = false; // --tek-glow: enable the phosphor halo on Tek 4014 vectors
     // --tek-color-mode 1 + --tek-beam/--tek-bg: drive the standalone Tek custom
     // color path (tekColorMode/tekBeamColor/tekBackgroundColor), exercising the
     // exact renderer override the [tek] config feeds in the live app.
     int tekColorMode = 0;
-    uint32_t tekBeamColor = 0x33FF66u;
+    bool haveTekColorMode = false;
+    uint32_t tekBeamColor = 0x66DD94u;
     // Whether --tek-beam or --tek-bg was actually passed: both are read only
     // under --tek-color-mode 1, and a stored value nothing consumes is a
     // silence the person who typed the flag cannot distinguish from success.
     bool haveTekColorArgument = false;
-    uint32_t tekBackgroundColor = 0x0A0A0Au;
+    uint32_t tekBackgroundColor = 0x051603u;
     uint32_t beamColor = 0; // --beam RRGGBB: override the default foreground (Tek phosphor / beam)
     bool haveBeamColor = false;
     uint32_t backgroundColor = 0; // --bg RRGGBB: override the default background

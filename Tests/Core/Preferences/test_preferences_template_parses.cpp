@@ -21,6 +21,7 @@
 // this looks for.
 
 #include "Core/Preferences/Preferences.h"
+#include "Core/Preferences/PreferencesDefaults.h"
 
 #include <sstream>
 #include <string>
@@ -43,7 +44,7 @@ struct Documented {
     int entry = 0;
 };
 
-// `# beam_color = "#33ff66"   # custom-mode beam color`
+// `# beam_color = "#66dd94"   # custom-mode beam color`
 //
 // The trailing `#` comment is kept: it is part of the line a reader uncomments,
 // so dropping it here would test something the reader never types.
@@ -212,6 +213,28 @@ TEST(testTheUpdateScheduleIsDocumentedAtItsDefault)
         CHECK_MSG(d.value == "true" || d.value.starts_with("true "), where.c_str());
     }
     CHECK_EQ(found, 1);
+}
+
+TEST(testTheTekTemplateMatchesTheEffectiveDefaults)
+{
+    std::string document = "[tek]\n";
+    int found = 0;
+    for (const Documented& d : documentedKeys()) {
+        if (d.section != "tek")
+            continue;
+        document += d.key + " = " + d.value + "\n";
+        ++found;
+    }
+    CHECK_EQ(found, 5);
+    Values values;
+    std::istringstream input(document);
+    REQUIRE(parse(input, values, ParseMode::Strict));
+    namespace Defaults = Ubiquitty::Preferences::Defaults;
+    CHECK(values.tekBrightPen == Defaults::tekBrightPen);
+    CHECK(values.tekGlowVectors == Defaults::tekGlowVectors);
+    CHECK(values.tekColorMode == Defaults::tekColorMode);
+    CHECK(values.tekBeamColor == Defaults::tekBeamColorHex);
+    CHECK(values.tekBackgroundColor == Defaults::tekBackgroundColorHex);
 }
 
 UBIQUITTY_TEST_MAIN()

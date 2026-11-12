@@ -80,7 +80,17 @@ TEST(theTubeColoursAreWrittenOnlyUnderTheCustomMode)
     const std::optional<std::string> written = stateSnapshotConfigurationFlags(custom, "");
     REQUIRE(written.has_value());
     CHECK(written->find("#802040") != std::string::npos);
-    CHECK(written->find("#33ff66") != std::string::npos);
+    CHECK(written->find("#66dd94") != std::string::npos);
+}
+
+TEST(theThemeModeOverridesCustomConfiguration)
+{
+    SnapshotConfigurationFlags flags;
+    REQUIRE(parseWords({ "--tek-color-mode", "0" }, flags) == SnapshotFlagParse::Consumed);
+    const std::optional<std::string> document = stateSnapshotConfigurationFlags(flags, "[tek]\ncolor_mode = 1\n");
+    REQUIRE(document.has_value());
+    CHECK(configured(*document).tekColorMode == 0);
+    CHECK(document->find("beam_color") == std::string::npos);
 }
 
 TEST(aMissingOrMalformedValueIsRefused)

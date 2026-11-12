@@ -328,12 +328,16 @@ TEST(testTekColorSection)
 {
     namespace E = Ubiquitty::Preferences::Effective;
 
-    // Unset: theme mode, defaults resolve to green phosphor on near-black.
+    // Unset: the storage tube has its own phosphor and background.
     Values empty;
     CHECK(!empty.tekColorMode.has_value());
-    CHECK(E::tekColorMode(empty) == 0);
-    CHECK(E::tekBeamColor(empty) == 0x33FF66u);
-    CHECK(E::tekBackgroundColor(empty) == 0x0A0A0Au);
+    CHECK(E::tekColorMode(empty) == 1);
+    CHECK(E::tekGlowVectors(empty));
+    CHECK(E::tekBeamColor(empty) == 0x66DD94u);
+    CHECK(E::tekBackgroundColor(empty) == 0x051603u);
+    Values themed;
+    themed.tekColorMode = 0;
+    CHECK(E::tekColorMode(themed) == 0);
 
     // Custom mode + explicit hex (with and without '#').
     Values c = parseString("[tek]\n"
@@ -355,7 +359,7 @@ TEST(testTekColorSection)
     // Malformed hex falls back to the default color, not garbage.
     Values bad = parseString("[tek]\n"
                              "beam_color = \"nothex\"\n");
-    CHECK(E::tekBeamColor(bad) == 0x33FF66u);
+    CHECK(E::tekBeamColor(bad) == 0x66DD94u);
 }
 
 TEST(testFontSection)

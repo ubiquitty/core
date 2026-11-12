@@ -184,8 +184,10 @@ enum class SnapshotRequestParse : std::uint8_t {
         } else if (word == "--tek-glow") {
             arguments.shouldGlowTekVectors = true;
         } else if (word == "--tek-color-mode") {
-            if (const std::string* value = next())
+            if (const std::string* value = next()) {
                 arguments.tekColorMode = std::atoi(value->c_str()) ? 1 : 0;
+                arguments.haveTekColorMode = true;
+            }
         } else if (word == "--tek-beam") {
             if (hexInto(next(), arguments.tekBeamColor))
                 arguments.haveTekColorArgument = true;
@@ -291,10 +293,12 @@ inline void stateSnapshotDocument(const Diagnostics::SnapshotArguments& argument
         state(Key::AppearanceBackgroundOpacity, Value::ofNumber(SerializeKind::Double, arguments.backgroundOpacity));
     if (arguments.shouldGlowTekVectors)
         state(Key::TekGlowVectors, Value::ofBool(SerializeKind::Bool, true));
-    if (arguments.tekColorMode == 1) {
-        state(Key::TekColorMode, Value::ofInteger(SerializeKind::Int, 1));
-        state(Key::TekBeamColor, Value::ofText(SerializeKind::String, std::format("#{:06x}", arguments.tekBeamColor & 0xFFFFFFu)));
-        state(Key::TekBackgroundColor, Value::ofText(SerializeKind::String, std::format("#{:06x}", arguments.tekBackgroundColor & 0xFFFFFFu)));
+    if (arguments.haveTekColorMode) {
+        state(Key::TekColorMode, Value::ofInteger(SerializeKind::Int, arguments.tekColorMode));
+        if (arguments.tekColorMode == 1) {
+            state(Key::TekBeamColor, Value::ofText(SerializeKind::String, std::format("#{:06x}", arguments.tekBeamColor & 0xFFFFFFu)));
+            state(Key::TekBackgroundColor, Value::ofText(SerializeKind::String, std::format("#{:06x}", arguments.tekBackgroundColor & 0xFFFFFFu)));
+        }
     }
     if (!arguments.backgroundImage.empty()) {
         state(Key::AppearanceBackgroundImage, Value::ofText(SerializeKind::String, arguments.backgroundImage));

@@ -98,10 +98,11 @@ Projection makeProjection(int tekWidth, int tekHeight, float devX, float devY, f
 // one-pixel antialiasing feather, so nothing the beam draws at an edge address
 // is cut by the rect.
 constexpr float beamWidthInPoints = 1.0f;
-constexpr float haloSigmaInPoints = 2.0f;
+constexpr float haloSigmaInPoints = 0.9f;
 constexpr float haloReachInPoints = 3.0f * haloSigmaInPoints;
-constexpr float haloPeakIntensity = 0.6f;
-constexpr float edgeInsetInPoints = haloReachInPoints + beamWidthInPoints;
+constexpr float haloPeakIntensity = 0.18f;
+// The fitted area stays independent of the optional halo's spread.
+constexpr float edgeInsetInPoints = 7.0f;
 
 // The Metal glow pass binds this struct's bytes as its `TekBeamGeometry`.
 static_assert(sizeof(BeamGeometry) == 5 * sizeof(float));

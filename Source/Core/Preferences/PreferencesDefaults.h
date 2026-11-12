@@ -97,15 +97,15 @@ inline constexpr bool beamTerminalFont = false;
 
 // [tek]
 inline constexpr bool tekBrightPen = false; // storage-tube bright-pen spot, off
-inline constexpr bool tekGlowVectors = false; // additive bloom on vectors, off
-// Tek color source: 0 = terminal theme, 1 = custom (colors below). Default theme.
-inline constexpr int tekColorMode = 0;
+inline constexpr bool tekGlowVectors = true; // compact halo on Tek vectors
+// Tek color source: 0 = terminal theme, 1 = custom phosphor and tube below.
+inline constexpr int tekColorMode = 1;
 // Custom-mode colors as packed 0xRRGGBB (opaque).
-inline constexpr unsigned tekBeamColor = 0x33FF66u; // green phosphor
-inline constexpr unsigned tekBackgroundColor = 0x0A0A0Au; // near-black
+inline constexpr unsigned tekBeamColor = 0x66DD94u; // mint-green phosphor
+inline constexpr unsigned tekBackgroundColor = 0x051603u; // dark storage tube
 // Canonical hex spellings for the packed defaults above (parse + renderer must agree).
-inline constexpr const char* tekBeamColorHex = "#33ff66";
-inline constexpr const char* tekBackgroundColorHex = "#0a0a0a";
+inline constexpr const char* tekBeamColorHex = "#66dd94";
+inline constexpr const char* tekBackgroundColorHex = "#051603";
 
 // [appearance]
 inline constexpr double backgroundOpacity = 1.0;
