@@ -272,12 +272,12 @@ TEST(aFramePastTheBoundIsRefusedForSpace)
     // Filled to the bound first: each of these has to be accepted, or the
     // refusal below is about the wrong guard.
     for (int frame = 1; frame < Ubiquitty::Image::maxTerminalImageFrameCount; ++frame) {
-        feed(t, apc("a=f,i=41", base64(pixels)));
+        feed(t, apc("a=f,f=32,s=2,v=2,i=41", base64(pixels)));
         const std::string accepted = outcome(replyStatus(t));
-        CHECK_MSG(accepted.rfind("ENOSPC", 0) != 0, "a frame inside the bound is not refused for space");
+        CHECK_CSTR_EQ(accepted.c_str(), "OK");
     }
 
-    feed(t, apc("a=f,i=41", base64(pixels)));
+    feed(t, apc("a=f,f=32,s=2,v=2,i=41", base64(pixels)));
     const std::string answer = outcome(replyStatus(t));
     CHECK_CSTR_EQ(answer.c_str(), "ENOSPC:too many frames");
 }
