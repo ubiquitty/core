@@ -15,7 +15,7 @@
 #include "UbiquittyCore/UbiquittyCore.h"
 #include "UbiquittyKit/UbiquittyKit.h"
 
-UBIQUITTY_KIT_REQUIRE(1, 0, 0);
+UBIQUITTY_KIT_REQUIRE(2, 0, 0);
 
 #include <array>
 #include <cstdio>
@@ -128,7 +128,10 @@ bool runProportionalFactSmoke()
 {
     static constexpr std::string_view query = "\x1b]66;p=1:q=1:i=9;OK\x1b\\";
     std::array<char, 64> reply {};
+    Ubiquitty::RestrictiveCapabilityPolicy policy;
     Ubiquitty::Terminal bare;
+    bare.capabilityPolicy = &policy;
+    bare.currentCapabilityOrigin = Ubiquitty::CapabilityOrigin::Local;
     Ubiquitty::resize(bare, 24, 80);
     if (bare.drawsProportionalText)
         return false;
@@ -136,6 +139,8 @@ bool runProportionalFactSmoke()
     if (Ubiquitty::drainOutput(&bare, reply) != 0)
         return false;
     Ubiquitty::Terminal drawing;
+    drawing.capabilityPolicy = &policy;
+    drawing.currentCapabilityOrigin = Ubiquitty::CapabilityOrigin::Local;
     Ubiquitty::resize(drawing, 24, 80);
     drawing.drawsProportionalText = true;
     Ubiquitty::processBytes(&drawing, query);
@@ -151,10 +156,13 @@ bool runKitSmoke()
     int pair[2] = { -1, -1 };
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0)
         return false;
+    Ubiquitty::RestrictiveCapabilityPolicy policy;
     auto terminal = std::make_unique<Ubiquitty::Terminal>();
     InlineQueueDispatcher dispatcher;
     CountingObserver observer;
-    auto session = UbiquittyKit::Session::createLocal(*terminal, dispatcher, observer, std::make_unique<PairStream>(pair[0]));
+    auto session = UbiquittyKit::Session::createLocal(*terminal,
+        UbiquittyKit::Session::EffectPolicy::withPolicy(policy, Ubiquitty::CapabilityOrigin::Local),
+        dispatcher, observer, std::make_unique<PairStream>(pair[0]));
     // Pre-start input: a no-op — nothing may reach the far end.
     session->sendInput("early");
     char preStart[8] = {};
@@ -204,7 +212,10 @@ int main()
     std::printf("find_package(UbiquittyCore) consumer — public API v%s\n",
         Ubiquitty::coreVersionString);
 
+    Ubiquitty::RestrictiveCapabilityPolicy policy;
     Ubiquitty::Terminal term;
+    term.capabilityPolicy = &policy;
+    term.currentCapabilityOrigin = Ubiquitty::CapabilityOrigin::Local;
     Ubiquitty::resize(term, 24, 80);
 
     static const char kStream[] = "Hello";

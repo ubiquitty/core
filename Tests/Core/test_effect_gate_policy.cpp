@@ -267,4 +267,96 @@ TEST(testAResetPreservesTheInstalledPolicy)
     t.capabilityPolicy = nullptr;
 }
 
+TEST(testRestrictivePolicyKeepsProtocolRepliesAndGridMetadata)
+{
+    RestrictiveCapabilityPolicy policy;
+    for (const CapabilityOrigin origin : { CapabilityOrigin::Local, CapabilityOrigin::Agent, CapabilityOrigin::Remote }) {
+        Terminal terminal;
+        hardReset(terminal);
+        resize(terminal, 5, 40);
+        terminal.capabilityPolicy = &policy;
+        terminal.currentCapabilityOrigin = origin;
+
+        feed(terminal, "\033[5n\033[2;3H\033[6n\033[18t\033[?1$p");
+        char outputBuffer[256];
+        (void)drain(terminal, outputBuffer);
+        CHECK_STR_EQ(std::string(outputBuffer), "\033[0n\033[2;3R\033[8;5;40t\033[?1;2$y");
+
+        feed(terminal, "\033[61\"p\033[c");
+        (void)drain(terminal, outputBuffer);
+        CHECK_STR_EQ(std::string(outputBuffer), "\033[?1;2c");
+
+        feed(terminal, "\033]2;embedded-terminal\007\033[2;3Htext");
+        CHECK_STR_EQ(terminal.titleUTF8, "embedded-terminal");
+        const Cell* first = UbiquittyTest::cell(terminal, 1, 2);
+        REQUIRE(first);
+        CHECK_EQ(first->codePoint, static_cast<std::uint32_t>('t'));
+    }
+}
+
+TEST(testRestrictivePolicyStopsExternalEffectsAtTheirSinks)
+{
+    RestrictiveCapabilityPolicy policy;
+    FocusRecordingWindowClient window;
+    WriteCountingClipboard clipboard;
+    for (const CapabilityOrigin origin : { CapabilityOrigin::Local, CapabilityOrigin::Agent, CapabilityOrigin::Remote }) {
+        Terminal terminal;
+        hardReset(terminal);
+        resize(terminal, 5, 40);
+        terminal.capabilityPolicy = &policy;
+        terminal.currentCapabilityOrigin = origin;
+        terminal.windowClient = &window;
+        terminal.clipboardClient = &clipboard;
+
+        feed(terminal, "\033]1337;StealFocus\007\033]52;c;SGk=\033\\\033[7;8;25,~");
+        CHECK_EQ(window.m_focusSteals, 0);
+        CHECK_EQ(clipboard.m_writes, 0);
+        CHECK(!terminal.pendingSound || !terminal.pendingSound->count);
+
+        feed(terminal, "\033[12;0;1;1;1;1*y\033[20t\033[21t");
+        char outputBuffer[256];
+        CHECK_EQ(drain(terminal, outputBuffer), 0);
+        CHECK(!effectGranted(terminal, Capability::FileReadAccess, "/tmp/embedded-image"));
+    }
+}
+
+TEST(testRestrictivePolicyRefusesUnknownCapabilitiesAndOrigins)
+{
+    RestrictiveCapabilityPolicy policy;
+    Terminal terminal;
+    hardReset(terminal);
+    terminal.capabilityPolicy = &policy;
+
+    CHECK(!effectAllowed(terminal, static_cast<Capability>(0xffff)));
+    CHECK(!effectGranted(terminal, static_cast<Capability>(0xffff)));
+    terminal.currentCapabilityOrigin = static_cast<CapabilityOrigin>(0xff);
+    CHECK(!effectAllowed(terminal, Capability::StealFocus));
+    CHECK(!effectAllowed(terminal, Capability::DeviceAttributesRead));
+    CHECK(!effectAllowed(terminal, Capability::ImageRender));
+    CHECK(!effectAllowed(terminal, Capability::SetWindowTitle));
+}
+
+TEST(testCustomDecisionsControlActualClipboardAndWindowEffects)
+{
+    for (const CapabilityDecision decision : { CapabilityDecision::Allow, CapabilityDecision::Deny, CapabilityDecision::Prompt }) {
+        RecordingPolicy policy(decision);
+        FocusRecordingWindowClient window;
+        WriteCountingClipboard clipboard;
+        Terminal terminal;
+        hardReset(terminal);
+        terminal.capabilityPolicy = &policy;
+        terminal.currentCapabilityOrigin = CapabilityOrigin::Agent;
+        terminal.windowClient = &window;
+        terminal.clipboardClient = &clipboard;
+
+        feed(terminal, "\033]1337;StealFocus\007\033]52;c;SGk=\033\\");
+        const int expectedEffects = decision == CapabilityDecision::Allow ? 1 : 0;
+        CHECK_EQ(window.m_focusSteals, expectedEffects);
+        CHECK_EQ(clipboard.m_writes, expectedEffects);
+        REQUIRE(!policy.m_origins.empty());
+        for (const CapabilityOrigin origin : policy.m_origins)
+            CHECK(origin == CapabilityOrigin::Agent);
+    }
+}
+
 UBIQUITTY_TEST_MAIN()

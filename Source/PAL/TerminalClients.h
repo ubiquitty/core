@@ -688,4 +688,28 @@ public:
     virtual void holdClipboardWrite(CapabilityOrigin, std::span<const ClipboardBuffer>, std::span<const char>) { }
 };
 
+/// An embedding policy that permits grid content and normal terminal replies,
+/// but refuses host effects and reads that disclose host or screen contents.
+///
+/// Has no consent presenter and never returns Prompt. Like every installed
+/// policy, it must outlive the terminals that reference it.
+class RestrictiveCapabilityPolicy final : public CapabilityPolicy {
+public:
+    [[nodiscard]] CapabilityDecision check(Capability capability, CapabilityOrigin origin, std::string_view /*detail*/) override
+    {
+        if (std::to_underlying(origin) > std::to_underlying(CapabilityOrigin::Remote))
+            return CapabilityDecision::Deny;
+        switch (tierOf(capability)) {
+        case CapabilityTier::Benign:
+        case CapabilityTier::Rendering:
+        case CapabilityTier::LowRiskInfo:
+            return CapabilityDecision::Allow;
+        case CapabilityTier::HostEscaping:
+        case CapabilityTier::ReadExfil:
+            return CapabilityDecision::Deny;
+        }
+        return CapabilityDecision::Deny;
+    }
+};
+
 } // namespace Ubiquitty

@@ -40,6 +40,7 @@
 #include "Core/Transport/Origin.h"
 #include "Forward.h"
 #include "PAL/Stream.h"
+#include "PAL/TerminalClients.h"
 
 #include <cstdint>
 #include <functional>
@@ -51,6 +52,45 @@ namespace UbiquittyKit {
 
 class Session final {
 public:
+    /// The terminal-wide effect policy selected before a session is created.
+    ///
+    /// Construct on the terminal's owner thread, with no other session driving
+    /// that terminal. The selection remains installed after Session teardown.
+    class EffectPolicy {
+    public:
+        /// Explicitly selects the existing Local defaults, without granting
+        /// authoritative file reads that require an installed policy.
+        [[nodiscard]] static EffectPolicy localDefaults()
+        {
+            return { nullptr, Ubiquitty::CapabilityOrigin::Local };
+        }
+
+        /// Uses a caller-owned policy and independently attributed origin.
+        ///
+        /// The policy must outlive the Terminal, not just the Session. Use
+        /// RestrictiveCapabilityPolicy when no host effects are needed. A
+        /// transport's display origin is not capability-origin attribution.
+        [[nodiscard]] static EffectPolicy withPolicy(Ubiquitty::CapabilityPolicy& policy, Ubiquitty::CapabilityOrigin origin)
+        {
+            return { &policy, origin };
+        }
+
+    private:
+        EffectPolicy(Ubiquitty::CapabilityPolicy* policy, Ubiquitty::CapabilityOrigin origin)
+            : m_policy(policy)
+            , m_origin(origin)
+        {
+        }
+
+        /// Installs the choice, refusing an invalid origin without mutation.
+        [[nodiscard]] bool install(Ubiquitty::Terminal&) const;
+
+        Ubiquitty::CheckedPtr<Ubiquitty::CapabilityPolicy> m_policy;
+        Ubiquitty::CapabilityOrigin m_origin;
+
+        friend class Session;
+    };
+
     // Every hook has a { } default (a new hook is a kit MINOR; a pure virtual
     // would break every embedder subclass and is a kit MAJOR by policy).
     class Observer {
@@ -93,7 +133,9 @@ public:
 
     // LOCAL origin: `pty` is an open PTY Stream the embedder created through
     // its PAL backend (openPTY is per-backend by design). The session owns it.
-    static std::unique_ptr<Session> createLocal(Ubiquitty::Terminal&, Ubiquitty::Session::Dispatcher&, Observer&, std::unique_ptr<Ubiquitty::PAL::Stream> pty);
+    // Each factory requires a policy choice before configuration or carrier
+    // callbacks can run. An invalid capability origin returns nullptr.
+    static std::unique_ptr<Session> createLocal(Ubiquitty::Terminal&, EffectPolicy, Ubiquitty::Session::Dispatcher&, Observer&, std::unique_ptr<Ubiquitty::PAL::Stream> pty);
 
     /// Creates a session whose carrier's bytes are already the terminal stream.
     ///
@@ -112,12 +154,12 @@ public:
     ///   - applyWindowSize: Carries a resize to the carrier's own geometry — an
     ///     SSH `window-change` request. May be empty for a carrier that has no
     ///     geometry to resize.
-    static std::unique_ptr<Session> createDirect(Ubiquitty::Terminal&, Ubiquitty::Session::Dispatcher&, Observer&,
+    static std::unique_ptr<Session> createDirect(Ubiquitty::Terminal&, EffectPolicy, Ubiquitty::Session::Dispatcher&, Observer&,
         std::unique_ptr<Ubiquitty::Transport::Channel> channel, std::function<void(int, int)> applyWindowSize);
 
     // REMOTE origin: the factory builds the transport per (re)connect attempt;
     // `attachSessionID` 0 = a fresh daemon session, nonzero = reattach.
-    static std::unique_ptr<Session> createRemote(Ubiquitty::Terminal&, Ubiquitty::Session::Dispatcher&, Ubiquitty::Session::ChannelFactory&, Observer&, std::uint32_t attachSessionID);
+    static std::unique_ptr<Session> createRemote(Ubiquitty::Terminal&, EffectPolicy, Ubiquitty::Session::Dispatcher&, Ubiquitty::Session::ChannelFactory&, Observer&, std::uint32_t attachSessionID);
 
     ~Session();
     Session(const Session&) = delete;

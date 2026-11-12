@@ -14,6 +14,7 @@
 
 #include "UbiquittyKit/UbiquittyKit.h"
 
+#include "Core/EffectGate.h"
 #include "Core/Protocol/Sync/Connection.h"
 #include "Core/Runtime/TerminalLaunchSeed.h"
 #include "Core/Transport/Channel.h"
@@ -33,12 +34,36 @@
 #include <string>
 #include <sys/socket.h>
 #include <thread>
+#include <type_traits>
 #include <unistd.h>
 #include <vector>
 
-UBIQUITTY_KIT_REQUIRE(1, 0, 0);
+UBIQUITTY_KIT_REQUIRE(2, 0, 0);
 
 namespace {
+
+template<typename Facade>
+concept CreatesLocalWithoutEffectPolicy = requires(Ubiquitty::Terminal& terminal, Ubiquitty::Session::Dispatcher& dispatcher,
+    typename Facade::Observer& observer, std::unique_ptr<Ubiquitty::PAL::Stream> stream) {
+    Facade::createLocal(terminal, dispatcher, observer, std::move(stream));
+};
+
+template<typename Facade>
+concept CreatesDirectWithoutEffectPolicy = requires(Ubiquitty::Terminal& terminal, Ubiquitty::Session::Dispatcher& dispatcher,
+    typename Facade::Observer& observer, std::unique_ptr<Ubiquitty::Transport::Channel> channel, std::function<void(int, int)> resize) {
+    Facade::createDirect(terminal, dispatcher, observer, std::move(channel), resize);
+};
+
+template<typename Facade>
+concept CreatesRemoteWithoutEffectPolicy = requires(Ubiquitty::Terminal& terminal, Ubiquitty::Session::Dispatcher& dispatcher,
+    Ubiquitty::Session::ChannelFactory& factory, typename Facade::Observer& observer) {
+    Facade::createRemote(terminal, dispatcher, factory, observer, 0);
+};
+
+static_assert(!CreatesLocalWithoutEffectPolicy<UbiquittyKit::Session>);
+static_assert(!CreatesDirectWithoutEffectPolicy<UbiquittyKit::Session>);
+static_assert(!CreatesRemoteWithoutEffectPolicy<UbiquittyKit::Session>);
+static_assert(!std::is_default_constructible_v<UbiquittyKit::Session::EffectPolicy>);
 
 // A thread-safe session-thread stand-in: the channel's I/O thread posts here;
 // the test drains on the main thread (the "session thread").
@@ -275,7 +300,7 @@ void runRemoteOriginChecks()
         QueueDispatcher dispatcher;
         RecordingObserver observer;
         FakeRemoteFactory factory;
-        auto session = UbiquittyKit::Session::createRemote(*terminal, dispatcher, factory, observer, 0);
+        auto session = UbiquittyKit::Session::createRemote(*terminal, UbiquittyKit::Session::EffectPolicy::localDefaults(), dispatcher, factory, observer, 0);
         CHECK(session->origin().transport == Ubiquitty::Transport::OriginKind::Daemon);
         CHECK(session->origin().isRemote());
         CHECK(session->health() == Ubiquitty::Session::Health::Connecting);
@@ -336,7 +361,7 @@ void runRemoteOriginChecks()
         QueueDispatcher dispatcher;
         RecordingObserver observer;
         FakeRemoteFactory factory;
-        auto session = UbiquittyKit::Session::createRemote(*terminal, dispatcher, factory, observer, 0);
+        auto session = UbiquittyKit::Session::createRemote(*terminal, UbiquittyKit::Session::EffectPolicy::localDefaults(), dispatcher, factory, observer, 0);
         session->start(80, 24);
         CHECK(dispatcher.drainUntil([&] { return factory.createCount == 1; }));
         factory.last->fireConnect();
@@ -356,7 +381,7 @@ void runRemoteOriginChecks()
         QueueDispatcher dispatcher;
         RecordingObserver observer;
         FakeRemoteFactory factory;
-        auto session = UbiquittyKit::Session::createRemote(*terminal, dispatcher, factory, observer, 0);
+        auto session = UbiquittyKit::Session::createRemote(*terminal, UbiquittyKit::Session::EffectPolicy::localDefaults(), dispatcher, factory, observer, 0);
         session->start(80, 24);
         CHECK(dispatcher.drainUntil([&] { return factory.createCount == 1; }));
         factory.last->fireConnect();
@@ -405,7 +430,7 @@ TEST(kitSession)
 
     auto stream = std::make_unique<SocketPairStream>(pair[0]);
     SocketPairStream* streamPointer = stream.get();
-    auto session = UbiquittyKit::Session::createLocal(terminal, dispatcher, observer, std::move(stream));
+    auto session = UbiquittyKit::Session::createLocal(terminal, UbiquittyKit::Session::EffectPolicy::localDefaults(), dispatcher, observer, std::move(stream));
 
     CHECK(session->origin().transport == Ubiquitty::Transport::OriginKind::Local);
     CHECK(!session->origin().isRemote());
@@ -504,7 +529,7 @@ TEST(kitSession)
         auto stopTerminal = std::make_unique<Ubiquitty::Terminal>();
         QueueDispatcher stopDispatcher;
         RecordingObserver stopObserver;
-        auto stopSession = UbiquittyKit::Session::createLocal(*stopTerminal, stopDispatcher, stopObserver, std::make_unique<SocketPairStream>(stopPair[0]));
+        auto stopSession = UbiquittyKit::Session::createLocal(*stopTerminal, UbiquittyKit::Session::EffectPolicy::localDefaults(), stopDispatcher, stopObserver, std::make_unique<SocketPairStream>(stopPair[0]));
         stopSession->start(80, 24);
         CHECK(::write(stopPair[1], "late-bytes", 10) == 10);
         std::this_thread::sleep_for(std::chrono::milliseconds(100)); // let the I/O thread enqueue
@@ -522,7 +547,7 @@ TEST(kitSession)
         auto destroyTerminal = std::make_unique<Ubiquitty::Terminal>();
         QueueDispatcher destroyDispatcher;
         RecordingObserver destroyObserver;
-        auto destroySession = UbiquittyKit::Session::createLocal(*destroyTerminal, destroyDispatcher, destroyObserver, std::make_unique<SocketPairStream>(destroyPair[0]));
+        auto destroySession = UbiquittyKit::Session::createLocal(*destroyTerminal, UbiquittyKit::Session::EffectPolicy::localDefaults(), destroyDispatcher, destroyObserver, std::make_unique<SocketPairStream>(destroyPair[0]));
         destroySession->start(80, 24);
         CHECK(::write(destroyPair[1], "orphan-bytes", 12) == 12);
         std::this_thread::sleep_for(std::chrono::milliseconds(100)); // let the I/O thread enqueue
@@ -589,7 +614,7 @@ TEST(kitSessionOverADelegatedCarrier)
 
     int resizedColumns = 0;
     int resizedRows = 0;
-    auto session = UbiquittyKit::Session::createDirect(terminal, dispatcher, observer, std::move(channel),
+    auto session = UbiquittyKit::Session::createDirect(terminal, UbiquittyKit::Session::EffectPolicy::localDefaults(), dispatcher, observer, std::move(channel),
         [&](int columns, int rows) {
             resizedColumns = columns;
             resizedRows = rows;
@@ -648,6 +673,7 @@ TEST(kitSessionsFollowTheConfigurationDocument)
     CHECK(Preferences::configure("[cursor]\nshape = \"underline\"\n[underline]\nthickness = 2.0\n", Preferences::ParseMode::Strict).isApplied);
 
     QueueDispatcher dispatcher;
+    Ubiquitty::RestrictiveCapabilityPolicy policy;
     Ubiquitty::Terminal terminals[2];
     RecordingObserver observers[2];
     std::unique_ptr<UbiquittyKit::Session> sessions[2];
@@ -656,7 +682,8 @@ TEST(kitSessionsFollowTheConfigurationDocument)
         Ubiquitty::resize(terminals[index], 24, 80);
         (void)Ubiquitty::Runtime::seedTerminalConfiguration(terminals[index], Preferences::values());
         CHECK(terminals[index].cursorShapePref == static_cast<std::uint8_t>(Preferences::CursorShape::Underline));
-        sessions[index] = UbiquittyKit::Session::createDirect(terminals[index], dispatcher, observers[index],
+        sessions[index] = UbiquittyKit::Session::createDirect(terminals[index],
+            UbiquittyKit::Session::EffectPolicy::withPolicy(policy, Ubiquitty::CapabilityOrigin::Remote), dispatcher, observers[index],
             std::make_unique<FakeRemoteChannel>(Ubiquitty::Transport::Origin { Ubiquitty::Transport::OriginKind::Local, std::string() }, nullptr),
             nullptr);
         sessions[index]->start(80, 24);
@@ -678,6 +705,8 @@ TEST(kitSessionsFollowTheConfigurationDocument)
         CHECK_MSG(terminals[index].cursorShapePref == static_cast<std::uint8_t>(Preferences::CursorShape::Block), "the terminal is re-seeded");
         CHECK(!terminals[index].cursorBlinkPref);
         CHECK(terminals[index].ambiguousWidth == Ubiquitty::Unicode::Width::ambiguousWidthFromCells(2));
+        CHECK(terminals[index].capabilityPolicy.isInstalled(&policy));
+        CHECK(terminals[index].currentCapabilityOrigin == Ubiquitty::CapabilityOrigin::Remote);
         CHECK_MSG(observers[index].frames > 0, "a frame follows the change");
     }
 
@@ -690,6 +719,205 @@ TEST(kitSessionsFollowTheConfigurationDocument)
     CHECK_EQ(observers[1].configurations, 1);
     CHECK_MSG(observers[0].lastConfiguration.underlineThicknessScale == 1.0, "an empty document is the default table");
     sessions[0].reset();
+}
+
+namespace {
+
+class InlineDispatcher final : public Ubiquitty::Session::Dispatcher {
+public:
+    void post(Ubiquitty::Session::PostedWork work) override { std::move(work)(); }
+    void postDelayed(double, Ubiquitty::Session::PostedWork work) override { std::move(work)(); }
+};
+
+struct InitialOutputProbe {
+    std::string sent;
+    int starts = 0;
+    int stops = 0;
+};
+
+// A carrier may supply its first bytes before start returns. An inline
+// dispatcher leaves no later turn on which to finish installing authority.
+class InitialOutputChannel final : public Ubiquitty::Transport::Channel {
+public:
+    InitialOutputChannel(InitialOutputProbe& probe, std::string output)
+        : m_probe(probe)
+        , m_output(std::move(output))
+    {
+    }
+
+    bool start(Ubiquitty::Transport::ChannelObserver* observer) override
+    {
+        ++m_probe.starts;
+        observer->onConnect();
+        observer->onData({ reinterpret_cast<const std::uint8_t*>(m_output.data()), m_output.size() });
+        return true;
+    }
+    void send(std::span<const std::uint8_t> bytes) override
+    {
+        m_probe.sent.append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    }
+    void stop() override { ++m_probe.stops; }
+    [[nodiscard]] Ubiquitty::Transport::Origin origin() const override
+    {
+        return { Ubiquitty::Transport::OriginKind::SSH, "testhost" };
+    }
+    [[nodiscard]] Ubiquitty::Transport::Health health() const override { return Ubiquitty::Transport::Health::Connected; }
+    [[nodiscard]] std::string description() const override { return "initial-output"; }
+
+private:
+    InitialOutputProbe& m_probe;
+    std::string m_output;
+};
+
+class SessionWindowClient final : public Ubiquitty::WindowClient {
+public:
+    void stealFocus() override { ++focusSteals; }
+    int focusSteals = 0;
+};
+
+class SessionAllowPolicy final : public Ubiquitty::CapabilityPolicy {
+public:
+    [[nodiscard]] Ubiquitty::CapabilityDecision check(Ubiquitty::Capability, Ubiquitty::CapabilityOrigin, std::string_view) override
+    {
+        return Ubiquitty::CapabilityDecision::Allow;
+    }
+};
+
+} // namespace
+
+TEST(kitSessionInstallsItsEffectPolicyBeforeInitialOutput)
+{
+    Ubiquitty::RestrictiveCapabilityPolicy policy;
+    SessionWindowClient window;
+    Ubiquitty::Terminal terminal;
+    Ubiquitty::hardReset(terminal);
+    terminal.windowClient = &window;
+    InlineDispatcher dispatcher;
+    RecordingObserver observer;
+    InitialOutputProbe probe;
+
+    auto session = UbiquittyKit::Session::createDirect(terminal,
+        UbiquittyKit::Session::EffectPolicy::withPolicy(policy, Ubiquitty::CapabilityOrigin::Remote),
+        dispatcher, observer,
+        std::make_unique<InitialOutputChannel>(probe, "\033]1337;StealFocus\007\033[5n\033[2;3H\033[6n"), nullptr);
+    REQUIRE(session);
+    CHECK(terminal.capabilityPolicy.isInstalled(&policy));
+    CHECK(terminal.currentCapabilityOrigin == Ubiquitty::CapabilityOrigin::Remote);
+    session->start(80, 24);
+    CHECK_EQ(probe.starts, 1);
+    CHECK_EQ(window.focusSteals, 0);
+    CHECK_STR_EQ(probe.sent, "\033[0n\033[2;3R");
+
+    Ubiquitty::hardReset(terminal);
+    CHECK(terminal.capabilityPolicy.isInstalled(&policy));
+    CHECK(terminal.currentCapabilityOrigin == Ubiquitty::CapabilityOrigin::Remote);
+    session.reset();
+    CHECK_EQ(probe.stops, 1);
+    CHECK(terminal.capabilityPolicy.isInstalled(&policy));
+    Ubiquitty::processBytes(&terminal, "\033]1337;StealFocus\007");
+    CHECK_EQ(window.focusSteals, 0);
+}
+
+TEST(kitExplicitLocalDefaultsAllowEffectsWithoutGrantingFileReads)
+{
+    Ubiquitty::RestrictiveCapabilityPolicy previousPolicy;
+    SessionWindowClient window;
+    Ubiquitty::Terminal terminal;
+    Ubiquitty::hardReset(terminal);
+    terminal.windowClient = &window;
+    terminal.capabilityPolicy = &previousPolicy;
+    terminal.currentCapabilityOrigin = Ubiquitty::CapabilityOrigin::Remote;
+    InlineDispatcher dispatcher;
+    RecordingObserver observer;
+    InitialOutputProbe probe;
+
+    auto session = UbiquittyKit::Session::createDirect(terminal, UbiquittyKit::Session::EffectPolicy::localDefaults(), dispatcher, observer,
+        std::make_unique<InitialOutputChannel>(probe, "\033]1337;StealFocus\007"), nullptr);
+    REQUIRE(session);
+    CHECK(!terminal.capabilityPolicy.installed());
+    CHECK(terminal.currentCapabilityOrigin == Ubiquitty::CapabilityOrigin::Local);
+    session->start(80, 24);
+    CHECK_EQ(window.focusSteals, 1);
+    CHECK(!Ubiquitty::effectGranted(terminal, Ubiquitty::Capability::FileReadAccess, "/tmp/embedded-image"));
+}
+
+TEST(kitSessionPolicySelectionIsPerTerminalAndQueuedWorkStopsAtTeardown)
+{
+    Ubiquitty::RestrictiveCapabilityPolicy restrictive;
+    SessionAllowPolicy allow;
+    SessionWindowClient restrictedWindow;
+    SessionWindowClient allowedWindow;
+    Ubiquitty::Terminal restrictedTerminal;
+    Ubiquitty::Terminal allowedTerminal;
+    Ubiquitty::hardReset(restrictedTerminal);
+    Ubiquitty::hardReset(allowedTerminal);
+    restrictedTerminal.windowClient = &restrictedWindow;
+    allowedTerminal.windowClient = &allowedWindow;
+    QueueDispatcher dispatcher;
+    RecordingObserver restrictedObserver;
+    RecordingObserver allowedObserver;
+    auto restrictedChannel = std::make_unique<FakeRemoteChannel>(Ubiquitty::Transport::Origin {}, nullptr);
+    auto allowedChannel = std::make_unique<FakeRemoteChannel>(Ubiquitty::Transport::Origin {}, nullptr);
+    auto* restrictedCarrier = restrictedChannel.get();
+    auto* allowedCarrier = allowedChannel.get();
+    auto restrictedSession = UbiquittyKit::Session::createDirect(restrictedTerminal,
+        UbiquittyKit::Session::EffectPolicy::withPolicy(restrictive, Ubiquitty::CapabilityOrigin::Local),
+        dispatcher, restrictedObserver, std::move(restrictedChannel), nullptr);
+    auto allowedSession = UbiquittyKit::Session::createDirect(allowedTerminal,
+        UbiquittyKit::Session::EffectPolicy::withPolicy(allow, Ubiquitty::CapabilityOrigin::Agent),
+        dispatcher, allowedObserver, std::move(allowedChannel), nullptr);
+    REQUIRE(restrictedSession && allowedSession);
+    restrictedSession->start(80, 24);
+    allowedSession->start(80, 24);
+    const std::string output = "\033]1337;StealFocus\007";
+    const std::vector<std::uint8_t> bytes(output.begin(), output.end());
+    restrictedCarrier->fireData(bytes);
+    allowedCarrier->fireData(bytes);
+    CHECK(dispatcher.drainUntil([&] { return restrictedObserver.frames == 1 && allowedObserver.frames == 1; }));
+    CHECK_EQ(restrictedWindow.focusSteals, 0);
+    CHECK_EQ(allowedWindow.focusSteals, 1);
+    CHECK(restrictedTerminal.currentCapabilityOrigin == Ubiquitty::CapabilityOrigin::Local);
+    CHECK(allowedTerminal.currentCapabilityOrigin == Ubiquitty::CapabilityOrigin::Agent);
+
+    allowedCarrier->fireData(bytes);
+    allowedTerminal.capabilityPolicy = &restrictive;
+    allowedTerminal.currentCapabilityOrigin = Ubiquitty::CapabilityOrigin::Remote;
+    allowedSession.reset();
+    bool didDrain = false;
+    dispatcher.post([&] { didDrain = true; });
+    CHECK(dispatcher.drainUntil([&] { return didDrain; }));
+    CHECK_EQ(allowedWindow.focusSteals, 1);
+    CHECK_EQ(allowedObserver.frames, 1);
+    CHECK(allowedTerminal.capabilityPolicy.isInstalled(&restrictive));
+    CHECK(allowedTerminal.currentCapabilityOrigin == Ubiquitty::CapabilityOrigin::Remote);
+}
+
+TEST(kitSessionRejectsInvalidPolicyOriginsWithoutChangingTheTerminal)
+{
+    Ubiquitty::RestrictiveCapabilityPolicy previousPolicy;
+    SessionAllowPolicy replacementPolicy;
+    Ubiquitty::Terminal terminal;
+    Ubiquitty::hardReset(terminal);
+    terminal.capabilityPolicy = &previousPolicy;
+    terminal.currentCapabilityOrigin = Ubiquitty::CapabilityOrigin::Remote;
+    QueueDispatcher dispatcher;
+    RecordingObserver observer;
+    FakeRemoteFactory factory;
+    const auto invalid = UbiquittyKit::Session::EffectPolicy::withPolicy(replacementPolicy, static_cast<Ubiquitty::CapabilityOrigin>(0xff));
+    InitialOutputProbe probe;
+
+    auto direct = UbiquittyKit::Session::createDirect(terminal, invalid, dispatcher, observer,
+        std::make_unique<InitialOutputChannel>(probe, "untrusted"), nullptr);
+    CHECK(!direct);
+    auto remote = UbiquittyKit::Session::createRemote(terminal, invalid, dispatcher, factory, observer, 0);
+    CHECK(!remote);
+    auto local = UbiquittyKit::Session::createLocal(terminal, invalid, dispatcher, observer, nullptr);
+    CHECK(!local);
+    CHECK(terminal.capabilityPolicy.isInstalled(&previousPolicy));
+    CHECK(terminal.currentCapabilityOrigin == Ubiquitty::CapabilityOrigin::Remote);
+    CHECK_EQ(probe.starts, 0);
+    CHECK_EQ(factory.createCount, 0);
+    CHECK_EQ(observer.frames, 0);
 }
 
 UBIQUITTY_TEST_MAIN()

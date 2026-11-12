@@ -245,8 +245,19 @@ void Session::followConfiguration(Ubiquitty::Terminal& terminal, Ubiquitty::Sess
         });
 }
 
-std::unique_ptr<Session> Session::createLocal(Ubiquitty::Terminal& terminal, Ubiquitty::Session::Dispatcher& dispatcher, Observer& observer, std::unique_ptr<Ubiquitty::PAL::Stream> pty)
+bool Session::EffectPolicy::install(Ubiquitty::Terminal& terminal) const
 {
+    if (std::to_underlying(m_origin) > std::to_underlying(Ubiquitty::CapabilityOrigin::Remote))
+        return false;
+    terminal.capabilityPolicy = m_policy.get();
+    terminal.currentCapabilityOrigin = m_origin;
+    return true;
+}
+
+std::unique_ptr<Session> Session::createLocal(Ubiquitty::Terminal& terminal, EffectPolicy effectPolicy, Ubiquitty::Session::Dispatcher& dispatcher, Observer& observer, std::unique_ptr<Ubiquitty::PAL::Stream> pty)
+{
+    if (!effectPolicy.install(terminal))
+        return nullptr;
     auto channel = std::make_unique<Ubiquitty::Transport::LocalPTYChannel>(std::move(pty));
     // Captured raw: the LocalState owns the channel and outlives every call.
     auto* ptyChannel = channel.get();
@@ -257,17 +268,21 @@ std::unique_ptr<Session> Session::createLocal(Ubiquitty::Terminal& terminal, Ubi
     return session;
 }
 
-std::unique_ptr<Session> Session::createDirect(Ubiquitty::Terminal& terminal, Ubiquitty::Session::Dispatcher& dispatcher, Observer& observer,
+std::unique_ptr<Session> Session::createDirect(Ubiquitty::Terminal& terminal, EffectPolicy effectPolicy, Ubiquitty::Session::Dispatcher& dispatcher, Observer& observer,
     std::unique_ptr<Ubiquitty::Transport::Channel> channel, std::function<void(int, int)> applyWindowSize)
 {
+    if (!effectPolicy.install(terminal))
+        return nullptr;
     std::unique_ptr<Session> session(new Session());
     session->m_local = std::make_shared<LocalState>(terminal, dispatcher, observer, std::move(channel), std::move(applyWindowSize));
     session->followConfiguration(terminal, dispatcher, observer);
     return session;
 }
 
-std::unique_ptr<Session> Session::createRemote(Ubiquitty::Terminal& terminal, Ubiquitty::Session::Dispatcher& dispatcher, Ubiquitty::Session::ChannelFactory& factory, Observer& observer, std::uint32_t attachSessionID)
+std::unique_ptr<Session> Session::createRemote(Ubiquitty::Terminal& terminal, EffectPolicy effectPolicy, Ubiquitty::Session::Dispatcher& dispatcher, Ubiquitty::Session::ChannelFactory& factory, Observer& observer, std::uint32_t attachSessionID)
 {
+    if (!effectPolicy.install(terminal))
+        return nullptr;
     std::unique_ptr<Session> session(new Session());
     session->m_remote = std::make_unique<RemoteState>(terminal, dispatcher, factory, observer, attachSessionID);
     session->followConfiguration(terminal, dispatcher, observer);

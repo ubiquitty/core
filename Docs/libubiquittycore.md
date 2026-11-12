@@ -49,7 +49,10 @@ reaches operating-system services through PAL rather than making raw OS calls.
 ```cpp
 #include "UbiquittyCore/UbiquittyCore.h"
 
+Ubiquitty::RestrictiveCapabilityPolicy policy;
 Ubiquitty::Terminal terminal;
+terminal.capabilityPolicy = &policy;
+terminal.currentCapabilityOrigin = Ubiquitty::CapabilityOrigin::Local;
 Ubiquitty::resize(terminal, 24, 80);
 Ubiquitty::processBytes(&terminal, "hello\r\n");
 
@@ -106,14 +109,32 @@ application that trusted it.
 ## Capability policy
 
 A `Terminal` gates each reply, and each effect that leaves the grid, on its
-`capabilityPolicy` at its `currentCapabilityOrigin`. A terminal with no policy
-installed answers from `defaultDecision` in `PAL/Capability.h`: the default
-Local origin is allowed every effect, and an Agent or Remote origin is refused
-host-escaping and exfiltrating effects while its benign replies still answer.
-An embedder that connects clients installs its own `CapabilityPolicy` before
-feeding untrusted output and keeps it alive while the terminal references it;
-the [embedding contract](capability-origin.md#frontend-and-embedding-contract)
-states the rest.
+`capabilityPolicy` at its `currentCapabilityOrigin`. The example above installs
+`RestrictiveCapabilityPolicy`: it permits grid metadata, rendering and benign
+protocol replies, and refuses host-escaping and exfiltrating effects for every
+origin. Declare the policy before the terminal so it outlives every reference
+the terminal holds. A product needing consent or different permissions supplies
+its own `CapabilityPolicy` before feeding output.
+
+Every C++ session factory requires a `UbiquittyKit::Session::EffectPolicy`
+argument immediately after the terminal. Use `EffectPolicy::withPolicy(policy,
+origin)` to install a borrowed policy and the correct principal.
+Create the session on the terminal's owner thread while it is idle, with no
+other session driving that terminal. The selected policy and origin remain
+installed after session teardown, so a supplied policy must outlive the
+terminal.
+`EffectPolicy::localDefaults()` explicitly selects the existing no-policy Local
+behavior; it is not a sandbox and does not install a consent policy. Operations
+that require an installed policy, including gated file reads, remain refused.
+
+The raw model remains default-constructible. Without a policy it still answers
+from `defaultDecision` in `PAL/Capability.h`: Local output uses permissive effect
+defaults while policy-requiring file reads remain refused. Agent and Remote
+origins are refused host-escaping and exfiltrating effects while their benign
+replies still answer. The factory
+requirement does not protect code that feeds a raw terminal directly. The
+[embedding contract](capability-origin.md#frontend-and-embedding-contract)
+describes the complete policy and lifetime rules.
 
 ## Platform services
 

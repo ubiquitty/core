@@ -28,7 +28,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <format>
+#include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 
 // ---------------------------------------------------------------------------
@@ -45,19 +47,19 @@ namespace Ubiquitty::PAL {
 Ticks monotonicTicks() { return Ticks(0); }
 uint32_t monotonicMicros() { return 0; }
 
-void diagWrite(const char* message, int length)
+void diagWrite(std::string_view message)
 {
-    if (message && length > 0)
-        std::fwrite(message, 1, static_cast<size_t>(length), stderr);
+    if (!message.empty())
+        std::fwrite(message.data(), 1, message.size(), stderr);
 }
 
 void bellRing(BellMode) { }
 
-void clipboardSetText(const char*, int) { }
+void clipboardSetText(std::string_view) { }
 int clipboardGetText(char*, int) { return -1; }
 
 int preferencesLoad(PreferencesBlobKey, void*, int) { return -1; }
-int preferencesSaveAtomic(PreferencesBlobKey, const void*, int) { return 0; }
+int preferencesSaveAtomic(PreferencesBlobKey, std::span<const std::byte>) { return 0; }
 
 } // namespace Ubiquitty::PAL
 
@@ -142,7 +144,10 @@ int main()
     printLine("libUbiquittyCore consumer sample (public API v{})",
         Ubiquitty::coreVersionString);
 
+    Ubiquitty::RestrictiveCapabilityPolicy policy;
     Ubiquitty::Terminal term;
+    term.capabilityPolicy = &policy;
+    term.currentCapabilityOrigin = Ubiquitty::CapabilityOrigin::Local;
     Ubiquitty::resize(term, kRows, kColumns);
 
     // Feed a byte stream through the real VT parser: plain text, then an SGR

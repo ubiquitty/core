@@ -219,9 +219,24 @@ refused every host-escaping and exfiltrating effect, the clipboard write and
 notification a remote owner would be asked about included. The agent mirror
 refuses every effect.
 
-The embedding kits install no policy of their own. `UbiquittyKit::Session`
-drives a terminal its embedder owns, and the embedder installs the policy on
-it. A shell that builds `TerminalSurface`s, whose sessions no workspace model
+Every `UbiquittyKit::Session` factory requires an `EffectPolicy` immediately
+after its borrowed `Terminal&`. `EffectPolicy::withPolicy(policy, origin)`
+installs the supplied policy and principal before the session can process
+output. The policy is borrowed and must outlive the terminal, not merely the
+session. Create on the terminal's owner thread while it is idle, with no other
+session driving it. The selected policy and origin remain installed after
+session teardown. `EffectPolicy::localDefaults()` explicitly selects a null
+policy and the Local principal; it preserves the no-policy Local behavior and
+is not a sandbox. Neither choice creates a consent interface for the embedder.
+
+`RestrictiveCapabilityPolicy` is available for embedders that need grid
+metadata, rendering and benign protocol replies without host-escaping or
+exfiltrating effects. It refuses those effects for every origin. The standalone
+Core samples install it before processing bytes. A raw `Terminal` remains
+default-constructible. The factory requirement does not cover direct model
+ingestion; install a policy and origin before feeding it untrusted output.
+
+A shell that builds `TerminalSurface`s, whose sessions no workspace model
 makes, registers its clients once as the process default
 (`WorkspaceSession::setDefaultTerminalClientInstaller`) and asks for them on
 each surface (`RuntimeDrive.installDefaultClients`), as the iOS shell does in

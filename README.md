@@ -54,6 +54,11 @@ draws for itself embeds it directly: link the CMake target `ubiquitty-core`
 and read [Embedding the portable terminal Core](Docs/libubiquittycore.md). The
 C++ session facade (`Source/UbiquittyKit`, not the `ubiquitty-kit` repository)
 drives sessions, live configuration and local or remote transports.
+Its factories require an explicit `Session::EffectPolicy` choice. Use
+`EffectPolicy::withPolicy(policy, origin)` with `RestrictiveCapabilityPolicy`
+for grid content and normal replies without host-escaping or exfiltrating
+effects; the [embedding guide](Docs/libubiquittycore.md#capability-policy)
+explains policy selection and lifetime.
 The [workspace embedding facade](Docs/embedding-workspaces.md) supplies the
 host's pane replicas, workspace actions and directory to an independent client.
 
