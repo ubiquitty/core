@@ -250,6 +250,7 @@ A default xterm ignores these; Core follows the protocol's own specification.
 
 | Sequence | Core behavior | Authority and tests |
 | --- | --- | --- |
+| SGR 5, 6 and 8 | Slow and rapid blink modulate glyph coverage; conceal suppresses ink while preserving the cell background. The software compositor applies the same coverage as the native renderers. | ECMA-48 8.3.117; `testSoftwareTextBlinkAndConcealKeepTheGroundVisible` |
 | XTPUSHCOLORS / XTPOPCOLORS / XTREPORTCOLORS | Ten bounded palette slots retain indexed, special, default, cursor and dynamic colors; default operations push/pop, indexed operations leave the position unchanged, reports include the high-water mark, and Sync preserves future restores. | xterm ctlseqs `CSI Pm # P`, `CSI Pm # Q`, `CSI # R`; `test_prefixed_handlers`, `test_sync_checkpoint` |
 | XTQFMTKEYS | Accept both documented `CSI ? Pp g` and xterm-411a's `CSI > Pp g`. | xterm ctlseqs and VTPrsTbl.c; `test_prefixed_handlers` |
 | DECSCUSR | 0 and an omitted parameter select blinking block; 7 restores the user preference, also advertised as terminfo Se; undefined selectors preserve state. | VT510 DECSCUSR, xterm extension; `test_vt100_modes` |

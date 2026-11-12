@@ -3418,3 +3418,39 @@ TEST(testAScaledProportionalStripIsCutFromItsMasterAcrossItsBandsOnThePortableAr
     const std::string seams = std::to_string(repeated) + " row(s) of the master shown twice down the block";
     CHECK_MSG(repeated == 0, seams.c_str());
 }
+
+TEST(testSoftwareTextBlinkAndConcealKeepTheGroundVisible)
+{
+    std::array<Cell, 2> cells { defaultBlankCell, defaultBlankCell };
+    cells[0].codePoint = 'X';
+    cells[0].pen.attributes.add(VT::Attribute::Blink);
+    cells[0].pen.foregroundIndex = 7;
+    cells[0].pen.backgroundIndex = 4;
+    cells[1].pen.backgroundIndex = 4;
+    TermPalette palette;
+    palette.seedDefaults();
+    BuildInputs input;
+    input.cells = cells.data();
+    input.rows = 1;
+    input.columns = 2;
+    input.palette = &palette;
+    input.resolveBlink = true;
+    SoftwareRenderer renderer(renderCellWidth, renderCellHeight);
+    int width = 0;
+    int height = 0;
+    std::vector<std::uint8_t> visible;
+    REQUIRE(renderer.render(input, visible, width, height));
+    input.blinkTicks = 42;
+    std::vector<std::uint8_t> hidden;
+    REQUIRE(renderer.render(input, hidden, width, height));
+    CHECK(visible != hidden);
+    cells[0].pen.attributes.remove(VT::Attribute::Blink);
+    cells[0].pen.attributes.add(VT::Attribute::Hidden);
+    input.blinkTicks = 0;
+    std::vector<std::uint8_t> concealed;
+    REQUIRE(renderer.render(input, concealed, width, height));
+    CHECK(concealed == hidden);
+    const Pixel ground = at(hidden, width, renderCellWidth, 0);
+    const Pixel ink = at(hidden, width, renderCellWidth / 2, renderCellHeight / 2);
+    CHECK(ground.red == ink.red && ground.green == ink.green && ground.blue == ink.blue);
+}

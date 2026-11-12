@@ -637,6 +637,26 @@ private:
     ///     whether the glyph came from the wide sheet.
     ///   - paint: Which part of the cell to paint.
     void composite(const CellInstance& instance, IntPoint gridOriginInPixels, std::vector<std::uint8_t>& rgba, IntSize surface, int rowScale, CellPaint paint) const;
+    /// Selects the opaque or opacity-aware cell compositor.
+    ///
+    /// - Parameters:
+    ///   - instance: The cell and its resolved foreground alpha.
+    ///   - gridOriginInPixels: The grid inset in device pixels.
+    ///   - rgba: The destination RGBA surface.
+    ///   - surface: The destination bounds.
+    ///   - rowScale: The row's DECDWL width scale.
+    ///   - paint: Whether to draw the background, glyph, or both.
+    void compositeWithCoverage(const CellInstance& instance, IntPoint gridOriginInPixels, std::vector<std::uint8_t>& rgba, IntSize surface, int rowScale, CellPaint paint) const;
+    /// Composites a cell whose glyph has partial foreground opacity.
+    ///
+    /// - Parameters:
+    ///   - instance: The cell and its resolved foreground alpha.
+    ///   - gridOriginInPixels: The grid inset in device pixels.
+    ///   - rgba: The destination RGBA surface.
+    ///   - surface: The destination bounds.
+    ///   - rowScale: The row's DECDWL width scale.
+    ///   - paint: Whether to draw the background, glyph, or both.
+    void compositeWithOpacity(const CellInstance& instance, IntPoint gridOriginInPixels, std::vector<std::uint8_t>& rgba, IntSize surface, int rowScale, CellPaint paint) const;
     /// Draws one subpixel-overflow glyph over the composited backgrounds.
     ///
     /// The full slot quad at `penX - margin`, mixed in the integer domain over

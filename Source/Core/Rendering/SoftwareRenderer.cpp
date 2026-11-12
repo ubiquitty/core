@@ -95,6 +95,18 @@ struct ClippedQuad {
     };
 }
 
+// Choose opacity once per quad. Ordinary opaque ink retains its original
+// coverage loop; blink and conceal scale only the quads that carry them.
+template<typename Paint>
+void withForegroundCoverage(float opacity, const Paint& paint)
+{
+    const int alpha = channelToByte(std::abs(opacity));
+    if (alpha == 255)
+        paint([](int coverage) { return coverage; });
+    else
+        paint([alpha](int coverage) { return (coverage * alpha + 127) / 255; });
+}
+
 // mix(background, foreground, coverage) = round((background*(255-coverage) + foreground*coverage) / 255).
 //
 // The CPU<->GPU oracle, and the reason it is one function: the float mix into a
@@ -827,26 +839,28 @@ void SoftwareRenderer::compositeProportionalGlyph(const GlyphInstance& g,
     // drawn from the ordinary raster, each half cut at the pair's midline.
     const float texelsPerPixelY = g.sizeInPixels.y > 0.0f ? (g.atlasBottomRight.y - g.atlasTopLeft.y) / g.sizeInPixels.y : 1.0f;
 
-    for (int localY = clip.firstRow; localY < clip.lastRow; ++localY) {
-        const int atlasY = clampInt(texelsPerPixelY == 1.0f
-                ? slotMinY + localY
-                : static_cast<int>(std::floor(g.atlasTopLeft.y + (static_cast<float>(localY) + 0.5f) * texelsPerPixelY)),
-            0, sheetHeight - 1);
-        const std::uint8_t* atlasRow = sheet.data()
-            + static_cast<std::size_t>(atlasY) * sheetWidth;
-        std::uint8_t* destination = rgba.data()
-            + static_cast<std::size_t>(originY + localY) * rowStride
-            + static_cast<std::size_t>(originX + clip.firstColumn) * 4;
-        for (int localX = clip.firstColumn; localX < clip.lastColumn;
-            ++localX, destination += 4) {
-            const int atlasX = clampInt(slotMinX + static_cast<int>((static_cast<float>(localX) + 0.5f) * texelsPerPixel), 0, sheetWidth - 1);
-            const int coverage = atlasRow[atlasX];
-            if (coverage == 0)
-                continue;
-            writeInkPixel(destination, isOverSurface ? destination : cellGround.data(),
-                foregroundRed, foregroundGreen, foregroundBlue, coverage);
+    withForegroundCoverage(g.foreground.w, [&](const auto& coverageFor) {
+        for (int localY = clip.firstRow; localY < clip.lastRow; ++localY) {
+            const int atlasY = clampInt(texelsPerPixelY == 1.0f
+                    ? slotMinY + localY
+                    : static_cast<int>(std::floor(g.atlasTopLeft.y + (static_cast<float>(localY) + 0.5f) * texelsPerPixelY)),
+                0, sheetHeight - 1);
+            const std::uint8_t* atlasRow = sheet.data()
+                + static_cast<std::size_t>(atlasY) * sheetWidth;
+            std::uint8_t* destination = rgba.data()
+                + static_cast<std::size_t>(originY + localY) * rowStride
+                + static_cast<std::size_t>(originX + clip.firstColumn) * 4;
+            for (int localX = clip.firstColumn; localX < clip.lastColumn;
+                ++localX, destination += 4) {
+                const int atlasX = clampInt(slotMinX + static_cast<int>((static_cast<float>(localX) + 0.5f) * texelsPerPixel), 0, sheetWidth - 1);
+                const int coverage = coverageFor(atlasRow[atlasX]);
+                if (coverage == 0)
+                    continue;
+                writeInkPixel(destination, isOverSurface ? destination : cellGround.data(),
+                    foregroundRed, foregroundGreen, foregroundBlue, coverage);
+            }
         }
-    }
+    });
 }
 
 void SoftwareRenderer::compositeLigatureGlyph(const GlyphInstance& g, const LigatureSheet& stripSheet, std::vector<std::uint8_t>& rgba, IntSize surface, InkGround ground) const
@@ -892,22 +906,24 @@ void SoftwareRenderer::compositeLigatureGlyph(const GlyphInstance& g, const Liga
         return;
     const std::size_t rowStride = static_cast<std::size_t>(surface.width) * 4;
 
-    for (int ly = clip.firstRow; ly < clip.lastRow; ++ly) {
-        const int ty = clampInt(texelsPerPixelY == 1.0f
-                ? sliceMinY + ly
-                : static_cast<int>(std::floor(g.atlasTopLeft.y + (static_cast<float>(ly) + 0.5f) * texelsPerPixelY)),
-            0, sheetHeight - 1);
-        const std::uint8_t* const sheetRow = sheet.data() + static_cast<std::size_t>(ty) * sheetWidth;
-        std::uint8_t* out = rgba.data() + static_cast<std::size_t>(originY + ly) * rowStride
-            + static_cast<std::size_t>(originX + clip.firstColumn) * 4;
-        for (int lx = clip.firstColumn; lx < clip.lastColumn; ++lx, out += 4) {
-            const int tx = clampInt(sliceMinX + static_cast<int>((static_cast<float>(lx) + 0.5f) * texelsPerPixel), 0, sheetWidth - 1);
-            const int coverage = sheetRow[tx];
-            if (coverage == 0)
-                continue;
-            writeInkPixel(out, isOverSurface ? out : cellGround.data(), foregroundRed, foregroundGreen, foregroundBlue, coverage);
+    withForegroundCoverage(g.foreground.w, [&](const auto& coverageFor) {
+        for (int ly = clip.firstRow; ly < clip.lastRow; ++ly) {
+            const int ty = clampInt(texelsPerPixelY == 1.0f
+                    ? sliceMinY + ly
+                    : static_cast<int>(std::floor(g.atlasTopLeft.y + (static_cast<float>(ly) + 0.5f) * texelsPerPixelY)),
+                0, sheetHeight - 1);
+            const std::uint8_t* const sheetRow = sheet.data() + static_cast<std::size_t>(ty) * sheetWidth;
+            std::uint8_t* out = rgba.data() + static_cast<std::size_t>(originY + ly) * rowStride
+                + static_cast<std::size_t>(originX + clip.firstColumn) * 4;
+            for (int lx = clip.firstColumn; lx < clip.lastColumn; ++lx, out += 4) {
+                const int tx = clampInt(sliceMinX + static_cast<int>((static_cast<float>(lx) + 0.5f) * texelsPerPixel), 0, sheetWidth - 1);
+                const int coverage = coverageFor(sheetRow[tx]);
+                if (coverage == 0)
+                    continue;
+                writeInkPixel(out, isOverSurface ? out : cellGround.data(), foregroundRed, foregroundGreen, foregroundBlue, coverage);
+            }
         }
-    }
+    });
 }
 
 void SoftwareRenderer::compositeColorGlyph(const GlyphInstance& g, std::vector<std::uint8_t>& rgba, IntSize surface) const
@@ -947,30 +963,32 @@ void SoftwareRenderer::compositeColorGlyph(const GlyphInstance& g, std::vector<s
             sheetColumns[static_cast<std::size_t>(lx)] = sheetColumnFor(lx);
     }
 
-    for (int ly = clip.firstRow; ly < clip.lastRow; ++ly) {
-        const int y = originY + ly;
-        // The pixel centre against the quad's true origin, not against its
-        // truncated one. A rasteriser evaluates an interpolated coordinate at
-        // the centre of each pixel it covers, so a quad whose origin carries a
-        // fraction — an emoji's square slot centred in a two-cell span lands on
-        // a half — samples half a texel away from `(index + 0.5) / extent`.
-        const float v = g.atlasTopLeft.y + vSpan * ((static_cast<float>(y) + 0.5f) - g.originInPixels.y) / g.sizeInPixels.y;
-        const int ty = clampInt(static_cast<int>(v), 0, m_color.atlasHeight - 1);
-        const std::uint8_t* const sheetRow = m_color.pixels.data() + static_cast<std::size_t>(ty) * m_color.atlasWidth * 4;
-        std::uint8_t* out = rgba.data() + static_cast<std::size_t>(y) * rowStride
-            + static_cast<std::size_t>(originX + clip.firstColumn) * 4;
-        for (int lx = clip.firstColumn; lx < clip.lastColumn; ++lx, out += 4) {
-            const int tx = areColumnsTabled ? sheetColumns[static_cast<std::size_t>(lx)] : sheetColumnFor(lx);
-            const std::uint8_t* source = sheetRow + static_cast<std::size_t>(tx) * 4;
-            const int alpha = source[3];
-            if (alpha == 0)
-                continue;
-            const int inverse = 255 - alpha;
-            for (int channel = 0; channel < 3; ++channel)
-                out[channel] = static_cast<std::uint8_t>((out[channel] * inverse + source[channel] * alpha + 127) / 255);
-            out[3] = static_cast<std::uint8_t>(std::min(255, out[3] + alpha));
+    withForegroundCoverage(g.foreground.w, [&](const auto& coverageFor) {
+        for (int ly = clip.firstRow; ly < clip.lastRow; ++ly) {
+            const int y = originY + ly;
+            // The pixel centre against the quad's true origin, not against its
+            // truncated one. A rasteriser evaluates an interpolated coordinate at
+            // the centre of each pixel it covers, so a quad whose origin carries a
+            // fraction — an emoji's square slot centred in a two-cell span lands on
+            // a half — samples half a texel away from `(index + 0.5) / extent`.
+            const float v = g.atlasTopLeft.y + vSpan * ((static_cast<float>(y) + 0.5f) - g.originInPixels.y) / g.sizeInPixels.y;
+            const int ty = clampInt(static_cast<int>(v), 0, m_color.atlasHeight - 1);
+            const std::uint8_t* const sheetRow = m_color.pixels.data() + static_cast<std::size_t>(ty) * m_color.atlasWidth * 4;
+            std::uint8_t* out = rgba.data() + static_cast<std::size_t>(y) * rowStride
+                + static_cast<std::size_t>(originX + clip.firstColumn) * 4;
+            for (int lx = clip.firstColumn; lx < clip.lastColumn; ++lx, out += 4) {
+                const int tx = areColumnsTabled ? sheetColumns[static_cast<std::size_t>(lx)] : sheetColumnFor(lx);
+                const std::uint8_t* source = sheetRow + static_cast<std::size_t>(tx) * 4;
+                const int alpha = coverageFor(source[3]);
+                if (alpha == 0)
+                    continue;
+                const int inverse = 255 - alpha;
+                for (int channel = 0; channel < 3; ++channel)
+                    out[channel] = static_cast<std::uint8_t>((out[channel] * inverse + source[channel] * alpha + 127) / 255);
+                out[3] = static_cast<std::uint8_t>(std::min(255, out[3] + alpha));
+            }
         }
-    }
+    });
 }
 
 float SoftwareRenderer::sampleMonoCoverage(float x, float y) const
@@ -1160,6 +1178,133 @@ void SoftwareRenderer::composite(const CellInstance& instance, IntPoint gridOrig
     });
 }
 
+// Keep the profiled opaque compositor intact. Blink and conceal take the
+// opacity walk only when their resolved foreground needs it.
+void SoftwareRenderer::compositeWithCoverage(const CellInstance& instance, IntPoint gridOriginInPixels, std::vector<std::uint8_t>& rgba, IntSize surface, int rowScale, CellPaint paint) const
+{
+    if (std::abs(instance.foreground.w) >= 1.0f)
+        composite(instance, gridOriginInPixels, rgba, surface, rowScale, paint);
+    else
+        compositeWithOpacity(instance, gridOriginInPixels, rgba, surface, rowScale, paint);
+}
+
+void SoftwareRenderer::compositeWithOpacity(const CellInstance& instance, IntPoint gridOriginInPixels, std::vector<std::uint8_t>& rgba, IntSize surface, int rowScale, CellPaint paint) const
+{
+    const int cellLeft = static_cast<int>(std::lround(instance.gridPosition.x * static_cast<float>(m_cellWidth)));
+    const int cellRight = static_cast<int>(std::lround((instance.gridPosition.x + instance.widthCells) * static_cast<float>(m_cellWidth)));
+    const int spanWidth = cellRight - cellLeft;
+    // Which SHEET the cell's glyph came from, which the span cannot answer on
+    // its own: a wide cell and a narrow cell on a doubled row both span two.
+    // The row's scale divides out, leaving the cell's own width. A doubled
+    // row's narrow cell is two one-cell windows of its doubled master, or the
+    // 1x glyph cropped where those were declined; both are mono-sheet rects.
+    const int rowWidthScale = rowScale > 0 ? rowScale : 1;
+    const bool isWide = instance.widthCells > 1.5f * static_cast<float>(rowWidthScale);
+    const Atlas& atlas = isWide ? m_wide : m_mono;
+    // The origin arrives already rounded and is added in the integer domain, so
+    // an inset of zero cannot move a pixel: this whole pass stays the arithmetic
+    // it was. See render() for why the CPU path takes whole pixels at all.
+    // The origin is whole, as every grid origin is, and added in the integer
+    // domain.
+    const int x0 = gridOriginInPixels.x + cellLeft;
+    const int y0 = gridOriginInPixels.y + static_cast<int>(instance.gridPosition.y) * m_cellHeight;
+
+    // Colors as exact 0..255 bytes — the palette is 8-bit, so the instance's
+    // 0..1 floats are N/255 and round-trip cleanly. The mix runs in this
+    // integer domain (below) so the CPU and GPU agree bit-for-bit.
+    const int backgroundRed = channelToByte(instance.background.x), backgroundGreen = channelToByte(instance.background.y), backgroundBlue = channelToByte(instance.background.z), backgroundAlpha = channelToByte(instance.background.w);
+    const int foregroundRed = channelToByte(instance.foreground.x), foregroundGreen = channelToByte(instance.foreground.y), foregroundBlue = channelToByte(instance.foreground.z);
+    const bool hasGlyph = instance.atlasBottomRight.x > instance.atlasTopLeft.x;
+    if (paint == CellPaint::Ink && !hasGlyph)
+        return;
+    const float spanU = instance.atlasBottomRight.x - instance.atlasTopLeft.x;
+    const float spanV = instance.atlasBottomRight.y - instance.atlasTopLeft.y;
+
+    // Clipped once against the surface rather than per pixel: the bounds do not
+    // change inside the loops they guard, and this is the one loop in the
+    // backend that runs per pixel of the frame rather than per cell of it.
+    const ClippedQuad clip = clipQuadToSurface(x0, y0, spanWidth, m_cellHeight, surface);
+    if (clip.isEmpty())
+        return;
+
+    // INTEGER mix(background, foreground, cov): out =
+    // round((background*(255-cov)+foreground*cov)/255). The float mix ->
+    // UNORM8 store diverges by a LSB between the CPU and lavapipe once
+    // coverage is anti-aliased. The GPU cell shader runs this same integer
+    // formula and emits byte/255 (which lavapipe stores exactly), so both
+    // paths land on the identical byte — the CPU<->GPU oracle. For 0/255
+    // coverage it reduces to background / foreground.
+    std::uint8_t* const surfaceBase = rgba.data();
+    const std::size_t rowStride = static_cast<std::size_t>(surface.width) * 4;
+
+    if (!hasGlyph || paint == CellPaint::Ground) {
+        // Coverage is zero over the whole cell, and the mix at zero coverage is
+        // (background*255 + 127)/255 — the background byte itself, since the
+        // remainder cannot reach 255. So the cell is one four-byte pattern
+        // repeated, and the four channel mixes per pixel compute that pattern
+        // again for every pixel of every blank cell on the screen. The ground
+        // of an inked cell is the same pattern, its ink left for a later pass.
+        std::array<std::uint8_t, 4> pattern {};
+        writeMixedPixel(pattern.data(), backgroundRed, backgroundGreen, backgroundBlue, backgroundAlpha,
+            foregroundRed, foregroundGreen, foregroundBlue, 0);
+        for (int py = clip.firstRow; py < clip.lastRow; ++py) {
+            std::uint8_t* out = surfaceBase + static_cast<std::size_t>(y0 + py) * rowStride
+                + static_cast<std::size_t>(x0 + clip.firstColumn) * 4;
+            for (int px = clip.firstColumn; px < clip.lastColumn; ++px, out += 4)
+                std::memcpy(out, pattern.data(), pattern.size());
+        }
+        return;
+    }
+
+    // The atlas column depends on px alone, so every row of the cell taps the
+    // same columns: resolved once for the span instead of once per pixel, which
+    // is where the divide in it goes. A span wider than the buffer keeps the
+    // per-pixel form — the arithmetic is the lambda either way, so the two
+    // schedules cannot answer differently.
+    const auto texelColumnFor = [&](int px) {
+        const float u = instance.atlasTopLeft.x + (px + 0.5f) / spanWidth * spanU;
+        // Atlas pixels: the interpolated coordinate is the texel.
+        return clampInt(static_cast<int>(u), 0, atlas.atlasWidth - 1);
+    };
+    // Tabled once for the span, as the colour sheet's tap above is.
+    std::array<int, maxSpanTexelColumns> texelColumns;
+    const bool areColumnsTabled = clip.lastColumn <= static_cast<int>(texelColumns.size());
+    if (areColumnsTabled) {
+        for (int px = clip.firstColumn; px < clip.lastColumn; ++px)
+            texelColumns[static_cast<std::size_t>(px)] = texelColumnFor(px);
+    }
+
+    // One walk of the cell's pixels and their coverage, written two ways: the
+    // whole cell mixes every pixel from its own ground, and the ink alone mixes
+    // only the pixels the glyph covers, over whatever the surface holds there.
+    const auto walkCoverage = [&](const auto& writePixel) {
+        for (int py = clip.firstRow; py < clip.lastRow; ++py) {
+            const float v = instance.atlasTopLeft.y + (py + 0.5f) / m_cellHeight * spanV;
+            const int ay = clampInt(static_cast<int>(v), 0, atlas.atlasHeight - 1);
+            const std::uint8_t* const atlasRow = atlas.pixels.data() + static_cast<std::size_t>(ay) * atlas.atlasWidth;
+            std::uint8_t* out = surfaceBase + static_cast<std::size_t>(y0 + py) * rowStride
+                + static_cast<std::size_t>(x0 + clip.firstColumn) * 4;
+            for (int px = clip.firstColumn; px < clip.lastColumn; ++px, out += 4)
+                writePixel(out, atlasRow[areColumnsTabled ? texelColumns[static_cast<std::size_t>(px)] : texelColumnFor(px)]);
+        }
+    };
+    withForegroundCoverage(instance.foreground.w, [&](const auto& coverageFor) {
+        if (paint == CellPaint::Ink) {
+            walkCoverage([&](std::uint8_t* out, int coverage) {
+                coverage = coverageFor(coverage);
+                if (coverage != 0)
+                    writeInkPixel(out, out, foregroundRed, foregroundGreen, foregroundBlue, coverage);
+            });
+            return;
+        }
+        walkCoverage([&](std::uint8_t* out, int coverage) {
+            coverage = coverageFor(coverage);
+            writeMixedPixel(out, backgroundRed, backgroundGreen, backgroundBlue, backgroundAlpha,
+                foregroundRed, foregroundGreen, foregroundBlue, coverage);
+        });
+    });
+}
+
 // Subpixel overflow glyph: the quad is the FULL slot (sizeInPixels), placed at
 // originInPixels (penX - margin, rowTop) so a glyph wider than the cell box
 // overflows symmetrically into the neighbour columns. Coverage is sampled by
@@ -1209,138 +1354,140 @@ void SoftwareRenderer::compositeGlyph(const GlyphInstance& g, const Atlas& atlas
     const bool isOneToOne = std::fabs(sourceWidth - g.sizeInPixels.x) < 0.001f
         && std::fabs(sourceHeight - g.sizeInPixels.y) < 0.001f;
 
-    if (isOneToOne) {
-        for (int ly = clip.firstRow; ly < clip.lastRow; ++ly) {
-            const int ty = clampInt(slotMinY + ly, 0, atlas.atlasHeight - 1);
-            const std::uint8_t* const atlasRow = atlas.pixels.data() + static_cast<std::size_t>(ty) * atlas.atlasWidth;
-            std::uint8_t* out = rgba.data() + static_cast<std::size_t>(originY + ly) * rowStride
-                + static_cast<std::size_t>(originX + clip.firstColumn) * 4;
-            for (int lx = clip.firstColumn; lx < clip.lastColumn; ++lx, out += 4) {
-                const int tx = clampInt(slotMinX + lx, 0, atlas.atlasWidth - 1);
-                const int coverage = atlasRow[tx];
-                if (coverage == 0)
-                    continue;
-                writeInkPixel(out, isOverSurface ? out : cellGround.data(), foregroundRed, foregroundGreen, foregroundBlue, coverage);
+    withForegroundCoverage(g.foreground.w, [&](const auto& coverageFor) {
+        if (isOneToOne) {
+            for (int ly = clip.firstRow; ly < clip.lastRow; ++ly) {
+                const int ty = clampInt(slotMinY + ly, 0, atlas.atlasHeight - 1);
+                const std::uint8_t* const atlasRow = atlas.pixels.data() + static_cast<std::size_t>(ty) * atlas.atlasWidth;
+                std::uint8_t* out = rgba.data() + static_cast<std::size_t>(originY + ly) * rowStride
+                    + static_cast<std::size_t>(originX + clip.firstColumn) * 4;
+                for (int lx = clip.firstColumn; lx < clip.lastColumn; ++lx, out += 4) {
+                    const int tx = clampInt(slotMinX + lx, 0, atlas.atlasWidth - 1);
+                    const int coverage = coverageFor(atlasRow[tx]);
+                    if (coverage == 0)
+                        continue;
+                    writeInkPixel(out, isOverSurface ? out : cellGround.data(), foregroundRed, foregroundGreen, foregroundBlue, coverage);
+                }
             }
+            return;
         }
-        return;
-    }
 
-    // The scaled case, which the Vulkan glyph pass (linear mode)
-    // computes the same way: the pixel centre maps into the source rect, the
-    // four texels around it are weighted by the fractional part, and a tap
-    // outside the instance's box, or outside the sheet, reads zero.
-    //
-    // Written apart from the walk above rather than folded into it: at a ratio
-    // of one this arithmetic returns the same texel — a linear tap at a texel
-    // centre is that texel — but it costs four loads and three lerps to say so,
-    // on the pass that draws every glyph on screen.
-    // The quad's own edges, not the truncated ones the walk above uses. A
-    // scripted quad is placed at a fraction of a pixel and is a fraction of a
-    // pixel wide, and the GPU rasterises exactly that: a pixel is covered when
-    // its CENTRE falls inside the quad. Truncating the origin first shifts the
-    // whole letter and shears the mapping under it, which is a picture no arm
-    // draws.
-    const float quadLeft = g.originInPixels.x;
-    const float quadTop = g.originInPixels.y;
-    const float quadWidth = g.sizeInPixels.x;
-    const float quadHeight = g.sizeInPixels.y;
-    if (quadWidth <= 0.0f || quadHeight <= 0.0f)
-        return;
-    int firstColumn = static_cast<int>(std::floor(quadLeft));
-    int lastColumn = static_cast<int>(std::ceil(quadLeft + quadWidth));
-    int firstRow = static_cast<int>(std::floor(quadTop));
-    int lastRow = static_cast<int>(std::ceil(quadTop + quadHeight));
-    firstColumn = clampInt(firstColumn, 0, surface.width);
-    lastColumn = clampInt(lastColumn, 0, surface.width);
-    firstRow = clampInt(firstRow, 0, surface.height);
-    lastRow = clampInt(lastRow, 0, surface.height);
+        // The scaled case, which the Vulkan glyph pass (linear mode)
+        // computes the same way: the pixel centre maps into the source rect, the
+        // four texels around it are weighted by the fractional part, and a tap
+        // outside the instance's box, or outside the sheet, reads zero.
+        //
+        // Written apart from the walk above rather than folded into it: at a ratio
+        // of one this arithmetic returns the same texel — a linear tap at a texel
+        // centre is that texel — but it costs four loads and three lerps to say so,
+        // on the pass that draws every glyph on screen.
+        // The quad's own edges, not the truncated ones the walk above uses. A
+        // scripted quad is placed at a fraction of a pixel and is a fraction of a
+        // pixel wide, and the GPU rasterises exactly that: a pixel is covered when
+        // its CENTRE falls inside the quad. Truncating the origin first shifts the
+        // whole letter and shears the mapping under it, which is a picture no arm
+        // draws.
+        const float quadLeft = g.originInPixels.x;
+        const float quadTop = g.originInPixels.y;
+        const float quadWidth = g.sizeInPixels.x;
+        const float quadHeight = g.sizeInPixels.y;
+        if (quadWidth <= 0.0f || quadHeight <= 0.0f)
+            return;
+        int firstColumn = static_cast<int>(std::floor(quadLeft));
+        int lastColumn = static_cast<int>(std::ceil(quadLeft + quadWidth));
+        int firstRow = static_cast<int>(std::floor(quadTop));
+        int lastRow = static_cast<int>(std::ceil(quadTop + quadHeight));
+        firstColumn = clampInt(firstColumn, 0, surface.width);
+        lastColumn = clampInt(lastColumn, 0, surface.width);
+        firstRow = clampInt(firstRow, 0, surface.height);
+        lastRow = clampInt(lastRow, 0, surface.height);
 
-    // The instance's own box in the sheet. A linear tap half a texel past the
-    // rect it maps would read whatever the neighbouring slot holds there —
-    // nothing guarantees a margin between slots — so a tap outside the box
-    // takes the box's nearest texel, as a sampler clamped to the box does, and
-    // a tap outside the sheet reads zero. The picture is then the slot's own
-    // pixels whatever was allocated around it. Clamped rather than zero
-    // because a rect may be cut from inside a raster: a soft sized band's edge
-    // falls between two rows of the 1x glyph, and a zero tap there blends the
-    // band's last row with nothing, a lighter line across the glyph at every
-    // band join.
-    const int boxLeft = static_cast<int>(std::floor(g.atlasTopLeft.x));
-    const int boxTop = static_cast<int>(std::floor(g.atlasTopLeft.y));
-    const int boxRight = static_cast<int>(std::ceil(g.atlasBottomRight.x)) - 1;
-    const int boxBottom = static_cast<int>(std::ceil(g.atlasBottomRight.y)) - 1;
-    const auto tap = [&](int x, int y) -> float {
-        x = clampInt(x, boxLeft, boxRight);
-        y = clampInt(y, boxTop, boxBottom);
-        if (x < 0 || y < 0 || x >= atlas.atlasWidth || y >= atlas.atlasHeight)
-            return 0.0f;
-        return static_cast<float>(atlas.pixels[static_cast<std::size_t>(y) * atlas.atlasWidth + static_cast<std::size_t>(x)]);
-    };
-    const auto tapCoverage = [&](int x, int y) { return static_cast<int>(tap(x, y)); };
-    const auto toFixed64 = [](float value) { return static_cast<int>(std::floor(value * 64.0f + 0.5f)); };
-    struct FixedQuad {
-        int originX64, originY64, sizeX64, sizeY64, atlasX64, atlasY64, sourceWidth64, sourceHeight64;
-    };
-    const FixedQuad quad { toFixed64(quadLeft), toFixed64(quadTop), toFixed64(quadWidth), toFixed64(quadHeight),
-        toFixed64(g.atlasTopLeft.x), toFixed64(g.atlasTopLeft.y), toFixed64(g.atlasBottomRight.x - g.atlasTopLeft.x),
-        toFixed64(g.atlasBottomRight.y - g.atlasTopLeft.y) };
-    if (quad.sizeX64 <= 0 || quad.sizeY64 <= 0)
-        return;
-    // The bitmap tier takes the GPU glyph pass's nearest tap instead: the texel
-    // the pixel centre lands in, held inside the instance's box. A bitmap face
-    // has no intermediate coverage for a linear tap to find, so blending its
-    // texels draws a blurred letter no GPU arm draws.
-    for (int y = firstRow; y < lastRow; ++y) {
-        if (m_isBitmapFace) {
-            const float centreY = static_cast<float>(y) + 0.5f;
-            if (centreY < quadTop || centreY >= quadTop + quadHeight)
+        // The instance's own box in the sheet. A linear tap half a texel past the
+        // rect it maps would read whatever the neighbouring slot holds there —
+        // nothing guarantees a margin between slots — so a tap outside the box
+        // takes the box's nearest texel, as a sampler clamped to the box does, and
+        // a tap outside the sheet reads zero. The picture is then the slot's own
+        // pixels whatever was allocated around it. Clamped rather than zero
+        // because a rect may be cut from inside a raster: a soft sized band's edge
+        // falls between two rows of the 1x glyph, and a zero tap there blends the
+        // band's last row with nothing, a lighter line across the glyph at every
+        // band join.
+        const int boxLeft = static_cast<int>(std::floor(g.atlasTopLeft.x));
+        const int boxTop = static_cast<int>(std::floor(g.atlasTopLeft.y));
+        const int boxRight = static_cast<int>(std::ceil(g.atlasBottomRight.x)) - 1;
+        const int boxBottom = static_cast<int>(std::ceil(g.atlasBottomRight.y)) - 1;
+        const auto tap = [&](int x, int y) -> float {
+            x = clampInt(x, boxLeft, boxRight);
+            y = clampInt(y, boxTop, boxBottom);
+            if (x < 0 || y < 0 || x >= atlas.atlasWidth || y >= atlas.atlasHeight)
+                return 0.0f;
+            return static_cast<float>(atlas.pixels[static_cast<std::size_t>(y) * atlas.atlasWidth + static_cast<std::size_t>(x)]);
+        };
+        const auto tapCoverage = [&](int x, int y) { return static_cast<int>(tap(x, y)); };
+        const auto toFixed64 = [](float value) { return static_cast<int>(std::floor(value * 64.0f + 0.5f)); };
+        struct FixedQuad {
+            int originX64, originY64, sizeX64, sizeY64, atlasX64, atlasY64, sourceWidth64, sourceHeight64;
+        };
+        const FixedQuad quad { toFixed64(quadLeft), toFixed64(quadTop), toFixed64(quadWidth), toFixed64(quadHeight),
+            toFixed64(g.atlasTopLeft.x), toFixed64(g.atlasTopLeft.y), toFixed64(g.atlasBottomRight.x - g.atlasTopLeft.x),
+            toFixed64(g.atlasBottomRight.y - g.atlasTopLeft.y) };
+        if (quad.sizeX64 <= 0 || quad.sizeY64 <= 0)
+            return;
+        // The bitmap tier takes the GPU glyph pass's nearest tap instead: the texel
+        // the pixel centre lands in, held inside the instance's box. A bitmap face
+        // has no intermediate coverage for a linear tap to find, so blending its
+        // texels draws a blurred letter no GPU arm draws.
+        for (int y = firstRow; y < lastRow; ++y) {
+            if (m_isBitmapFace) {
+                const float centreY = static_cast<float>(y) + 0.5f;
+                if (centreY < quadTop || centreY >= quadTop + quadHeight)
+                    continue;
+                const float texelY = g.atlasTopLeft.y + (centreY - quadTop) / quadHeight * sourceHeight;
+                const int ty = clampInt(static_cast<int>(std::floor(texelY)), boxTop, boxBottom);
+                std::uint8_t* out = rgba.data() + static_cast<std::size_t>(y) * rowStride
+                    + static_cast<std::size_t>(firstColumn) * 4;
+                for (int x = firstColumn; x < lastColumn; ++x, out += 4) {
+                    const float centreX = static_cast<float>(x) + 0.5f;
+                    if (centreX < quadLeft || centreX >= quadLeft + quadWidth)
+                        continue;
+                    const float texelX = g.atlasTopLeft.x + (centreX - quadLeft) / quadWidth * sourceWidth;
+                    const int tx = clampInt(static_cast<int>(std::floor(texelX)), boxLeft, boxRight);
+                    const int coverage = coverageFor(static_cast<int>(tap(tx, ty)));
+                    if (coverage <= 0)
+                        continue;
+                    writeInkPixel(out, isOverSurface ? out : cellGround.data(), foregroundRed, foregroundGreen, foregroundBlue, coverage);
+                }
                 continue;
-            const float texelY = g.atlasTopLeft.y + (centreY - quadTop) / quadHeight * sourceHeight;
-            const int ty = clampInt(static_cast<int>(std::floor(texelY)), boxTop, boxBottom);
+            }
+            // The linear tap in 1/64 fixed point, with the same integer steps
+            // the glyph shader takes: a float division or a fused multiply-add rounds
+            // differently on a GPU, and one unit of coverage apart is a different
+            // picture. Positions round to the 1/64 grid once, from the instance's
+            // floats, which both arms hold bit for bit.
+            const int centreY64 = y * 64 + 32;
+            if (centreY64 < quad.originY64 || centreY64 >= quad.originY64 + quad.sizeY64)
+                continue;
+            const int sourceY64 = quad.atlasY64 + (centreY64 - quad.originY64) * quad.sourceHeight64 / quad.sizeY64 - 32;
+            const int y0 = sourceY64 >> 6;
+            const int weightY = sourceY64 & 63;
             std::uint8_t* out = rgba.data() + static_cast<std::size_t>(y) * rowStride
                 + static_cast<std::size_t>(firstColumn) * 4;
             for (int x = firstColumn; x < lastColumn; ++x, out += 4) {
-                const float centreX = static_cast<float>(x) + 0.5f;
-                if (centreX < quadLeft || centreX >= quadLeft + quadWidth)
+                const int centreX64 = x * 64 + 32;
+                if (centreX64 < quad.originX64 || centreX64 >= quad.originX64 + quad.sizeX64)
                     continue;
-                const float texelX = g.atlasTopLeft.x + (centreX - quadLeft) / quadWidth * sourceWidth;
-                const int tx = clampInt(static_cast<int>(std::floor(texelX)), boxLeft, boxRight);
-                const int coverage = static_cast<int>(tap(tx, ty));
+                const int sourceX64 = quad.atlasX64 + (centreX64 - quad.originX64) * quad.sourceWidth64 / quad.sizeX64 - 32;
+                const int x0 = sourceX64 >> 6;
+                const int weightX = sourceX64 & 63;
+                const int top = tapCoverage(x0, y0) * (64 - weightX) + tapCoverage(x0 + 1, y0) * weightX;
+                const int bottom = tapCoverage(x0, y0 + 1) * (64 - weightX) + tapCoverage(x0 + 1, y0 + 1) * weightX;
+                const int coverage = coverageFor((top * (64 - weightY) + bottom * weightY + 2048) >> 12);
                 if (coverage <= 0)
                     continue;
-                writeInkPixel(out, isOverSurface ? out : cellGround.data(), foregroundRed, foregroundGreen, foregroundBlue, coverage);
+                writeInkPixel(out, isOverSurface ? out : cellGround.data(), foregroundRed, foregroundGreen, foregroundBlue, coverage > 255 ? 255 : coverage);
             }
-            continue;
         }
-        // The linear tap in 1/64 fixed point, with the same integer steps
-        // the glyph shader takes: a float division or a fused multiply-add rounds
-        // differently on a GPU, and one unit of coverage apart is a different
-        // picture. Positions round to the 1/64 grid once, from the instance's
-        // floats, which both arms hold bit for bit.
-        const int centreY64 = y * 64 + 32;
-        if (centreY64 < quad.originY64 || centreY64 >= quad.originY64 + quad.sizeY64)
-            continue;
-        const int sourceY64 = quad.atlasY64 + (centreY64 - quad.originY64) * quad.sourceHeight64 / quad.sizeY64 - 32;
-        const int y0 = sourceY64 >> 6;
-        const int weightY = sourceY64 & 63;
-        std::uint8_t* out = rgba.data() + static_cast<std::size_t>(y) * rowStride
-            + static_cast<std::size_t>(firstColumn) * 4;
-        for (int x = firstColumn; x < lastColumn; ++x, out += 4) {
-            const int centreX64 = x * 64 + 32;
-            if (centreX64 < quad.originX64 || centreX64 >= quad.originX64 + quad.sizeX64)
-                continue;
-            const int sourceX64 = quad.atlasX64 + (centreX64 - quad.originX64) * quad.sourceWidth64 / quad.sizeX64 - 32;
-            const int x0 = sourceX64 >> 6;
-            const int weightX = sourceX64 & 63;
-            const int top = tapCoverage(x0, y0) * (64 - weightX) + tapCoverage(x0 + 1, y0) * weightX;
-            const int bottom = tapCoverage(x0, y0 + 1) * (64 - weightX) + tapCoverage(x0 + 1, y0 + 1) * weightX;
-            const int coverage = (top * (64 - weightY) + bottom * weightY + 2048) >> 12;
-            if (coverage <= 0)
-                continue;
-            writeInkPixel(out, isOverSurface ? out : cellGround.data(), foregroundRed, foregroundGreen, foregroundBlue, coverage > 255 ? 255 : coverage);
-        }
-    }
+    });
 }
 
 // Decoration rule -> pixels: a faithful CPU port of the Metal cell shader's
@@ -2508,7 +2655,7 @@ bool SoftwareRenderer::render(const BuildInputs& in, std::vector<std::uint8_t>& 
                 const std::uint8_t lineAttribute = (in.lineAttributes && row >= 0 && row < in.rows)
                     ? in.lineAttributes[row]
                     : lineAttributeNormal;
-                composite(m_cellInstances[i], { gridOriginX, gridOriginY }, rgbaOut, { width, height },
+                compositeWithCoverage(m_cellInstances[i], { gridOriginX, gridOriginY }, rgbaOut, { width, height },
                     static_cast<int>(textScaleForLineAttribute(lineAttribute).widthScale), paint);
             }
         };

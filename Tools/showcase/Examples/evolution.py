@@ -4,20 +4,12 @@
 
 """The evolution of the terminal, played on the terminal.
 
-A title sequence, nine chapters, a credits roll, and a hand-off to the
-shell. One thing travels through every era: HELLO, WORLD, typed on paper in
-1963, drawn by a storage tube's beam, looped on a phosphor screen, surviving
-a selective erase, printed in colour, set in eight scripts, built by a
-shell that talks back, and at last running in a session that outlives the
-window watching it. Each chapter is drawn only with the sequences its era
-brought and the terminal still honours. Every cut is a wipe or a dissolve
-under synchronized output, every card counts its year up in double height,
-and the score is a tracker's piece played by DECPS, the VT520's play-sound
-sequence with Ubiquitty's voices and channels, cued on a timeline under the
-action.
+HELLO, WORLD passes through paper, vector graphics, character cells, Unicode,
+images and persistent sessions. The scenes send terminal control sequences;
+no screenshot or video is substituted for a running terminal.
 
-    python3 evolution.py                       the director's cut, about two minutes
-    python3 evolution.py --cut short           the first-launch cut, under a minute
+    python3 evolution.py                       the full sequence
+    python3 evolution.py --cut short           the short sequence
     python3 evolution.py --chapter tektronix   one chapter (names: --list)
     python3 evolution.py --reduced-motion      cuts for dissolves, stills for fades
     python3 evolution.py --silent              no score
@@ -45,6 +37,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import textwrap
 import zlib
 
 ESC = "\x1b"
@@ -1134,38 +1127,49 @@ def fade_in(s, era, lines, steps=6, hold=0.06):
         s.pause(hold)
 
 
-def headline(s, row, text, colour):
+def dec_headline(s, row, text, colour):
     """A DECDHL pair: `text` double height across two rows, centred, in `colour`."""
     pad = s.dwl_pad(text)
     return (s.line_start(row) + ESC + "#3" + pad + fg(*colour) + BOLD + text + RESET
             + s.line_start(row + 1) + ESC + "#4" + pad + fg(*colour) + BOLD + text + RESET)
 
 
+def proportional_heading(s, row, text, colour, bold=False):
+    cells = (STAGE_W - 4) // 2
+    return (s.at(row, 3) + fg(*colour) + (BOLD if bold else "")
+            + OSC + "66;p=1:c=%d:s=2:h=2;" % cells + text + BEL + RESET)
+
+
+def headline(s, row, text, colour):
+    if s.sized_text:
+        return proportional_heading(s, row, text, colour, bold=True)
+    return dec_headline(s, row, text, colour)
+
+
 def card(s, era, numeral, year, title, subtitle, from_year=None):
-    """A chapter card: the year counts up in double height, the title fades under it."""
+    """A short chapter card with proportional double-height type and a date rail."""
     s.write(HIDE, CLEAR)
-    mid = STAGE_H // 2 - 2
     colours = s.era_colours(era)
-    s.write(s.centred(mid - 2, fg(*lerp(colours.background, colours.foreground, 0.55)) + "CHAPTER " + numeral + RESET))
-    if from_year is not None and not s.reduced:
-        # The odometer: the years between the chapters flick past in the
-        # double-height digits, quickening into the year that stays.
-        span = int(year) - int(from_year)
-        for step in range(1, 9):
-            shown = int(from_year) + round(span * (step / 8.0) ** 1.6)
-            s.write(SYNC_ON, headline(s, mid, str(shown), lerp(colours.background, colours.foreground, 0.35 + 0.65 * step / 8)), SYNC_OFF)
-            s.pause(0.05 + 0.02 * step)
-    steps = 1 if s.reduced else 6
+    start = int(from_year) if from_year and from_year.isdigit() else 1963
+    end = int(year) if year.isdigit() else 2026
+    steps = 1 if s.reduced else 5
     for step in range(1, steps + 1):
         t = step / steps
-        colour = lerp(colours.background, colours.foreground, t)
-        s.write(SYNC_ON, headline(s, mid, year, colours.foreground))
-        # The name a DEC double-width line under the double-height year.
-        s.write(s.line_start(mid + 3), ESC + "#6", s.dwl_pad(title), fg(*colour), BOLD, title, RESET)
-        s.write(s.centred(mid + 5, fg(*lerp(colours.background, colours.foreground, 0.6 * t)) + subtitle + RESET))
-        s.write(SYNC_OFF)
-        s.pause(0.07)
-    s.pause(0.9 if s.short else 1.5)
+        eased = t * t * (3 - 2 * t)
+        colour = lerp(colours.background, colours.foreground, eased)
+        s.write(SYNC_ON, s.centred(5, fg(*lerp(colours.background, colours.foreground, 0.5)) + "CHAPTER " + numeral + RESET))
+        s.write(headline(s, 8, year, colour), headline(s, 11, title, colour))
+        for line, text in enumerate(textwrap.wrap(subtitle, width=38)):
+            if s.sized_text:
+                s.write(proportional_heading(s, 15 + line * 2, text, lerp(colours.background, colours.foreground, 0.65 * eased)))
+            else:
+                s.write(s.centred(15 + line, fg(*colour) + text + RESET))
+        point = round(72 * (start + (end - start) * eased - 1963) / (2026 - 1963))
+        point = max(0, min(72, point))
+        s.write(s.at(22, 4), fg(*lerp(colours.background, colours.foreground, 0.25)), "─" * 73,
+                s.at(22, 4 + point), fg(*colour), "●", RESET, SYNC_OFF)
+        s.pause(0.055)
+    s.pause(0.55 if s.short else 0.9)
     s.write(CLEAR)
 
 
@@ -1187,78 +1191,26 @@ def crt_power_on(s, era):
     s.write(CLEAR)
 
 
-LEADER_DIGITS = {
-    "3": ["11111", "....1", "....1", "01111", "....1", "....1", "11111"],
-    "2": ["11111", "....1", "....1", "11111", "1....", "1....", "11111"],
-    "1": ["..1..", ".11..", "..1..", "..1..", "..1..", "..1..", "11111"],
-}
-
-
-def leader_frame(s, digit, sweep):
-    """One frame of a film leader: the clock-hand sweep through a ringed count."""
-    cx, cy = 40.5, 12.5
-    dark, lit, ring, ink = (34, 34, 34), (92, 92, 92), (150, 150, 150), (240, 240, 240)
-    glyph = LEADER_DIGITS[digit]
-    s.write(SYNC_ON)
-    for row in range(1, STAGE_H + 1):
-        line = [s.at(row, 1)]
-        current = None
-        for col in range(1, STAGE_W + 1):
-            dx, dy = (col - cx) / 2.5, row - cy
-            radius = math.hypot(dx, dy)
-            angle = (math.atan2(dx, -dy)) % 6.2832
-            colour = (0, 0, 0)
-            if radius <= 9.0:
-                colour = lit if angle <= sweep else dark
-                if abs(radius - 9.0) < 0.6 or (abs(dx) < 0.3 and radius > 2.5) or (abs(dy) < 0.3 and radius > 2.5):
-                    colour = ring
-            gx, gy = (col - 36) // 2, row - 9
-            if 0 <= gx < 5 and 0 <= gy < 7 and glyph[gy][gx] == "1":
-                colour = ink
-            if colour != current:
-                line.append(bg(*colour))
-                current = colour
-            line.append(" ")
-        s.write("".join(line))
-    s.write(RESET, SYNC_OFF)
-
-
 def chapter_title(s):
-    """The opening: the name in double height, the title, and a leader counting down."""
+    """A brief opening built from the greeting that travels through the show."""
     s.write(light(s, INK), HIDE, CLEAR)
     if s.tracker and not s.quiet:
         download_drums(s)
-    s.pause(0.3)
     music(s, ("lead", "pad"))
-    steps = 1 if s.reduced else 8
+    steps = 1 if s.reduced else 6
     for step in range(1, steps + 1):
         t = step / steps
-        s.write(SYNC_ON, headline(s, 10, "UBIQUITTY", lerp(INK.background, ACCENT, t)))
-        s.write(s.centred(13, fg(*lerp(INK.background, INK.foreground, 0.45 * t)) + "p r e s e n t s" + RESET), SYNC_OFF)
-        s.pause(0.08)
-    s.pause(2.2 if not s.short else 1.4)
+        s.write(SYNC_ON, headline(s, 9, "HELLO, WORLD", lerp(INK.background, INK.foreground, t)))
+        s.write(s.centred(14, fg(*lerp(INK.background, ACCENT, t)) + "1963 → NOW" + RESET), SYNC_OFF)
+        s.pause(0.055)
+    s.pause(0.7 if s.short else 1.0)
     s.write(CLEAR)
-    for step in range(1, steps + 1):
-        t = step / steps
-        s.write(SYNC_ON, headline(s, 9, "THE TERMINAL", lerp(INK.background, INK.foreground, t)))
-        colour = fg(*lerp(INK.background, INK.foreground, 0.6 * t))
-        if s.sized_text:
-            s.write(s.at(13, 26), colour, OSC + "66;p=1:c=30:h=2;sixty years, one screen" + BEL, RESET, SYNC_OFF)
-        else:
-            s.write(s.centred(13, colour + "sixty years, one screen" + RESET), SYNC_OFF)
-        s.pause(0.08)
-    s.pause(1.4)
-    s.write(CLEAR)
-    if s.short or s.reduced:
-        return
-    for digit in "321":
-        sound(s, [A5], 2, 3)
-        for step in range(1, 13):
-            leader_frame(s, digit, 6.2832 * step / 12)
-            s.pause(0.07)
-    s.write(CLEAR)
-    sound(s, [A6], 3, 3)
-    s.pause(0.3)
+    s.write(headline(s, 9, "THE TERMINAL", INK.foreground))
+    if s.sized_text:
+        s.write(proportional_heading(s, 14, "An evolution in control sequences.", lerp(INK.background, INK.foreground, 0.6)))
+    else:
+        s.write(s.centred(14, DIM + "An evolution in control sequences." + RESET))
+    s.pause(0.8 if s.short else 1.1)
 
 
 def type_out(s, row, col, text, cps, jitter=0.35, clatter=False):
@@ -1294,7 +1246,7 @@ NO_REGION = CSI + "r" + CSI + "?69l"
 
 def chapter_teletype(s):
     cut(s, PAPER, "dissolve")
-    card(s, PAPER, "I", "1963", "THE TELETYPE", "a typewriter with a wire")
+    card(s, PAPER, "I", "1963", "THE TELETYPE", "110 baud. Ten characters a second.")
     s.write(HIDE)
     row = 3
     lines = [
@@ -1453,7 +1405,7 @@ def tek_scene(spin, yaw):
     out = [TEK_SOLID]
     out.extend(tek_lettering(380, 2760, "TEKTRONIX 4014", 40))
     out.append(TEK_LARGE + tek_text(380, 2500, "HELLO, WORLD"))
-    out.append(TEK_MEDIUM + tek_text(380, 2380, "STORAGE TUBE - 1974 - THE PICTURE PERSISTS UNTIL THE PAGE IS ERASED"))
+    out.append(TEK_MEDIUM + tek_text(380, 2380, "1974  /  VECTOR GRAPHICS  /  ERASE THE PAGE TO START AGAIN"))
     out.append(TEK_SHORT + tek_poly([(300, 2300), (3820, 2300)]) + TEK_SOLID)
     out.extend(tek_poly(curve) for curve in globe_curves(*GLOBE, spin=spin))
     out.append(TEK_LARGE + tek_text(900, 380, "GLOBE"))
@@ -1469,7 +1421,7 @@ def chapter_tektronix(s):
     cut(s, PHOSPHOR, "iris")
     # The tube is lit in the same phosphor as the window around it.
     s.write(OSC + "16;" + rgb_spec(*PHOSPHOR.background) + ST, OSC + "15;" + rgb_spec(*PHOSPHOR.foreground) + ST)
-    card(s, PHOSPHOR, "II", "1974", "TEKTRONIX 4014", "a storage tube draws in vectors, and remembers them", from_year="1963")
+    card(s, PHOSPHOR, "II", "1974", "TEKTRONIX 4014", "A beam draws the picture.", from_year="1963")
     s.queue_ahead(chapter_tektronix)
     s.write(TEK_ENTER, TEK_PAGE, TEK_SOLID)
     s.in_tek = True
@@ -1482,7 +1434,7 @@ def chapter_tektronix(s):
     # largest and its smallest character sizes; the beam letters them.
     s.write(TEK_LARGE, tek_text(380, 2500, "HELLO, WORLD"))
     sound(s, [E6, A6], 2, 2)
-    s.write(TEK_MEDIUM, tek_text(380, 2380, "STORAGE TUBE - 1974 - THE PICTURE PERSISTS UNTIL THE PAGE IS ERASED"))
+    s.write(TEK_MEDIUM, tek_text(380, 2380, "1974  /  VECTOR GRAPHICS  /  ERASE THE PAGE TO START AGAIN"))
     s.write(TEK_SHORT, tek_poly([(300, 2300), (3820, 2300)]))
     s.pause(0.4)
 
@@ -1515,16 +1467,14 @@ def chapter_tektronix(s):
     # commits the frame drawn since the last one and clears the tube for
     # the next, so the globe and the cube turn while everything around
     # them is redrawn in place.
-    frames = 8 if s.reduced else (14 if s.short else 24)
+    frames = 1 if s.reduced else (24 if s.short else 40)
     for frame in range(1, frames + 1):
-        s.write(TEK_PAGE, tek_scene(6.2832 * frame / frames / 4, 0.55 + 6.2832 * frame / frames))
-        s.pause(0.08)
-    s.write(TEK_PAGE)
-    s.pause(1.6)
+        s.write(TEK_PAGE, tek_scene(1.57 * (0.5 - 0.5 * math.cos(math.pi * frame / frames)), 0.55 + 6.2832 * (0.5 - 0.5 * math.cos(math.pi * frame / frames))))
+        s.pause(0.055)
+    s.pause(0.6)
     # The page is erased, the way a storage tube ends a picture, and the
     # tube is left before the next era's curtain closes over the grid.
     s.write(TEK_PAGE)
-    s.pause(0.4)
     s.write(TEK_EXIT, OSC + "115" + ST, OSC + "116" + ST)
     s.in_tek = False
 
@@ -1580,7 +1530,7 @@ def wrap(text, width):
 
 def chapter_vt100(s):
     cut(s, PHOSPHOR, "curtain")
-    card(s, PHOSPHOR, "III", "1978", "VT100", "the screen learns to erase", from_year="1974")
+    card(s, PHOSPHOR, "III", "1978", "VT100", "Move the cursor. Rewrite the screen.", from_year="1974")
     sound(s, [C5], 12, 1)
     crt_power_on(s, PHOSPHOR)
     music(s, ("kick", "hat", "snare", "bass"))
@@ -1681,7 +1631,7 @@ def decdld(glyphs):
 
 def chapter_vt220(s, pictures):
     cut(s, AMBER, "slide")
-    card(s, AMBER, "IV", "1983", "VT220 · VT240 · VT320", "soft fonts, pictures, a status line, and erase that spares", from_year="1978")
+    card(s, AMBER, "IV", "1983", "VT220 · VT240 · VT320", "Download a font. Send a picture.", from_year="1978")
     s.write(HIDE)
     music(s, ("kick", "hat", "snare", "bass", "stab"))
     s.write(CSI + "2$~", CSI + "1$}", sgr(7), "  VT320   HOST-WRITABLE STATUS LINE   DECSSDT 2   ".ljust(s.columns), RESET, CSI + "0$}")
@@ -1747,7 +1697,7 @@ def chapter_vt220(s, pictures):
 
 def chapter_xterm(s):
     cut(s, THEME, "dissolve")
-    card(s, THEME, "V", "1996", "XTERM", "colour, a title, and a mouse on the Unix desktop", from_year="1983")
+    card(s, THEME, "V", "1996", "XTERM", "Colour. Mouse input. A window title.", from_year="1983")
     music(s, ("kick", "hat", "ohat", "snare", "bass", "arp"))
     s.write(HIDE, CSI + "22;0t", OSC + "2;xterm - the evolution of the terminal" + ST)
     s.write(s.at(2, 4), DIM, "16 COLOURS ", RESET, "    ")
@@ -1781,10 +1731,10 @@ def chapter_xterm(s):
     sound(s, [E6, A6], 2, 2)
     s.pause(0.8)
 
-    s.write(s.at(20, 4), DIM, "MOUSE", RESET, "   click anywhere: the terminal says where  ", DIM, "xterm mouse 1000 · SGR 1006", RESET)
+    s.write(s.at(20, 4), DIM, "MOUSE", RESET, "   click a cell to mark it  ", DIM, "xterm mouse 1000 · SGR 1006", RESET)
     s.write(CSI + "?1000h", CSI + "?1006h")
     clicks = 0
-    for event in s.events(6.0 if s.is_live else 0.6):
+    for event in s.events(4.0):
         if event[0] != "mouse":
             continue
         button, col, row, pressed = event[1:]
@@ -1792,11 +1742,9 @@ def chapter_xterm(s):
             continue
         clicks += 1
         sound(s, [C6], 2, 2)
-        s.write(CSI + "%d;%dH" % (row, col), sgr(1, 33), "✦", RESET)
+        s.write(CSI + "%d;%dH" % (row, col), sgr(1, 33), "✦︎", RESET)
         s.write(s.at(22, 4), CSI + "K", "button %d at row %d, column %d" % (button, row - s.row0, col - s.col0))
-    if not s.is_live:
-        s.write(s.at(21, 70), sgr(1, 33), "✦", RESET, s.at(22, 4), "button 0 at row 21, column 70")
-    elif not clicks:
+    if s.is_live and not clicks:
         s.write(s.at(22, 4), DIM, "no click; the mouse is yours again", RESET)
     s.write(CSI + "?1006l", CSI + "?1000l")
     s.pause(1.0)
@@ -1832,7 +1780,7 @@ HELLO_SCRIPTS = [
 
 def chapter_unicode(s):
     cut(s, THEME, "curtain")
-    card(s, THEME, "VI", "2003", "UNICODE", "hello, world in every script; the grid still counts cells", from_year="1996")
+    card(s, THEME, "VI", "2003", "UNICODE", "One grid. Many writing systems.", from_year="1996")
     s.write(HIDE)
     label = lambda row, text: s.at(row, 3) + DIM + text.ljust(10) + RESET
     music(s, ("kick", "hat", "ohat", "snare", "bass", "arp", "lead", "fills"))
@@ -1840,7 +1788,7 @@ def chapter_unicode(s):
     s.write(label(2, "hello"))
     s.pause(0.6)
     rows = [
-        (5, "emoji", "😀 🚀 🎨 🦉 🌊   👩‍💻 👨‍👩‍👧   🇺🇦 🇯🇵   👍🏽 ✌🏿   ☂️ ☂︎"),
+        (5, "emoji", "😀 🚀 🎨 🦉 🌊   👩‍💻 👨‍👩‍👧   🇨🇦 🇧🇷 🇯🇵 🇮🇸   👍🏽 ✌🏿   ☂️ ☂︎"),
         (7, "marks", "é ñ ộ ǚ ą̈ ậ   Z̤̈a̘̼l̯̗g̙̙o   ∑ ∫ √ ∞ ≠ ≤ ≥ ⌈x⌉"),
     ]
     for row, name, text in rows:
@@ -1861,7 +1809,7 @@ def chapter_unicode(s):
     seg = lambda colour, text: bg(*colour) + text
     s.write(label(15, "powerline"), fg(40, 40, 60), seg((40, 40, 60), " ~/hello "), bg(90, 110, 200), fg(40, 40, 60), "", fg(255, 255, 255),
             " main ", bg(60, 160, 100), fg(90, 110, 200), "", fg(20, 40, 20), " ✓ ", RESET, fg(60, 160, 100), "", RESET,
-            "   ", DIM, "wedges the terminal draws itself", RESET)
+            "   ", DIM, "cell-aligned separators", RESET)
     s.pause(1.0)
     s.write(label(18, "braille"))
     frames = 12 if s.reduced else 48
@@ -1874,14 +1822,14 @@ def chapter_unicode(s):
         if step % 12 == 0:
             sound(s, [C6 + (step // 12) * 2], 2, 1)
         s.pause(0.04)
-    s.write(s.at(22, 13), DIM, "two by four dots per cell, drawn under synchronized output (2026h)", RESET)
+    s.write(s.at(22, 13), DIM, "8 dots per cell · synchronized frames", RESET)
     s.pause(1.4)
 
 
 def chapter_truecolor(s):
     """A plasma on the whole stage, each cell two pixels tall."""
     cut(s, THEME, "iris")
-    card(s, THEME, "VII", "2012", "TRUECOLOR", "sixteen million colours, two to a cell", from_year="2003")
+    card(s, THEME, "VII", "2012", "TRUECOLOR", "24 bits. No palette.", from_year="2003")
     s.write(HIDE)
     palette = [hsv(i / 256.0, 0.85, 1.0) for i in range(256)]
     music(s)
@@ -1910,7 +1858,7 @@ def chapter_truecolor(s):
 
 def chapter_pictures(s, pictures):
     cut(s, THEME, "slide")
-    card(s, THEME, "VIII", "2013", "PICTURES IN THE GRID", "inline images, animation, and a shell that talks back", from_year="2012")
+    card(s, THEME, "VIII", "2013", "PICTURES IN THE GRID", "Pixels beside text.", from_year="2012")
     music(s, ("pad", "arp", "lead", "build"))
     s.write(HIDE)
     width, height, rgba = pictures.sphere
@@ -1927,9 +1875,16 @@ def chapter_pictures(s, pictures):
         s.pause(0.05)
     sound(s, [C6, E6, G6], 1, 2)
     s.pause(0.6)
+    if not s.reduced:
+        for step in range(1, 13):
+            t = (1 - math.cos(math.pi * step / 12)) / 2
+            crop_width, crop_height = round(width * (1 - 0.28 * t)), round(height * (1 - 0.28 * t))
+            s.write(s.at(3, 30), kitty_place(KITTY_JULIA, 48, 12,
+                    ((width - crop_width) // 2, (height - crop_height) // 2, crop_width, crop_height)))
+            s.pause(0.045)
     width, height, frames = pictures.spinner
     s.write(s.at(10, 4), kitty_animation(KITTY_SPINNER, width, height, frames, 6, 3, 90))
-    s.write(s.at(13, 4), DIM, "frames the terminal", RESET, s.at(14, 4), DIM, "advances itself", RESET)
+    s.write(s.at(13, 4), DIM, "8 frames. One image.", RESET, s.at(14, 4), DIM, "Playback stays in Core.", RESET)
     s.pause(1.0)
 
     prompt = lambda row, command: (s.at(row, 4) + OSC + "133;A" + ST + fg(120, 200, 255) + "❯ " + RESET + OSC + "133;B" + ST + command + OSC + "133;C" + ST)
@@ -1952,9 +1907,9 @@ def chapter_pictures(s, pictures):
     s.pause(1.0)
     s.write(prompt(21, "make test"))
     s.pause(0.4)
-    s.write(s.at(22, 4), fg(255, 100, 100), "1 of 40 tests failed", RESET, OSC + "133;D;2" + ST)
+    s.write(s.at(22, 4), fg(90, 200, 120), "40 tests passed", RESET, OSC + "133;D;0" + ST)
     s.pause(0.5)
-    s.write(s.at(23, 4), DIM, "the gutter marks each prompt, red where it failed; the tab showed progress", RESET)
+    s.write(s.at(23, 4), DIM, "Command boundaries · exit status · progress", RESET)
     s.pause(1.8)
     s.write(OSC + "21337;indicator=;status=;status-color=" + BEL)
 
@@ -1998,7 +1953,7 @@ def chapter_typography(s):
     first plate.
     """
     cut(s, THEME, "curtain")
-    card(s, THEME, "IX", "TYPE", "TYPOGRAPHY", "a specimen folio, on the same eighty columns")
+    card(s, THEME, "IX", "TYPE", "TYPOGRAPHY", "Glyphs, baselines and proportions.")
     s.write(HIDE)
     music(s)
     colours = s.era_colours(THEME)
@@ -2012,7 +1967,7 @@ def chapter_typography(s):
     # ---- Plate I: sizes, weights and mathematics ----------------------------
     s.write(masthead(s, "SIZES, WEIGHTS & MATH", "PLATE I", colours))
     s.pause(0.3)
-    rows = [headline(s, 4, "#3 #4  double height, Aa Bb Gg 0123 &", colours.foreground)]
+    rows = [dec_headline(s, 4, "#3 #4  double height, Aa Bb Gg 0123 &", colours.foreground)]
     dwl = "#6  double width, two cells a glyph"
     rows.append(s.line_start(6) + ESC + "#6" + s.dwl_pad(dwl) + fade(0.7) + dwl + RESET)
     row = 8
@@ -2053,13 +2008,13 @@ def chapter_typography(s):
                 + "   " + sgr("4:3", "58;5;27") + "azure curl" + RESET)
     rows.append(label(8, "ideogram") + sgr(60) + "下線" + sgr(65) + " under   " + sgr(61) + "二重" + sgr(65) + " double   " + sgr(62) + "上線" + sgr(65)
                 + " over   " + sgr(64) + "強調" + sgr(65) + " stress   " + note("SGR 60 to 64"))
-    rows.append(label(10, "link") + link("https://github.com/ubiquitty/ubiquitty", "an OSC 8 hyperlink, quietly ruled"))
+    rows.append(label(10, "link") + link("https://github.com/ubiquitty/ubiquitty", "github.com/ubiquitty/ubiquitty"))
     ansi = "".join(CSI + "4%dm  " % i + CSI + "49m" for i in range(8)) + "  " + "".join(CSI + "10%dm  " % i + CSI + "49m" for i in range(8))
     rows.append(label(12, "ansi") + ansi + "  " + note("SGR 40 to 47, 100 to 107"))
     rows.append(label(13, "cube 16-79") + "".join(CSI + "48;5;%dm " % (16 + i) + CSI + "49m" for i in range(64)))
     rows.append(label(14, "greys") + "".join(CSI + "48;5;%dm  " % (232 + i) + CSI + "49m" for i in range(24)))
     rows.append(label(15, "truecolor") + "".join(bg(30 + i * 3, 50 + i * 2, 235 - i * 3) + " " for i in range(64)) + RESET)
-    rows.append(label(17, "blink") + sgr(5) + "slow" + sgr(25) + "   " + sgr(6) + "rapid" + sgr(25) + "   " + note("SGR 5 and 6, where the window blinks"))
+    rows.append(label(17, "blink") + sgr(5) + "slow" + sgr(25) + "   " + sgr(6) + "rapid" + sgr(25) + "   " + note("SGR 5 / 6"))
     rows.append(label(19, "colour") + "".join(CSI + "3%dm" % i + "text " for i in range(8)) + RESET + "  " + note("SGR 30 to 37"))
     reveal(s, rows, hold)
     s.pause(reading)
@@ -2342,8 +2297,8 @@ def scene_persistence(s):
         frame("client B · attached to the same session", (120, 255, 160), [prompt] + lines_now(),
               "client B reattached: the gap's lines are all here")
     s.pause(0.3)
-    s.write(s.at(box_top + box_height + 1, box_left), BOLD, "same session, same scrollback, nothing lost.", RESET)
-    s.write(s.at(box_top + box_height + 2, box_left), DIM, "ubiquitty-host keeps the Core; windows and agents are its clients", RESET)
+    s.write(s.at(box_top + box_height + 1, box_left), BOLD, "Reattached. The build kept running.", RESET)
+    s.write(s.at(box_top + box_height + 2, box_left), DIM, "The host owns the session. Clients can leave.", RESET)
     s.write(s.at(box_top + box_height + 3, box_left), DIM, where, RESET)
     s.pause(2.0)
     if private:
@@ -2368,10 +2323,10 @@ def dialog(s, top, left):
     fits = lambda col, cells: col + cells - 1 <= STAGE_W
     if s.sized_text:
         run = proportional
-        body = ("Text set in the system face, inside", "the cell grid, measured and placed.")
+        body = ("Proportional text inside", "a fixed cell grid.")
     else:
         run = lambda text, cells, align=0: (text.center(cells) if align == 2 else text.ljust(cells))[:cells]
-        body = ("The tour has a minute to go, or", "the window is yours right now.")
+        body = ("A session can outlive", "the window showing it.")
     if fits(left + 2, 20):
         s.write(s.at(top + 1, left + 2), BOLD, run("Welcome to Ubiquitty", 20), RESET)
     if fits(left + 2, 32):
@@ -2420,51 +2375,36 @@ def dialog_answer(s, top, left, seconds):
 
 
 def chapter_ubiquitty(s, pictures):
-    frames = rain_frames(76 if not s.short else 56)
     cut(s, THEME, "dissolve")
-    card(s, THEME, "X", "2026", "UBIQUITTY", "one terminal session, wherever the work runs", from_year="2013")
+    card(s, THEME, "X", "2026", "UBIQUITTY", "A session survives its windows.", from_year="2013")
     s.write(HIDE)
     music(s, CLIMAX)
-    # The rain, paced: frames the eye can follow.
-    paced = 6 if s.reduced else (16 if s.short else 36)
-    for rows in frames[:paced]:
+    frames = rain_frames(1 if s.reduced else (24 if s.short else 36))
+    for rows in frames:
         s.write(SYNC_ON)
         for index, line in enumerate(rows):
             s.write(s.at(index + 1, 1), line)
         s.write(SYNC_OFF)
-        s.pause(0.06)
-    # Then the burst: forty frames handed over at once, and a cursor report
-    # asked for behind them. The reply comes back only after the terminal
-    # has drained every byte before it, which is what the clock measures.
-    burst_frames = frames[paced:]
-    burst = "".join(SYNC_ON + "".join(s.at(index + 1, 1) + line for index, line in enumerate(rows)) + SYNC_OFF for rows in burst_frames)
-    drained = None
-    if s.is_live:
+        s.pause(0.05)
+    cells = len(frames) * STAGE_W * STAGE_H
+    measure = "%d synchronized frames" % len(frames)
+    if s.is_live and not s.reduced:
+        burst_frames = rain_frames(16, seed=2027)
+        burst = "".join(SYNC_ON + "".join(s.at(index + 1, 1) + line for index, line in enumerate(rows)) + SYNC_OFF for rows in burst_frames)
         started = time.monotonic()
         s.write(burst)
         if s.query(CSI + "6n", rb"\x1b\[\d+;\d+R", timeout=5.0):
-            drained = time.monotonic() - started
-    else:
-        s.write(burst)
-    # The reveal: the last frame stays, and the numbers land on it.
-    cells = len(burst_frames) * STAGE_W * STAGE_H
-    measure = "drained in %d ms" % round(drained * 1000) if drained else "drained in one breath"
+            measure = "%s bytes / %d ms round trip" % (format(len(burst.encode("utf-8")), ","), round((time.monotonic() - started) * 1000))
     plate = bg(0, 0, 0) + fg(235, 235, 235)
-    s.write(SYNC_ON)
-    s.write(s.centred(11, plate + BOLD + "   %s cells  ·  %s bytes  ·  %s   " % (format(cells, ","), format(len(burst.encode("utf-8")), ","), measure) + RESET))
-    s.write(s.centred(12, plate + DIM + "  %d frames handed over at once, drawn faster than one could be seen  " % len(burst_frames) + RESET))
-    s.write(SYNC_OFF)
-    sound(s, [A6, E6, A5], 2, 2)
-    s.pause(1.8)
-    last = burst_frames[-1]
-    s.write(SYNC_ON, s.at(11, 1), last[10], s.at(12, 1), last[11], SYNC_OFF)
-    cut(s, THEME, "dissolve", hold=0.04)
+    s.write(SYNC_ON, s.centred(12, plate + "  " + measure + "  " + RESET), SYNC_OFF)
+    s.pause(0.8)
+    cut(s, THEME, "dissolve", hold=0.03)
 
     steps = 1 if s.reduced else 6
     for step in range(1, steps + 1):
         t = step / steps
         s.write(SYNC_ON, headline(s, 1, "UBIQUITTY", lerp(s.theme.background, ACCENT, t)))
-        s.write(s.centred(3, fg(*lerp(s.theme.background, s.theme.foreground, 0.6 * t)) + "one terminal session, wherever the work runs" + RESET), SYNC_OFF)
+        s.write(s.centred(3, fg(*lerp(s.theme.background, s.theme.foreground, 0.6 * t)) + "A session survives its windows." + RESET), SYNC_OFF)
         s.pause(0.06)
     s.pause(0.4)
 
@@ -2483,7 +2423,7 @@ def chapter_ubiquitty(s, pictures):
         s.write(SYNC_OFF)
         s.pause(0.05)
     s.write(CSI + "?7h")
-    s.write(s.at(5, 4), DIM, "throughput", RESET, "   %s cells in %d frames, %s" % (format(cells, ","), len(burst_frames), measure))
+    s.write(s.at(5, 4), DIM, "frames", RESET, "       " + measure)
     if s.sized_text:
         s.write(s.at(6, 4), DIM, "sized text", RESET, "   ", sized("2x", 2), " ", sized("3x", 3), "   ", DIM, "OSC 66 s=2 and s=3", RESET)
     s.write(s.at(10, 4), DIM, "presentation", RESET, "   ", CSI + "76:1m", "☂ ☀ ✈ ♥ ★", CSI + "76m", "  colour")
@@ -2492,7 +2432,7 @@ def chapter_ubiquitty(s, pictures):
     s.write(s.at(14, 19), DIM, "mode 7401 shows a lock", RESET)
     s.write(s.at(17, 4), DIM, "session", RESET, "      ", DIM, where, RESET)
     sound(s, [E5], 1, 2)
-    answer = dialog_answer(s, 8, 43, 6.0) if s.is_live else None
+    answer = dialog_answer(s, 8, 43, 4.0)
     if not s.is_live:
         s.pause(0.4)
     s.write(CSI + "?7401l")
@@ -2509,11 +2449,11 @@ def chapter_ubiquitty(s, pictures):
     s.write(s.at(20, 4), DIM, "detection", RESET, "    DECRQM ?7402 → ", verdict)
     sound(s, [C6, G6], 3, 2)
     s.write(s.at(21, 4), DIM, "hyperlinks", RESET, "   ", link("https://github.com/ubiquitty/ubiquitty", sgr(4) + "github.com/ubiquitty/ubiquitty" + RESET),
-            "   ", DIM, "OSC 8: ⌘-click opens it", RESET)
+            "   ", DIM, "OSC 8 hyperlink", RESET)
     if s.short:
         s.pause(1.6)
         return
-    s.write(s.at(23, 4), DIM, "fullscreen", RESET, "   mode 7402 next: content edge to edge, no padding, for a moment")
+    s.write(s.at(23, 4), DIM, "fullscreen", RESET, "   7402 · image fills the viewport")
     s.pause(2.2)
 
 
@@ -2528,69 +2468,30 @@ def chapter_fullscreen(s, pictures):
 
 
 CREDITS = [
-    ("THE TERMINAL", 1.0), ("sixty years, one screen", 0.6), ("", 0), ("", 0),
-    ("CAST, IN ORDER OF APPEARANCE", 0.5), ("", 0),
-    ("Teletype Model 33 ASR  ·  1963", 1.0), ("Tektronix 4014  ·  1974", 1.0), ("DEC VT100  ·  1978", 1.0),
-    ("DEC VT220, VT240, VT320  ·  1983", 1.0), ("xterm  ·  1996", 1.0), ("Unicode and UTF-8  ·  2003", 1.0),
-    ("truecolor  ·  2012", 1.0), ("inline pictures  ·  2013", 1.0), ("Ubiquitty and ubiquitty-host  ·  2026", 1.0), ("", 0), ("", 0),
-    ("SEQUENCES", 0.5), ("", 0),
-    ("OSC 10, 11, 12  ·  DECDHL, DECDWL  ·  SGR 1, 4, 5, 7  ·  BEL", 0.8),
-    ("DECSET 38  ·  GS vectors  ·  US alpha text  ·  PAGE  ·  line styles", 0.8),
-    ("DEC special graphics  ·  DECSTBM, DECSLRM  ·  DA1, CPR  ·  DECSCUSR", 0.8),
-    ("DECDLD  ·  DECSCA, DECSEL  ·  DECSSDT, DECSASD  ·  Sixel", 0.8),
-    ("DECFRA, DECCRA, DECCARA, DECSACE", 0.8),
-    ("SGR 38;5  ·  OSC 2  ·  XTWINOPS 22, 23  ·  DECSET 1000, 1006", 0.8),
-    ("UAX-29 clusters  ·  braille  ·  box drawing  ·  SGR 4:3, 58  ·  DECSET 2026", 0.8),
-    ("SGR 38;2  ·  OSC 1337  ·  kitty graphics and animation", 0.8),
-    ("OSC 133  ·  OSC 9;4  ·  OSC 21337  ·  OSC 8  ·  DSR", 0.8),
-    ("the Sync protocol  ·  ubiquitty-host  ·  ubq new, send, read", 0.8),
-    ("OSC 66  ·  SGR 1:n  ·  SGR 76  ·  DECRQM", 0.8),
-    ("DECSET 7401, 7402  ·  OSC 7402  ·  CSI > 9 u", 0.8),
-    ("", 0), ("", 0),
-    ("MUSIC", 0.5), ("", 0),
-    ("Beethoven: Ode to Joy, arranged for DECPS voices and a sampled kit,", 0.8),
-    ("a square bass, saw arpeggios, a sine lead, eight channels of DECPS", 0.8),
-    ("", 0), ("", 0), ("", 0),
-    ("A  U B I Q U I T T Y  P R O D U C T I O N", 1.0),
-    ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0),
+    ("CONTROL SEQUENCES", 0.5),
+    ("DEC · ECMA-48 · Unicode · xterm · Kitty", 1.0),
+    ("", 0),
+    ("evolution.py", 1.0),
+    ("Rendered by Ubiquitty", 0.6),
 ]
 
 
 def chapter_credits(s):
-    """The roll: lines rise through a four-sided region, the track under them."""
-    cut(s, INK, "iris")
-    s.write(HIDE, CLEAR, scroll_region(s, 1, STAGE_H))
+    """A compact source card at the end of the sequence."""
+    cut(s, INK, "slide", hold=0.03)
     colours = s.era_colours(INK)
-    music(s)
-    step = 7 * BAR / len(CREDITS)
-    for text, weight in CREDITS:
-        s.write(s.at(STAGE_H, 1), CSI + "K")
+    for index, (text, weight) in enumerate(CREDITS):
         if text:
-            s.write(s.centred(STAGE_H, fg(*lerp(colours.background, colours.foreground, weight)) + (BOLD if weight == 1.0 else "") + text + RESET))
-        s.write(s.at(STAGE_H, 1), ESC + "D")
-        s.pause(step)
-    s.write(NO_REGION)
-    s.pause(0.8)
+            s.write(s.centred(7 + index * 2, fg(*lerp(colours.background, colours.foreground, weight)) + text + RESET))
+            s.pause(0.1)
+    s.pause(1.0)
 
 
 def chapter_finale(s):
-    """The hand-off: on the main screen, so it stays above the first prompt."""
-    s.write(light(s, THEME), CSI + "?1049l", SHOW, CSI + "0 q", CSI + "H", CLEAR)
-    plate = bg(55, 55, 65) + fg(136, 136, 190)
-    s.write(ESC + "#3", sgr(1, 36), "  UBIQUITTY", RESET, "\r\n")
-    s.write(ESC + "#4", sgr(1, 36), "  UBIQUITTY", RESET, "\r\n")
-    s.write("  ", plate, " sixty years of terminals, and every one of them still speaks here ", RESET, "\r\n\r\n")
-    s.write("  HELLO, WORLD went from paper to a storage tube to a screen, through colour,\r\n")
-    s.write("  Unicode and pictures, and ended in a session that outlives the window watching\r\n")
-    s.write("  it. This terminal honours every sequence of every era it passed through.\r\n\r\n")
-    s.write(BOLD, "Explore:", RESET, "  ", sgr(36), link("https://github.com/ubiquitty/ubiquitty", "[ Documentation ]"), RESET)
-    if s.is_ubiquitty:
-        for action, label_text in (("connect", "⌘⇧K Connect"), ("settings", "Settings")):
-            s.write("  ", sgr(36), link("ubiquitty:action/" + action, "[ " + label_text + " ]"), RESET)
-        s.write("\r\n          ", sgr(36), link("ubiquitty:action/shell-integration", "[ Install shell integration ]"), RESET)
-    if s.short:
-        s.write("\r\n\r\n", BOLD, "Watch the full history:", RESET, "  ", DIM, "python3 Tools/showcase/Examples/evolution.py --cut full", RESET)
-    s.write("\r\n\r\n", DIM, "  This window drops into your shell now.", RESET, "\r\n\r\n")
+    """A closing card, with playback controls left to the player."""
+    s.write(light(s, THEME), CSI + "?1049l", HIDE, CSI + "H", CLEAR)
+    s.write(headline(s, 10, "UBIQUITTY", (136, 136, 190)))
+    s.write(s.centred(15, DIM + "ubiquitty.org" + RESET))
     music(s, ("crash", "kick", "hat", "snare", "bass", "arp", "lead", "pad"), coda=FINAL)
     s.pause(4.0 if not s.quiet else 0.5)
     # The coda is sent whole before the hand-off; it rings out after.
