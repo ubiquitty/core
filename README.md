@@ -5,7 +5,7 @@
 
 **The terminal engine and persistent multiplexer behind Ubiquitty.**
 
-Embed the C++23 engine, build your own terminal UI, or keep shells running in
+Embed the portable engine, build your own terminal UI, or keep shells running in
 `ubiquitty-host` and attach from your apps, scripts and agents. Core owns the
 terminal model, parser, input encoding, screen history and render plan. It needs
 no window system, GPU or UI toolkit. The host enforces capability tokens, attach
@@ -44,7 +44,7 @@ Ubiquitty is three repositories. Each depends only on the ones below it:
 
 ## What this repository holds
 
-**libubiquitty** is the terminal itself: a C++23 library with no window-system,
+**libubiquitty** is the terminal itself: a portable library with no window-system,
 GPU or UI-toolkit dependency. It parses a program's bytes, keeps the screen,
 history, modes and selection, encodes keys and mouse input, answers the
 program's queries, and produces the render plan (resolved text runs, fills and
