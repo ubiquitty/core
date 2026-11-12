@@ -436,7 +436,7 @@ TEST(pinsAndSearchAgreeWithTheOnePassAcrossTheFinish)
 // Both common geometries with a scrollback limit small enough that the rewrapped rows are evicted.
 TEST(aSlicedRewrapEqualsTheOnePassAtBothGeometriesWithASmallLimit)
 {
-    for (const auto geometry : { std::pair { 24, 80 }, std::pair { 50, 200 } }) {
+    for (const auto& geometry : { std::pair { 24, 80 }, std::pair { 50, 200 } }) {
         for (const int limit : { 60, 150 }) {
             const auto build = [&](Ubiquitty::Terminal& t) {
                 Ubiquitty::hardReset(t);

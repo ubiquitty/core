@@ -647,7 +647,8 @@ void LineStore::appendDefaultASCII(std::span<const std::uint8_t> text, int lengt
         // a block without one takes the row expanded, as every row was.
         if (block.text) [[likely]] {
             std::uint8_t* bytes = block.text.get() + (destination - block.base.get());
-            std::memcpy(bytes, text.data(), text.size());
+            if (!text.empty())
+                std::memcpy(bytes, text.data(), text.size());
             std::memset(bytes + text.size(), 0, static_cast<std::size_t>(length) - text.size());
             return true;
         }

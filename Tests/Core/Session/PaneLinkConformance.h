@@ -98,7 +98,7 @@ struct PaneLinkRecorder final : Ubiquitty::Session::PaneLinkObserver {
     int factsChanges = 0;
 };
 
-/// The visible grid a view lends, as text, one line per row.
+/// The visible grid a view lends, as text, joining soft-wrapped rows.
 ///
 /// - Parameter view: The view.
 /// - Returns: The text, empty when the view lends no terminal.
@@ -114,7 +114,8 @@ inline std::string paneViewText(const Ubiquitty::Session::PaneView& view)
             const std::uint32_t codePoint = cell && cell->codePoint ? cell->codePoint : ' ';
             text.push_back(codePoint >= 0x20 && codePoint < 0x7F ? static_cast<char>(codePoint) : '?');
         }
-        text.push_back('\n');
+        if (!Ubiquitty::Screen::visibleRowWrapped(&terminal, 0, row))
+            text.push_back('\n');
     }
     return text;
 }

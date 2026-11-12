@@ -497,6 +497,21 @@ private:
 
 } // namespace
 
+// Shell prompts can put an echoed marker across a soft wrap, but an explicit
+// newline still separates two pieces of output.
+TEST(thePaneViewTextJoinsOnlySoftWrappedRows)
+{
+    Ubiquitty::Terminal terminal;
+    Ubiquitty::hardReset(terminal);
+    Ubiquitty::resize(terminal, 4, 8);
+    Ubiquitty::processBytes(&terminal, "prompt: pane-link\r\nnext");
+    const std::string text = UbiquittyTest::paneViewText({ .terminal = &terminal });
+    const std::size_t newline = text.find('\n');
+    REQUIRE(newline != std::string::npos);
+    CHECK(text.substr(0, newline).find("prompt: pane-link") != std::string::npos);
+    CHECK(text.substr(newline + 1).starts_with("next"));
+}
+
 // The link a local terminal's pane is drawn through.
 TEST(theInProcessLinkKeepsThePaneLinkContract)
 {

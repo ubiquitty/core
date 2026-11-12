@@ -1485,6 +1485,15 @@ TEST(testDefaultASCIIRowsExpandOnFirstRead)
     }
 }
 
+TEST(testDefaultASCIIAnEmptySpanStoresBlankCells)
+{
+    LineStore s;
+    s.init(8);
+    s.appendDefaultASCII({}, 8, 0, 0, false, false);
+    CHECK_EQ(s.count(), 1);
+    CHECK(asciiRowMatches(s.at(0), {}, 8));
+}
+
 TEST(testWritableAtExpandsACompactRowBeforeItIsWritten)
 {
     LineStore s;
