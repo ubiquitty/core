@@ -384,7 +384,7 @@ TEST(physicalOperationsRefuseBeforeFreezingOrConsumingAnyOwner)
     refuses();
     CHECK_EQ(client.pendingClipboardRequests.front(), 41u);
     client.pendingClipboardRequests.clear();
-    client.terminationCall.emplace();
+    client.terminationCall = Access::Client::TerminationCall {};
     refuses();
     CHECK(client.terminationCall.has_value());
     client.terminationCall.reset();
