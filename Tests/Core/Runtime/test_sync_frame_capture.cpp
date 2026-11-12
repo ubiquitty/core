@@ -3346,6 +3346,112 @@ TEST(aTekFramesCaptureCarriesTheTube)
     CHECK_EQ(background.red, 0x1616);
 }
 
+// A menu replaces an animated frame with one PAGE and then waits for input.
+// The settled frame must carry the menu without another PAGE or a frontend
+// asking for a storage-tube commit.
+TEST(aQuietTekMenuReplacesThePreviousFrameWithoutAnotherPage)
+{
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    TerminalSession& session = *fixture.session;
+    session.setSyncFrameCaptureGeometry(testGeometry());
+    fixture.stream->toRead += tekEnterAndDraw;
+    static_cast<void>(session.drain());
+    releaseFrameHeldForQuiet(session);
+    static_cast<void>(TakenFrame(session.takeSyncFrame()));
+
+    fixture.stream->toRead += "\x1b\x0cMENU\x1f";
+    static_cast<void>(session.drain());
+    releaseFrameHeldForQuiet(session);
+    static_cast<void>(TakenFrame(session.takeSyncFrame()));
+    const FrameAsk menu = askForFrame(session, {});
+    REQUIRE(menu.frame != nullptr);
+    const Tek::PrimitiveSpan primitives = menu.frame->tekPrimitives();
+    REQUIRE(primitives.size() == 4u);
+    CHECK(primitives[0].kind == Tek::PrimitiveKind::Glyph);
+    CHECK_EQ(primitives[0].codePoint, static_cast<std::uint32_t>('M'));
+}
+
+// A display tick may not have taken the animation's last capture before
+// the menu arrives. The final menu must supersede that queued capture.
+TEST(aQuietTekMenuSupersedesAnUntakenCapture)
+{
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    TerminalSession& session = *fixture.session;
+    session.setSyncFrameCaptureGeometry(testGeometry());
+    fixture.stream->readMicroseconds = 10'000;
+    fixture.stream->toRead += tekEnterAndDraw;
+    CHECK(session.drain().end == Runtime::DrainPassEnd::TimeBudget);
+    fixture.stream->readMicroseconds = 0;
+    REQUIRE(session.syncFramePublicationCount() > 0u);
+    releaseFrameHeldForQuiet(session);
+    withSessionModel(session, [](Terminal& terminal) {
+        {
+            auto paint = terminal.grid->beginPaint();
+            PaintRun run {};
+            while (paint.nextDirtyRun(&run))
+                paint.ackRun(run);
+        }
+        CHECK(!terminal.grid->hasUnpaintedWork());
+    });
+
+    fixture.stream->toRead += "\x1b\x0cMENU\x1f";
+    static_cast<void>(session.drain());
+    releaseFrameHeldForQuiet(session);
+    const FrameAsk menu = askForFrame(session, {});
+    REQUIRE(menu.frame != nullptr);
+    const Tek::PrimitiveSpan primitives = menu.frame->tekPrimitives();
+    REQUIRE(primitives.size() == 4u);
+    CHECK(primitives[0].kind == Tek::PrimitiveKind::Glyph);
+    CHECK_EQ(primitives[0].codePoint, static_cast<std::uint32_t>('M'));
+}
+
+// Store-mode output appends to the working tube without PAGE. Every settled
+// frame includes those strokes even after an earlier frame was committed.
+TEST(aQuietTekStoreFrameIncludesTheLatestStrokes)
+{
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    TerminalSession& session = *fixture.session;
+    session.setSyncFrameCaptureGeometry(testGeometry());
+    fixture.stream->toRead += tekEnterAndDraw;
+    static_cast<void>(session.drain());
+    releaseFrameHeldForQuiet(session);
+    static_cast<void>(TakenFrame(session.takeSyncFrame()));
+    session.requestTekFrameCommit();
+    static_cast<void>(TakenFrame(session.takeSyncFrame()));
+
+    fixture.stream->toRead += tekSecondVector;
+    static_cast<void>(session.drain());
+    releaseFrameHeldForQuiet(session);
+    static_cast<void>(TakenFrame(session.takeSyncFrame()));
+    const FrameAsk appended = askForFrame(session, {});
+    REQUIRE(appended.frame != nullptr);
+    CHECK_EQ(appended.frame->tekPrimitives().size(), 2u);
+}
+
+// A PAGE with no redraw leaves a blank tube once output is quiet.
+TEST(aQuietTekPageClearsTheCommittedFrame)
+{
+    SessionFixture fixture(24, 80);
+    REQUIRE(fixture.isReady);
+    TerminalSession& session = *fixture.session;
+    session.setSyncFrameCaptureGeometry(testGeometry());
+    fixture.stream->toRead += tekEnterAndDraw;
+    static_cast<void>(session.drain());
+    releaseFrameHeldForQuiet(session);
+    static_cast<void>(TakenFrame(session.takeSyncFrame()));
+
+    fixture.stream->toRead += "\x1b\x0c";
+    static_cast<void>(session.drain());
+    releaseFrameHeldForQuiet(session);
+    static_cast<void>(TakenFrame(session.takeSyncFrame()));
+    const FrameAsk erased = askForFrame(session, {});
+    REQUIRE(erased.frame != nullptr);
+    CHECK(erased.frame->tekPrimitives().empty());
+}
+
 // The frontend's ingest-idle commit is the owner's work: asked without the
 // model lock, it retires the capture of the uncommitted tube, and the frame
 // the view takes next shows the committed one. Before the commit, the tube
@@ -3368,11 +3474,10 @@ TEST(aTekCommitIsAppliedByTheOwnerBeforeTheViewsNextFrame)
         CHECK_EQ(committed.frame->tekPrimitives().size(), 1u);
     }
 
-    fixture.stream->toRead += tekSecondVector;
-    static_cast<void>(session.drain());
-    releaseFrameHeldForQuiet(session);
-    REQUIRE(!session.isFrameHeld());
-    static_cast<void>(TakenFrame(session.takeSyncFrame()));
+    // The frontend can also commit a draw before the runtime observes quiet.
+    withSessionModel(session, [](Terminal& terminal) {
+        Ubiquitty::processBytes(&terminal, tekSecondVector);
+    });
     {
         const FrameAsk before = askForFrame(session, {});
         REQUIRE(before.frame != nullptr);

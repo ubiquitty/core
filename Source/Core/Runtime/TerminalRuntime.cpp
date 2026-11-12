@@ -1139,6 +1139,9 @@ std::uint64_t TerminalRuntime::coherenceNow() const
 
 void TerminalRuntime::takeAdmittedFrame(FrameClass frameClass, std::uint64_t nowMicroseconds)
 {
+    // A quiet Tek draw has no next PAGE to commit it before capture.
+    if (frameClass == FrameClass::Settled && m_term->isTekModeActive)
+        tekCommitFrame(*m_term);
     const auto dirtySince = m_coherence.dirtySinceMicroseconds();
     m_lastFrameLagMicroseconds = dirtySince && nowMicroseconds >= *dirtySince ? nowMicroseconds - *dirtySince : 0;
     m_coherence.noteFrameTaken(*m_term, nowMicroseconds);

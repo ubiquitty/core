@@ -6967,7 +6967,7 @@ public:
             const FrameLane::DemandRule rule = demand.isResizing ? FrameLane::DemandRule::Resize : FrameLane::DemandRule::Coherence;
             static_cast<void>(m_frameLane.raiseDemand(PAL::monotonicMicros(), rule));
             // A resize registers geometry and asks in the same display turn.
-            // Its next step retires any capture left waiting at that geometry,
+            // Each geometry change retires captures left waiting at the old geometry,
             // so a free model serves this step before the owner is woken.
             if ((!hasOwnerLoop || demand.isResizing) && serveFrameDemandHere()) {
                 if (Rendering::FrameCapture* capture = takeWaitingCapture())
@@ -9745,8 +9745,12 @@ private:
                 const bool isCopyReason
                     = reason == SyncFrameReason::Boundary || reason == SyncFrameReason::SaturatedPass
                     || reason == SyncFrameReason::ContinuingPass;
-                const bool isStandingCaptureStale = !isCopyReason && session->m_frameLane.hasReadyCapture()
-                    && session->hasGridWorkSinceLastPaint();
+                bool isStandingCaptureStale = false;
+                if (!isCopyReason && session->m_frameLane.hasReadyCapture()) {
+                    const Ubiquitty::Terminal* terminal = session->modelTerm();
+                    // The storage tube can change without a text-grid write.
+                    isStandingCaptureStale = session->hasGridWorkSinceLastPaint() || (terminal && terminal->isTekModeActive);
+                }
                 if (isStandingCaptureStale)
                     session->m_staleCaptureReplacedCount.fetch_add(1, std::memory_order_relaxed);
                 // A view's outstanding demand is served at any frame the rule
