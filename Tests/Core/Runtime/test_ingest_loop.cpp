@@ -1728,8 +1728,41 @@ TEST(testAViewScrollingAnIdlePaneGetsAFrameAtEachPosition)
     CHECK_MSG(flick == 90, std::format("eight rows a frame: {} of 90 frames were a capture at the scrolled position", flick).c_str());
 }
 
-// A resize's geometry and its frame are asked in the same display turn. The
-// next step supersedes the geometry, so a capture left for that step is late.
+// A short-lived program can finish before its view registers geometry. The
+// completed ingest thread still needs joining, but cannot serve the first
+// frame the view asks for after EOF.
+TEST(testAViewFirstShownAfterItsProgramEndsGetsACapture)
+{
+    LoopSession loop;
+    REQUIRE(loop.isRunning);
+    TerminalSession& session = loop.session();
+    REQUIRE(loop.write("finished before the first frame"));
+    loop.writeEnd.reset();
+    bool didEnd = false;
+    for (int waited = 0; waited < 2000 && !didEnd; ++waited) {
+        {
+            TerminalSession::ModelReadScope read(session);
+            didEnd = session.sessionEnd().didEnd;
+        }
+        if (!didEnd)
+            ::usleep(1000);
+    }
+    REQUIRE(didEnd);
+    session.setSyncFrameCaptureGeometry(captureGeometry());
+    bool didCapture = false;
+    for (int waited = 0; waited < 2000 && !didCapture; ++waited) {
+        FrameSupply supply;
+        auto* frame = session.takeFrame({ .nowTicks = Ubiquitty::PAL::monotonicTicks() }, supply);
+        didCapture = frame && supply.route == FrameRoute::Captured;
+        releaseFrameCapture(frame);
+        if (!didCapture)
+            ::usleep(1000);
+    }
+    CHECK_MSG(didCapture, "a completed, unjoined ingest thread left the view waiting for its first capture");
+}
+
+// A resize's geometry and its frame are asked in the same display turn. Each
+// resize supersedes prior geometry and captures made for that geometry.
 TEST(testAResizingViewGetsAFrameAtEachGeometry)
 {
     LoopSession loop;

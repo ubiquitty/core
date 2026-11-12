@@ -4789,7 +4789,7 @@ public:
     ///   - payload: Its payload.
     void postCommand(const Runtime::OwnerCommand& command, std::span<const std::byte> payload = {}) UBIQUITTY_EXCLUDES(modelLockRole)
     {
-        if (!m_ingestThread.joinable()) {
+        if (!isIngestLoopActive()) {
             const ModelLockHold hold(m_modelLock);
             m_runtime->applyOwnerCommand(command, payload);
             return;
@@ -6412,12 +6412,14 @@ public:
         m_loop.adoptFloodEndpoint(isFloodDisarmed ? nullptr : stream->duplicateAsPollableStream());
         (void)m_loop.prepare();
         m_loop.resetStop();
+        m_didIngestFinish.store(false, std::memory_order_relaxed);
         m_ingestThread = std::jthread([this] {
             // Before the loop, so every pass runs in the band the bridge's
             // ingest queue names: the two drivers run the same Core loop and
             // must differ only in who owns the thread.
             PAL::raiseCurrentThreadToInteractivePriority();
             m_loop.run(m_pollableEndpoint->handle());
+            m_didIngestFinish.store(true, std::memory_order_release);
         });
         return true;
     }
@@ -6774,7 +6776,7 @@ public:
         if (!m_isSyncCaptureArmed.load(std::memory_order_acquire) || !m_isSyncFramePresented.load(std::memory_order_relaxed))
             return;
         static_cast<void>(m_frameLane.raiseDemand(PAL::monotonicMicros(), FrameLane::DemandRule::Coherence));
-        if (m_ingestThread.joinable())
+        if (isIngestLoopActive())
             m_loop.raiseWake();
         else
             static_cast<void>(serveFrameDemandHere());
@@ -6837,7 +6839,7 @@ public:
             return;
         m_isTekFrameCommitRequested.store(true, std::memory_order_release);
         (void)m_frameLane.retireReady();
-        if (m_ingestThread.joinable())
+        if (isIngestLoopActive())
             m_loop.raiseWake();
         else
             static_cast<void>(serveFrameDemandHere());
@@ -6978,7 +6980,7 @@ public:
         // No capture waits: the owner is asked for one, at its next turn or
         // the next frame the rule admits, whichever comes first.
         const bool isLaneServed = m_isSyncCaptureArmed.load(std::memory_order_acquire) && m_isSyncFramePresented.load(std::memory_order_relaxed);
-        const bool hasOwnerLoop = m_ingestThread.joinable();
+        const bool hasOwnerLoop = isIngestLoopActive();
         if (isLaneServed) {
             const FrameLane::DemandRule rule = demand.isResizing ? FrameLane::DemandRule::Resize : FrameLane::DemandRule::Coherence;
             static_cast<void>(m_frameLane.raiseDemand(PAL::monotonicMicros(), rule));
@@ -14294,6 +14296,18 @@ private:
     /// replica with each change. Frontend thread.
     [[nodiscard]] bool isRemoteReplica() const { return m_remote && m_remote->core && !m_tmuxPrimaryStream; }
 
+    /// Whether the owned ingest thread can still answer work.
+    ///
+    /// A thread that reached EOF stays joinable until stopped. Its final
+    /// model access precedes the completion publication, so a caller can
+    /// serve captures or commands once that publication is observed.
+    ///
+    /// - Returns: Whether the thread is starting or has not finished.
+    [[nodiscard]] bool isIngestLoopActive() const
+    {
+        return m_ingestThread.joinable() && !m_didIngestFinish.load(std::memory_order_acquire);
+    }
+
     /// Whether this session's ingest loop is running and drains the model it
     /// presents: the runtime's own, neither adopted nor a remote replica. Such
     /// a model's writer publishes at every release of the lock and applies
@@ -14301,7 +14315,7 @@ private:
     /// thread, which alone starts and stops the loop.
     [[nodiscard]] bool isModelDrainedByIngestLoop() const
     {
-        return m_ingestThread.joinable() && !m_externalTerminal && !(m_remote && m_remote->core && !m_tmuxPrimaryStream);
+        return isIngestLoopActive() && !m_externalTerminal && !(m_remote && m_remote->core && !m_tmuxPrimaryStream);
     }
 
     /// The same terminal as ``modelTerm()``, as an identity only: to test for
@@ -14534,6 +14548,7 @@ private:
     // still-running loop joins before anything it reads dies.
     IngestLoop m_loop { *m_runtime, m_host };
     std::unique_ptr<PAL::PollableByteStream> m_pollableEndpoint;
+    std::atomic<bool> m_didIngestFinish { false };
     std::jthread m_ingestThread;
 } UBIQUITTY_SHARED_REFERENCE(retainTerminalSession, releaseTerminalSession);
 
