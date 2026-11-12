@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "Harness.h"
+#include "Platform/FrameCadence.h"
 
 // test_frame_cadence — what a frontend presents at each display tick while a
 // real drain parses what a writer thread writes, with no display. A frontend
@@ -998,6 +999,7 @@ private:
 struct CadenceRun {
     bool didStart = false;
     bool didSelect = false;
+    bool didPrepareFrontendThread = false;
     bool doesSelectionStandAtEnd = false;
     Clock::time_point writerStartedAt;
     Clock::time_point writerStoppedAt;
@@ -1117,7 +1119,7 @@ CadenceRun runCadence(const CadenceCase& cadenceCase, Decision decision)
     // The frontend's thread runs at the priority a frontend's main thread
     // does, as the drain's runs at its own.
     std::jthread frontendThread([&] {
-        PAL::raiseCurrentThreadToInteractivePriority();
+        run.didPrepareFrontendThread = UbiquittyTest::preparePresentationThread();
         const Clock::time_point end = run.writerStartedAt + cadenceCase.duration;
         Clock::time_point next = run.writerStartedAt;
         int index = 0;
@@ -1187,6 +1189,7 @@ void checkCadence(const CadenceCase& cadenceCase, const CadenceRun& run, double 
     const std::string name = cadenceCase.name;
     REQUIRE_MSG(run.didStart, (name + ": the session started").c_str());
     REQUIRE_MSG(run.didSelect, (name + ": the selection was made").c_str());
+    REQUIRE_MSG(run.didPrepareFrontendThread, (name + ": the frontend entered the native presentation priority").c_str());
 
     // Where output flows outside a synchronized update's hold and the
     // drain's stall.

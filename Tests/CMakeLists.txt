@@ -284,7 +284,7 @@ set(test_ingest_loop_EXTRA_SOURCES     Source/Platform/POSIX/PTYStream.cpp
 # test_flood_start runs the ingest loop over a pipe, on the real clock, poll and waker.
 set(test_flood_start_EXTRA_SOURCES ${test_ingest_loop_EXTRA_SOURCES})
 # The frame cadence runs a real drain and a frontend tick on the real clock.
-set(test_frame_cadence_EXTRA_SOURCES ${test_ingest_loop_EXTRA_SOURCES})
+set(test_frame_cadence_EXTRA_SOURCES ${test_ingest_loop_EXTRA_SOURCES} Tests/Platform/FrameCadence.cpp)
 # Reads the model lock's acquisition count around each frame decision.
 set(test_frame_cadence_EXTRA_DEFINES UBIQUITTY_ENABLE_TEST_HOOKS=1)
 # The settings fan-out runs against a started session, and a session is the
