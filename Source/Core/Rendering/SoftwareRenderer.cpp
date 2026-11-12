@@ -1958,7 +1958,8 @@ SoftwareRenderer::ImageMipChain& SoftwareRenderer::buildImageMipChain(ImageMipCh
     int width = image.width;
     int height = image.height;
     std::vector<std::uint8_t> base(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4);
-    Image::widenToRGBA8(image.pixels, width, height, image.format, base.data());
+    const unsigned char* pixels = image.currentFrame < image.frameCount ? image.frames[image.currentFrame].pixels : image.pixels;
+    Image::widenToRGBA8(pixels, width, height, image.format, base.data());
     Image::bleedIntoTransparentTexels(base.data(), width, height);
     const int levelCount = Image::imageMipLevelCount(width, height);
     chain.sizes.reserve(static_cast<std::size_t>(levelCount));
@@ -2126,9 +2127,7 @@ void SoftwareRenderer::compositeImages(const BuildInputs& in, ImageBand band, st
     const std::span<const Image::ImageQuad> all { m_imageQuads };
     const std::span<const Image::ImageQuad> bandQuads = band == ImageBand::Under ? all.first(split) : all.subspan(split);
     for (const Image::ImageQuad& q : bandQuads) {
-        // Resolve the source image by imageID. frames[0] aliases the base
-        // pixel buffer, so single-frame images sample img->pixels; frame 0
-        // only (animation is deferred).
+        // Resolve the image once; both sampling paths use its selected frame.
         const Ubiquitty::Image::TerminalImage* img = nullptr;
         for (int ii = 0; ii < in.imageCount; ++ii) {
             const Ubiquitty::Image::TerminalImage* cand = &in.images[ii];
@@ -2140,7 +2139,7 @@ void SoftwareRenderer::compositeImages(const BuildInputs& in, ImageBand band, st
         if (!img || img->width <= 0 || img->height <= 0)
             continue;
         const int bytesPerPixel = (img->format == 32) ? 4 : 3;
-        const unsigned char* src = img->pixels;
+        const unsigned char* src = img->currentFrame < img->frameCount ? img->frames[img->currentFrame].pixels : img->pixels;
         if (q.filter == Image::ImageFilter::Smooth) {
             compositeFilteredImage(q, *img, rgba, surface);
             continue;

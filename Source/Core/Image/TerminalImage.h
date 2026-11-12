@@ -116,8 +116,8 @@ constexpr int maxDecodedImageDimension = 16384;
 }
 
 // Animation playback state per TerminalImage. AnimationState::Stopped stops on
-// the current frame; AnimationState::RunOnce advances frames and then stops
-// on the last one; AnimationState::Looping wraps back to frame 0 at the end.
+// the current frame; AnimationState::RunOnce walks the available frames and
+// waits on the last for more; AnimationState::Looping wraps back to frame 0.
 enum class AnimationState : uint8_t {
     Stopped = 0,
     RunOnce = 1,
@@ -125,7 +125,7 @@ enum class AnimationState : uint8_t {
 };
 
 // One animation frame. frames[0] always shadows the base pixel buffer so the
-// renderer path can stay frame-unaware; multi-frame images add 1..N via a=f.
+// base buffer has one owner; renderers sample frames[currentFrame].
 struct TerminalImageFrame {
     bool used;
     // `gapless` frames (kitty z=negative) are instantly skipped in playback; they
@@ -151,7 +151,7 @@ struct TerminalImage {
     uint32_t pixelLength;
     /* owned */ unsigned char* pixels; // malloc'd; freed in dispose(); frames[0].pixels aliases this
     // frames[0].pixels aliases this base buffer (not a separate allocation), so a
-    // frame-unaware renderer reading image->pixels sees frames[currentFrame].
+    // image->pixels stays the root buffer; currentFrame selects the shown buffer.
     // Frames 1..frameCount-1 own independent heap buffers.
     std::array<TerminalImageFrame, maxTerminalImageFrameCount> frames;
     uint16_t frameCount;

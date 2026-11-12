@@ -64,6 +64,32 @@ CellMetrics unifontMetrics()
     return rasterizer.cellMetrics();
 }
 
+TEST(frameCaptureOwnsTheSelectedAnimationPixels)
+{
+    auto terminal = makeTerminal(4, 8);
+    processBytes(terminal.get(), "\033_Ga=T,i=31,f=32,s=1,v=1,C=1,q=2;/wAA/w==\033\\");
+    processBytes(terminal.get(), "\033_Ga=f,i=31,f=32,s=1,v=1,q=2;AAD//w==\033\\");
+    TerminalFrameInputs frame;
+    TerminalSnapshotOptions options;
+    REQUIRE(frame.capture(*terminal, options, unifontMetrics(), GlyphSlotGeometry {}));
+    REQUIRE(frame.inputs().images);
+    CHECK(frame.inputs().images[0].pixels[0] == 255);
+    processBytes(terminal.get(), "\033_Ga=a,i=31,c=2,q=2\033\\");
+    REQUIRE(frame.capture(*terminal, options, unifontMetrics(), GlyphSlotGeometry {}));
+    const auto& captured = frame.inputs().images[0];
+    CHECK(captured.currentFrame == 1);
+    REQUIRE(captured.pixels);
+    CHECK(captured.pixels[0] == 0);
+    CHECK(captured.pixels[2] == 255);
+    CHECK(captured.frames[1].pixels == captured.pixels);
+    CHECK(captured.pixels != terminal->images.stored[0].frames[1].pixels);
+    processBytes(terminal.get(), "\033_Ga=a,i=31,c=1,q=2\033\\");
+    CHECK(captured.pixels[2] == 255);
+    REQUIRE(frame.capture(*terminal, options, unifontMetrics(), GlyphSlotGeometry {}));
+    CHECK(frame.inputs().images[0].pixels[0] == 255);
+    CHECK(frame.inputs().images[0].pixels[2] == 0);
+}
+
 TEST(testCaptureFillsTheGridAndGeometry)
 {
     auto t = makeTerminal();

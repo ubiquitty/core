@@ -45,11 +45,10 @@ void initFrameZero(TerminalImage* image)
     if (!image)
         return;
     image->frames[0].used = true;
-    image->frames[0].gapless = false;
+    image->frames[0].gapless = true;
     image->frames[0].pixels = image->pixels;
     image->frames[0].pixelLength = image->pixelLength;
-    // 0 = unspecified gap → default (40ms) at playback, so the root frame is a
-    // real, visible frame 1 of the loop rather than being instantly skipped.
+    // Kitty's root starts without a gap; a=a,r=1,z=N makes it visible in playback.
     image->frames[0].delayMilliseconds = 0;
     image->frameCount = 1;
     image->currentFrame = 0;
@@ -777,6 +776,8 @@ bool anyAnimating(const Ubiquitty::Terminal* t)
             continue;
         if (image->frameCount <= 1)
             continue;
+        if (image->animationState == AnimationState::RunOnce && image->currentFrame + 1 >= image->frameCount)
+            continue;
         return true;
     }
     return false;
@@ -823,7 +824,8 @@ void advanceFrames(Ubiquitty::Terminal* t, uint32_t elapsedMilliseconds)
             if (cycleMilliseconds > 0 && remaining >= cycleMilliseconds)
                 remaining = static_cast<uint32_t>(remaining % cycleMilliseconds);
         }
-        while (remaining > 0 && image->animationState != AnimationState::Stopped) {
+        int gaplessSteps = 0;
+        while ((remaining > 0 || image->frames[image->currentFrame].gapless) && image->animationState != AnimationState::Stopped) {
             const TerminalImageFrame* frame = &image->frames[image->currentFrame];
             // Effective gap: a gapless frame (kitty z<0) skips instantly; a
             // 0/unspecified gap uses the 40ms default so the frame is shown.
@@ -832,12 +834,12 @@ void advanceFrames(Ubiquitty::Terminal* t, uint32_t elapsedMilliseconds)
             if (delay == 0) {
                 // Gapless frame: advance immediately, don't burn ms.
                 step = 0;
-            } else if (image->frameClockMilliseconds + remaining < delay) {
+            } else if (static_cast<uint64_t>(image->frameClockMilliseconds) + remaining < delay) {
                 image->frameClockMilliseconds += remaining;
                 remaining = 0;
                 break;
             } else {
-                step = delay - image->frameClockMilliseconds;
+                step = delay > image->frameClockMilliseconds ? delay - image->frameClockMilliseconds : 0;
                 remaining -= step;
             }
             image->frameClockMilliseconds = 0;
@@ -847,12 +849,12 @@ void advanceFrames(Ubiquitty::Terminal* t, uint32_t elapsedMilliseconds)
                     image->currentFrame = 0;
                 } else {
                     image->currentFrame = static_cast<uint16_t>(image->frameCount - 1);
-                    image->animationState = AnimationState::Stopped;
                     break;
                 }
             }
-            // Guard against infinite loop on all-gapless frames.
-            if (step == 0 && delay == 0)
+            // A full pass through only gapless frames has no visible result.
+            gaplessSteps = delay == 0 ? gaplessSteps + 1 : 0;
+            if (gaplessSteps >= image->frameCount)
                 break;
         }
         markDirty(*t, image);

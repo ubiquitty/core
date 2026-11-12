@@ -1263,7 +1263,7 @@ TEST(testKittyAnimationTickDropsWholeCyclesExactly)
         feed(term, "\033_Ga=T,t=d,f=24,s=1,v=1,i=7100;/wAA\033\\");
         feed(term, "\033_Ga=f,i=7100,f=24,s=1,v=1,z=10;AP8A\033\\");
         feed(term, "\033_Ga=f,i=7100,f=24,s=1,v=1,z=30;AAD/\033\\");
-        feed(term, "\033_Ga=a,i=7100,c=3;\033\\"); // c=3 = loop
+        feed(term, "\033_Ga=a,i=7100,s=3,r=1,z=40;\033\\"); // s=3 = loop
     };
 
     int comparisons = 0;
@@ -1306,20 +1306,21 @@ TEST(testKittyAnimationRunOnceStopsAtTheLastFrameHoweverLongTheGap)
     Ubiquitty::hardReset(t);
     feed(t, "\033_Ga=T,t=d,f=24,s=1,v=1,i=7101;/wAA\033\\");
     feed(t, "\033_Ga=f,i=7101,f=24,s=1,v=1,z=10;AP8A\033\\");
-    feed(t, "\033_Ga=a,i=7101,c=2;\033\\"); // c=2 = run once
+    feed(t, "\033_Ga=a,i=7101,s=2,r=1,z=40;\033\\"); // s=2 = loading
 
     Ubiquitty::Image::advanceFrames(&t, 4200000);
     const Ubiquitty::Image::TerminalImage* img = findKittyImage(t, 7101);
     CHECK(img != nullptr);
     if (img) {
         CHECK_MSG(img->currentFrame == img->frameCount - 1, "a run-once animation left its last frame");
-        CHECK_MSG(img->animationState == Ubiquitty::Image::AnimationState::Stopped, "a run-once animation did not stop");
+        CHECK_MSG(img->animationState == Ubiquitty::Image::AnimationState::RunOnce, "loading playback lost its waiting state");
+        CHECK(!Ubiquitty::Image::anyAnimating(&t));
     }
 }
 
 TEST(testKittyAnimationFrameNumberPastSixteenBitsNamesNoFrame)
 {
-    // r is the frame to show, counted from 1, and a two-frame image has two.
+    // c is the frame to show, counted from 1, and a two-frame image has two.
     // A number that narrows to a valid one, 65536 above all, which narrows to
     // 0 and then to frame 65535, must leave the frame where it was: the tick
     // reads frames[currentFrame] from a fixed array.
@@ -1328,7 +1329,7 @@ TEST(testKittyAnimationFrameNumberPastSixteenBitsNamesNoFrame)
         Ubiquitty::hardReset(t);
         feed(t, "\033_Ga=T,t=d,f=24,s=1,v=1,i=7103;/wAA\033\\");
         feed(t, "\033_Ga=f,i=7103,f=24,s=1,v=1,z=10;AP8A\033\\");
-        feed(t, std::string("\033_Ga=a,i=7103,c=3,r=") + frame + "\033\\");
+        feed(t, std::string("\033_Ga=a,i=7103,s=3,c=") + frame + "\033\\");
         const Ubiquitty::Image::TerminalImage* img = findKittyImage(t, 7103);
         CHECK(img != nullptr);
         if (!img)
@@ -1352,16 +1353,14 @@ TEST(testKittyGraphicsAnimationControlAndTick)
     feed(t, "\033_Ga=f,i=7002,f=24,s=1,v=1,z=100;AP8A\033\\");
     feed(t, "\033_Ga=f,i=7002,f=24,s=1,v=1,z=250;AAD/\033\\");
 
-    // c=2 = run-once.
-    feed(t, "\033_Ga=a,i=7002,c=2;\033\\");
+    // s=2 = loading.
+    feed(t, "\033_Ga=a,i=7002,s=2,r=1,z=40;\033\\");
     img = findKittyImage(t, 7002);
     CHECK(img != nullptr);
     if (img)
         CHECK(img->animationState == Ubiquitty::Image::AnimationState::RunOnce);
 
-    /// Frame 0 (the base/root frame) has no explicit gap. Per the kitty
-    /// spec a 0/unspecified gap means the DEFAULT gap (40ms) — the root
-    /// frame is a real, visible frame 1, not instantly skipped. Advance
+    /// The control above explicitly assigns the root a 40ms gap. Advance
     /// 30 ms — still on frame 0.
     Ubiquitty::Image::advanceFrames(&t, 30);
     img = findKittyImage(t, 7002);
@@ -1398,12 +1397,13 @@ TEST(testKittyGraphicsAnimationControlAndTick)
     img = findKittyImage(t, 7002);
     if (img) {
         CHECK(img->currentFrame == 2);
-        CHECK(img->animationState == Ubiquitty::Image::AnimationState::Stopped);
+        CHECK(img->animationState == Ubiquitty::Image::AnimationState::RunOnce);
+        CHECK(!Ubiquitty::Image::anyAnimating(&t));
     }
 
     // Now start looping; expect it to wrap to frame 0 when frame 2's
     // delay elapses again, and SHOW frame 0 for the 40ms default gap.
-    feed(t, "\033_Ga=a,i=7002,c=3;\033\\");
+    feed(t, "\033_Ga=a,i=7002,s=3;\033\\");
     img = findKittyImage(t, 7002);
     if (img) {
         CHECK(img->animationState == Ubiquitty::Image::AnimationState::Looping);
@@ -1449,8 +1449,8 @@ TEST(testKittyGraphicsAnimationBaseFrameInLoop)
         CHECK(img->frameCount == 6);
         CHECK(img->frames[0].used);
         CHECK(img->frames[0].pixels == img->pixels); // frame 0 aliases base
-        CHECK(!img->frames[0].gapless);
-        CHECK(img->frames[0].delayMilliseconds == 0); // 0 = default gap
+        CHECK(img->frames[0].gapless);
+        CHECK(img->frames[0].delayMilliseconds == 0); // root starts gapless
         // Base frame pixels are red.
         CHECK(img->frames[0].pixels[0] == 0xFF);
         CHECK(img->frames[0].pixels[1] == 0x00);
@@ -1463,8 +1463,8 @@ TEST(testKittyGraphicsAnimationBaseFrameInLoop)
         CHECK(img->currentFrame == 0);
     }
 
-    // a=a c=3 → looping.
-    feed(t, "\033_Ga=a,i=7100,c=3;\033\\");
+    // a=a s=3 → looping.
+    feed(t, "\033_Ga=a,i=7100,s=3,r=1,z=40;\033\\");
     img = findKittyImage(t, 7100);
     if (img) {
         CHECK(img->animationState == Ubiquitty::Image::AnimationState::Looping);
@@ -1519,7 +1519,7 @@ TEST(testKittyGraphicsAnimationGaplessFrame)
         CHECK(img->frames[2].delayMilliseconds == 100);
     }
 
-    feed(t, "\033_Ga=a,i=7200,c=3;\033\\");
+    feed(t, "\033_Ga=a,i=7200,s=3,r=1,z=40;\033\\");
     /// Advance just past the base frame's 40ms default gap: the 1ms surplus
     /// drives through the gapless frame 1 (instant skip, zero dwell) and
     /// lands on frame 2.
@@ -1537,11 +1537,11 @@ TEST(testKittyGraphicsAnimationAndFrameErrors)
 
     // a=a (animation control) without image id: refused, and with no id to
     // answer to, unanswered.
-    feed(t, "\033_Ga=a,c=2;\033\\");
+    feed(t, "\033_Ga=a,s=2;\033\\");
     CHECK(drain(t, outputBuffer) == 0);
 
     // a=a with unknown image id.
-    feed(t, "\033_Ga=a,i=9999,c=2;\033\\");
+    feed(t, "\033_Ga=a,i=9999,s=2;\033\\");
     drain(t, outputBuffer);
     CHECK(strstr(outputBuffer, "ENOENT") != nullptr);
 

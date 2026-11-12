@@ -50,6 +50,7 @@ struct GraphicsControl {
     int cellRows; // r
     int pixelOffsetX; // X
     int pixelOffsetY; // Y
+    uint32_t frameBackground; // Y on a=f is a packed RGBA color
     int sourceX; // x
     int sourceY; // y
     int sourceWidth; // w

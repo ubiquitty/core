@@ -1471,8 +1471,14 @@ void TerminalFrameInputs::captureImages(const FrameSource& source)
             Image::TerminalImage captured = incoming;
             captured.frames = {};
 
-            const bool hasValidPixels = incoming.used && incoming.pixels && incoming.pixelLength > 0
-                && incoming.pixelLength <= static_cast<std::uint32_t>(Image::maxDecodedImageBytes);
+            const auto* selected = incoming.currentFrame < incoming.frameCount && incoming.currentFrame < incoming.frames.size()
+                    && incoming.frames[incoming.currentFrame].used
+                ? &incoming.frames[incoming.currentFrame]
+                : nullptr;
+            const unsigned char* incomingPixels = selected ? selected->pixels : incoming.pixels;
+            const std::uint32_t incomingLength = selected ? selected->pixelLength : incoming.pixelLength;
+            const bool hasValidPixels = incoming.used && incomingPixels && incomingLength > 0
+                && incomingLength <= static_cast<std::uint32_t>(Image::maxDecodedImageBytes);
             if (!hasValidPixels) {
                 captured.pixels = nullptr;
                 captured.pixelLength = 0;
@@ -1483,15 +1489,16 @@ void TerminalFrameInputs::captureImages(const FrameSource& source)
             const bool canReusePixels = previous.used
                 && previous.contentGeneration == incoming.contentGeneration
                 && previous.currentFrame == incoming.currentFrame
-                && previous.pixelLength == incoming.pixelLength
-                && pixels.size() == incoming.pixelLength;
+                && previous.pixelLength == incomingLength
+                && pixels.size() == incomingLength;
             if (!canReusePixels) {
-                pixels.assign(incoming.pixels, incoming.pixels + incoming.pixelLength);
+                pixels.assign(incomingPixels, incomingPixels + incomingLength);
 #if UBIQUITTY_PERF_DIAG
-                m_copyStatistics.imageBytesCopied += incoming.pixelLength;
+                m_copyStatistics.imageBytesCopied += incomingLength;
 #endif
             }
             captured.pixels = pixels.data();
+            captured.pixelLength = incomingLength;
             if (captured.currentFrame < captured.frames.size()) {
                 Image::TerminalImageFrame current {};
                 if (incoming.currentFrame < incoming.frames.size()) {

@@ -260,7 +260,7 @@ void imageFixture(Ubiquitty::Terminal& terminal)
     Ubiquitty::resize(terminal, 6, 40);
     UbiquittyTest::feed(terminal, "\033_Ga=T,f=32,s=1,v=1,i=7,p=9,c=2,r=3,C=1,q=2;/wAA/w==\033\\"
                                   "\033_Ga=f,f=32,s=1,v=1,i=7,z=60,q=2;AP8A/w==\033\\"
-                                  "\033_Ga=a,i=7,c=3,r=2,q=2;\033\\"
+                                  "\033_Ga=a,i=7,s=3,c=2,q=2;\033\\"
                                   "\033[?1049h\033_Ga=p,i=7,p=10,c=1,r=1,C=1,q=2;\033\\\033[?1049l");
     terminal.images.kittyNextImageID = 0x80000007;
     terminal.images.kittyImageUseSeq += 11;

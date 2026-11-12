@@ -2364,6 +2364,49 @@ TEST(aNaturalImageKeepsItsDevicePixelsAtEveryScale)
     }
 }
 
+TEST(selectedAnimationFramesReachNearestAndFilteredSoftwareRendering)
+{
+    for (int imageSize : { 1, 32 }) {
+        auto terminal = std::make_unique<Terminal>();
+        resize(*terminal, 4, 8);
+        std::vector<unsigned char> red(static_cast<std::size_t>(imageSize * imageSize) * 4, 0);
+        std::vector<unsigned char> blue(red.size(), 0);
+        for (std::size_t offset = 0; offset < red.size(); offset += 4) {
+            red[offset] = red[offset + 3] = 255;
+            blue[offset + 2] = blue[offset + 3] = 255;
+        }
+        const std::string geometry = ",f=32,s=" + std::to_string(imageSize) + ",v=" + std::to_string(imageSize);
+        processBytes(terminal.get(), "\033_Ga=T,i=31,c=1,r=1,C=1,q=2" + geometry + ";" + UbiquittyTest::Kitty::base64(red) + "\033\\");
+        processBytes(terminal.get(), "\033_Ga=f,i=31,q=2" + geometry + ";" + UbiquittyTest::Kitty::base64(blue) + "\033\\");
+        TermPalette palette;
+        palette.seedDefaults();
+        std::vector<Cell> cells(32);
+        BuildInputs inputs;
+        inputs.cells = cells.data();
+        inputs.rows = 4;
+        inputs.columns = 8;
+        inputs.palette = &palette;
+        inputs.images = terminal->images.stored.data();
+        inputs.imageCount = Image::maxTerminalImageCount;
+        inputs.placements = terminal->images.placements.data();
+        inputs.placementCount = Image::maxTerminalImagePlacementCount;
+        SoftwareRenderer renderer(renderCellWidth, renderCellHeight);
+        std::vector<std::uint8_t> rgba;
+        int width = 0;
+        int height = 0;
+        REQUIRE(renderer.render(inputs, rgba, width, height));
+        CHECK(at(rgba, width, 4, 8).red == 255);
+        processBytes(terminal.get(), "\033_Ga=a,i=31,c=2,q=2\033\\");
+        REQUIRE(renderer.render(inputs, rgba, width, height));
+        CHECK(at(rgba, width, 4, 8).red == 0);
+        CHECK(at(rgba, width, 4, 8).blue == 255);
+        processBytes(terminal.get(), "\033_Ga=a,i=31,c=1,q=2\033\\");
+        REQUIRE(renderer.render(inputs, rgba, width, height));
+        CHECK(at(rgba, width, 4, 8).red == 255);
+        CHECK(at(rgba, width, 4, 8).blue == 0);
+    }
+}
+
 namespace {
 // A proportional primary face as a row laid out as letters sees it: the pitch
 // is proportional, a run shapes to advances that are not whole pixels, and the

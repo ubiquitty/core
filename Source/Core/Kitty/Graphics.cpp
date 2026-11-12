@@ -23,6 +23,7 @@
 #include "PAL/TaskQueue.h"
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -502,6 +503,16 @@ static int kittyParseUInt(const char* s)
     return n;
 }
 
+static std::optional<uint32_t> kittyParseIdentifier(const char* text)
+{
+    uint32_t value = 0;
+    const char* end = text + std::strlen(text);
+    const auto result = std::from_chars(text, end, value);
+    if (result.ec != std::errc {} || result.ptr != end)
+        return std::nullopt;
+    return value;
+}
+
 // Parse a signed decimal integer (the `z` key may be negative for under-text
 // layering). Returns true on success, writing *out.
 static bool kittyParseSInt(const char* s, int32_t* outputBuffer)
@@ -573,20 +584,20 @@ static void kittyParseControl(char* data, Ubiquitty::Kitty::GraphicsControl* out
             outputBuffer->hasTransferKey = true;
             break;
         case 'i':
-            if (n >= 0) {
-                outputBuffer->imageID = static_cast<uint32_t>(n);
+            if (const auto identifier = kittyParseIdentifier(eq)) {
+                outputBuffer->imageID = *identifier;
                 outputBuffer->hasImageID = true;
             }
             break;
         case 'I':
-            if (n >= 0) {
-                outputBuffer->imageNumber = static_cast<uint32_t>(n);
+            if (const auto identifier = kittyParseIdentifier(eq)) {
+                outputBuffer->imageNumber = *identifier;
                 outputBuffer->hasImageNumber = true;
             }
             break;
         case 'p':
-            if (n >= 0) {
-                outputBuffer->placementID = static_cast<uint32_t>(n);
+            if (const auto identifier = kittyParseIdentifier(eq)) {
+                outputBuffer->placementID = *identifier;
                 outputBuffer->hasPlacementID = true;
             }
             break;
@@ -615,6 +626,8 @@ static void kittyParseControl(char* data, Ubiquitty::Kitty::GraphicsControl* out
         case 'Y':
             if (n >= 0)
                 outputBuffer->pixelOffsetY = n;
+            if (const auto color = kittyParseIdentifier(eq))
+                outputBuffer->frameBackground = *color;
             break;
         case 'x':
             if (n >= 0)
@@ -1542,6 +1555,10 @@ static void kittyDisplayExisting(Ubiquitty::Terminal& t, const Ubiquitty::Kitty:
         kittyRespond(t, c, "OK");
         return;
     }
+    // A nonzero placement id names one placement for this image. Releasing
+    // that slot first also permits replacement when the table is full.
+    if (c->hasPlacementID && c->placementID != 0)
+        Image::removePlacements(t, image->imageID, Image::PlacementMatchMode::MatchID, c->placementID);
     p = Image::allocatePlacement(t);
     if (p)
         kittyFillPlacement(p, t, c, image->imageID);
@@ -1551,95 +1568,170 @@ static void kittyDisplayExisting(Ubiquitty::Terminal& t, const Ubiquitty::Kitty:
     kittyRespond(t, c, "OK");
 }
 
-// Append a frame to an existing image (a=f). Payload is the frame's pixel bytes
-// (same format/size as the base); `z` carries the display delay. Frames beyond
-// maxTerminalImageFrameCount are dropped with a kitty error.
-static void kittyAddFrame(Ubiquitty::Terminal& t, const Ubiquitty::Kitty::GraphicsControl* c, std::span<const char> payload)
+// Animation canvases use RGBA so partial frames retain transparent pixels even
+// when the original transfer was RGB. Promotion commits only after every copy
+// is allocated; a refusal leaves the existing image intact.
+static bool kittyPromoteAnimationImage(Image::TerminalImage& image)
 {
-    Image::TerminalImage* image;
-    uint32_t expected;
-    uint32_t bytesPerPixel;
-    int rawLength = 0;
-    if (!c->hasImageID) {
-        kittyRespond(t, c, "EINVAL:frame requires image id");
+    if (image.format == 32)
+        return true;
+    if (image.format != 24)
+        return false;
+    const std::size_t count = static_cast<std::size_t>(image.width) * image.height;
+    if (count * 4 * image.frameCount > Image::maxDecodedImageBytes)
+        return false;
+    std::array<KittyBytes, Image::maxTerminalImageFrameCount> promoted;
+    for (int frame = 0; frame < image.frameCount; ++frame) {
+        promoted[frame].reset(static_cast<unsigned char*>(std::malloc(count * 4)));
+        if (!promoted[frame])
+            return false;
+        for (std::size_t pixel = 0; pixel < count; ++pixel) {
+            std::memcpy(promoted[frame].get() + pixel * 4, image.frames[frame].pixels + pixel * 3, 3);
+            promoted[frame].get()[pixel * 4 + 3] = 255;
+        }
+    }
+    for (int frame = 0; frame < image.frameCount; ++frame) {
+        std::free(image.frames[frame].pixels);
+        image.frames[frame].pixels = promoted[frame].release();
+        image.frames[frame].pixelLength = static_cast<uint32_t>(count * 4);
+    }
+    image.pixels = image.frames[0].pixels;
+    image.pixelLength = image.frames[0].pixelLength;
+    image.format = 32;
+    return true;
+}
+
+// Straight-alpha source-over; the color channels are not premultiplied in the
+// protocol or in TerminalImage. Integer rounding is bounded to one byte.
+enum class PixelComposition : uint8_t {
+    Blend,
+    Replace
+};
+
+static void kittyCompositePixel(unsigned char* destination, const unsigned char* source, int components, PixelComposition composition)
+{
+    const uint32_t sourceAlpha = components == 4 ? source[3] : 255;
+    if (composition == PixelComposition::Replace || sourceAlpha == 255) {
+        std::memcpy(destination, source, 3);
+        destination[3] = static_cast<unsigned char>(sourceAlpha);
         return;
     }
-    image = kittyFindImage(t, c);
+    const uint32_t destinationAlpha = destination[3];
+    const uint32_t alpha = sourceAlpha * 255 + destinationAlpha * (255 - sourceAlpha);
+    if (!alpha)
+        return;
+    for (int component = 0; component < 3; ++component) {
+        const uint32_t color = source[component] * sourceAlpha * 255 + destination[component] * destinationAlpha * (255 - sourceAlpha);
+        destination[component] = static_cast<unsigned char>((color + alpha / 2) / alpha);
+    }
+    destination[3] = static_cast<unsigned char>((alpha + 127) / 255);
+}
+
+static void kittyAddFrame(Ubiquitty::Terminal& t, const Ubiquitty::Kitty::GraphicsControl* c, std::span<const char> payload)
+{
+    Image::TerminalImage* image = kittyFindImage(t, c);
     if (!image) {
         kittyRespond(t, c, "ENOENT:image not found");
         return;
     }
-    if (image->frameCount >= Image::maxTerminalImageFrameCount) {
+    const bool isEditing = c->cellRows > 0;
+    if ((isEditing && c->cellRows > image->frameCount) || c->cellColumns > image->frameCount) {
+        kittyRespond(t, c, "ENOENT:frame not found");
+        return;
+    }
+    if (!isEditing && image->frameCount >= Image::maxTerminalImageFrameCount) {
         kittyRespond(t, c, "ENOSPC:too many frames");
         return;
     }
-    if (image->format != 24 && image->format != 32) {
-        // Frames are raw 24/32-bit only (no f=100 PNG frames).
+    if (c->format != 24 && c->format != 32) {
         kittyRespond(t, c, "ENOTSUP:frame format unsupported");
         return;
     }
-    bytesPerPixel = (image->format == 32) ? 4UL : 3UL;
-    expected = static_cast<uint32_t>(image->width) * static_cast<uint32_t>(image->height) * bytesPerPixel;
-    auto extracted = kittyResolveTransport(t, c, payload, static_cast<int>(expected), TempFileUnlink::Consume);
+    if (c->width <= 0 || c->height <= 0 || c->sourceX > image->width || c->sourceY > image->height
+        || c->width > image->width - c->sourceX || c->height > image->height - c->sourceY) {
+        kittyRespond(t, c, "EINVAL:frame rectangle outside image");
+        return;
+    }
+    const int components = c->format == 32 ? 4 : 3;
+    const int expected = c->width * c->height * components;
+    auto extracted = kittyResolveTransport(t, c, payload, expected, TempFileUnlink::Consume);
     if (!extracted) {
         kittyRespond(t, c, extracted.error());
         return;
     }
-    // Every refusal below returns with ownedFrame still holding the buffer, so
-    // each one frees it; the frame that keeps it releases at the transfer.
-    KittyBytes ownedFrame = std::move(extracted->bytes);
-    rawLength = extracted->length;
-    if (rawLength != static_cast<int>(expected)) {
+    if (extracted->length != expected) {
         kittyRespond(t, c, "EINVAL:frame size mismatch");
         return;
     }
-    // maxDecodedImageBytes bounds the image, not just its base buffer: frames are
-    // the same image, and each one is exactly width*height*bytesPerPixel, so
-    // maxTerminalImageFrameCount of them reach 16x the ceiling from payloads that
-    // arrive zlib-compressed. Refusing here is what makes enforceBudget's "only
-    // `keep` remains (bounded by the per-image cap)" true on this path — it cannot
-    // evict the image it was asked to keep, so it cannot bound one that grows.
-    if (Image::imageBytes(*image) + static_cast<uint64_t>(rawLength) > static_cast<uint64_t>(Image::maxDecodedImageBytes)) {
+    const bool isFullFrame = c->sourceX == 0 && c->sourceY == 0 && c->width == image->width && c->height == image->height;
+    const bool canAdoptTransfer = isFullFrame && c->format == image->format
+        && (c->pixelOffsetX == 1 || (!isEditing && c->cellColumns == 0 && c->frameBackground == 0));
+    const std::size_t canvasBytes = canAdoptTransfer ? static_cast<std::size_t>(expected) : static_cast<std::size_t>(image->width) * image->height * 4;
+    const std::uint64_t storedBytes = canAdoptTransfer ? Image::imageBytes(*image) + (isEditing ? 0 : canvasBytes) : canvasBytes * (image->frameCount + (isEditing ? 0 : 1));
+    if (storedBytes > Image::maxDecodedImageBytes) {
         kittyRespond(t, c, "ENOSPC:frame exceeds the image size limit");
         return;
     }
-    {
-        Image::TerminalImageFrame* f = &image->frames[image->frameCount++];
-        f->used = true;
-        f->pixels = ownedFrame.release();
-        f->pixelLength = static_cast<uint32_t>(rawLength);
-        // Kitty `z` on a=f is the per-frame gap: z>0 = gap in ms, z=0/unspecified
-        // = default gap (40ms, applied at playback via delay 0), z<0 = gapless
-        // (instantly skipped — base data only, never shown).
-        f->gapless = (c->hasZIndex && c->zIndex < 0);
-        f->delayMilliseconds = (c->hasZIndex && c->zIndex > 0) ? static_cast<uint32_t>(c->zIndex) : 0;
+    const int target = isEditing ? c->cellRows - 1 : image->frameCount;
+    KittyBytes canvas;
+    if (canAdoptTransfer) {
+        // Full frames already own their final pixels. Keep that allocation and
+        // RGB storage; only a canvas operation requires copying or promotion.
+        canvas = std::move(extracted->bytes);
+    } else {
+        canvas.reset(static_cast<unsigned char*>(std::malloc(canvasBytes)));
+        if (!canvas || !kittyPromoteAnimationImage(*image)) {
+            kittyRespond(t, c, "ENOMEM:frame canvas");
+            return;
+        }
+        const int background = isEditing ? target : c->cellColumns - 1;
+        if (background >= 0)
+            std::memcpy(canvas.get(), image->frames[background].pixels, canvasBytes);
+        else {
+            const std::array<unsigned char, 4> color { static_cast<unsigned char>(c->frameBackground >> 24), static_cast<unsigned char>(c->frameBackground >> 16), static_cast<unsigned char>(c->frameBackground >> 8), static_cast<unsigned char>(c->frameBackground) };
+            for (std::size_t pixel = 0; pixel < canvasBytes; pixel += 4)
+                std::memcpy(canvas.get() + pixel, color.data(), 4);
+        }
+        for (int row = 0; row < c->height; ++row) {
+            for (int column = 0; column < c->width; ++column) {
+                const std::size_t destination = (static_cast<std::size_t>(row + c->sourceY) * image->width + column + c->sourceX) * 4;
+                const std::size_t source = (static_cast<std::size_t>(row) * c->width + column) * components;
+                kittyCompositePixel(canvas.get() + destination, extracted->bytes.get() + source, components, c->pixelOffsetX == 1 ? PixelComposition::Replace : PixelComposition::Blend);
+            }
+        }
     }
-    // New frame = new content for this id; bump so a frame-aware cache re-uploads
-    // even before currentFrame advances.
+    auto& frame = image->frames[target];
+    if (isEditing)
+        std::free(frame.pixels);
+    frame.pixels = canvas.release();
+    frame.pixelLength = static_cast<uint32_t>(canvasBytes);
+    frame.used = true;
+    if (!isEditing)
+        ++image->frameCount;
+    if (c->hasZIndex && c->zIndex != 0) {
+        frame.gapless = c->zIndex < 0;
+        frame.delayMilliseconds = c->zIndex > 0 ? static_cast<uint32_t>(c->zIndex) : 0;
+    }
+    if (target == 0) {
+        image->pixels = frame.pixels;
+        image->pixelLength = frame.pixelLength;
+    }
     image->contentGeneration = ++t.images.kittyImageContentSeq;
-    // A frame adds to the Terminal total that totalBytes already counts, so the
-    // budget needs enforcing here as it is after every other install.
     Image::enforceBudget(&t, image);
+    Image::markDirty(t, image);
     kittyRespond(t, c, "OK");
 }
 
-// Animation control (a=a): c=1 stop, c=2 run-once, c=3 loop; r=N (1-based) jumps
-// to a frame; z=delay overrides the current frame's delay. cellColumns holds `c`,
-// cellRows holds `r`.
+// s controls playback, c selects the displayed frame and r selects the frame
+// whose gap z changes. These keys are independent and can be sent together.
 static void kittyAnimationControl(Ubiquitty::Terminal& t, const Ubiquitty::Kitty::GraphicsControl* c)
 {
-    Image::TerminalImage* image;
-    if (!c->hasImageID) {
-        kittyRespond(t, c, "EINVAL:animation requires image id");
-        return;
-    }
-    image = kittyFindImage(t, c);
+    Image::TerminalImage* image = kittyFindImage(t, c);
     if (!image) {
         kittyRespond(t, c, "ENOENT:image not found");
         return;
     }
-    // cellColumns ('c'): 1=stop, 2=run-once, 3=loop. Other values left as-is.
-    switch (c->cellColumns) {
+    switch (c->width) {
     case 1:
         image->animationState = Image::AnimationState::Stopped;
         break;
@@ -1654,18 +1746,54 @@ static void kittyAnimationControl(Ubiquitty::Terminal& t, const Ubiquitty::Kitty
     default:
         break;
     }
-    // The frame number is compared as the integer it was sent as: narrowed
-    // first, r=65536 reads as 0 and names a frame past the array.
-    if (c->cellRows > 0 && c->cellRows <= static_cast<int>(image->frameCount)) {
-        image->currentFrame = static_cast<uint16_t>(c->cellRows - 1);
+    if (c->cellColumns > 0 && c->cellColumns <= image->frameCount) {
+        image->currentFrame = static_cast<uint16_t>(c->cellColumns - 1);
         image->frameClockMilliseconds = 0;
     }
-    if (c->hasZIndex && image->currentFrame < image->frameCount) {
-        // z gap override: z>0 = ms, z<0 = gapless, z=0 = default gap.
-        Image::TerminalImageFrame* f = &image->frames[image->currentFrame];
-        f->gapless = (c->zIndex < 0);
-        f->delayMilliseconds = (c->zIndex > 0) ? static_cast<uint32_t>(c->zIndex) : 0;
+    if (c->hasZIndex && c->zIndex != 0 && c->cellRows > 0 && c->cellRows <= image->frameCount) {
+        auto& frame = image->frames[c->cellRows - 1];
+        frame.gapless = c->zIndex < 0;
+        frame.delayMilliseconds = c->zIndex > 0 ? static_cast<uint32_t>(c->zIndex) : 0;
     }
+    Image::markDirty(t, image);
+    kittyRespond(t, c, "OK");
+}
+
+static void kittyComposeFrame(Ubiquitty::Terminal& t, const Ubiquitty::Kitty::GraphicsControl* c)
+{
+    Image::TerminalImage* image = kittyFindImage(t, c);
+    if (!image || c->cellRows <= 0 || c->cellRows > image->frameCount || c->cellColumns <= 0 || c->cellColumns > image->frameCount) {
+        kittyRespond(t, c, "ENOENT:frame not found");
+        return;
+    }
+    const int width = c->sourceWidth > 0 ? c->sourceWidth : image->width;
+    const int height = c->sourceHeight > 0 ? c->sourceHeight : image->height;
+    // Subtract before comparing: untrusted offsets and extents can be INT_MAX.
+    if (c->pixelOffsetX > image->width || c->pixelOffsetY > image->height || c->sourceX > image->width || c->sourceY > image->height
+        || width > image->width - c->pixelOffsetX || height > image->height - c->pixelOffsetY
+        || width > image->width - c->sourceX || height > image->height - c->sourceY) {
+        kittyRespond(t, c, "EINVAL:composition rectangle outside image");
+        return;
+    }
+    if (c->cellRows == c->cellColumns && c->pixelOffsetX < c->sourceX + width && c->sourceX < c->pixelOffsetX + width
+        && c->pixelOffsetY < c->sourceY + height && c->sourceY < c->pixelOffsetY + height) {
+        kittyRespond(t, c, "EINVAL:composition rectangles overlap");
+        return;
+    }
+    if (!kittyPromoteAnimationImage(*image)) {
+        kittyRespond(t, c, "ENOMEM:frame canvas");
+        return;
+    }
+    const auto& sourceFrame = image->frames[c->cellRows - 1];
+    auto& destinationFrame = image->frames[c->cellColumns - 1];
+    for (int row = 0; row < height; ++row) {
+        for (int column = 0; column < width; ++column) {
+            const std::size_t source = (static_cast<std::size_t>(row + c->pixelOffsetY) * image->width + column + c->pixelOffsetX) * 4;
+            const std::size_t destination = (static_cast<std::size_t>(row + c->sourceY) * image->width + column + c->sourceX) * 4;
+            kittyCompositePixel(destinationFrame.pixels + destination, sourceFrame.pixels + source, 4, c->cursorPolicy == 1 ? PixelComposition::Replace : PixelComposition::Blend);
+        }
+    }
+    image->contentGeneration = ++t.images.kittyImageContentSeq;
     Image::markDirty(t, image);
     kittyRespond(t, c, "OK");
 }
@@ -1693,6 +1821,9 @@ static void kittyProcessComplete(Ubiquitty::Terminal& t, Ubiquitty::Kitty::Graph
         break;
     case 'a':
         kittyAnimationControl(t, c);
+        break;
+    case 'c':
+        kittyComposeFrame(t, c);
         break;
     default:
         kittyRespond(t, c, "ENOTSUP:unsupported action");

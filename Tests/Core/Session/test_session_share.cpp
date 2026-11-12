@@ -533,7 +533,7 @@ TEST(aShareCarriesHostParserImagesAndTextContinuationWithoutMutatingTheSource)
                                  "\033]8;id=original;https://example.test/original\033\\linked\033]8;;\033\\"
                                  "\033_Ga=T,f=32,s=1,v=1,i=7,p=9,c=2,r=3,C=1,q=2;/wAA/w==\033\\"
                                  "\033_Ga=f,f=32,s=1,v=1,i=7,z=60,q=2;AP8A/w==\033\\"
-                                 "\033_Ga=a,i=7,c=3,r=2,q=2;\033\\"
+                                 "\033_Ga=a,i=7,s=3,c=2,q=2;\033\\"
                                  "\033P0;0;0;8;0;0;8;0{@~~~~\033\\");
     auto& bank = ensureSampleBank(*window);
     bank.slots[0] = { -17, 0, 19 };

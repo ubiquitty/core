@@ -165,6 +165,68 @@ TEST(testPlacingAnImageAlreadyStoredNeedsNoPayload)
     CHECK_MSG(placementCount(t) == afterTwo, "an unknown id places nothing");
 }
 
+TEST(testNamedKittyPlacementReplacesGeometryWithoutDuplicatingStorage)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::resize(t, 6, 10, Ubiquitty::Modes::ReflowMode::Fixed);
+    Ubiquitty::hardReset(t);
+    store(t, 31);
+    store(t, 32);
+    feed(t, apc("a=p,i=31,p=7,c=2,r=1,C=1"));
+    feed(t, apc("a=p,i=31,p=8,c=1,r=1,C=1"));
+    feed(t, apc("a=p,i=32,p=7,c=1,r=1,C=1"));
+    feed(t, "\033[3;4H");
+    feed(t, apc("a=p,i=31,p=7,c=1,r=2,C=1,z=-3"));
+    CHECK(placementCount(t) == 3);
+    CHECK(t.images.livePlacementCount == 3);
+    CHECK(liveImageCount(t) == 2);
+    int matching = 0;
+    for (const auto& placement : t.images.placements) {
+        if (!placement.used || placement.imageID != 31 || placement.placementID != 7)
+            continue;
+        ++matching;
+        CHECK(placement.cursorX == 3);
+        CHECK(placement.cursorY == 2);
+        CHECK(placement.cellColumns == 1);
+        CHECK(placement.cellRows == 2);
+        CHECK(placement.zIndex == -3);
+    }
+    CHECK(matching == 1);
+}
+
+TEST(testNamedKittyPlacementCanBeReplacedWithAFullPlacementTable)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::resize(t, 6, 10, Ubiquitty::Modes::ReflowMode::Fixed);
+    Ubiquitty::hardReset(t);
+    store(t, 31);
+    for (int id = 1; id <= Ubiquitty::Image::maxTerminalImagePlacementCount; ++id)
+        feed(t, apc("a=p,i=31,p=" + std::to_string(id) + ",c=1,r=1,C=1"));
+    CHECK(placementCount(t) == Ubiquitty::Image::maxTerminalImagePlacementCount);
+    feed(t, "\033[2;3H");
+    feed(t, apc("a=p,i=31,p=7,c=2,r=1,C=1"));
+    CHECK(t.images.livePlacementCount == Ubiquitty::Image::maxTerminalImagePlacementCount);
+    for (const auto& placement : t.images.placements) {
+        if (!placement.used || placement.placementID != 7)
+            continue;
+        CHECK(placement.cursorX == 2);
+        CHECK(placement.cursorY == 1);
+        CHECK(placement.cellColumns == 2);
+    }
+}
+
+TEST(testZeroKittyPlacementIDsKeepCreatingIndependentPlacements)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::resize(t, 6, 10, Ubiquitty::Modes::ReflowMode::Fixed);
+    Ubiquitty::hardReset(t);
+    store(t, 31);
+    feed(t, apc("a=p,i=31,p=0,c=1,r=1,C=1"));
+    feed(t, apc("a=p,i=31,p=0,c=1,r=1,C=1"));
+    CHECK(placementCount(t) == 2);
+    CHECK(t.images.livePlacementCount == 2);
+}
+
 TEST(testDeletingByIdTakesThePlacementsWithIt)
 {
     // The lower-case modes drop placements and keep the pixels for a later
@@ -320,6 +382,136 @@ TEST(testAnimationFramesAndControlReachTheirOwnPaths)
     feed(t, apc("a=a,i=51,s=2"));
     feed(t, apc("a=a,i=999,s=1"));
     CHECK_MSG(liveImageCount(t) == 1, "driving the animation neither adds nor drops an image");
+}
+
+TEST(kittyAnimationUsesStateAndFrameKeysFromTheProtocol)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::hardReset(t);
+    feed(t, apc("a=t,i=31,f=32,s=1,v=1", "/wAA/w=="));
+    feed(t, apc("a=f,i=31,f=32,s=1,v=1,z=25", "AAD//w=="));
+    feed(t, apc("a=a,i=31,c=2"));
+    const auto* image = imageWithID(t, 31);
+    REQUIRE(image);
+    CHECK(image->currentFrame == 1);
+    CHECK(image->animationState == Ubiquitty::Image::AnimationState::Stopped);
+    feed(t, apc("a=a,i=31,c=1,r=1,z=25,s=3"));
+    Ubiquitty::Image::advanceFrames(&t, 24);
+    CHECK(image->currentFrame == 0);
+    Ubiquitty::Image::advanceFrames(&t, 1);
+    CHECK(image->currentFrame == 1);
+    feed(t, apc("a=a,i=31,s=1"));
+    Ubiquitty::Image::advanceFrames(&t, 100);
+    CHECK(image->currentFrame == 1);
+    feed(t, apc("a=a,i=31,c=1,r=1,z=0,s=3"));
+    CHECK(image->frames[0].delayMilliseconds == 25);
+    Ubiquitty::Image::advanceFrames(&t, 25);
+    CHECK(image->currentFrame == 1);
+}
+
+TEST(kittyFrameRectanglesUsePreviousTransparentAndColoredCanvases)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::hardReset(t);
+    feed(t, apc("a=t,i=31,f=32,s=2,v=1", "/wAA//8AAP8="));
+    feed(t, apc("a=f,i=31,c=1,x=1,f=32,s=1,v=1", "AAD//w=="));
+    feed(t, apc("a=f,i=31,x=1,f=32,s=1,v=1", "AAD//w=="));
+    feed(t, apc("a=f,i=31,Y=4278190335,x=1,f=32,s=1,v=1", "AAD//w=="));
+    const auto* image = imageWithID(t, 31);
+    REQUIRE(image);
+    REQUIRE(image->frameCount == 4);
+    CHECK(image->frames[1].pixels[0] == 255);
+    CHECK(image->frames[1].pixels[6] == 255);
+    CHECK(image->frames[2].pixels[3] == 0);
+    CHECK(image->frames[2].pixels[6] == 255);
+    CHECK(image->frames[3].pixels[0] == 255);
+    CHECK(image->frames[3].pixels[6] == 255);
+    feed(t, apc("a=f,i=31,r=1,x=1,f=32,s=1,v=1,X=1", "AAD//w=="));
+    CHECK(image->frameCount == 4);
+    CHECK(image->pixels[0] == 255);
+    CHECK(image->pixels[6] == 255);
+    CHECK(image->frames[0].pixels == image->pixels);
+}
+
+TEST(kittyFrameBlendAndOverwritePreserveStraightAlpha)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::hardReset(t);
+    feed(t, apc("a=t,i=31,f=32,s=1,v=1", "/wAA/w=="));
+    feed(t, apc("a=f,i=31,c=1,f=32,s=1,v=1", "AAD/gA=="));
+    feed(t, apc("a=f,i=31,c=1,f=32,s=1,v=1,X=1", "AAD/gA=="));
+    const auto* image = imageWithID(t, 31);
+    REQUIRE(image && image->frameCount == 3);
+    CHECK(image->frames[1].pixels[0] == 127);
+    CHECK(image->frames[1].pixels[2] == 128);
+    CHECK(image->frames[1].pixels[3] == 255);
+    CHECK(image->frames[2].pixels[0] == 0);
+    CHECK(image->frames[2].pixels[2] == 255);
+    CHECK(image->frames[2].pixels[3] == 128);
+}
+
+TEST(kittyCompositionCopiesRectanglesAndRejectsInvalidSources)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::hardReset(t);
+    feed(t, apc("a=t,i=31,f=32,s=2,v=1", "/wAA//8AAP8="));
+    feed(t, apc("a=f,i=31,f=32,s=2,v=1", "AAD//wAA//8="));
+    feed(t, apc("a=c,i=31,r=2,c=1,w=1,h=1,x=1,C=1"));
+    const auto* image = imageWithID(t, 31);
+    REQUIRE(image);
+    CHECK(image->pixels[0] == 255);
+    CHECK(image->pixels[4] == 0);
+    CHECK(image->pixels[6] == 255);
+    feed(t, apc("a=c,i=31,r=1,c=1,w=2,h=1"));
+    CHECK(image->pixels[0] == 255);
+    feed(t, apc("a=c,i=31,r=2,c=1,w=2147483647,h=1"));
+    CHECK(image->pixels[0] == 255);
+    feed(t, apc("a=c,i=31,r=65537,c=1,w=1,h=1"));
+    CHECK(image->pixels[0] == 255);
+}
+
+TEST(kittyIdentifiersKeepAllThirtyTwoBits)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::hardReset(t);
+    feed(t, apc("a=T,i=4294967295,p=4294967295,f=24,s=1,v=1,C=1", "/wAA"));
+    REQUIRE(imageWithID(t, 4294967295u));
+    CHECK(placementCount(t) == 1);
+    CHECK(t.images.placements[0].placementID == 4294967295u);
+}
+
+TEST(kittyLoadingPlaybackResumesWhenAnotherFrameArrives)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::hardReset(t);
+    feed(t, apc("a=t,i=31,f=32,s=1,v=1", "/wAA/w=="));
+    feed(t, apc("a=f,i=31,f=32,s=1,v=1,z=25", "AAD//w=="));
+    feed(t, apc("a=a,i=31,r=1,z=25,s=2"));
+    Ubiquitty::Image::advanceFrames(&t, 75);
+    const auto* image = imageWithID(t, 31);
+    REQUIRE(image);
+    CHECK(image->currentFrame == 1);
+    CHECK(!Ubiquitty::Image::anyAnimating(&t));
+    feed(t, apc("a=f,i=31,f=32,s=1,v=1,z=25", "AP8A/w=="));
+    CHECK(Ubiquitty::Image::anyAnimating(&t));
+    Ubiquitty::Image::advanceFrames(&t, 25);
+    CHECK(image->currentFrame == 2);
+}
+
+TEST(kittyGaplessFramesAreSkippedAtAnExactBoundary)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::hardReset(t);
+    feed(t, apc("a=t,i=31,f=32,s=1,v=1", "/wAA/w=="));
+    feed(t, apc("a=f,i=31,f=32,s=1,v=1,z=-1", "AAD//w=="));
+    feed(t, apc("a=f,i=31,f=32,s=1,v=1,z=25", "AP8A/w=="));
+    const auto* image = imageWithID(t, 31);
+    REQUIRE(image);
+    CHECK(image->frames[0].gapless);
+    feed(t, apc("a=a,i=31,r=1,z=25,s=3"));
+    Ubiquitty::Image::advanceFrames(&t, 25);
+    CHECK(image->currentFrame == 2);
+    CHECK(image->frameClockMilliseconds == 0);
 }
 
 TEST(testAChunkedTransferAssemblesAcrossBlocks)

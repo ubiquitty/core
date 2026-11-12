@@ -1991,7 +1991,7 @@ TEST(anAnimatedHostPublishesTheSelectedFrameAndKeepsAnEarlierSnapshotStable)
     const auto snapshot = link.publisher.copyPixels(initial.images[0].asset.hash, red.size());
     REQUIRE(snapshot);
     link.write(kitty("a=f,f=32,s=1,v=1,i=7,z=40,q=2", green));
-    link.write(kitty("a=a,i=7,c=3,q=2"));
+    link.write(kitty("a=a,i=7,s=3,r=1,z=40,q=2"));
     REQUIRE(link.synchronize());
     CHECK_EQ(link.publisher.state().revision, initial.revision);
     CHECK_EQ(link.transfers, 1u);
@@ -2022,7 +2022,7 @@ TEST(aRetainedAnimatedCacheReusesOnlyItsSelectedFrameAndStopsItsLocalTimeline)
     link.write(kitty("a=T,f=32,s=1,v=1,i=7,q=2,C=1", green));
     Ubiquitty::processBytes(link.client.get(), kitty("a=T,f=32,s=1,v=1,i=99,q=2,C=1", red));
     Ubiquitty::processBytes(link.client.get(), kitty("a=f,f=32,s=1,v=1,i=99,z=40,q=2", green));
-    Ubiquitty::processBytes(link.client.get(), kitty("a=a,i=99,c=3,q=2"));
+    Ubiquitty::processBytes(link.client.get(), kitty("a=a,i=99,s=3,q=2"));
     Image::advanceFrames(link.client.get(), 40);
     const auto* animated = findImage(*link.client, 99);
     REQUIRE(animated && animated->currentFrame == 1);
@@ -2050,7 +2050,7 @@ TEST(anAnimatedCacheDoesNotMistakeItsUnselectedBaseForTheAdvertisedAsset)
     link.write(kitty("a=T,f=32,s=1,v=1,i=7,q=2,C=1", red));
     Ubiquitty::processBytes(link.client.get(), kitty("a=T,f=32,s=1,v=1,i=7,q=2,C=1", red));
     Ubiquitty::processBytes(link.client.get(), kitty("a=f,f=32,s=1,v=1,i=7,z=40,q=2", green));
-    Ubiquitty::processBytes(link.client.get(), kitty("a=a,i=7,c=3,q=2"));
+    Ubiquitty::processBytes(link.client.get(), kitty("a=a,i=7,s=3,r=1,z=40,q=2"));
     Image::advanceFrames(link.client.get(), 40);
     const auto* animated = findImage(*link.client, 7);
     REQUIRE(animated && animated->currentFrame == 1);
