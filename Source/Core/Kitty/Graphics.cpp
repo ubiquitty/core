@@ -1706,8 +1706,11 @@ static void kittyAddFrame(Ubiquitty::Terminal& t, const Ubiquitty::Kitty::Graphi
     frame.pixels = canvas.release();
     frame.pixelLength = static_cast<uint32_t>(canvasBytes);
     frame.used = true;
-    if (!isEditing)
+    if (!isEditing) {
         ++image->frameCount;
+        frame.gapless = false;
+        frame.delayMilliseconds = 0;
+    }
     if (c->hasZIndex && c->zIndex != 0) {
         frame.gapless = c->zIndex < 0;
         frame.delayMilliseconds = c->zIndex > 0 ? static_cast<uint32_t>(c->zIndex) : 0;

@@ -514,6 +514,23 @@ TEST(kittyGaplessFramesAreSkippedAtAnExactBoundary)
     CHECK(image->frameClockMilliseconds == 0);
 }
 
+TEST(kittyNewFrameResetsTheGapOfAReusedSlot)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::hardReset(t);
+    feed(t, apc("a=t,i=31,f=32,s=1,v=1", "/wAA/w=="));
+    feed(t, apc("a=f,i=31,f=32,s=1,v=1,z=-1", "AAD//w=="));
+    feed(t, apc("a=d,d=f,i=31"));
+    feed(t, apc("a=f,i=31,f=32,s=1,v=1", "AP8A/w=="));
+    const auto* image = imageWithID(t, 31);
+    REQUIRE(image && image->frameCount == 2);
+    CHECK(!image->frames[1].gapless);
+    CHECK(image->frames[1].delayMilliseconds == 0);
+    feed(t, apc("a=a,i=31,r=1,z=25,s=3"));
+    Ubiquitty::Image::advanceFrames(&t, 25);
+    CHECK(image->currentFrame == 1);
+}
+
 TEST(testAChunkedTransferAssemblesAcrossBlocks)
 {
     // A payload larger than one APC block arrives as `m=1` continuations, so
