@@ -401,7 +401,7 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.linux == 'true'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -411,6 +411,12 @@ jobs:
         run: |
           echo "UBQ_BUILD_ROOT=$RUNNER_WORKSPACE/build-arm64" >> "$GITHUB_ENV"
           echo "CCACHE_STATSLOG=$RUNNER_TEMP/ccache-arm64.log" >> "$GITHUB_ENV"
+      - name: Free unused hosted SDK space
+        if: runner.environment == 'github-hosted' && runner.os == 'Linux'
+        run: |
+          df -h /
+          sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup
+          df -h /
       - name: Restore the compiler cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
@@ -465,7 +471,7 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.linux == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -475,6 +481,12 @@ jobs:
         run: |
           echo "UBQ_BUILD_ROOT=$RUNNER_WORKSPACE/build-coverage" >> "$GITHUB_ENV"
           echo "CCACHE_STATSLOG=$RUNNER_TEMP/ccache-coverage.log" >> "$GITHUB_ENV"
+      - name: Free unused hosted SDK space
+        if: runner.environment == 'github-hosted' && runner.os == 'Linux'
+        run: |
+          df -h /
+          sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup
+          df -h /
       - name: Restore the compiler cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
