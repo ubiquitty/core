@@ -3,11 +3,38 @@
 
 # Ubiquitty Core
 
+**The terminal engine and persistent multiplexer behind Ubiquitty.**
+
+Embed the C++23 engine, build your own terminal UI, or keep shells running in
+`ubiquitty-host` and attach from your apps, scripts and agents. Core owns the
+terminal model, parser, input encoding, screen history and render plan. It needs
+no window system, GPU or UI toolkit. The host enforces capability tokens, attach
+consent and command policies for CLI and MCP clients.
+
+[Embed Core](Docs/libubiquittycore.md) · [Use the host and CLI](Docs/ubq.md) · [Get the apps](https://ubiquitty.org/)
+
+**100% conformance: 4,532 / 4,532 applicable cases passed, versus about 66% for the next-best tested engine in our recorded comparison.**
+
+**The fastest parser in our comparative benchmarks, as of 7 November 2026.** [Conformance scope](https://github.com/ubiquitty/ubiquitty#conformance) · [Benchmark methods](https://github.com/ubiquitty/ubiquitty#benchmarks)
+
+Legacy terminal software renders correctly. The most conformant engine in our
+recorded comparison covers DEC rectangular editing, selective erase, protected
+cells, cell checksums, national character sets, double-width and double-height lines.
+Modern protocols include Kitty keyboard input, animated Kitty graphics, Sixel,
+iTerm2 images, OSC 8 hyperlinks and synchronized output.
+
+Extended DECPS adds eight musical channels, waveform voices, WAV samples,
+envelopes, filters, reverb and tracker effects. Programs can use it for
+instruments, sequencers and game audio; the Mac app supplies playback.
+[Sound protocol](https://ubiquitty.org/features/sound/).
+
+## Choose your layer
+
 | You are building | Reach for | Repository |
 |---|---|---|
 | A C++ host with its own UI, text system or renderer | libubiquitty's C++ session facade and Core headers | [ubiquitty-core](https://github.com/ubiquitty/core) |
 | Persistent sessions, a session daemon, attach and reattach across machines | the multiplexer: `ubiquitty-host`, Sync, the `ubq` command and the agent | [ubiquitty-core](https://github.com/ubiquitty/core) |
-| A terminal view to drop into a macOS or iOS app | UbiquittyKit's `TerminalSurface` (Metal) | [ubiquitty-kit](https://github.com/ubiquitty/kit) |
+| A terminal view to drop into a macOS or iOS app | UbiquittyKit's `TerminalView` or SwiftUI `Terminal` (Metal) | [ubiquitty-kit](https://github.com/ubiquitty/kit) |
 | A terminal view in a Linux app, or a software-rendered surface | the Vulkan, FreeType and software renderers and the GTK platform layer | [ubiquitty-kit](https://github.com/ubiquitty/kit) |
 | Core's renderer drawing into a texture or layer your app owns | UbiquittyRenderKit (Metal) or the Vulkan renderer's exportable frames | [ubiquitty-kit](https://github.com/ubiquitty/kit) |
 | The Ubiquitty apps themselves | the macOS, iOS, Linux and web frontends | [ubiquitty](https://github.com/ubiquitty/ubiquitty) |
@@ -47,11 +74,11 @@ included. Renderers, terminal views and apps live in the repositories above.
 
 ## Correctness and performance
 
-**100% full-suite conformance: 4,529 / 4,529 applicable cases passed.** See the [comparison scope and scoring policy](https://github.com/ubiquitty/ubiquitty#conformance).
+**100% full-suite conformance: 4,532 / 4,532 applicable cases passed.** See the [comparison scope and scoring policy](https://github.com/ubiquitty/ubiquitty#conformance).
 
 **The fastest parser among the engines and workloads in our comparative runs, as of 7 November 2026.** See [benchmarks and measurement scope](https://github.com/ubiquitty/ubiquitty#benchmarks). Parser throughput, rendering, input latency and energy are separate measurements.
 
-A recorded October 27, 2026 run of Ghostty’s `libghostty-vt` engine passed **2,958 / 4,529 cases (65.31%)**. That dated result predates subsequent Ghostty fixes and is not a score for its current release.
+Ghostty’s `libghostty-vt` main (`cf3a8a659`) scored **66.3%** in our tests on **12 November 2026**.
 
 ## Build
 
