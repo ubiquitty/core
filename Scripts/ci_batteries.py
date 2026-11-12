@@ -206,9 +206,9 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
         return (
             Stage("setup", "Linux tools and hooks", LINUX_SETUP),
             Stage("frontend-tools", "GTK/Vulkan toolchain", LINUX_FRONTEND_TOOLS, repositories=("app",)),
-            Stage("quic", "QUIC dependencies", './Scripts/ensure-quic-deps.sh "$UBIQUITTY_QUIC_PREFIX"', "code"),
-            Stage("host-tests", "GCC host tests and QUIC integration", "SNAPSHOT=skip ./Scripts/run-tests.sh", "code", "gcc"),
-            Stage("fuzz", "Required bounded libFuzzer harnesses", "FUZZ_REQUIRED=1 ./Scripts/run-tests.sh --fuzz-only", "code", "clang"),
+            Stage("quic", "QUIC dependencies", './Scripts/ensure-quic-deps.sh "$UBIQUITTY_QUIC_PREFIX"', "code", repositories=("core", "app")),
+            Stage("host-tests", "GCC host tests and QUIC integration", "SNAPSHOT=skip ./Scripts/run-tests.sh", "code", "gcc", repositories=("core", "app")),
+            Stage("fuzz", "Required bounded libFuzzer harnesses", "FUZZ_REQUIRED=1 ./Scripts/run-tests.sh --fuzz-only", "code", "clang", repositories=("core",)),
             # REQUIRE: the gate stands down for a compiler that cannot read the
             # profile, and here that compiler is the one CI vouches applies it.
             # In the CI image that is the LLVM UBQ_PGO_LLVM names, which the
@@ -217,15 +217,16 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
                   'export PATH="${UBQ_PGO_LLVM:+$UBQ_PGO_LLVM:}$PATH"\n'
                   "python3 ./Scripts/check-profile-orphans.py\n"
                   "UBIQUITTY_PGO=REQUIRE python3 ./Scripts/check-pgo-applies.py --recorded-budget",
-                  "code", "clang", hosted=False),
-            Stage("portable-build", "Portable snapshot build", "./Scripts/build-core-snapshot.sh"),
+                  "code", "clang", hosted=False, repositories=("core",)),
+            Stage("portable-build", "Portable snapshot build", "./Scripts/build-core-snapshot.sh", repositories=("core",)),
             Stage("portable-snapshots", "Portable reference catalog", "python3 Tests/Snapshots/run.py --backend portable --quiet",
-                  requires=("portable-build",)),
-            Stage("host-glibc", "Linux host glibc-x86_64", "./Scripts/build-host.sh --release", "code"),
+                  requires=("portable-build",), repositories=("core",)),
+            Stage("host-glibc", "Linux host glibc-x86_64", "./Scripts/build-host.sh --release", "code", repositories=("core",)),
             Stage("agent-smokes", "Agent CLI, authentication, MCP, and completions",
-                  './Scripts/build-agent.sh\nUBQ_REQUIRED_TOOLS="${UBQ_REQUIRED_TOOLS:-} ubiquitty-host ubq" ./Scripts/run-tests.sh agent_smoke agent_auth_smoke agent_mcp_smoke agent_completions_smoke ubq_smoke ubq_smoke_cleanup', "code"),
-            Stage("host-musl", "Linux host static-musl-x86_64", "./Scripts/build-host-linux.sh x86_64", "code"),
-            Stage("sanitizers", "Clang ASan and UBSan suite", "./Scripts/run-sanitized-tests.sh", "code", "clang"),
+                  './Scripts/build-agent.sh\nUBQ_REQUIRED_TOOLS="${UBQ_REQUIRED_TOOLS:-} ubiquitty-host ubq" ./Scripts/run-tests.sh agent_smoke agent_auth_smoke agent_mcp_smoke agent_completions_smoke ubq_smoke ubq_smoke_cleanup', "code", repositories=("core",)),
+            Stage("host-musl", "Linux host static-musl-x86_64", "./Scripts/build-host-linux.sh x86_64", "code", repositories=("core",)),
+            Stage("sanitizers", "Clang ASan and UBSan suite", "./Scripts/run-sanitized-tests.sh", "code", "clang", repositories=("core",)),
+            Stage("kit-build", "Kit Linux libraries and tests", "./Scripts/build-linux.sh --test", repositories=("kit",)),
             Stage("linux-build", "Linux frontend Release", "./Scripts/build-linux-gtk.sh Release", repositories=("app",)),
             Stage("linux-smokes", "Linux headless smoke battery", "xvfb-run -a ./Scripts/run-linux-smokes.sh", "xvfb", repositories=("app",),
                   requires=("linux-build",)),
@@ -233,8 +234,8 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
                   requires=("linux-build",), hosted=False),
             Stage("linux-determinism", "Linux-native snapshot determinism", "xvfb-run -a python3 Tests/Snapshots/run.py --backend linux --twice linux_native_text", "xvfb", repositories=("app",),
                   requires=("linux-build",)),
-            Stage("wasm-tools", "Emscripten 6.0.9", WASM_SETUP, toolchain="wasm"),
-            Stage("wasm-smoke", "WASM Core smoke", 'source "$EMSDK_ENV"\n./Scripts/wasm-smoke.sh', toolchain="wasm"),
+            Stage("wasm-tools", "Emscripten 6.0.9", WASM_SETUP, toolchain="wasm", repositories=("core", "app")),
+            Stage("wasm-smoke", "WASM Core smoke", 'source "$EMSDK_ENV"\n./Scripts/wasm-smoke.sh', toolchain="wasm", repositories=("core",)),
             Stage("web-build", "Web frontend build", 'source "$EMSDK_ENV"\n./Scripts/build-web.sh', toolchain="wasm", repositories=("app",)),
             Stage("web-snapshots", "Web snapshot tier", 'source "$EMSDK_ENV"\npython3 Tests/Snapshots/run.py --backend web --quiet', toolchain="wasm", repositories=("app",)),
         )
@@ -265,24 +266,24 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
                   requires=("macos-build",)),
             Stage("pgo", "Portable PGO profile",
                   "python3 ./Scripts/check-profile-orphans.py --profile Support/pgo/portable-core.profdata\n"
-                  "UBIQUITTY_PGO=REQUIRE python3 ./Scripts/check-pgo-applies.py --profile Support/pgo/portable-core.profdata"),
+                  "UBIQUITTY_PGO=REQUIRE python3 ./Scripts/check-pgo-applies.py --profile Support/pgo/portable-core.profdata", repositories=("core",)),
             Stage("core-frames", "Core builder frames", "./Scripts/check-core-builder-frames.sh", repositories=("app",),
                   requires=("macos-build",)),
             # Swift renderer drivers link the stamped portable Core archive.
-            Stage("portable-build", "Portable snapshot build", "./Scripts/build-core-snapshot.sh"),
+            Stage("portable-build", "Portable snapshot build", "./Scripts/build-core-snapshot.sh", repositories=("core", "kit")),
             # The encoder and renderer drivers load the shader library, which the
             # app's own build makes; a Kit checkout builds it alone.
             Stage("metallib", "Kit shader library", "./Scripts/build-metallib.sh", repositories=("kit",)),
-            Stage("swift-renderer", "Swift renderer drivers", "./Scripts/check-swift-renderer.sh", repositories=("kit", "app"),
+            Stage("swift-renderer", "Swift renderer drivers", "./Scripts/check-swift-renderer.sh", repositories=("kit",),
                   requires=("portable-build", "metallib", "macos-build")),
             Stage("forks", "Built symbol forks", './Scripts/check-forks.sh "$UBQ_BUILD_ROOT/macos"', repositories=("app",),
                   requires=("macos-build",)),
-            Stage("snapshots", "Portable and Apple snapshot regressions", "./Scripts/run-tests.sh snapshots"),
+            Stage("snapshots", "Portable and Apple snapshot regressions", "./Scripts/run-tests.sh snapshots", repositories=("core", "app")),
             Stage("ios-build", "iOS simulator app and UI bundle", "./Scripts/build-ios.sh --sdk iphonesimulator --ui-tests", "code", repositories=("app",)),
             Stage("ios-smokes", "iOS smokes", "./Scripts/run-ios-smokes.sh", "code", repositories=("app",),
                   requires=("ios-build",)),
             Stage("ios-sync", "iOS Sync conformance", "./Scripts/run-ios-sync-conformance.sh", "code", repositories=("app",)),
-            Stage("ios-protected-file", "iOS protected file", "./Scripts/run-ios-protected-file-tests.sh", "code", repositories=("kit", "app")),
+            Stage("ios-protected-file", "iOS protected file", "./Scripts/run-ios-protected-file-tests.sh", "code", repositories=("kit",)),
             Stage("ios-ui", "iOS UI tests", "./Scripts/run-ios-ui-tests.sh", "code", repositories=("app",),
                   requires=("ios-build",)),
             # Last: the longest stage, so a failing host test does not leave the
@@ -559,10 +560,9 @@ def route_stage(stage, context: SourceRoots):
     core_driver = None
     subject_driver = None
     if stage.key == "snapshots":
-        command = "python3 Tests/Snapshots/run.py --backend portable --quiet"
+        backend = "portable" if context.repositories == ("core",) else "macos"
+        command = f"python3 Tests/Snapshots/run.py --backend {backend} --quiet"
         if "app" in context.repositories:
-            command += "\npython3 Tests/Snapshots/run.py --backend macos --quiet"
-            command += "\npython3 Tests/Snapshots/run.py --backend swift --quiet"
             command += '''
 if [ -f "$UBQ_BUILD_ROOT/web-dist/ubiquitty.wasm" ]; then
     webSnapshotStatus=0
@@ -583,8 +583,6 @@ fi'''
         if not subject_driver.exists() and not subject_driver.is_symlink():
             subject_driver = core_driver
         command = (
-            'SNAPSHOT=skip UBQ_TESTS_ROOT="$UBQ_CORE_ROOT" UBQ_KIT_ROOT= UBIQUITTY_KIT_SOURCE_DIR= '
-            'UBQ_BUILD_ROOT="$UBQ_BUILD_ROOT/core" ' + shlex.quote(str(core_driver)) + '\n'
             'SNAPSHOT=skip UBQ_TESTS_ROOT=' + shlex.quote(str(context.subject))
             + ' UBQ_BUILD_ROOT="$UBQ_BUILD_ROOT/subject" ' + shlex.quote(str(subject_driver))
         )

@@ -70,6 +70,22 @@ def carry_library_resolver(scripts):
 
 
 class BatteryTests(unittest.TestCase):
+    def test_library_suites_have_one_repository_owner(self):
+        core_only = {"fuzz", "pgo", "portable-build", "portable-snapshots",
+                     "host-glibc", "agent-smokes", "host-musl", "sanitizers", "wasm-smoke"}
+        linux = {stage.key: stage for stage in batteries.stages("linux")}
+        self.assertTrue(core_only <= linux.keys())
+        for key in core_only:
+            self.assertEqual(linux[key].repositories, ("core",), key)
+        self.assertEqual(linux["kit-build"].repositories, ("kit",))
+        self.assertEqual(linux["host-tests"].repositories, ("core", "app"))
+        apple = {stage.key: stage for stage in batteries.stages("apple")}
+        for key in ("swift-renderer", "ios-protected-file"):
+            self.assertEqual(apple[key].repositories, ("kit",), key)
+        self.assertEqual(apple["pgo"].repositories, ("core",))
+        for key in ("macos-build", "macos-smokes", "ios-build", "ios-smokes", "ios-ui"):
+            self.assertEqual(apple[key].repositories, ("app",), key)
+
     def test_agent_smokes_are_required_after_the_host_build(self):
         stages = list(batteries.stages("linux"))
         keys = [stage.key for stage in stages]
@@ -118,6 +134,7 @@ class BatteryTests(unittest.TestCase):
                 "pgo": 'export PATH="${UBQ_PGO_LLVM:+$UBQ_PGO_LLVM:}$PATH"\n'
                        "python3 ./Scripts/check-profile-orphans.py\n"
                        "UBIQUITTY_PGO=REQUIRE python3 ./Scripts/check-pgo-applies.py --recorded-budget",
+                "kit-build": "./Scripts/build-linux.sh --test",
                 "linux-build": "./Scripts/build-linux-gtk.sh Release",
                 "linux-smokes": "xvfb-run -a ./Scripts/run-linux-smokes.sh",
                 "linux-snapshots": "xvfb-run -a python3 Tests/Snapshots/run.py --backend linux --quiet",
@@ -3366,6 +3383,10 @@ class EveryWorkflowTests(unittest.TestCase):
                 if f"name: {platform.title()} battery (" in job:
                     lists += [(name, platform, group.split()[1::2], TEST_SOURCES.repositories)
                               for group in re.findall(r"(?m)^            stages: (.*)$", job)]
+                elif f"name: {platform.title()} battery\n" in job:
+                    lists.append((name, platform,
+                                  [stage.key for stage in batteries.source_stages(platform, TEST_SOURCES)],
+                                  TEST_SOURCES.repositories))
         # A step names the checkout it judges; a cross-repository job's is the Kit's or the app's.
         subjects = {"$KIT_CHECKOUT": ("kit",), "$APP_CHECKOUT": ("app",)}
         for platform, rest in re.findall(r"ci_batteries\.py\"? (?:run|report) (linux|apple)\b([^\n']*)", text):
@@ -3455,15 +3476,12 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         path = self.root / "battery.json"
         self.assertEqual(batteries.run_battery("linux", manifest, environment, path), 0)
         rows = [json.loads(line) for line in self.log.read_text().splitlines()]
-        self.assertEqual([row["label"] for row in rows], ["core-quic", "core-tests", "core-tests", "app-build", "core-snapshot"])
-        self.assertEqual((rows[1]["subject"], rows[1]["kit"]), (str(self.core), ""))
+        self.assertEqual([row["label"] for row in rows], ["core-quic", "core-tests", "app-build", "core-snapshot"])
         gcc_root = Path(environment["RUNNER_WORKSPACE"]) / "build-gcc"
-        self.assertEqual(rows[1]["build_root"], str(gcc_root / "core"))
-        self.assertEqual(rows[2]["build_root"], str(gcc_root / "subject"))
-        for index, row in enumerate(rows):
+        self.assertEqual(rows[1]["build_root"], str(gcc_root / "subject"))
+        for row in rows:
             self.assertEqual(row["cwd"], str(self.app))
-            if index != 1:
-                self.assertEqual((row["subject"], row["core"], row["kit"]), tuple(map(str, (self.app, self.core, self.kit))))
+            self.assertEqual((row["subject"], row["core"], row["kit"]), tuple(map(str, (self.app, self.core, self.kit))))
         self.assertIn("--source-root", rows[-1]["arguments"])
         self.assertIn(str(self.app), rows[-1]["arguments"])
         self.assertIn(str(self.kit), rows[-1]["arguments"])
@@ -3472,27 +3490,26 @@ class SourceCompositionBatteryTests(unittest.TestCase):
 
     def test_substantive_kit_driver_remains_the_kit_subject_entry(self):
         context = source_roots(self.kit, core=self.core, environment={})
-        stage = batteries.source_stages("linux", context, ("host-tests",))[0]
+        stage = batteries.source_stages("apple", context, ("host-tests",))[0]
         self.assertEqual(batteries.execute_stage(stage, self.environment(context)), 0)
         rows = [json.loads(line) for line in self.log.read_text().splitlines()]
-        self.assertEqual([row["label"] for row in rows], ["core-tests", "kit-tests"])
-        self.assertEqual([row["arguments"] for row in rows], [[], []])
-        self.assertEqual(rows[0]["subject"], str(self.core))
-        self.assertEqual(rows[1]["subject"], str(self.kit))
-        self.assertEqual(rows[1]["kit"], str(self.kit))
+        self.assertEqual([row["label"] for row in rows], ["kit-tests"])
+        self.assertEqual(rows[0]["arguments"], [])
+        self.assertEqual(rows[0]["subject"], str(self.kit))
+        self.assertEqual(rows[0]["kit"], str(self.kit))
 
-    def test_a_consumer_sanitizes_cores_suite_from_cores_tree(self):
+    def test_core_sanitizers_cannot_be_executed_as_a_consumer_suite(self):
         self.tool(self.core, "Scripts/run-sanitized-tests.sh", "core-sanitizers")
         for subject, kit in ((self.kit, self.kit), (self.app, self.kit)):
             with self.subTest(subject=subject.name):
-                self.log.unlink(missing_ok=True)
                 context = source_roots(subject, core=self.core, kit=kit, environment={})
                 stage = batteries.source_stages("linux", context, ("sanitizers",))[0]
-                self.assertEqual(batteries.execute_stage(stage, self.environment(context)), 0)
-                rows = [json.loads(line) for line in self.log.read_text().splitlines()]
-                self.assertEqual([row["label"] for row in rows], ["core-sanitizers"])
-                self.assertEqual((rows[0]["subject"], rows[0]["core"]), (str(self.core), str(self.core)))
-                self.assertFalse(rows[0]["kit"])
+                self.assertEqual(batteries.execute_stage(stage, self.environment(context)), 2)
+                self.assertFalse(self.log.exists())
+        context = source_roots(self.core, environment={})
+        stage = batteries.source_stages("linux", context, ("sanitizers",))[0]
+        self.assertEqual(batteries.execute_stage(stage, self.environment(context)), 0)
+        self.assertEqual(json.loads(self.log.read_text())["label"], "core-sanitizers")
 
     def test_consumer_owned_driver_is_not_replaced_with_the_shared_implementation(self):
         self.tool(self.app, "Scripts/run-tests.sh", "app-tests")
@@ -3500,8 +3517,8 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         stage = batteries.source_stages("linux", context, ("host-tests",))[0]
         self.assertEqual(batteries.execute_stage(stage, self.environment(context)), 0)
         rows = [json.loads(line) for line in self.log.read_text().splitlines()]
-        self.assertEqual([row["label"] for row in rows], ["core-tests", "app-tests"])
-        self.assertEqual(rows[1]["subject"], str(self.app))
+        self.assertEqual([row["label"] for row in rows], ["app-tests"])
+        self.assertEqual(rows[0]["subject"], str(self.app))
 
     def test_consumer_driver_cannot_escape_its_owner_before_either_pass_starts(self):
         outside = self.root / "outside-driver.sh"
@@ -3518,20 +3535,20 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         self.assertEqual(batteries.execute_stage(stage, self.environment(context)), 0)
         self.assertEqual(json.loads(self.log.read_text())["label"], "kit-prerequisite")
 
-    def test_apple_snapshot_stage_retains_all_three_required_arms_and_optional_web(self):
+    def test_app_snapshot_stage_checks_its_native_frontend_and_optional_web(self):
         context = source_roots(self.app, environment={})
         stage = batteries.source_stages("apple", context, ("snapshots",))[0]
         environment = self.environment(context)
         self.assertEqual(batteries.execute_stage(stage, environment), 0)
         rows = [json.loads(line) for line in self.log.read_text().splitlines()]
-        self.assertEqual([row["arguments"][row["arguments"].index("--backend") + 1] for row in rows], ["portable", "macos", "swift"])
+        self.assertEqual([row["arguments"][row["arguments"].index("--backend") + 1] for row in rows], ["macos"])
         module = Path(environment["UBQ_BUILD_ROOT"]) / "web-dist/ubiquitty.wasm"
         module.parent.mkdir(parents=True)
         module.write_text("built Web module fixture")
         self.log.unlink()
         self.assertEqual(batteries.execute_stage(stage, environment), 0)
         rows = [json.loads(line) for line in self.log.read_text().splitlines()]
-        self.assertEqual([row["arguments"][row["arguments"].index("--backend") + 1] for row in rows], ["portable", "macos", "swift", "web"])
+        self.assertEqual([row["arguments"][row["arguments"].index("--backend") + 1] for row in rows], ["macos", "web"])
 
     def test_explicit_reach_root_uses_app_git_and_library_pins_require_full_reach(self):
         output = self.root / "reach-output"
