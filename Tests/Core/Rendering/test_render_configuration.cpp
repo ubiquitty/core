@@ -240,13 +240,8 @@ TEST(testEveryFieldIsReachableFromADocument)
         const auto& descriptor = Preferences::writeDescriptors[index];
         if (Effective::reachOf(descriptor.id) != Effective::KeyReach::Renderer)
             continue;
-        // Colour mode is what lets the custom tube colours through, and the
-        // padding shorthand is overruled by the edges, so the document states
-        // the values that make every field observable at once.
-        if (descriptor.id == Key::TekColorMode) {
-            document += line(descriptor, "1");
-            continue;
-        }
+        // Derive the value from each key's current default, including the Tek
+        // colour mode: a fixed mode can itself become the default.
         if (const std::optional<std::string> literal = movingLiteral(descriptor))
             document += line(descriptor, *literal);
     }
