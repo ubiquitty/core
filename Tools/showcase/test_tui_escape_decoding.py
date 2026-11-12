@@ -18,12 +18,15 @@ terminal is recorded as a broken one.
 """
 
 import os
+import importlib.util
+import re
 import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
 
 from tui import Tui  # noqa: E402
+import tui as toolkit  # noqa: E402
 
 
 class DecodeEscape(unittest.TestCase):
@@ -71,6 +74,30 @@ class DecodeEscape(unittest.TestCase):
         a report would hide a key this demo should have bound.
         """
         self.assertEqual(self.decode("[99Z"), "unknown")
+
+
+class GraphicsAndMusic(unittest.TestCase):
+    def test_animation_chunks_and_playback_use_protocol_keys(self):
+        pixels = bytes([255, 0, 0, 255]) * 4096
+        wire = toolkit.image_kitty_animation(64, 64, [(pixels, 400), (pixels, 250)])
+        blocks = re.findall(r"\x1b_G(.*?)\x1b\\", wire)
+        frame_blocks = [block.split(";", 1)[0] for block in blocks if block.startswith("a=f")]
+        self.assertGreater(len(frame_blocks), 1)
+        self.assertTrue(all("a=f" in block.split(",") for block in frame_blocks))
+        self.assertIn("a=a,i=42,s=3,r=1,z=400,q=2", blocks[-1])
+
+    def test_score_bars_fit_the_clock_and_resolve(self):
+        path = os.path.join(os.path.dirname(__file__), "Examples", "evolution.py")
+        spec = importlib.util.spec_from_file_location("evolution_score", path)
+        evolution = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(evolution)
+        self.assertEqual(len(evolution.SONG), 16)
+        for chord, phrase in evolution.SONG + evolution.FINAL:
+            self.assertIn(chord, evolution.CHORDS)
+            self.assertEqual(sum(duration for _, duration in phrase), evolution.W)
+        self.assertEqual([note for note, _ in evolution.SONG[0][1]],
+                         [evolution.E6, evolution.E6, evolution.F6, evolution.G6])
+        self.assertEqual(evolution.FINAL[-1][1], [(evolution.REST, evolution.W)])
 
 
 if __name__ == "__main__":

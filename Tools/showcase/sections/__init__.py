@@ -52,6 +52,8 @@ JSON via `showcase.py --probes`):
                         the parser consumes) keeps its picture, because there
                         the blank frame is the assertion; it is listed in
                         BLANK_BY_CONTRACT in Scripts/check-showcase-goldens.py.
+    args: tuple[str]    Portable snapshot switches required by this entry,
+                        for example --draws-sized-text for OSC 66.
 
 `validate_module()` type-checks overrides and rejects non-executable assertions.
 
@@ -85,6 +87,8 @@ class Entry:
     # then calls its contract a page render rather than a snapshot of the
     # feature.
     descriptive: bool = False
+    # Portable snapshot switches required to exercise the demonstrated feature.
+    args: tuple = ()
 
 
 @dataclass
@@ -141,6 +145,8 @@ def validate_module(mod):
         if e.sequence is not None and not isinstance(e.sequence, (str, bytes)):
             raise ValueError(
                 f"section '{name}': ENTRIES[{i}].sequence must be str/bytes")
+        if not isinstance(e.args, (tuple, list)) or any(not isinstance(arg, str) or not arg for arg in e.args):
+            raise ValueError(f"section '{name}': ENTRIES[{i}].args must contain non-empty strings")
         if e.expect is not None and not isinstance(e.expect, str):
             raise ValueError(
                 f"section '{name}': ENTRIES[{i}].expect must be a str")

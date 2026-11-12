@@ -19,6 +19,8 @@ python3 Tools/showcase/showcase.py --list      # print the section/entry tree, n
 python3 Tools/showcase/showcase.py --self-test # import every section, validate contract
 python3 Tools/showcase/showcase.py --probes    # dump per-entry probe contract as JSON
 python3 Tools/showcase/showcase.py --help
+python3 Tools/showcase/showcase.py --demo 'Kitty animation'
+python3 Tools/showcase/showcase.py --demo 'Proportional text'
 ```
 
 `--list` and `--self-test` annotate each entry with a `[seg]` badge:
@@ -31,6 +33,12 @@ from the mandatory automated snapshot/reply contract.
 
 In the menu: arrows or `j`/`k` to move, `Enter`/`→` to open a section then run
 an entry, `Esc`/`←` to go back, `q` to quit. SGR mouse clicks also select.
+
+The animation entry sends six frames and loops with `a=a,s=3`; `r=1,z=120`
+assigns the root its gap, and frame continuation chunks repeat `a=f`.
+The proportional entry compares natural letter widths, cell-box boundaries,
+four alignments and mixed bold/grid text using OSC 66. `--demo` accepts a
+unique title fragment and returns after the entry exits.
 
 ## Layout
 

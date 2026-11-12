@@ -1039,15 +1039,16 @@ def _kitty_chunked(control_first, rgba):
     """Base64 + <=4096-byte chunk one RGBA payload into a Kitty APC stream.
 
     `control_first` is the control block for the FIRST chunk (e.g. the a=T
-    transmit-and-place keys or the a=f frame keys); continuation chunks carry
-    only `m=`. Shared by the still-image and per-frame transmit helpers.
+    transmit-and-place keys or the a=f frame keys); frame continuations repeat
+    `a=f` alongside `m=`. Shared by the still-image and frame helpers.
     """
     payload = base64.b64encode(rgba).decode("ascii")
     parts = [payload[i : i + 4096] for i in range(0, len(payload), 4096)] or [""]
     out = []
     for i, part in enumerate(parts):
         more = 1 if i < len(parts) - 1 else 0
-        ctrl = f"{control_first},m={more}" if i == 0 else f"m={more}"
+        continuation = "a=f," if "a=f" in control_first.split(",") else ""
+        ctrl = f"{control_first},m={more}" if i == 0 else f"{continuation}m={more}"
         out.append(f"{ESC}_G{ctrl};{part}{ST}")
     return "".join(out)
 
@@ -1058,7 +1059,7 @@ def image_kitty_animation(width, height, frames, image_id=42, loop=True):
     `frames` is a list of (rgba_bytes, delay_ms) pairs; the first is the base
     frame transmitted-and-placed (a=T) under an explicit image id `i=`, the rest
     are appended with a=f (the per-frame delay rides Kitty's `z=` key), and a
-    final a=a control with c=3 (loop) / c=2 (run once) starts playback. Every
+    final a=a control with s=3 (loop) / s=2 (loading) starts playback. Every
     block uses q=2 to suppress the OK/error reply APC (the demo reads stdin
     directly and would misread it as a keypress).
 
@@ -1066,7 +1067,7 @@ def image_kitty_animation(width, height, frames, image_id=42, loop=True):
     never ticks the animation freezes on the base frame; one that does cycles
     through every frame.
     """
-    base_rgba, _base_delay = frames[0]
+    base_rgba, base_delay = frames[0]
     out = [
         _kitty_chunked(
             f"a=T,f=32,s={width},v={height},i={image_id},q=2", base_rgba
@@ -1080,10 +1081,9 @@ def image_kitty_animation(width, height, frames, image_id=42, loop=True):
                 rgba,
             )
         )
-    # a=a animation control: c=3 loop forever, c=2 run once. r= is a 1-based
-    # frame jump (omitted: start at frame 1).
+    # s controls playback; r and z assign the root frame its display gap.
     play = 3 if loop else 2
-    out.append(f"{ESC}_Ga=a,i={image_id},c={play},q=2{ST}")
+    out.append(f"{ESC}_Ga=a,i={image_id},s={play},r=1,z={base_delay},q=2{ST}")
     return "".join(out)
 
 

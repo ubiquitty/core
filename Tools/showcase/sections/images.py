@@ -42,7 +42,7 @@ def _image_page(tui, caption, label, blob):
 
 _SIXEL_SEQ = T.image_sixel(*_gradient())
 _KITTY_SEQ = T.image_kitty(*T.test_image(_IMG_W, _IMG_H, "checkerboard"))
-# The animation stream is a=T base + five a=f frames + a=a c=3 (loop). Playback
+# The animation stream is a=T base + five a=f frames + a=a s=3 (loop). Playback
 # is timer-driven, so the golden holds whichever frame the capture caught.
 _KITTY_ANIM_SEQ = T.image_kitty_animation(
     _IMG_W, _IMG_H, T.test_image_frames(_IMG_W, _IMG_H, count=6),
@@ -65,10 +65,13 @@ def _demo_kitty(tui):
 
 
 def _demo_kitty_animation(tui):
-    return _image_page(
-        tui, "A cyan bar crosses the dark blue field from left to right and starts over.",
-        "APC G a=T, then five a=f frames 120 ms apart, then a=a c=3 to loop",
-        _KITTY_ANIM_SEQ)
+    try:
+        return _image_page(
+            tui, "A cyan bar crosses the dark blue field from left to right and starts over.",
+            "APC G a=T, then five a=f frames 120 ms apart, then a=a s=3 to loop",
+            _KITTY_ANIM_SEQ)
+    finally:
+        tui.write(f"{T.ESC}_Ga=d,d=I,i=42,q=2{T.ST}")
 
 
 def _demo_iterm2(tui):
@@ -178,7 +181,7 @@ ENTRIES = [
         title="Kitty animation (a=f frames)",
         explanation=(
             "a=T places the base frame under image id 42, a=f appends five more "
-            "with their delays on z=, and a=a c=3 loops them: a cyan bar crosses "
+            "with their delays on z=, and a=a s=3 loops them: a cyan bar crosses "
             "a dark blue field and starts over. A bar parked at the left means "
             "the animation never advanced."),
         run=_demo_kitty_animation,

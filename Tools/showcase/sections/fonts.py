@@ -226,7 +226,39 @@ def _demo_synthesis(tui):
     return tui.footer()
 
 
+def _proportional_run(text, cells, alignment=0):
+    return f"{OSC}66;p=1:c={cells}:h={alignment};{text}{T.BEL}"
+
+
+def _proportional_specimen(top=2, left=4):
+    out = move(top, left) + "Grid:  iiii WWWW  0123456789"
+    out += move(top + 2, left) + "Narrow |" + _proportional_run("iiii", 12) + "|"
+    out += move(top + 3, left) + "Wide   |" + _proportional_run("WWWW", 12) + "|"
+    for offset, (title, alignment) in enumerate((("Left   ", 0), ("Right  ", 1), ("Center ", 2), ("Justify", 3))):
+        out += move(top + 5 + offset, left) + title + "|" + _proportional_run("Text in a box", 24, alignment) + "|"
+    out += move(top + 10, left) + "Mixed: grid " + T.BOLD + _proportional_run("bold proportional", 22) + T.RESET + " grid"
+    return out
+
+
+def _demo_proportional(tui):
+    row = tui.page(TITLE, "Narrow and wide letters use natural advances inside fixed cell boxes.")
+    tui.write(_proportional_specimen(row, 4))
+    return tui.footer()
+
+
 ENTRIES = [
+    Entry(
+        title="Proportional text (OSC 66)",
+        explanation=(
+            "iiii and WWWW have different ink widths inside equal 12-cell boxes. "
+            "Each closing bar stays at its claimed column. Left, right, center "
+            "and justified runs use the same 24-cell measure; bold proportional "
+            "and grid text share a baseline."),
+        run=_demo_proportional,
+        sequence=_proportional_specimen(),
+        golden="fonts_proportional_text",
+        args=("--draws-sized-text",),
+    ),
     Entry(
         title="Font query and size (OSC 50)",
         explanation=(

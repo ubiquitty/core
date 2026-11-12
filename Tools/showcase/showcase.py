@@ -15,6 +15,7 @@ Run:
     python3 Tools/showcase/showcase.py --list       # print the section/entry tree (no TTY)
     python3 Tools/showcase/showcase.py --self-test  # import every section, validate contract
     python3 Tools/showcase/showcase.py --probes     # dump probe contract as JSON (no TTY)
+    python3 Tools/showcase/showcase.py --demo 'Kitty animation' # run one entry
 
 Stdlib only; Python 3.8+. Terminal state is restored on every exit path.
 """
@@ -153,6 +154,7 @@ def build_probe_contract(sections=None):
                 "golden": golden,
                 "snapshot": entry.snapshot,
                 "descriptive": entry.descriptive,
+                "args": list(entry.args),
             })
     return out
 
@@ -469,15 +471,23 @@ class Menu:
 move = T.move  # local alias used by Menu.render
 
 
-def cmd_interactive(own_theme=False):
+def cmd_interactive(own_theme=False, demo=None):
     sections = discover()
     if not sections:
         print("No sections discovered under Tools/showcase/sections/.", file=sys.stderr)
         return 1
+    entries = [entry for section in sections for entry in section.entries
+               if demo and demo.casefold() in entry.title.casefold()]
+    if demo and len(entries) != 1:
+        print(f"--demo needs one matching entry; found {len(entries)} for {demo!r}.", file=sys.stderr)
+        return 2
     tui = T.Tui(own_theme=own_theme)
     try:
         with tui.session(mouse=True):
-            Menu(tui, sections).run()
+            if demo:
+                entries[0].run(tui)
+            else:
+                Menu(tui, sections).run()
     except KeyboardInterrupt:
         pass  # session() restores terminal state in its finally block
     return 0
@@ -492,6 +502,8 @@ def main(argv):
                          help="validate discovery and the regression contract")
     command.add_argument("--probes", action="store_true",
                          help="emit the executable regression contract as JSON")
+    command.add_argument("--demo", metavar="TITLE",
+                         help="run the single entry whose title contains TITLE")
     parser.add_argument("--own-theme", action="store_true",
                         help="pin the interactive showcase's built-in theme")
     args = parser.parse_args(argv)
@@ -510,7 +522,7 @@ def main(argv):
         print("showcase.py needs a TTY for interactive mode; "
               "try --list or --self-test.", file=sys.stderr)
         return 2
-    return cmd_interactive(own_theme=args.own_theme)
+    return cmd_interactive(own_theme=args.own_theme, demo=args.demo)
 
 
 if __name__ == "__main__":

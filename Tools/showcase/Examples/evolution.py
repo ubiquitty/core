@@ -155,41 +155,38 @@ BAR = W / 32.0
 # off-beats, a triangle arpeggio in sixteenths, a sine melody and a sine pad.
 # Each part is its own channel, and a channel plays its requests in turn
 # without a gap, so every bar is cued a moment early and joins the last. In
-# A minor, at a hundred and twenty to the minute; the volumes stay low.
+# C major, at a hundred and twenty to the minute; the volumes stay low.
 CHORDS = {
     "Am": (C5, E5, A5), "F": (C5, F5, A5), "C": (C5, E5, G5), "G": (D5, G5, B5),
     "Dm": (D5, F5, A5), "E": (E5, GS5, B5), "Em": (E5, G5, B5),
 }
 ROOTS = {"Am": A5, "F": F5, "C": C5, "G": G5, "Dm": D5, "E": E5, "Em": E5}
 
-# The theme, A: eight bars that fall from E and settle on the dominant, so
-# they can go round again or close.
+# Beethoven's public-domain "Ode to Joy" theme, transposed to C major.
+# Four-bar questions and answers keep their dotted-quarter/eighth cadences;
+# the bridge leads back to the opening, and the coda resolves on the tonic.
+# Source score: https://www.carnegiehall.org/Education/Programs/Link-Up/National-Program/The-Orchestra-Sings/Ode-to-Joy
 THEME_A = [
-    ("Am", [(E6, H), (C6, Q), (B5, Q)]),
-    ("F", [(A5, DH), (C6, Q)]),
-    ("C", [(E6, Q), (D6, Q), (C6, H)]),
-    ("G", [(B5, DH), (D6, Q)]),
-    ("Am", [(C6, Q), (B5, Q), (A5, H)]),
-    ("F", [(A5, Q), (G5, Q), (F5, H)]),
-    ("Dm", [(D6, Q), (C6, Q), (A5, H)]),
-    ("E", [(B5, H), (GS5, Q), (B5, Q)]),
+    ("C", [(E6, Q), (E6, Q), (F6, Q), (G6, Q)]),
+    ("G", [(G6, Q), (F6, Q), (E6, Q), (D6, Q)]),
+    ("C", [(C6, Q), (C6, Q), (D6, Q), (E6, Q)]),
+    ("G", [(E6, DQ), (D6, E), (D6, H)]),
+    ("C", [(E6, Q), (E6, Q), (F6, Q), (G6, Q)]),
+    ("G", [(G6, Q), (F6, Q), (E6, Q), (D6, Q)]),
+    ("C", [(C6, Q), (C6, Q), (D6, Q), (E6, Q)]),
+    ("C", [(D6, DQ), (C6, E), (C6, H)]),
 ]
-# The theme, B: the answer, brighter and higher, over the relative major.
 THEME_B = [
-    ("C", [(G6, H), (E6, Q), (D6, Q)]),
-    ("G", [(D6, DH), (B5, Q)]),
-    ("Am", [(C6, Q), (D6, Q), (E6, H)]),
-    ("Em", [(B5, W)]),
-    ("F", [(A5, Q), (C6, Q), (F6, H)]),
-    ("C", [(E6, Q), (D6, Q), (C6, H)]),
-    ("Dm", [(D6, Q), (E6, Q), (F6, Q), (D6, Q)]),
-    ("E", [(E6, DH), (B5, Q)]),
+    ("G", [(D6, Q), (D6, Q), (E6, Q), (C6, Q)]),
+    ("G", [(D6, Q), (E6, E), (F6, E), (E6, Q), (C6, Q)]),
+    ("G", [(D6, Q), (E6, E), (F6, E), (E6, Q), (D6, Q)]),
+    ("G", [(C6, Q), (D6, Q), (G5, H)]),
+    ("C", [(E6, Q), (E6, Q), (F6, Q), (G6, Q)]),
+    ("G", [(G6, Q), (F6, Q), (E6, Q), (D6, Q)]),
+    ("C", [(C6, Q), (C6, Q), (D6, Q), (E6, Q)]),
+    ("C", [(D6, DQ), (C6, E), (C6, H)]),
 ]
-FINAL = [("E", [(B5, H), (GS5, Q), (B5, Q)]), ("Am", [(A5, W)]), ("Am", [(A5, W)])]
-# The piece goes round this for as long as the show runs, and the chapters
-# change the arrangement, not the tune. Sixteen bars, so the fills on every
-# fourth bar keep their place in the phrase round after round; each theme
-# ends on the dominant, and the next begins where it leads.
+FINAL = [("G", [(D6, H), (B5, H)]), ("C", [(C6, DH), (REST, Q)]), ("C", [(REST, W)])]
 SONG = THEME_A + THEME_B
 # How far ahead of the clock a bar is cued. Short, so a chapter's change of
 # parts lands on the next bar or the one after; long enough that a picture
@@ -848,7 +845,8 @@ def kitty_chunks(control, payload):
     out = []
     for index, part in enumerate(parts):
         more = 1 if index < len(parts) - 1 else 0
-        head = "%s,m=%d" % (control, more) if index == 0 else "m=%d" % more
+        continuation = "a=f," if "a=f" in control.split(",") else ""
+        head = "%s,m=%d" % (control, more) if index == 0 else "%sm=%d" % (continuation, more)
         out.append(APC + "G" + head + ";" + part + ST)
     return "".join(out)
 
@@ -886,7 +884,7 @@ def kitty_animation(image_id, width, height, frames, columns, rows, delay_ms):
     out = [kitty_chunks("a=T,f=32,s=%d,v=%d,i=%d,c=%d,r=%d,q=2" % (width, height, image_id, columns, rows), frames[0])]
     for frame in frames[1:]:
         out.append(kitty_chunks("a=f,f=32,s=%d,v=%d,i=%d,z=%d,q=2" % (width, height, image_id, delay_ms), frame))
-    out.append(APC + "Ga=a,i=%d,c=3,q=2" % image_id + ST)
+    out.append(APC + "Ga=a,i=%d,s=3,r=1,z=%d,q=2" % (image_id, delay_ms) + ST)
     return "".join(out)
 
 
@@ -2055,7 +2053,7 @@ def chapter_typography(s):
                 + "   " + sgr("4:3", "58;5;27") + "azure curl" + RESET)
     rows.append(label(8, "ideogram") + sgr(60) + "下線" + sgr(65) + " under   " + sgr(61) + "二重" + sgr(65) + " double   " + sgr(62) + "上線" + sgr(65)
                 + " over   " + sgr(64) + "強調" + sgr(65) + " stress   " + note("SGR 60 to 64"))
-    rows.append(label(10, "link") + link("https://github.com/yaglo/ubiquitty", "an OSC 8 hyperlink, quietly ruled"))
+    rows.append(label(10, "link") + link("https://github.com/ubiquitty/ubiquitty", "an OSC 8 hyperlink, quietly ruled"))
     ansi = "".join(CSI + "4%dm  " % i + CSI + "49m" for i in range(8)) + "  " + "".join(CSI + "10%dm  " % i + CSI + "49m" for i in range(8))
     rows.append(label(12, "ansi") + ansi + "  " + note("SGR 40 to 47, 100 to 107"))
     rows.append(label(13, "cube 16-79") + "".join(CSI + "48;5;%dm " % (16 + i) + CSI + "49m" for i in range(64)))
@@ -2510,7 +2508,7 @@ def chapter_ubiquitty(s, pictures):
     verdict = state.get(numbers[0], "unclear") if numbers else "no answer, so the mode is unknown"
     s.write(s.at(20, 4), DIM, "detection", RESET, "    DECRQM ?7402 → ", verdict)
     sound(s, [C6, G6], 3, 2)
-    s.write(s.at(21, 4), DIM, "hyperlinks", RESET, "   ", link("https://github.com/yaglo/ubiquitty", sgr(4) + "github.com/yaglo/ubiquitty" + RESET),
+    s.write(s.at(21, 4), DIM, "hyperlinks", RESET, "   ", link("https://github.com/ubiquitty/ubiquitty", sgr(4) + "github.com/ubiquitty/ubiquitty" + RESET),
             "   ", DIM, "OSC 8: ⌘-click opens it", RESET)
     if s.short:
         s.pause(1.6)
@@ -2550,7 +2548,7 @@ CREDITS = [
     ("DECSET 7401, 7402  ·  OSC 7402  ·  CSI > 9 u", 0.8),
     ("", 0), ("", 0),
     ("MUSIC", 0.5), ("", 0),
-    ("a tracker piece in A minor: a sampled kit downloaded like a soft font,", 0.8),
+    ("Beethoven: Ode to Joy, arranged for DECPS voices and a sampled kit,", 0.8),
     ("a square bass, saw arpeggios, a sine lead, eight channels of DECPS", 0.8),
     ("", 0), ("", 0), ("", 0),
     ("A  U B I Q U I T T Y  P R O D U C T I O N", 1.0),
@@ -2585,7 +2583,7 @@ def chapter_finale(s):
     s.write("  HELLO, WORLD went from paper to a storage tube to a screen, through colour,\r\n")
     s.write("  Unicode and pictures, and ended in a session that outlives the window watching\r\n")
     s.write("  it. This terminal honours every sequence of every era it passed through.\r\n\r\n")
-    s.write(BOLD, "Explore:", RESET, "  ", sgr(36), link("https://github.com/yaglo/ubiquitty", "[ Documentation ]"), RESET)
+    s.write(BOLD, "Explore:", RESET, "  ", sgr(36), link("https://github.com/ubiquitty/ubiquitty", "[ Documentation ]"), RESET)
     if s.is_ubiquitty:
         for action, label_text in (("connect", "⌘⇧K Connect"), ("settings", "Settings")):
             s.write("  ", sgr(36), link("ubiquitty:action/" + action, "[ " + label_text + " ]"), RESET)

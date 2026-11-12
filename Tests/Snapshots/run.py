@@ -728,6 +728,8 @@ def load_showcase_regressions():
                 backend="portable",
                 golden=snapshot_path(f"golden/portable/showcase/{golden_name}.png"),
                 sequence=encoded_sequence,
+                case={"columns": 80, "rows": 24, "config": "configs/showcase.toml",
+                      "feed_bytes": encoded_sequence, "args": probe["args"]} if probe.get("args") else None,
             ))
         if expected is not None:
             regressions.append(Regression(
@@ -757,6 +759,8 @@ def validate_showcase_probe(probe, index):
         raise ValueError(f"showcase probe {index}.expect must be a string or null")
     if not isinstance(probe.get("snapshot", True), bool):
         raise ValueError(f"showcase probe {index}.snapshot must be a bool")
+    if not isinstance(probe.get("args", []), list) or any(not isinstance(arg, str) or not arg for arg in probe.get("args", [])):
+        raise ValueError(f"showcase probe {index}.args must contain non-empty strings")
     if not probe.get("snapshot", True) and probe.get("expect") is None:
         raise ValueError(f"showcase probe {index} takes no picture and asserts no reply")
 
