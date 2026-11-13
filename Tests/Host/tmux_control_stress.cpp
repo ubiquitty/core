@@ -782,6 +782,7 @@ void runFlood(const std::string& tmux)
     }
     const double seconds = std::chrono::duration<double>(Clock::now() - started).count();
     std::printf("tmux_control_stress: flood: the flood landed after %.1f s\n", seconds);
+    std::fflush(stdout);
 
     // Every line typed during the flood reached tmux once, in order.
     const PrivateServer::Answer history = hosted.server.run({ "capture-pane", "-p", "-S", "-", "-t", "%" + std::to_string(typed) });
@@ -1177,9 +1178,11 @@ int main(int argc, char** argv)
         }
         const int before = failures;
         const auto started = Clock::now();
+        std::fprintf(stderr, "tmux_control_stress: starting %s\n", name.c_str());
         found->second();
         std::printf("tmux_control_stress: %s: %s (%.1f s)\n", name.c_str(), failures == before ? "ok" : "FAILED",
             std::chrono::duration<double>(Clock::now() - started).count());
+        std::fflush(stdout);
     }
     return failures == 0 ? 0 : 1;
 }

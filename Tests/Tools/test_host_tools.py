@@ -79,6 +79,11 @@ class BuildPrerequisiteTests(unittest.TestCase):
                 self.assertEqual(properties["TIMEOUT"], 60)
                 self.assertTrue(properties["RUN_SERIAL"])
                 self.assertIn("timing", properties["RESOURCE_LOCK"])
+            stress = entries["shell_tmux_control_stress"]
+            properties = {item["name"]: item["value"] for item in stress["properties"]}
+            self.assertEqual(properties["TIMEOUT"], 600)
+            self.assertTrue(properties.get("RUN_SERIAL"), "The tmux flood must not compete with fixture builds")
+            self.assertIn("timing", properties["RESOURCE_LOCK"])
 
     def test_quic_requires_go_before_fetching_sources(self):
         with tempfile.TemporaryDirectory() as directory:

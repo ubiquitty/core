@@ -904,13 +904,15 @@ function(ubq_schedule_run_tests_stanzas driver)
     set(shell_test_session_stress_JOBS ${UBIQUITTY_HOST_FIXTURE_JOBS})
     set(shell_test_session_stress_RUN_SERIAL TRUE)
 
-    # Frame-count and handoff deadlines require a quiet scheduler. The
-    # sanitizer stanza also runs the ingest loop's timing cases inside its
-    # instrumented binary, so it needs the same isolation as that unit test.
+    # Frame-count, handoff and live tmux flood deadlines require a quiet
+    # scheduler. The sanitizer stanza also runs the ingest loop's timing cases
+    # inside its instrumented binary, so it needs that unit test's isolation.
     set(shell_sanitized_sync_RUN_SERIAL TRUE)
     list(APPEND shell_sanitized_sync_RESOURCE_LOCK timing)
     set(shell_sync_output_e2e_RUN_SERIAL TRUE)
     list(APPEND shell_sync_output_e2e_RESOURCE_LOCK timing)
+    set(shell_tmux_control_stress_RUN_SERIAL TRUE)
+    list(APPEND shell_tmux_control_stress_RESOURCE_LOCK timing)
 
     ubiquitty_schedule_shell_stanzas(DRIVER ${driver} STANZAS ${_stanzas})
 endfunction()
