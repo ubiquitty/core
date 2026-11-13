@@ -426,14 +426,13 @@ TEST(testSnapBoundsVoidPlus5)
 
 TEST(testSnapBoundsTopVoid)
 {
-    // EMPTY top line is a pure \n: the anchor sits past it, so the line drops
-    // out (column0 == columns) and the selection lands on the LOWER line.
+    // An empty top line is a selectable newline, wherever the pointer sits.
     static const char text[] = "~~~~~~~~"
                                "~~~~~~~~";
     Grid g = { 2, 8, text };
     Ubiquitty::SelectionBounds b = { 0, 3, 1, 5 };
     Ubiquitty::Selection::snapBoundsToVoid(&b, Ubiquitty::SelectionMode::Character, 8, gridCellAt, &g, nullptr, nullptr);
-    CHECK(b.row0 == 0 && b.column0 == 8); // columns ⇒ empty top line excluded
+    CHECK(b.row0 == 0 && b.column0 == 0);
     CHECK(b.row1 == 1 && b.column1 == 7);
 
     // Top line with CONTENT, anchor on a glyph: kept from the anchor.
@@ -1474,10 +1473,11 @@ TEST(testRowSpanTopEdgeSingleVsMulti)
                                "~~~~~~~~";
     Grid g = { 2, 8, text };
 
-    // Multi-row: top line drops out (column0 == columns).
+    // Multi-row: the blank top line contributes its newline.
     Ubiquitty::SelectionBounds multi = { 0, 3, 1, 5 };
     Ubiquitty::Selection::RowSpan tMulti = Ubiquitty::Selection::rowSpan(&multi, Ubiquitty::SelectionMode::Character, 0, 8, gridCellAt, &g, nullptr, nullptr);
-    CHECK(tMulti.column0 == 8);
+    CHECK(tMulti.selected);
+    CHECK(tMulti.column0 == 0 && tMulti.column1 == 7);
 
     // Single-row empty line: collapses to lp+1 == 0 instead of columns.
     Ubiquitty::SelectionBounds single = { 0, 3, 0, 5 };
@@ -1495,16 +1495,14 @@ TEST(testRowSpanTopEdgeSingleVsMulti)
 
 TEST(testABlankTopRowStaysWhenTheBoundsAreAnchoredByCommand)
 {
-    // Blank top row, multi-row bounds from its first cell. A pointer's drag
-    // drops the row: (0, 0) is the row's void. A command's selection keeps it
-    // whole, and the bottom row is the pointer's business either way.
+    // Pointer drags and commands both keep a blank top row's newline.
     static const char text[] = "~~~~~~~~"
                                "ab~~~~~~";
     Grid g = { 2, 8, text };
     Ubiquitty::SelectionBounds pointer = { 0, 0, 1, 1 };
     Ubiquitty::Selection::RowSpan dragged = Ubiquitty::Selection::rowSpan(&pointer, Ubiquitty::SelectionMode::Character, 0, 8, gridCellAt, &g, nullptr, nullptr);
-    CHECK(!dragged.selected);
-    CHECK(dragged.column0 == 8);
+    CHECK(dragged.selected);
+    CHECK(dragged.column0 == 0 && dragged.column1 == 7);
 
     Ubiquitty::SelectionBounds command = { 0, 0, 1, 1 };
     command.isAnchoredByCommand = true;
@@ -1520,6 +1518,26 @@ TEST(testABlankTopRowStaysWhenTheBoundsAreAnchoredByCommand)
     one.isAnchoredByCommand = true;
     Ubiquitty::Selection::RowSpan alone = Ubiquitty::Selection::rowSpan(&one, Ubiquitty::SelectionMode::Character, 0, 8, gridCellAt, &g, nullptr, nullptr);
     CHECK(alone.column0 == 0 && alone.column1 == 7);
+}
+
+TEST(testRowSpanKeepsTheNewlineOfASpaceFilledTopRow)
+{
+    static const char text[] = "     ~~~~~~~~~~~"
+                               "alpha~~~~~~~~~~~";
+    Grid g = { 2, 16, text };
+    for (const int column : { 5, 15 }) {
+        Ubiquitty::SelectionBounds bounds = { 0, column, 1, 4 };
+        const auto span = Ubiquitty::Selection::rowSpan(&bounds, Ubiquitty::SelectionMode::Character, 0, 16, gridCellAt, &g, nullptr, nullptr);
+        CHECK(span.selected);
+        CHECK(span.column0 == 0 && span.column1 == 15);
+    }
+    // Spaces after visible text still obey the ordinary trailing-void rule.
+    static const char content[] = "abc  ~~~~~~~~~~~"
+                                  "alpha~~~~~~~~~~~";
+    Grid contentGrid = { 2, 16, content };
+    Ubiquitty::SelectionBounds beyond = { 0, 15, 1, 4 };
+    const auto dropped = Ubiquitty::Selection::rowSpan(&beyond, Ubiquitty::SelectionMode::Character, 0, 16, gridCellAt, &contentGrid, nullptr, nullptr);
+    CHECK(!dropped.selected);
 }
 
 TEST(testSelectAllIsAnchoredByCommandUntilTheAnchorMoves)
@@ -1614,8 +1632,8 @@ TEST(testSelectRegionIsACommandsPlacement)
 TEST(testACommandsOutputKeepsItsBlankFirstRow)
 {
     // The output region starts on a blank row: a program that opens its
-    // output with a newline. A pointer's drag from that row starts below;
-    // the command's selection paints the row whole.
+    // output with a newline. Both a pointer's drag and the command's
+    // selection paint that row whole.
     static const char text[] = "$ cmd~~~"
                                "~~~~~~~~"
                                "out~~~~~"
@@ -1645,7 +1663,8 @@ TEST(testACommandsOutputKeepsItsBlankFirstRow)
     Ubiquitty::Selection::update(&selection, 4, 8, region.row1, region.column1);
     CHECK(Ubiquitty::Selection::getBounds(&selection, 4, 8, gridCellAt, &g, &b));
     Ubiquitty::Selection::RowSpan dragged = Ubiquitty::Selection::rowSpan(&b, Ubiquitty::SelectionMode::Character, 1, 8, gridCellAt, &g, nullptr, nullptr);
-    CHECK(!dragged.selected);
+    CHECK(dragged.selected);
+    CHECK(dragged.column0 == 0 && dragged.column1 == 7);
 }
 
 TEST(testRowSpanRectLinePassthrough)

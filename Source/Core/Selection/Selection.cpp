@@ -658,6 +658,21 @@ int lastPrintedColumn(int row, int columns, SelectionCellAt cellAt, void* cellCo
     return -1;
 }
 
+[[gnu::noinline]] static bool hasOnlyBlankCells(int row, int lastColumn, SelectionCellAt cellAt, void* cellContext, SelectionAttributesAt attributesAt, void* attributeContext)
+{
+    // Only inspect this prefix when the top endpoint is past the printed cells.
+    // Explicit spaces must not make a visually blank row lose its newline.
+    // Keep the scan out of rowSpan's ordinary edge and interior paths.
+    for (int column = lastColumn; column >= 0; --column) {
+        const uint32_t ch = safeCellAt(cellAt, cellContext, row, column);
+        if (ch && ch != ' ')
+            return false;
+        if (!ch && attributesAt && (attributesAt(attributeContext, row, column) & selectionAttributeWideContinuation))
+            return false;
+    }
+    return true;
+}
+
 RowSpan rowSpan(const SelectionBounds* b, SelectionMode mode, int row, int columns, SelectionCellAt cellAt, void* cellContext, SelectionAttributesAt attributesAt, void* attributeContext)
 {
     RowSpan rs = { 0, 0, false };
@@ -705,11 +720,9 @@ RowSpan rowSpan(const SelectionBounds* b, SelectionMode mode, int row, int colum
                 c1 = lp;
         }
     }
-    // Top edge in the void (the line's trailing newline), so a top endpoint there
-    // starts the selection after the content:
-    //   * Empty top line → drops out (column0 == columns); run begins next row.
-    //     Unless the bounds are isAnchoredByCommand: a command named the row's
-    //     start, no pointer sat in its void, and the row stays (column0 == 0).
+    // An empty edge row represents a selectable newline, at either end and
+    // in either drag direction. A top endpoint past a content line instead
+    // starts the selection after its content:
     //   * Content line, endpoint within voidSnapCells → caught, column0 collapses
     //     to the first void column.
     //   * Content line, endpoint beyond → not caught, line drops out.
@@ -717,12 +730,9 @@ RowSpan rowSpan(const SelectionBounds* b, SelectionMode mode, int row, int colum
     if (row == b->row0) {
         const int lp = lastPrintedColumn(row, columns, cellAt, cellContext, attributesAt, attributeContext);
         if (c0 > lp) {
-            if (lp < 0) {
-                // `&`, not `&&`: a short-circuit adds a branch, and this
-                // function keeps the block structure its PGO profile describes.
-                const bool shouldDropRow = (b->row0 != b->row1) & !b->isAnchoredByCommand;
-                c0 = shouldDropRow ? columns : (lp + 1);
-            } else if (m != Mode::Word && c0 - lp >= voidSnapCells)
+            if (lp < 0 || hasOnlyBlankCells(row, lp, cellAt, cellContext, attributesAt, attributeContext))
+                c0 = 0;
+            else if (m != Mode::Word && c0 - lp >= voidSnapCells)
                 c0 = columns;
             else
                 c0 = lp + 1;

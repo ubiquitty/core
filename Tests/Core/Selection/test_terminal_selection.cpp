@@ -688,14 +688,8 @@ TEST(testClearAndSelectAll)
     CHECK(Selection::selectedText(session, t).empty());
 }
 
-// A full-screen program on the primary screen -- Claude Code is one -- leaves
-// its first row blank as a rule. Select All takes that row: it is a bare
-// newline, the way a blank row anywhere else in the selection is. It was the
-// one row the highlight left out, and only while the buffer held no history: a
-// character selection from (0, 0) meets the top-edge void rule, which starts a
-// drag after the empty row it began on, while with one row of scrollback the
-// visible top row is an interior row of the selection and paints whole. That
-// is the "sometimes" in the report.
+// A full-screen program can leave its first row blank. Select All takes that
+// row's newline just like any other blank row, with or without scrollback.
 TEST(selectAllTakesABlankTopRowHoweverItCameToBeBlank)
 {
     // Never written: the row holds the blank sentinel.
@@ -788,8 +782,8 @@ TEST(aShiftClickAfterSelectAllTrimsToTheCellAndKeepsTheBlankTopRow)
 
 TEST(aPressAfterSelectAllDragsByThePointersRuleAgain)
 {
-    // The fact Select All records is the command's, not the row's: the next
-    // press on the blank top row sits in its void, and the drag starts below.
+    // A fresh press replaces Select All with the pointer's range. Its blank
+    // top row still contributes a newline.
     Terminal t;
     hardReset(t);
     resize(t, 4, 20);
@@ -802,10 +796,14 @@ TEST(aPressAfterSelectAllDragsByThePointersRuleAgain)
     Selection::endGesture(session);
 
     Rendering::SelectionRowSpan spans[8] {};
-    CHECK_EQ(Selection::viewportSpans(session, t, 0, spans), 1);
-    CHECK_EQ(spans[0].visibleRow, 1);
+    CHECK_EQ(Selection::viewportSpans(session, t, 0, spans), 2);
+    CHECK_EQ(spans[0].visibleRow, 0);
     CHECK_EQ(spans[0].column0, 0);
-    CHECK_EQ(spans[0].column1, 2);
+    CHECK_EQ(spans[0].column1, 19);
+    CHECK_EQ(spans[1].visibleRow, 1);
+    CHECK_EQ(spans[1].column0, 0);
+    CHECK_EQ(spans[1].column1, 2);
+    CHECK(Selection::selectedText(session, t) == "\nalp");
 }
 
 // Claude Code composes each redraw inside a DECSET 2026 block. A Select All

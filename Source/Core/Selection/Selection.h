@@ -28,10 +28,9 @@ struct SelectionState {
     /// True when a command put the anchor at a row's first cell, the way Select
     /// All and Select Last Command Output do.
     ///
-    /// A pointer pressed on a blank row sits in that row's void, and the void
-    /// rule starts the selection on the row after. A command names the row's
-    /// start, so the row stays in. Moving the head keeps the fact; every
-    /// function that places the anchor afresh clears it.
+    /// Moving the head keeps the origin of the anchor; every function that
+    /// places the anchor afresh clears it. Blank rows are selectable newlines
+    /// regardless of how the anchor was placed.
     bool isAnchoredByCommand = false;
     /// Code points of the first selected cell's text the selection leaves out,
     /// and of the last selected cell's text it keeps.
@@ -52,9 +51,7 @@ struct SelectionBounds {
     int row1;
     int column1;
     /// The state's ``SelectionState/isAnchoredByCommand``, carried by the bounds
-    /// functions so the per-row void rule can read it: the top edge is a row's
-    /// first cell by command, and a blank first row stays in where a
-    /// pointer's press on it would drop the row. False for a bounds built by hand.
+    /// functions. False for bounds built by hand.
     bool isAnchoredByCommand = false;
     /// Code points of `column0`'s text on `row0` the selection leaves out, and
     /// of `column1`'s text on `row1` it keeps; zero is the whole cell. See
@@ -184,9 +181,8 @@ void snapBoundsToVoid(SelectionBounds* b, SelectionMode, int columns, SelectionC
 // Selected column range on `row` for bounds `b`, applying the per-row void rule
 // (the single source of that rule). Rows outside [row0,row1] yield {0,0,false}
 // without touching the callbacks; interior rows resolve in O(1). Rect/line spans
-// pass through whole; word/char edge rows snap the void per voidSnapCells. A
-// blank top row drops out of a multi-row span unless the bounds are
-// isAnchoredByCommand: a command named the row's start.
+// pass through whole; word/char edge rows snap the void per voidSnapCells.
+// Blank edge rows select their newline, covering the whole row.
 [[nodiscard]] RowSpan rowSpan(const SelectionBounds* b, SelectionMode, int row, int columns, SelectionCellAt, void* cellContext, SelectionAttributesAt, void* attributeContext);
 
 // Caret column the empty-line drag collapses to: an empty line (lastPrinted
@@ -295,10 +291,9 @@ void setCharacterSpan(SelectionState*, int rows, int columns, int row, int colum
 /// Selects the cells a command names: `region` as given, in character mode.
 ///
 /// The endpoints are placed, not pressed, so the selection is marked
-/// ``SelectionState/isAnchoredByCommand`` and a blank first row stays in the
-/// highlight where a pointer's press on it would start the drag below. Select
-/// All and Select Last Command Output are regions, and every arm routes
-/// through here so none carries a begin-and-update pair of its own.
+/// ``SelectionState/isAnchoredByCommand``. Select All and Select Last Command
+/// Output are regions, and every arm routes through here so none carries a
+/// begin-and-update pair of its own.
 ///
 /// - Parameters:
 ///   - selection: The selection to set.
