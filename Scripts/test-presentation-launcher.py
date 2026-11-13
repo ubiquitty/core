@@ -29,6 +29,19 @@ class PresentationLauncherTests(unittest.TestCase):
         self.calls = []
         self.job = None
 
+    def tearDown(self):
+        self.stop_worker()
+
+    def stop_worker(self):
+        if self.child is None:
+            return
+        if self.child.poll() is None:
+            os.killpg(self.child.pid, signal.SIGTERM)
+        self.child.wait(timeout=5)
+        self.output.close()
+        self.errors.close()
+        self.input.close()
+
     def launchctl(self, arguments):
         self.calls.append(arguments)
         if arguments[0] == "bootstrap":
@@ -40,13 +53,7 @@ class PresentationLauncherTests(unittest.TestCase):
                                           env=self.job["EnvironmentVariables"], stdout=self.output,
                                           stderr=self.errors, stdin=self.input, start_new_session=True)
         else:
-            if self.child is not None:
-                if self.child.poll() is None:
-                    os.killpg(self.child.pid, signal.SIGTERM)
-                self.child.wait(timeout=5)
-                self.output.close()
-                self.errors.close()
-                self.input.close()
+            self.stop_worker()
         return subprocess.CompletedProcess(arguments, 0, "", "")
 
     def run_command(self, code, *arguments):
@@ -91,8 +98,11 @@ class PresentationLauncherTests(unittest.TestCase):
 
     def test_interruption_ends_the_owned_worker_and_removes_its_files(self):
         with patch.object(launcher, "launchctl", side_effect=self.launchctl), \
-                patch.object(launcher.time, "sleep", side_effect=SystemExit(143)), \
+                patch.object(launcher, "time", wraps=time) as clock, \
                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            # subprocess.wait also uses time.sleep while reaping the worker.
+            # Interrupt only the launcher's polling, not cleanup's wait.
+            clock.sleep.side_effect = SystemExit(143)
             with self.assertRaises(SystemExit) as stopped:
                 launcher.run_interactive([sys.executable, "-c", "import time; time.sleep(60)"])
         self.assertEqual(stopped.exception.code, 143)
