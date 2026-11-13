@@ -12,8 +12,14 @@
 
 #include "BenchHarness.h"
 #include "Harness.h"
+#include "PAL/UnixFileDescriptor.h"
 
+#include <cstdio>
+#include <cstdlib>
+#include <memory>
 #include <string>
+
+#include <unistd.h>
 
 using Ubiquitty::Bench::measurePaired;
 using Ubiquitty::Bench::PairedTiming;
@@ -123,4 +129,33 @@ TEST(repeat_once_opts_a_lane_out_of_repeating)
     const int iters = 4;
     (void)Ubiquitty::Bench::measure(warmup, iters, [&] { ++calls; }, Ubiquitty::Bench::Repeat::Once);
     CHECK(calls == warmup + iters);
+}
+
+TEST(jsonPreservesSubMicrosecondLatency)
+{
+    const std::unique_ptr<FILE, decltype(&std::fclose)> output(std::tmpfile(), &std::fclose);
+    REQUIRE(output);
+    Ubiquitty::PAL::UnixFileDescriptor previous(::dup(STDOUT_FILENO));
+    REQUIRE(previous);
+    std::fflush(stdout);
+    REQUIRE(::dup2(::fileno(output.get()), STDOUT_FILENO) >= 0);
+    const double value = 0.0000000125;
+    const double tail = 0.0000000375;
+    Ubiquitty::Bench::emitJSON({ { "tiny_latency", "milliseconds", value, tail } }, "fixture", "fixture");
+    std::fflush(stdout);
+    const int restored = ::dup2(previous.get(), STDOUT_FILENO);
+    REQUIRE(restored >= 0);
+    std::rewind(output.get());
+    std::string json;
+    char buffer[1024];
+    while (const auto length = std::fread(buffer, 1, sizeof(buffer), output.get()))
+        json.append(buffer, length);
+    const auto name = json.find("\"tiny_latency\"");
+    REQUIRE(name != std::string::npos);
+    const auto valueField = json.find("\"value\":", name);
+    const auto tailField = json.find("\"p95\":", name);
+    REQUIRE(valueField != std::string::npos);
+    REQUIRE(tailField != std::string::npos);
+    CHECK(std::strtod(json.c_str() + valueField + 8, nullptr) == value);
+    CHECK(std::strtod(json.c_str() + tailField + 6, nullptr) == tail);
 }

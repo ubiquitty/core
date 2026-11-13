@@ -602,7 +602,7 @@ inline void emitJSON(const std::vector<Result>& results, const char* platform, c
         std::printf("  \"training_mode\": \"fixed-input-counts\",\n");
     std::printf("  \"benchmarks\": [\n");
     for (std::size_t i = 0; i < all.size(); ++i) {
-        std::printf("    {\"name\": \"%s\", \"unit\": \"%s\", \"value\": %.4f, \"p95\": %.4f}%s\n", all[i].name.c_str(), all[i].unit.c_str(), all[i].value, all[i].p95, (i + 1 < all.size()) ? "," : "");
+        std::printf("    {\"name\": \"%s\", \"unit\": \"%s\", \"value\": %.17g, \"p95\": %.17g}%s\n", all[i].name.c_str(), all[i].unit.c_str(), all[i].value, all[i].p95, (i + 1 < all.size()) ? "," : "");
     }
     std::printf("  ]\n}\n");
 }
