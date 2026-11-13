@@ -201,7 +201,7 @@ TEST(shiftDragsKeepBlankFirstRowsOnLiveAndCapturedScreens)
     // Prompt markers carry shell metadata without printing a character.
     for (const std::string_view top : { "", "stale\r\033[2K", "     \r", "\033]133;A\007\033]133;B\007\033]133;C\007" }) {
         for (const auto screen : { ScreenKind::Primary, ScreenKind::History, ScreenKind::Alternate }) {
-            for (const bool upward : { true, false }) {
+            for (const bool isUpward : { true, false }) {
                 for (const bool isMouseReporting : { false, true }) {
                     Views views;
                     hardReset(views.terminal);
@@ -215,8 +215,8 @@ TEST(shiftDragsKeepBlankFirstRowsOnLiveAndCapturedScreens)
                     feed(views.terminal, "\033[2J\033[H" + std::string(top) + "\033[2;1Halpha\033[3;1Hbeta");
                     if (isMouseReporting)
                         feed(views.terminal, "\033[?1002h\033[?1006h");
-                    auto press = at(PointerFact::Kind::Press, upward ? 2 : 0, upward ? 3.25 : 17.25);
-                    auto drag = at(PointerFact::Kind::Motion, upward ? 0 : 2, upward ? 17.25 : 3.25);
+                    auto press = at(PointerFact::Kind::Press, isUpward ? 2 : 0, isUpward ? 3.25 : 17.25);
+                    auto drag = at(PointerFact::Kind::Motion, isUpward ? 0 : 2, isUpward ? 17.25 : 3.25);
                     auto release = at(PointerFact::Kind::Release, drag.row, drag.xInCells);
                     press.hasShift = drag.hasShift = release.hasShift = true;
                     CHECK_EQ(views.route({ press, drag, release }, "Shift drag keeps the blank first row", { .isMouseReporting = isMouseReporting }), 3u);
