@@ -44,6 +44,7 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -52,6 +53,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -158,6 +160,41 @@ LoginShell loginShell()
     return { "/bin/sh", "-sh" };
 }
 
+constexpr std::string_view shellReadyMarker = "ubiquitty-pane-facts-shell-ready";
+
+// The fixture's PTY-ready signal precedes exec. Wait for the login shell's
+// final startup file instead, carrying its output into the frozen terminal.
+bool waitForShellReady(AdoptionOwner& owner)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    std::string tail;
+    std::array<char, 4096> bytes;
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+        if (left <= 0)
+            return false;
+        struct pollfd ready { .fd = owner.master.get(), .events = POLLIN, .revents = 0 };
+        if (::poll(&ready, 1, static_cast<int>(left)) < 0) {
+            if (errno == EINTR)
+                continue;
+            return false;
+        }
+        const auto count = ::read(owner.master.get(), bytes.data(), bytes.size());
+        if (count < 0 && (errno == EAGAIN || errno == EINTR))
+            continue;
+        if (count <= 0)
+            return false;
+        const std::string_view output(bytes.data(), static_cast<std::size_t>(count));
+        Ubiquitty::processBytes(owner.terminal.get(), output);
+        tail.append(output);
+        if (tail.find(shellReadyMarker) != std::string::npos)
+            return true;
+        if (tail.size() >= shellReadyMarker.size())
+            tail.erase(0, tail.size() - shellReadyMarker.size() + 1);
+    }
+    return false;
+}
+
 } // namespace
 
 int main()
@@ -190,6 +227,13 @@ int main()
         std::fclose(zshrc);
     else
         return 1;
+    for (const auto& path : { zdotdir + "/.zlogin", std::string(home) + "/.profile" }) {
+        FILE* startup = std::fopen(path.c_str(), "w");
+        if (!startup)
+            return 1;
+        std::fprintf(startup, "printf '%s\\n'\n", shellReadyMarker.data());
+        std::fclose(startup);
+    }
     const std::string agentToken = "panefactsagentpanefactsagentpanefactsagent";
     FILE* tokens = std::fopen((macHome + "/tokens").c_str(), "w");
     if (!tokens)
@@ -212,20 +256,33 @@ int main()
     };
     do {
         auto* owner = fixture.makeOwner();
-        if (!owner || !fixture.startLeader(*owner, [&](int slave) {
+        if (!owner) {
+            fail("could not create the shell's PTY owner");
+            break;
+        }
+        if (!fixture.startLeader(*owner, [&](int slave) {
                 if (::dup2(slave, STDIN_FILENO) < 0 || ::dup2(slave, STDOUT_FILENO) < 0 || ::dup2(slave, STDERR_FILENO) < 0)
                     return 1;
                 if (slave > STDERR_FILENO)
                     ::close(slave);
-                if (::setenv("ZDOTDIR", zdotdir.c_str(), 1) != 0 || ::setenv("SHELL", shell.path.c_str(), 1) != 0)
+                if (::setenv("ZDOTDIR", zdotdir.c_str(), 1) != 0 || ::setenv("SHELL", shell.path.c_str(), 1) != 0 || ::setenv("HOME", home, 1) != 0)
                     return 1;
                 // Direct exec preserves both the exact tracked child PID and
                 // login argv[0], without login(1) orphaning another shell.
                 ::execl(shell.path.c_str(), shell.dashedName.c_str(), static_cast<char*>(nullptr));
                 return 127;
-            })
-            || !fixture.adopt(*owner)) {
-            fail("the actual shell owner lacked exact Committed evidence");
+            })) {
+            fail("the shell's controlling PTY was not ready");
+            break;
+        }
+        if (!waitForShellReady(*owner)) {
+            fail("the login shell did not finish startup before adoption");
+            break;
+        }
+        if (!fixture.adopt(*owner)) {
+            const auto rejection = owner->result.attempt ? owner->result.attempt->rejection() : std::nullopt;
+            fail("the actual shell owner lacked exact Committed evidence: ownership=" + std::to_string(static_cast<unsigned>(owner->result.ownership))
+                + " rejection=" + (rejection ? std::to_string(static_cast<unsigned>(*rejection)) : "none") + " elapsed=" + std::to_string(owner->elapsed.count()) + "ms");
             break;
         }
         const std::uint32_t sessionID = owner->result.adopted.sessionID;
