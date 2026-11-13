@@ -215,6 +215,22 @@ namespace Sync = Ubiquitty::Protocol::Sync;
 
 constexpr std::uint64_t remoteFixtureDaemonInstanceID = 17;
 
+std::size_t countFrames(std::span<const std::vector<std::uint8_t>> writes, Sync::FrameKind kind)
+{
+    Sync::FrameDecoder decoder;
+    std::size_t count = 0;
+    for (const auto& bytes : writes) {
+        decoder.append(bytes);
+        while (const auto frame = decoder.next()) {
+            if (frame->kind == kind)
+                ++count;
+        }
+    }
+    CHECK(decoder.error() == Sync::EnvelopeError::None);
+    CHECK(decoder.bufferedBytes() == 0);
+    return count;
+}
+
 class FakeRemoteChannel final : public Ubiquitty::Transport::Channel {
 public:
     FakeRemoteChannel(Ubiquitty::Transport::Origin origin, FrameLog* sink)
@@ -323,18 +339,29 @@ void runRemoteOriginChecks()
         CHECK(session->health() == Ubiquitty::Session::Health::Connected);
 
         const std::size_t framesBeforeInput = factory.sentLog.size();
+        // Let connection housekeeping become due: input waiting for a pane
+        // bind must stay buffered even when its flush sends control frames.
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
         // Input is the pane's, and waits in the core for the host to bind
         // the pane: nothing of it is written yet.
         session->sendInput("x");
-        CHECK(factory.sentLog.size() == framesBeforeInput);
+        CHECK(countFrames(std::span(factory.sentLog).subspan(framesBeforeInput), Sync::FrameKind::Raw) == 0);
         session->setSize(100, 30);
-        CHECK(factory.sentLog.size() == framesBeforeInput + 1); // Window Facts can leave before the pane's Viewport.
+        const auto beforeBind = std::span(factory.sentLog).subspan(framesBeforeInput);
+        CHECK(countFrames(beforeBind, Sync::FrameKind::Raw) == 0);
+        CHECK(countFrames(beforeBind, Sync::FrameKind::Viewport) == 0);
+        CHECK(countFrames(beforeBind, Sync::FrameKind::Facts) == 1);
 
         host.receive(factory.sentLog);
+        CHECK(host.plane().typed().events().empty());
+        CHECK(host.plane().connection().facts().viewportColumns == 100);
+        CHECK(host.plane().connection().facts().viewportRows == 30);
         const int framesBeforeCheckpoint = observer.frames;
         factory.last->fireData(host.publish());
         CHECK(dispatcher.drainUntil([&] { return observer.frames > framesBeforeCheckpoint; }));
         host.receive(factory.sentLog);
+        CHECK(host.plane().typed().bytes() == "x");
+        CHECK(host.plane().typed().events().size() == 1);
         const auto viewports = host.plane().connection().takeViewportReports();
         CHECK(std::ranges::any_of(viewports, [](const auto& report) {
             return report.viewport.columns == 100 && report.viewport.rows == 30;
