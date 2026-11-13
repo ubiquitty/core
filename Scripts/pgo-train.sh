@@ -88,6 +88,15 @@ RAW_DIRECTORY="$BUILD/profraw"
 rm -rf "$RAW_DIRECTORY"
 mkdir -p "$RAW_DIRECTORY"
 INSTRUMENT_FLAGS="-O3 $(ubiquitty_lto_flag) -DNDEBUG -fprofile-generate=$RAW_DIRECTORY"
+# Shared inline Core bodies must retain instrumentation in every translation
+# unit. Turning it off for the driver loses alternate inline CFG hashes.
+DRIVER_PROFILE_LIST="$BUILD/controller-profile.list"
+cat > "$DRIVER_PROFILE_LIST" <<'PROFILE_LIST'
+[llvm]
+!fun:main
+!fun:_ZN12_GLOBAL__N_1*
+!fun:_ZN9Ubiquitty5Bench*
+PROFILE_LIST
 
 echo "pgo-train: building instrumented libUbiquittyCore + bench_stack ..." >&2
 build_portable_core_archive "$BUILD" "$INSTRUMENT_FLAGS"
@@ -98,10 +107,16 @@ ubiquitty_core_pal_stub_source "$BUILD/bench_pal_stub.cpp"
 # render lanes that reach it. build-perf-bench.sh carries both, and a training
 # build that carries fewer include roots than the MEASUREMENT build compiles a
 # different program than the one the profile is meant to describe.
-$CXX_LAUNCHED -std=c++23 $INSTRUMENT_FLAGS -DUBIQUITTY_PGO_TRAINING=1 -fno-exceptions -fno-rtti -pthread \
+# Counter weights describe Core, not the corpus controller. Driver counters
+# would also change the profile summary that classifies Core's hot functions.
+$CXX_LAUNCHED -std=c++23 $INSTRUMENT_FLAGS -fprofile-list="$DRIVER_PROFILE_LIST" -DUBIQUITTY_PGO_TRAINING=1 -fno-exceptions -fno-rtti -pthread \
     -I"$ROOT/Source" \
     -I"$ROOT/Tests" \
-    "$ROOT/Tests/Performance/bench_stack.cpp" "$BUILD/bench_pal_stub.cpp" \
+    -c "$ROOT/Tests/Performance/bench_stack.cpp" -o "$BUILD/bench_stack_driver.o"
+# shellcheck disable=SC2086
+$CXX_LAUNCHED -std=c++23 $INSTRUMENT_FLAGS -fno-exceptions -fno-rtti -pthread \
+    -I"$ROOT/Source" -I"$ROOT/Tests" \
+    "$BUILD/bench_stack_driver.o" "$BUILD/bench_pal_stub.cpp" \
     "$PORTABLE_CORE_ARCHIVE" -o "$BUILD/bench_stack_instrumented"
 
 echo "pgo-train: running fixed-input lanes (training counters, not performance evidence) ..." >&2
@@ -119,10 +134,14 @@ fi
 # few counts from it, and -fprofile-use reads few as cold. A profile is a claim
 # about what the terminal receives, and a terminal receives text.
 # shellcheck disable=SC2086
-$CXX_LAUNCHED -std=c++23 $INSTRUMENT_FLAGS -fno-exceptions -fno-rtti -pthread \
+$CXX_LAUNCHED -std=c++23 $INSTRUMENT_FLAGS -fprofile-list="$DRIVER_PROFILE_LIST" -fno-exceptions -fno-rtti -pthread \
     -I"$ROOT/Source" \
     -I"$ROOT/Tests" \
-    "$ROOT/Tests/Performance/bench_ingest_corpora.cpp" "$BUILD/bench_pal_stub.cpp" \
+    -c "$ROOT/Tests/Performance/bench_ingest_corpora.cpp" -o "$BUILD/bench_corpora_driver.o"
+# shellcheck disable=SC2086
+$CXX_LAUNCHED -std=c++23 $INSTRUMENT_FLAGS -fno-exceptions -fno-rtti -pthread \
+    -I"$ROOT/Source" -I"$ROOT/Tests" \
+    "$BUILD/bench_corpora_driver.o" "$BUILD/bench_pal_stub.cpp" \
     "$PORTABLE_CORE_ARCHIVE" -o "$BUILD/bench_corpora_instrumented"
 env -u UBQ_BENCH_STREAM "$BUILD/bench_corpora_instrumented" --repetitions 2 > "$BUILD/training-corpora.json"
 
