@@ -1672,6 +1672,21 @@ SyncFrameCaptureGeometry captureGeometry()
 
 namespace {
 
+// An interactive gesture starts after its view has presented its first frame.
+bool waitForInitialCapture(TerminalSession& session)
+{
+    for (int waited = 0; waited < 2000; ++waited) {
+        FrameSupply supply;
+        auto* frame = session.takeFrame({ .nowTicks = Ubiquitty::PAL::monotonicTicks() }, supply);
+        const bool didCapture = frame && supply.route == FrameRoute::Captured;
+        releaseFrameCapture(frame);
+        if (didCapture)
+            return true;
+        ::usleep(1000);
+    }
+    return false;
+}
+
 // Scrolls a view over a loop's idle pane `rowsPerFrame` rows a frame for
 // `frames` frames, and counts the frames at which the view's ask was answered
 // with a capture at the position it scrolled to. `scroll` moves the view.
@@ -1685,16 +1700,7 @@ int framesServedAtTheScrolledPosition(LoopSession& loop, int rowsPerFrame, int f
     if (!loop.write(history))
         return -1;
     session.setSyncFrameCaptureGeometry(captureGeometry());
-    bool isFirstShown = false;
-    for (int waited = 0; waited < 2000 && !isFirstShown; ++waited) {
-        FrameSupply supply;
-        Ubiquitty::Rendering::FrameCapture* frame = session.takeFrame({ .nowTicks = Ubiquitty::PAL::monotonicTicks() }, supply);
-        isFirstShown = supply.route == FrameRoute::Captured;
-        releaseFrameCapture(frame);
-        if (!isFirstShown)
-            ::usleep(1000);
-    }
-    if (!isFirstShown)
+    if (!waitForInitialCapture(session))
         return -1;
     int served = 0;
     for (int frameIndex = 1; frameIndex <= frames; ++frameIndex) {
@@ -1769,6 +1775,8 @@ TEST(testAResizingViewGetsAFrameAtEachGeometry)
     REQUIRE(loop.isRunning);
     TerminalSession& session = loop.session();
     REQUIRE(loop.write("resize frame"));
+    session.setSyncFrameCaptureGeometry(captureGeometry());
+    REQUIRE(waitForInitialCapture(session));
     int served = 0;
     for (int step = 1; step <= 30; ++step) {
         const int rows = 24 + step;

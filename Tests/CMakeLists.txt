@@ -293,10 +293,12 @@ set(test_frame_cadence_EXTRA_SOURCES ${test_ingest_loop_EXTRA_SOURCES} Tests/Pla
 set(test_frame_cadence_EXTRA_DEFINES UBIQUITTY_ENABLE_TEST_HOOKS=1)
 if(APPLE)
     # A service's inherited utility clamp still coalesces timed wakes after a
-    # thread requests interactive QoS. The display probe needs a UI job's
+    # thread requests interactive QoS. Display readers need a UI job's
     # process policy as well; its timing assertions remain the same.
-    set(test_frame_cadence_LAUNCHER ${Python3_EXECUTABLE}
-        ${UBIQUITTY_CORE_SOURCE_DIR}/Scripts/run-presentation-test.py)
+    foreach(_ubq_display_test IN ITEMS test_frame_cadence test_ingest_loop)
+        set(${_ubq_display_test}_LAUNCHER ${Python3_EXECUTABLE}
+            ${UBIQUITTY_CORE_SOURCE_DIR}/Scripts/run-presentation-test.py)
+    endforeach()
 endif()
 # The settings fan-out runs against a started session, and a session is the
 # runtime whether or not the case opens a PTY: the same PAL set has to link.
