@@ -3984,6 +3984,7 @@ elif wanted sanitized_sync && command -v cmake >/dev/null 2>&1; then
                 SANITIZED_RED+=("$SANITIZED_NAME")
                 grep -m1 -E 'ERROR: AddressSanitizer|runtime error:|FAILED|FATAL' "$OUT/sanitized-$SANITIZED_NAME.log" | sed "s/^/sanitized_sync: $SANITIZED_NAME: /" >&2
                 echo "  (the whole run is in $OUT/sanitized-$SANITIZED_NAME.log)" >&2
+                cat "$OUT/sanitized-$SANITIZED_NAME.log" >&2
             fi
         done
         if [ "${#SANITIZED_RED[@]}" -ne 0 ]; then

@@ -384,6 +384,14 @@ public:
     /// - Returns: Whether the session reads its foreground.
     bool raiseTreeEdge() { return m_treeNotify != nullptr && m_treeNotify(m_treeContext); }
 
+    // The kernel handoff follows the edge even when the test's driving thread
+    // is descheduled beyond its intended delay.
+    bool raiseTreeEdge(std::chrono::milliseconds shellReturnDelay)
+    {
+        m_shellReturnAt.store(std::chrono::steady_clock::now() + shellReturnDelay, std::memory_order_release);
+        return raiseTreeEdge();
+    }
+
     int read(std::span<char> buffer) override { return m_endpoint.read(buffer); }
     int write(std::span<const char> bytes) override { return m_endpoint.write(bytes); }
     int writeAll(std::span<const char> bytes) override { return m_endpoint.writeAll(bytes); }
@@ -396,10 +404,10 @@ public:
     ProcessFacts& process() override { return *this; }
 
     std::string foregroundName() override { return {}; }
-    bool foregroundIsShell() override { return shellGroup != 0 && foregroundGroup.load(std::memory_order_relaxed) == shellGroup; }
+    bool foregroundIsShell() override { return shellGroup != 0 && currentForegroundGroup() == shellGroup; }
     std::optional<ProcessID> foregroundProcessGroup() override
     {
-        const ProcessID group = foregroundGroup.load(std::memory_order_relaxed);
+        const ProcessID group = currentForegroundGroup();
         if (groupAfterNextProbe.load(std::memory_order_acquire) != 0) {
             groupReadBeforeHandoff.store(group, std::memory_order_relaxed);
             acknowledgedGroupReads.fetch_add(1, std::memory_order_release);
@@ -432,6 +440,15 @@ public:
     bool deliversTreeEdges() override { return isTreeTracked; }
 
 private:
+    ProcessID currentForegroundGroup()
+    {
+        const auto returnAt = m_shellReturnAt.load(std::memory_order_acquire);
+        if (returnAt != std::chrono::steady_clock::time_point::max() && std::chrono::steady_clock::now() >= returnAt)
+            foregroundGroup.store(shellGroup, std::memory_order_relaxed);
+        return foregroundGroup.load(std::memory_order_relaxed);
+    }
+
+    std::atomic<std::chrono::steady_clock::time_point> m_shellReturnAt { std::chrono::steady_clock::time_point::max() };
     int m_rawDescriptor;
     PipeEndpoint m_endpoint;
     bool (*m_treeNotify)(void*) = nullptr;
@@ -645,9 +662,7 @@ TEST(testAnExitEdgeIsAnsweredOnceTheShellHasTheTerminalBack)
         // so the exit edge is the one the loop answers.
         ::usleep((Ubiquitty::Title::edgeFloorMilliseconds + Ubiquitty::Title::edgeSettleMilliseconds) * 2000);
 
-        CHECK_MSG(transport.raiseTreeEdge(), level);
-        ::usleep(Ubiquitty::Title::edgeSettleMilliseconds * 1000 / 6);
-        transport.foregroundGroup = shellGroup;
+        CHECK_MSG(transport.raiseTreeEdge(std::chrono::milliseconds(Ubiquitty::Title::edgeSettleMilliseconds / 6)), level);
         bool isRetired = false;
         for (int waited = 0; waited < 2000 && !isRetired; ++waited) {
             isRetired = titleOf(session).empty();
