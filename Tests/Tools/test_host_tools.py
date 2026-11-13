@@ -30,13 +30,13 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def load(name: str):
-    """Imports a Tools/ script as a module, without running its main.
+def load(name: str, directory: str = "Tools"):
+    """Imports a local script as a module, without running its main.
 
     - Parameter name: the script's file name.
     - Returns: the module.
     """
-    spec = importlib.util.spec_from_file_location(name.replace("-", "_").replace(".py", ""), ROOT / "Tools" / name)
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_").replace(".py", ""), ROOT / directory / name)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -64,7 +64,8 @@ class BuildPrerequisiteTests(unittest.TestCase):
             executable = build / "Tests/test_pty"
             executable.write_text("#!/bin/sh\nexit 0\n")
             executable.chmod(0o755)
-            listing = json.loads(subprocess.check_output(
+            reporting = load("ctest_report.py", "Scripts")
+            listing = reporting.discovery_payload(subprocess.check_output(
                 ["ctest", "--test-dir", str(build), "--show-only=json-v1"], text=True))
             entries = {entry["name"]: entry for entry in listing["tests"]}
             self.assertFalse("test_pty" in entries, "PTY cases must be scheduled as bounded shards")

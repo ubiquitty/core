@@ -1438,6 +1438,17 @@ class CTestReportingTests(unittest.TestCase):
                           "--rerun-failed", "--union", "--tests-from-file",
                           "selected.txt", "--exclude-from-file=excluded.txt"])
 
+    def test_discovery_payload_retains_metadata_and_reports_trailing_output(self):
+        payload = {"tests": [{"name": "test_pty.0", "properties": [{"name": "TIMEOUT", "value": 60}]}]}
+        error = io.StringIO()
+        with redirect_stderr(error):
+            decoded = ctest_reporting.discovery_payload(json.dumps(payload) + "\nSHELL-LANE: census\n")
+        self.assertEqual(decoded, payload)
+        self.assertIn("SHELL-LANE: census", error.getvalue())
+        for invalid in ("not JSON", "[]", '{"tests":'):
+            with self.subTest(invalid=invalid), self.assertRaises(RuntimeError):
+                ctest_reporting.discovery_payload(invalid)
+
     def test_discovery_resolves_relative_selector_files_from_the_build_tree(self):
         with tempfile.TemporaryDirectory() as directory:
             build = Path(directory)

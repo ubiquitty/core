@@ -103,13 +103,8 @@ def selection_arguments(arguments):
     return selected
 
 
-def discover(build, arguments, environment):
-    command = ["ctest", "--test-dir", str(build), "--show-only=json-v1",
-               *selection_arguments(arguments)]
-    finished = subprocess.run(command, capture_output=True, text=True,
-                              check=False, env=environment, cwd=build)
-    if finished.returncode != 0:
-        raise RuntimeError(f"CTest discovery failed: {finished.stderr.strip() or finished.stdout.strip()}")
+def discovery_payload(output):
+    """Reads CTest metadata and reports any trailing tool output."""
     # The first JSON document on stdout, not the whole of stdout. Anything the
     # toolchain prints after it — a CMake deprecation notice, a linker warning
     # that arrives late — is trailing text, and reading the stream as one
@@ -120,13 +115,26 @@ def discover(build, arguments, environment):
     # whatever wrote it, and a discovery that silently tolerated anything would
     # be the next thing nobody can diagnose.
     try:
-        payload, consumed = json.JSONDecoder().raw_decode(finished.stdout.lstrip())
+        payload, consumed = json.JSONDecoder().raw_decode(output.lstrip())
     except json.JSONDecodeError as error:
         raise RuntimeError(f"CTest discovery returned invalid JSON: {error}") from error
-    trailing = finished.stdout.lstrip()[consumed:].strip()
+    trailing = output.lstrip()[consumed:].strip()
     if trailing:
         print(f"ctest: discovery read its JSON and ignored {len(trailing)} trailing byte(s) on stdout: "
               f"{trailing[:200]!r}", file=sys.stderr)
+    if not isinstance(payload, dict):
+        raise RuntimeError("CTest discovery returned a non-object JSON value")
+    return payload
+
+
+def discover(build, arguments, environment):
+    command = ["ctest", "--test-dir", str(build), "--show-only=json-v1",
+               *selection_arguments(arguments)]
+    finished = subprocess.run(command, capture_output=True, text=True,
+                              check=False, env=environment, cwd=build)
+    if finished.returncode != 0:
+        raise RuntimeError(f"CTest discovery failed: {finished.stderr.strip() or finished.stdout.strip()}")
+    payload = discovery_payload(finished.stdout)
     tests = payload.get("tests", [])
     if not tests:
         raise RuntimeError("CTest selected no tests; an empty suite is not a pass")
