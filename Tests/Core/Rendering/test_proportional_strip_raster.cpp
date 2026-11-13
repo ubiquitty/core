@@ -27,8 +27,9 @@ public:
 
     bool rasterizeGlyph(std::uint32_t, FontFace, std::uint32_t, int, int, std::uint8_t*) override { return false; }
 
-    int shapeProportionalRun(ClusterSpan codePoints, FontFace, std::span<ProportionalShapedGlyph> glyphs) override
+    int shapeProportionalRun(ClusterSpan codePoints, FontFace face, std::span<ProportionalShapedGlyph> glyphs) override
     {
+        m_shapedFace = face;
         if (glyphs.size() < codePoints.size()) {
             return 0;
         }
@@ -42,9 +43,10 @@ public:
         return static_cast<int>(codePoints.size());
     }
 
-    bool rasteriseProportionalRun(std::span<const ProportionalShapedGlyph> glyphs, FontFace,
+    bool rasteriseProportionalRun(std::span<const ProportionalShapedGlyph> glyphs, FontFace face,
         int width, int, std::span<std::uint8_t> coverage) override
     {
+        m_drawnFace = face;
         m_origins.clear();
         double pen = 0.0;
         for (const ProportionalShapedGlyph& glyph : glyphs) {
@@ -61,9 +63,10 @@ public:
 
     // A master marks each glyph's column with its canvas row plus one, so a
     // slot shows which slot height of the master it was cut from.
-    bool rasteriseSizedProportionalRun(std::span<const ProportionalShapedGlyph> glyphs, FontFace, const SizedMaster& master,
+    bool rasteriseSizedProportionalRun(std::span<const ProportionalShapedGlyph> glyphs, FontFace face, const SizedMaster& master,
         int width, int height, std::span<std::uint8_t> coverage) override
     {
+        m_drawnFace = face;
         m_masterScale = master.scale.whole();
         m_masterWidthScale = master.widthScale;
         m_masterHeight = height;
@@ -82,6 +85,8 @@ public:
     [[nodiscard]] int masterScale() const { return m_masterScale; }
     [[nodiscard]] int masterWidthScale() const { return m_masterWidthScale; }
     [[nodiscard]] int masterHeight() const { return m_masterHeight; }
+    [[nodiscard]] FontFace shapedFace() const { return m_shapedFace; }
+    [[nodiscard]] FontFace drawnFace() const { return m_drawnFace; }
 
 private:
     float m_glyphOffset = 0.0f;
@@ -89,6 +94,8 @@ private:
     int m_masterScale = 0;
     int m_masterWidthScale = 0;
     int m_masterHeight = 0;
+    FontFace m_shapedFace = FontFace::Regular;
+    FontFace m_drawnFace = FontFace::Regular;
 };
 
 ProportionalStripRequest requestForAlignment(std::uint8_t alignment)
@@ -103,6 +110,29 @@ ProportionalStripRequest requestForAlignment(std::uint8_t alignment)
 }
 
 } // namespace
+
+TEST(proportionalStripsKeepItalicFacesThroughShapingAndEveryBand)
+{
+    RecordingRasterizer rasterizer;
+    const std::array<std::uint32_t, 2> text { 'a', 'b' };
+    std::vector<ProportionalShapedGlyph> shaped;
+    std::array<std::uint8_t, 40> coverage;
+    for (const auto face : { FontFace::Regular, FontFace::Italic, FontFace::Bold, FontFace::BoldItalic }) {
+        for (const std::uint8_t scale : { 1, 2 }) {
+            for (std::uint8_t band = 0; band < scale; ++band) {
+                auto request = requestForAlignment(0);
+                request.face = face;
+                request.scale = scale;
+                request.band = band;
+                const auto shape = shapeProportionalStrip(rasterizer, text, request, shaped);
+                REQUIRE(shape.glyphCount == 2);
+                CHECK(rasterizer.shapedFace() == face);
+                CHECK(rasteriseProportionalStrip(rasterizer, shaped, request, shape.layout, coverage));
+                CHECK(rasterizer.drawnFace() == face);
+            }
+        }
+    }
+}
 
 TEST(justifiedStripOpensEachGapOnceAndKeepsTheFinalWord)
 {

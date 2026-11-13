@@ -67,9 +67,8 @@ ProportionalStripShape shapeProportionalStrip(GlyphRasterizer& rasterizer, Clust
     ProportionalStripShape shape;
     if (codePoints.empty() || request.widthCells < 1 || request.cellAdvanceInPixels <= 0.0f)
         return shape;
-    const FontFace shapedFace = isBold(request.face) ? FontFace::Bold : FontFace::Regular;
     shapedOut.assign(codePoints.size() * 2, Ubiquitty::ProportionalShapedGlyph {});
-    const int glyphCount = rasterizer.shapeProportionalRun(codePoints, shapedFace, shapedOut);
+    const int glyphCount = rasterizer.shapeProportionalRun(codePoints, request.face, shapedOut);
     if (glyphCount <= 0 || static_cast<std::size_t>(glyphCount) > shapedOut.size())
         return shape;
     shapedOut.resize(static_cast<std::size_t>(glyphCount));
@@ -101,7 +100,6 @@ bool rasteriseProportionalStrip(GlyphRasterizer& rasterizer, std::span<const Ubi
     const std::size_t slotBytes = static_cast<std::size_t>(request.slotWidthInPixels) * static_cast<std::size_t>(request.slotHeightInPixels);
     if (shaped.empty() || layout.tileCount <= 0 || request.slotWidthInPixels <= 0 || request.slotHeightInPixels <= 0 || coverageOut.size() < slotBytes)
         return false;
-    const FontFace shapedFace = isBold(request.face) ? FontFace::Bold : FontFace::Regular;
     // Core has placed every glyph; the strip's fractional pen translates that
     // placement into the slot without changing the spacing.
     std::vector<Ubiquitty::ProportionalShapedGlyph> placed(shaped.begin(), shaped.end());
@@ -113,7 +111,7 @@ bool rasteriseProportionalStrip(GlyphRasterizer& rasterizer, std::span<const Ubi
     size.widthScale = request.widthScale == 2 ? 2 : 1;
     const SizedMaster master = selectSizedMaster(size, {}, 0.0, 0.0);
     if (master.isIdentity()) {
-        if (!rasterizer.rasteriseProportionalRun(placed, shapedFace, request.slotWidthInPixels, request.slotHeightInPixels, coverageOut))
+        if (!rasterizer.rasteriseProportionalRun(placed, request.face, request.slotWidthInPixels, request.slotHeightInPixels, coverageOut))
             return false;
     } else {
         // The run at its size, on a canvas as many slots tall, of which the
@@ -122,7 +120,7 @@ bool rasteriseProportionalStrip(GlyphRasterizer& rasterizer, std::span<const Ubi
             return false;
         const int canvasHeight = master.scale.scaled(request.slotHeightInPixels);
         std::vector<std::uint8_t> canvas(static_cast<std::size_t>(request.slotWidthInPixels) * static_cast<std::size_t>(canvasHeight), 0);
-        if (!rasterizer.rasteriseSizedProportionalRun(placed, shapedFace, master, request.slotWidthInPixels, canvasHeight, canvas))
+        if (!rasterizer.rasteriseSizedProportionalRun(placed, request.face, master, request.slotWidthInPixels, canvasHeight, canvas))
             return false;
         std::ranges::copy(std::span<const std::uint8_t>(canvas).subspan(static_cast<std::size_t>(size.band) * slotBytes, slotBytes), coverageOut.begin());
     }

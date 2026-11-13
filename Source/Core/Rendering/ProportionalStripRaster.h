@@ -33,7 +33,7 @@ struct ProportionalStripRequest {
     int slotWidthInPixels = 0;
     /// The slot's height.
     int slotHeightInPixels = 0;
-    /// The face the run is set in; italic resolves to its upright.
+    /// The face used for both shaping and drawing the run.
     FontFace face = FontFace::Regular;
     /// The zero-based tile of the full shaped run.
     int tileIndex = 0;
