@@ -941,7 +941,6 @@ static constexpr const char* renamesItselfMarker = "--ubiquitty-renames-itself";
 // names nothing there.
 static std::string executablePath;
 
-#if defined(__APPLE__)
 // The shell and its sleeper both carry the marker, so every fixture process
 // participates in its no-survivor assertion and marker-scoped cleanup.
 static std::string markedSleepCommand(const std::string& marker)
@@ -949,7 +948,6 @@ static std::string markedSleepCommand(const std::string& marker)
     return Input::shellEscapedPath(executablePath) + " " + sleepsMarker + " 1000 "
         + Input::shellEscapedPath(marker) + "; : " + Input::shellEscapedPath(marker);
 }
-#endif
 
 // argv[0] made absolute against the directory this process started in. A
 // name with no slash was found on PATH and is kept, since the launch resolves
