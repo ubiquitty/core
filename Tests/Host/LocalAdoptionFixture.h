@@ -244,21 +244,41 @@ public:
             return false;
         m_socketPath = home + "/" + m_socketLeaf;
         const std::string processIDPath = m_socketPath + ".pid";
+        int ready[2] { -1, -1 };
+        if (::pipe(ready) != 0)
+            return false;
+        PAL::UnixFileDescriptor readEnd(ready[0]);
+        PAL::UnixFileDescriptor writeEnd(ready[1]);
         if (!m_daemon.spawn([&] {
+                readEnd.reset();
                 if (::setenv("UBIQUITTY_HOME", home.c_str(), 1) != 0)
                     return 1;
                 Host::Daemon daemon;
                 if (!daemon.start(m_socketPath.c_str(), processIDPath.c_str(), "/bin/sh", 80, 24))
                     return 1;
+                const char message = 'r';
+                if (::write(writeEnd.get(), &message, 1) != 1)
+                    return 1;
+                writeEnd.reset();
                 return daemon.run();
             }))
             return false;
+        writeEnd.reset();
+        // Binding precedes executable capture and the rest of daemon startup.
+        // A queued connect cannot establish readiness for a bounded handoff.
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-        do {
-            if (connectAdoptionSocket(m_socketPath))
-                return true;
-            ::usleep(10'000);
-        } while (std::chrono::steady_clock::now() < deadline);
+        while (std::chrono::steady_clock::now() < deadline) {
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+            if (remaining <= 0)
+                return false;
+            struct pollfd wait { .fd = readEnd.get(), .events = POLLIN, .revents = 0 };
+            const int readyCount = ::poll(&wait, 1, static_cast<int>(remaining));
+            if (readyCount < 0 && errno == EINTR)
+                continue;
+            char message = 0;
+            return readyCount == 1 && (wait.revents & POLLIN) && ::read(readEnd.get(), &message, 1) == 1 && message == 'r'
+                && connectAdoptionSocket(m_socketPath);
+        }
         return false;
     }
 
