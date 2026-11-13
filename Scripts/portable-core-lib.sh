@@ -55,6 +55,16 @@ ubiquitty_lto_flag() {
     rm -f "$probe"
 }
 
+# Reap the whole wave before reporting a failure; no compiler survives a
+# failed archive build, and the caller never archives unfinished objects.
+ubiquitty_wait_for_compilers() {
+    local status=0 process
+    for process in "$@"; do
+        wait "$process" || status=1
+    done
+    return "$status"
+}
+
 build_portable_core_archive() {
     local build="$1"; shift
     local extra="${1:-}"
@@ -142,7 +152,12 @@ for rel in sys.stdin.read().split():
     if stale:
         print(rel)
 " "$objdir" "$root")"
-    local objs=()
+    local objs=() compileProcesses=()
+    local compileJobs="${UBQ_BUILD_JOBS:-1}"
+    if [[ ! "$compileJobs" =~ ^[1-9][0-9]*$ ]]; then
+        echo "portable-core: UBQ_BUILD_JOBS must be a positive integer" >&2
+        return 1
+    fi
     local rel obj
     while IFS= read -r rel; do
         obj="$objdir/$(echo "$rel" | tr '/' '_').o"
@@ -151,11 +166,25 @@ for rel in sys.stdin.read().split():
         # reports as "not stale" — so a long stale list left objects unbuilt.
         if grep -qxF "$rel" <<<"$staleList"; then
             # shellcheck disable=SC2086
-            $launcher "$cxx" -std=c++23 $extra -fno-exceptions -fno-rtti -pthread \
-                -MMD -MF "$obj.d" -I"$root/Source" -c "$root/$rel" -o "$obj"
+            (
+                if ! $launcher "$cxx" -std=c++23 $extra -fno-exceptions -fno-rtti -pthread \
+                        -MMD -MF "$obj.d" -I"$root/Source" -c "$root/$rel" -o "$obj"; then
+                    rm -f "$obj" "$obj.d"
+                    exit 1
+                fi
+            ) &
+            compileProcesses+=("$!")
+            if [ "${#compileProcesses[@]}" -ge "$compileJobs" ]; then
+                ubiquitty_wait_for_compilers "${compileProcesses[@]}" || return 1
+                compileProcesses=()
+            fi
         fi
         objs+=("$obj")
     done < <("$root/Scripts/gen-portable-core-sources.sh" --print)
+
+    if [ "${#compileProcesses[@]}" -gt 0 ]; then
+        ubiquitty_wait_for_compilers "${compileProcesses[@]}" || return 1
+    fi
 
     # shellcheck disable=SC2086
     $launcher "$cxx" -std=c++23 $extra -fno-exceptions -fno-rtti \

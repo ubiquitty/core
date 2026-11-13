@@ -417,4 +417,7 @@ done
 python3 "$ROOT/Scripts/test-pgo-toolchain.py"
 check "the Linux profile's toolchain provenance tests pass" "0" "$?"
 
+python3 "$ROOT/Scripts/test-portable-core-build.py"
+check "portable archive workers preserve failure and dependency checks" "0" "$?"
+
 report "test-build-scripts-pgo" "builders forward PGO, select profiles by target, preserve explicit overrides and private training outputs, hold a Linux profile to its image, and report quiet failures"
