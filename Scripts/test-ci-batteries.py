@@ -3299,6 +3299,63 @@ def fork_runners(evaluate, runs_on):
     return reached
 
 
+
+class AppleDependencyCacheTests(unittest.TestCase):
+    def assertDependencyCache(self, job):
+        reader = draft_workflows()
+        def step(name):
+            found = re.search(r"(?ms)^      - name: " + re.escape(name) + r"\n(.*?)(?=^      - |\Z)", job)
+            self.assertIsNotNone(found, name)
+            return reader.mapping(found.group(1), 8)
+        restored = step("Restore QUIC dependencies")
+        saved = step("Save QUIC dependencies")
+        self.assertIn("actions/cache/restore@", restored["uses"])
+        self.assertIn("actions/cache/save@", saved["uses"])
+        self.assertTrue(reader.scalar(saved["if"]).startswith("always() && "))
+        restore_inputs = reader.mapping(restored["with"], 10)
+        save_inputs = reader.mapping(saved["with"], 10)
+        self.assertEqual(restore_inputs["key"], save_inputs["key"])
+        self.assertEqual(restore_inputs["path"], save_inputs["path"])
+        paths = restore_inputs["path"].splitlines()[1:]
+        self.assertEqual(len(paths), 2)
+        self.assertTrue(paths[0].strip().endswith("/quic-deps"))
+        self.assertEqual(paths[1].strip(), "!" + paths[0].strip() + "/**/src/*/build")
+        key = reader.scalar(restore_inputs["key"])
+        suffix = "${{ github.run_id }}-${{ github.run_attempt }}"
+        self.assertTrue(key.endswith(suffix))
+        self.assertEqual(reader.scalar(restore_inputs["restore-keys"]), key.removesuffix(suffix))
+        for required in ("runner.os", "runner.arch", "outputs.quic_toolchain", "hashFiles(",
+                         "Scripts/fetch-quic-deps.sh", "Scripts/macos-deployment-target.txt",
+                         "Scripts/cmake/UbiquittyPreProject.cmake"):
+            self.assertIn(required, key)
+        self.assertIn("xcodebuild -version | shasum -a 256", job)
+        self.assertNotIn("cache-hit", job)
+
+    def testOwnedAppleJobsCachePinnedSourcesAndAllSDKArchives(self):
+        jobs = workflow_jobs((WORKFLOWS / "ci.yml").read_text())
+        self.assertDependencyCache(jobs["apple"])
+        self.assertLess(jobs["apple"].index("name: Restore QUIC dependencies"),
+                        jobs["apple"].index("name: Run the fail-fast Apple battery"))
+        if TEST_SOURCES.repositories == ("app",):
+            self.assertIn("matrix.group", jobs["apple"].split("name: Restore QUIC dependencies", 1)[1].split("name: Restore the compiler cache", 1)[0])
+            release = workflow_jobs((WORKFLOWS / "release.yml").read_text())
+            for name in ("release", "ios"):
+                self.assertDependencyCache(release[name])
+            self.assertIn("matrix.sdk", release["ios"].split("name: Restore QUIC dependencies", 1)[1].split("name: Compiler cache", 1)[0])
+
+    def testCacheContractRejectsMissingSourcesToolchainOrFailureSave(self):
+        job = workflow_jobs((WORKFLOWS / "ci.yml").read_text())["apple"]
+        self.assertDependencyCache(job)
+        for broken in (job.replace("outputs.quic_toolchain", "outputs.unkeyed"),
+                       job.replace("always() && steps.roots.outputs.build != ''", "success()"),
+                       job.replace(" }}/quic-deps\n", " }}/quic-deps/lib\n"),
+                       job.replace("/**/src/*/build", "/unused")):
+            with self.subTest(broken=broken != job):
+                self.assertNotEqual(broken, job)
+                with self.assertRaises(AssertionError):
+                    self.assertDependencyCache(broken)
+
+
 class WorkflowTests(unittest.TestCase):
     source_repositories = ("app",)
 

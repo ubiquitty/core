@@ -339,6 +339,15 @@ jobs:
             echo "CCACHE_MAXSIZE=2G"
           } >> "$GITHUB_ENV"
           echo "build=$(python3 Scripts/build_root.py .)" >> "$GITHUB_OUTPUT"
+          echo "quic_toolchain=$(xcodebuild -version | shasum -a 256 | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Restore QUIC dependencies
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: |
+            ${{ steps.roots.outputs.build }}/quic-deps
+            !${{ steps.roots.outputs.build }}/quic-deps/**/src/*/build
+          key: quic-apple-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.roots.outputs.quic_toolchain }}-${{ hashFiles('Scripts/fetch-quic-deps.sh', 'Scripts/macos-deployment-target.txt', 'Scripts/cmake/UbiquittyPreProject.cmake') }}-apple-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: quic-apple-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.roots.outputs.quic_toolchain }}-${{ hashFiles('Scripts/fetch-quic-deps.sh', 'Scripts/macos-deployment-target.txt', 'Scripts/cmake/UbiquittyPreProject.cmake') }}-apple-
       - name: Restore the compiler cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
@@ -347,14 +356,6 @@ jobs:
           restore-keys: |
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-apple-
             ccache-apple-
-      - name: Cache QUIC dependencies
-        if: needs.preflight.outputs.code == 'true'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
-        with:
-          path: |
-            ${{ steps.roots.outputs.build }}/quic-deps/lib
-            ${{ steps.roots.outputs.build }}/quic-deps/include
-          key: quic-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Scripts/fetch-quic-deps.sh') }}
       - name: Run the fail-fast Apple battery
         id: battery
         run: python3 Scripts/ci_batteries.py run apple
@@ -392,6 +393,15 @@ jobs:
         if: always()
         run: |
           if [ -s "$CCACHE_STATSLOG" ]; then ccache --show-log-stats; else echo "No compiler invocations recorded in this job"; fi
+      - name: Save QUIC dependencies
+        if: always() && steps.roots.outputs.build != ''
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: |
+            ${{ steps.roots.outputs.build }}/quic-deps
+            !${{ steps.roots.outputs.build }}/quic-deps/**/src/*/build
+          key: quic-apple-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.roots.outputs.quic_toolchain }}-${{ hashFiles('Scripts/fetch-quic-deps.sh', 'Scripts/macos-deployment-target.txt', 'Scripts/cmake/UbiquittyPreProject.cmake') }}-apple-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Save the compiler cache
         if: always()
         continue-on-error: true
