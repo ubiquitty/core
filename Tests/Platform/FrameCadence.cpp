@@ -6,9 +6,22 @@
 
 #if defined(__APPLE__)
 #include <pthread/qos.h>
+#include <sys/resource.h>
 #endif
 
 namespace UbiquittyTest {
+
+bool preparePresentationProcess()
+{
+#if defined(__APPLE__)
+    // A headless runner can pass its process background policy to the test.
+    // That policy coalesces timed wakes even at user-interactive thread QoS;
+    // a foreground native view does not inherit it.
+    return ::setpriority(PRIO_DARWIN_PROCESS, 0, 0) == 0;
+#else
+    return true;
+#endif
+}
 
 bool preparePresentationThread()
 {

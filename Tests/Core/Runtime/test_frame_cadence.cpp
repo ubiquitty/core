@@ -1395,6 +1395,7 @@ constexpr double minCoreShare = 0.5;
 // either finds less than the share a run needs.
 void runAndCheck(const CadenceCase& cadenceCase)
 {
+    REQUIRE_MSG(UbiquittyTest::preparePresentationProcess(), "the presentation test left inherited process background policy");
     const double shareBefore = availableCoreShare();
     if (shareBefore < minCoreShare) {
         const std::string reason = std::format("{}: a busy thread could have {:.2f} of a core, below {:.2f}", cadenceCase.name, shareBefore, minCoreShare);
