@@ -1185,11 +1185,14 @@ def card(s, era, numeral, year, title, subtitle, from_year=None):
     s.write(HIDE, CLEAR)
     mid = STAGE_H // 2 - 2
     colours = s.era_colours(era)
-    def paint(weight, year_weight=None):
+    has_odometer = from_year is not None and not s.reduced
+    def paint(weight, year_weight=None, chapter_weight=None):
         if year_weight is None:
             year_weight = weight
+        if chapter_weight is None:
+            chapter_weight = weight
         colour = lerp(colours.background, colours.foreground, weight)
-        s.write(SYNC_ON, s.centred(mid - 2, fg(*lerp(colours.background, colours.foreground, 0.55 * weight)) + "CHAPTER " + numeral + RESET),
+        s.write(SYNC_ON, s.centred(mid - 2, fg(*lerp(colours.background, colours.foreground, 0.55 * chapter_weight)) + "CHAPTER " + numeral + RESET),
                 headline(s, mid, year, lerp(colours.background, colours.foreground, year_weight)))
         if s.sized_text:
             s.write(proportional_heading(s, mid + 3, title, colour, bold=True))
@@ -1198,15 +1201,15 @@ def card(s, era, numeral, year, title, subtitle, from_year=None):
             s.write(s.line_start(mid + 3), ESC + "#6", s.dwl_pad(title), fg(*colour), BOLD, title, RESET)
             s.write(s.centred(mid + 5, fg(*lerp(colours.background, colours.foreground, 0.6 * weight)) + subtitle + RESET))
         s.write(SYNC_OFF)
-    s.write(s.centred(mid - 2, fg(*lerp(colours.background, colours.foreground, 0.55)) + "CHAPTER " + numeral + RESET))
-    if from_year is not None and not s.reduced:
+    if has_odometer:
         span = int(year) - int(from_year)
         for step in range(1, 9):
             shown = int(from_year) + round(span * (step / 8.0) ** 1.6)
-            s.write(SYNC_ON, headline(s, mid, str(shown), lerp(colours.background, colours.foreground, 0.35 + 0.65 * step / 8)), SYNC_OFF)
+            s.write(SYNC_ON, s.centred(mid - 2, fg(*lerp(colours.background, colours.foreground, 0.55 * step / 8)) + "CHAPTER " + numeral + RESET),
+                    headline(s, mid, str(shown), lerp(colours.background, colours.foreground, 0.35 + 0.65 * step / 8)), SYNC_OFF)
             s.pause(0.05 + 0.02 * step)
     for step in range(1, (1 if s.reduced else 6) + 1):
-        paint(1.0 if s.reduced else step / 6, year_weight=1.0)
+        paint(1.0 if s.reduced else step / 6, year_weight=1.0, chapter_weight=1.0 if has_odometer else None)
         s.pause(0.07)
     s.pause(0.9 if s.short else 1.5)
     if not s.reduced:
@@ -1296,17 +1299,17 @@ def chapter_title(s):
         s.write(SYNC_ON, headline(s, 9, "THE TERMINAL", lerp(INK.background, INK.foreground, t)))
         colour = fg(*lerp(INK.background, INK.foreground, 0.6 * t))
         if s.sized_text:
-            s.write(proportional_heading(s, 13, "sixty years, one screen", lerp(INK.background, INK.foreground, 0.6 * t)), SYNC_OFF)
+            s.write(proportional_heading(s, 13, "Sixty years, one screen", lerp(INK.background, INK.foreground, 0.6 * t)), SYNC_OFF)
         else:
-            s.write(s.centred(13, colour + "sixty years, one screen" + RESET), SYNC_OFF)
+            s.write(s.centred(13, colour + "Sixty years, one screen" + RESET), SYNC_OFF)
         s.pause(0.08)
     s.pause(1.4)
     if not s.reduced:
         for step in range(7, -1, -1):
             t = step / 8
             s.write(SYNC_ON, headline(s, 9, "THE TERMINAL", lerp(INK.background, INK.foreground, t)))
-            s.write(proportional_heading(s, 13, "sixty years, one screen", lerp(INK.background, INK.foreground, 0.6 * t))
-                    if s.sized_text else s.centred(13, fg(*lerp(INK.background, INK.foreground, 0.6 * t)) + "sixty years, one screen" + RESET))
+            s.write(proportional_heading(s, 13, "Sixty years, one screen", lerp(INK.background, INK.foreground, 0.6 * t))
+                    if s.sized_text else s.centred(13, fg(*lerp(INK.background, INK.foreground, 0.6 * t)) + "Sixty years, one screen" + RESET))
             s.write(SYNC_OFF)
             s.pause(0.05)
     s.write(CLEAR)
@@ -1355,7 +1358,7 @@ NO_REGION = CSI + "r" + CSI + "?69l"
 
 def chapter_teletype(s):
     cut(s, PAPER, "crossfade")
-    card(s, PAPER, "I", "1963", "THE TELETYPE", "a typewriter with a wire")
+    card(s, PAPER, "I", "1963", "THE TELETYPE", "A typewriter with a wire")
     s.write(HIDE)
     row = 3
     lines = [
@@ -1530,7 +1533,7 @@ def chapter_tektronix(s):
     cut(s, PHOSPHOR, "iris")
     # The tube is lit in the same phosphor as the window around it.
     s.write(OSC + "16;" + rgb_spec(*PHOSPHOR.background) + ST, OSC + "15;" + rgb_spec(*PHOSPHOR.foreground) + ST)
-    card(s, PHOSPHOR, "II", "1974", "TEKTRONIX 4014", "a storage tube draws in vectors, and remembers them", from_year="1963")
+    card(s, PHOSPHOR, "II", "1974", "TEKTRONIX 4014", "Vectors drawn in phosphor, held until the page is erased", from_year="1963")
     s.queue_ahead(chapter_tektronix)
     s.write(TEK_ENTER, TEK_PAGE, TEK_SOLID)
     s.in_tek = True
@@ -1572,20 +1575,18 @@ def chapter_tektronix(s):
     sound(s, [C6], 2, 2)
     s.pause(1.2)
 
-    # The page is erased and rewritten twenty-four times over: each PAGE
-    # commits the frame drawn since the last one and clears the tube for
+    # Each PAGE commits the frame drawn since the last one and clears the tube for
     # the next, so the globe and the cube turn while everything around
-    # them is redrawn in place.
-    frames = 8 if s.reduced else (14 if s.short else 24)
+    # them is redrawn in place. The turn eases in and settles at its last pose.
+    frames = 1 if s.reduced else (24 if s.short else 40)
     for frame in range(1, frames + 1):
-        s.write(TEK_PAGE, tek_scene(6.2832 * frame / frames / 4, 0.55 + 6.2832 * frame / frames))
-        s.pause(0.08)
-    s.write(TEK_PAGE)
-    s.pause(1.6)
+        turn = 0.5 - 0.5 * math.cos(math.pi * frame / frames)
+        s.write(TEK_PAGE, tek_scene(1.57 * turn, 0.55 + 6.2832 * turn))
+        s.pause(0.055)
+    s.pause(0.6)
     # The page is erased, the way a storage tube ends a picture, and the
     # tube is left before the next era's curtain closes over the grid.
     s.write(TEK_PAGE)
-    s.pause(0.4)
     s.write(TEK_EXIT, OSC + "115" + ST, OSC + "116" + ST)
     s.in_tek = False
 
@@ -1641,7 +1642,7 @@ def wrap(text, width):
 
 def chapter_vt100(s):
     cut(s, PHOSPHOR, "curtain")
-    card(s, PHOSPHOR, "III", "1978", "VT100", "the screen learns to erase", from_year="1974")
+    card(s, PHOSPHOR, "III", "1978", "VT100", "The screen learns to erase", from_year="1974")
     sound(s, [C5], 12, 1)
     crt_power_on(s, PHOSPHOR)
     music(s, ("kick", "hat", "snare", "bass"))
@@ -1742,7 +1743,7 @@ def decdld(glyphs):
 
 def chapter_vt220(s, pictures):
     cut(s, AMBER, "slide")
-    card(s, AMBER, "IV", "1983", "VT220 · VT240 · VT320", "soft fonts, pictures, a status line, and erase that spares", from_year="1978")
+    card(s, AMBER, "IV", "1983", "VT220 · VT240 · VT320", "Soft fonts, Sixel graphics, and selective erase", from_year="1978")
     s.write(HIDE)
     music(s, ("kick", "hat", "snare", "bass", "stab"))
     s.write(CSI + "2$~", CSI + "1$}", sgr(7), "  VT320   HOST-WRITABLE STATUS LINE   DECSSDT 2   ".ljust(s.columns), RESET, CSI + "0$}")
@@ -1808,7 +1809,7 @@ def chapter_vt220(s, pictures):
 
 def chapter_xterm(s):
     cut(s, THEME, "slide")
-    card(s, THEME, "V", "1996", "XTERM", "colour, a title, and a mouse on the Unix desktop", from_year="1983")
+    card(s, THEME, "V", "1996", "XTERM", "Colour, a title, and a mouse on the Unix desktop", from_year="1983")
     music(s, ("kick", "hat", "ohat", "snare", "bass", "arp"))
     s.write(HIDE, CSI + "22;0t", OSC + "2;xterm - the evolution of the terminal" + ST)
     s.write(s.at(2, 4), DIM, "16 COLOURS ", RESET, "    ")
@@ -1842,7 +1843,7 @@ def chapter_xterm(s):
     sound(s, [E6, A6], 2, 2)
     s.pause(0.8)
 
-    s.write(s.at(20, 4), DIM, "MOUSE", RESET, "   click anywhere: the terminal says where  ", DIM, "xterm mouse 1000 · SGR 1006", RESET)
+    s.write(s.at(20, 4), DIM, "MOUSE", RESET, "   Click to see the pointer coordinates.  ", DIM, "xterm mouse 1000 · SGR 1006", RESET)
     s.write(CSI + "?1000h", CSI + "?1006h")
     clicks = 0
     for event in s.events(6.0):
@@ -1854,9 +1855,9 @@ def chapter_xterm(s):
         clicks += 1
         sound(s, [C6], 2, 2)
         s.write(CSI + "%d;%dH" % (row, col), sgr(1, 33), "✦︎", RESET)
-        s.write(s.at(22, 4), CSI + "K", "button %d at row %d, column %d" % (button, row - s.row0, col - s.col0))
+        s.write(s.at(22, 4), CSI + "K", "Button %d at row %d, column %d" % (button, row - s.row0, col - s.col0))
     if s.is_live and not clicks:
-        s.write(s.at(22, 4), DIM, "no click; the mouse is yours again", RESET)
+        s.write(s.at(22, 4), DIM, "Mouse reporting ended.", RESET)
     s.write(CSI + "?1006l", CSI + "?1000l")
     s.pause(1.0)
     s.write(CSI + "23;0t")
@@ -1891,16 +1892,16 @@ HELLO_SCRIPTS = [
 
 def chapter_unicode(s):
     cut(s, THEME, "curtain")
-    card(s, THEME, "VI", "2003", "UNICODE", "hello, world in every script; the grid still counts cells", from_year="1996")
+    card(s, THEME, "VI", "2003", "UNICODE", "Hello, world in every script; the grid still counts cells", from_year="1996")
     s.write(HIDE)
     label = lambda row, text: s.at(row, 3) + DIM + text.ljust(10) + RESET
     music(s, ("kick", "hat", "ohat", "snare", "bass", "arp", "lead", "fills"))
     fade_in(s, THEME, [(2, 13, HELLO_SCRIPTS[0], 1.0), (3, 13, HELLO_SCRIPTS[1], 1.0)], steps=6, hold=0.05)
-    s.write(label(2, "hello"))
+    s.write(label(2, "Hello"))
     s.pause(0.6)
     rows = [
-        (5, "emoji", "😀 🚀 🎨 🦉 🌊   👩‍💻 👨‍👩‍👧   🇨🇦 🇧🇷 🇯🇵 🇮🇸   👍🏽 ✌🏿   ☂️ ☂︎"),
-        (7, "marks", "é ñ ộ ǚ ą̈ ậ   Z̤̈a̘̼l̯̗g̙̙o   ∑ ∫ √ ∞ ≠ ≤ ≥ ⌈x⌉"),
+        (5, "Emoji", "😀 🚀 🎨 🦉 🌊   👩‍💻 👨‍👩‍👧   🇨🇦 🇧🇷 🇯🇵 🇮🇸   👍🏽 ✌🏿   ☂️ ☂︎"),
+        (7, "Marks", "é ñ ộ ǚ ą̈ ậ   Z̤̈a̘̼l̯̗g̙̙o   ∑ ∫ √ ∞ ≠ ≤ ≥ ⌈x⌉"),
     ]
     for row, name, text in rows:
         fade_in(s, THEME, [(row, 13, text, 1.0)], steps=4, hold=0.04)
@@ -1908,22 +1909,22 @@ def chapter_unicode(s):
     if s.short:
         s.pause(1.2)
         return
-    s.write(label(9, "boxes"), "┌──┐ ┏━━┓ ╔══╗ ╭──╮   ░▒▓█  ▁▂▃▄▅▆▇█  ▏▎▍▌▋▊▉  🬀🬁🬂🬃🬄🬅  ⣿⣷⣯⣟")
+    s.write(label(9, "Boxes"), "┌──┐ ┏━━┓ ╔══╗ ╭──╮   ░▒▓█  ▁▂▃▄▅▆▇█  ▏▎▍▌▋▊▉  🬀🬁🬂🬃🬄🬅  ⣿⣷⣯⣟")
     s.write(s.at(10, 13), "│  │ ┃  ┃ ║  ║ │  │", DIM, s.at(10, 35), "shades", s.at(10, 42), "blocks", s.at(10, 51), "eighths",
             s.at(10, 60), "sextant", s.at(10, 68), "braille", RESET)
     s.write(s.at(11, 13), "└──┘ ┗━━┛ ╚══╝ ╰──╯")
-    s.write(label(13, "rules"), sgr("4:1"), "single", RESET, "  ", sgr("4:2"), "double", RESET, "  ", sgr("4:3"), "curly", RESET, "  ",
+    s.write(label(13, "Rules"), sgr("4:1"), "single", RESET, "  ", sgr("4:2"), "double", RESET, "  ", sgr("4:3"), "curly", RESET, "  ",
             sgr("4:4"), "dotted", RESET, "  ", sgr("4:5"), "dashed", RESET, "  ", sgr("4:3", "58;2;255;90;90"), "coloured", RESET, "  ",
             sgr(53), "overline", RESET)
-    s.write(label(14, "styles"), BOLD, "bold", RESET, "  ", DIM, "faint", RESET, "  ", ITALIC, "italic", RESET, "  ", sgr(9), "struck", RESET,
+    s.write(label(14, "Styles"), BOLD, "bold", RESET, "  ", DIM, "faint", RESET, "  ", ITALIC, "italic", RESET, "  ", sgr(9), "struck", RESET,
             "  ", sgr(7), " inverse ", RESET, "  x", sgr(73), "2", sgr(75), "  H", sgr(74), "2", sgr(75), "O")
     arrow = chr(0xE0B0)
-    s.write(label(15, "powerline"), bg(40, 40, 60), fg(220, 225, 240), " ~/hello ",
+    s.write(label(15, "Powerline"), bg(40, 40, 60), fg(220, 225, 240), " ~/hello ",
             bg(90, 110, 200), fg(40, 40, 60), arrow, fg(255, 255, 255), " main ",
             bg(60, 160, 100), fg(90, 110, 200), arrow, fg(15, 35, 22), " ✓ ",
-            RESET, fg(60, 160, 100), arrow, RESET, "   ", DIM, "wedges the terminal draws itself", RESET)
+            RESET, fg(60, 160, 100), arrow, RESET, "   ", DIM, "Separators drawn by the terminal", RESET)
     s.pause(1.0)
-    s.write(label(18, "braille"))
+    s.write(label(18, "Braille"))
     frames = 12 if s.reduced else 48
     for step in range(frames):
         frame = braille_frame(64, 4, step * 0.22)
@@ -1934,14 +1935,14 @@ def chapter_unicode(s):
         if step % 12 == 0:
             sound(s, [C6 + (step // 12) * 2], 2, 1)
         s.pause(0.04)
-    s.write(s.at(22, 13), DIM, "two by four dots per cell, drawn under synchronized output (2026h)", RESET)
+    s.write(s.at(22, 13), DIM, "Eight dots per cell, drawn with synchronized output (2026h)", RESET)
     s.pause(1.4)
 
 
 def chapter_truecolor(s):
     """A plasma on the whole stage, each cell two pixels tall."""
     cut(s, THEME, "iris")
-    card(s, THEME, "VII", "2012", "TRUECOLOR", "sixteen million colours, two to a cell", from_year="2003")
+    card(s, THEME, "VII", "2012", "TRUECOLOR", "Sixteen million colours, two to a cell", from_year="2003")
     s.write(HIDE)
     palette = [hsv(i / 256.0, 0.85, 1.0) for i in range(256)]
     music(s)
@@ -1970,7 +1971,7 @@ def chapter_truecolor(s):
 
 def chapter_pictures(s, pictures):
     cut(s, THEME, "slide")
-    card(s, THEME, "VIII", "2013", "PICTURES IN THE GRID", "inline images, animation, and a shell that talks back", from_year="2012")
+    card(s, THEME, "VIII", "2013", "PICTURES IN THE GRID", "Images and animation alongside shell output", from_year="2012")
     music(s, ("pad", "arp", "lead", "build"))
     s.write(HIDE)
     width, height, rgba = pictures.sphere
@@ -1989,7 +1990,7 @@ def chapter_pictures(s, pictures):
     s.pause(0.6)
     width, height, frames = pictures.spinner
     s.write(s.at(10, 4), kitty_animation(KITTY_SPINNER, width, height, frames, 6, 3, 90))
-    s.write(s.at(13, 4), DIM, "frames the terminal", RESET, s.at(14, 4), DIM, "advances itself", RESET)
+    s.write(s.at(13, 4), DIM, "Animation advanced", RESET, s.at(14, 4), DIM, "by the terminal", RESET)
     s.pause(1.0)
 
     prompt = lambda row, command: (s.at(row, 4) + OSC + "133;A" + ST + fg(120, 200, 255) + "❯ " + RESET + OSC + "133;B" + ST + command + OSC + "133;C" + ST)
@@ -2014,7 +2015,7 @@ def chapter_pictures(s, pictures):
     s.pause(0.4)
     s.write(s.at(22, 4), fg(255, 100, 100), "1 of 40 tests failed", RESET, OSC + "133;D;2" + ST)
     s.pause(0.5)
-    s.write(s.at(23, 4), DIM, "the gutter marks each prompt, red where it failed; the tab showed progress", RESET)
+    s.write(s.at(23, 4), DIM, "The gutter marks each prompt; the tab shows command progress.", RESET)
     s.pause(1.8)
     s.write(OSC + "21337;indicator=;status=;status-color=" + BEL)
 
@@ -2051,14 +2052,14 @@ def chapter_typography(s):
 
     The plates follow the snapshot suite's specimen folio. Plate I is sizes,
     weights and mathematics: DEC's double height and double width, OSC 66
-    sized text where the terminal draws it, the SGR weights and the variable
-    axis, then display settings a foundry would show. Plate II is styles,
+    sized text where the terminal draws it, the SGR styles, then display
+    settings a foundry would show. Plate II is styles,
     rules and colour; Plate III, where sized text is drawn, is proportional
     runs; Plate IV is boxes, blocks and separators. The short cut shows the
     first plate.
     """
     cut(s, THEME, "curtain")
-    card(s, THEME, "IX", "TYPE", "TYPOGRAPHY", "a specimen folio, on the same eighty columns")
+    card(s, THEME, "IX", "TYPE", "TYPOGRAPHY", "A type specimen on the same eighty columns")
     s.write(HIDE)
     music(s)
     colours = s.era_colours(THEME)
@@ -2077,26 +2078,25 @@ def chapter_typography(s):
     rows.append(s.line_start(6) + ESC + "#6" + s.dwl_pad(dwl) + fade(0.7) + dwl + RESET)
     row = 8
     if s.sized_text:
-        rows.append(label(row, "sized") + sized("Aa", 3) + "   " + sized("Bb", 2) + "   " + note("s=3 and s=2: as wide and tall as the scale"))
+        rows.append(label(row, "Sized") + sized("Aa", 3) + "   " + sized("Bb", 2) + "   " + note("Text at three and two times the cell size"))
         row += 3
-    rows.append(label(row, "weight") + "Regular   " + BOLD + "Bold" + RESET + "   " + DIM + "Faint" + RESET + "   " + ITALIC + "Italic" + RESET
+    rows.append(label(row, "Weight") + "Regular   " + BOLD + "Bold" + RESET + "   " + DIM + "Faint" + RESET + "   " + ITALIC + "Italic" + RESET
                 + "   " + BOLD + ITALIC + "Bold Italic" + RESET + "   " + note("SGR 1, 2, 3, 1;3"))
-    rows.append(label(row + 1, "axis") + "".join(CSI + "1:%dm" % n + "Weight " + sgr(22) for n in range(1, 8)) + "  " + note("SGR 1:1 to 1:7"))
     row += 3
     rows.append(s.at(row, 16) + "⎛ " + it("n") + " ⎞         " + it("n") + "!         " + it("n") + "                    ⌠∞"
-                + label(row + 1, "display") + s.at(row + 1, 16) + "⎜   ⎟  =  ────────       ∑ " + it("i") + "  =  ½ " + it("n") + "(" + it("n") + "+1)     ⎮ "
+                + label(row + 1, "Display") + s.at(row + 1, 16) + "⎜   ⎟  =  ────────       ∑ " + it("i") + "  =  ½ " + it("n") + "(" + it("n") + "+1)     ⎮ "
                 + it("e") + SUP + "−" + it("x") + "²" + SOFF + " d" + it("x") + " = √π ⁄ 2"
                 + s.at(row + 2, 16) + "⎝ " + it("k") + " ⎠     " + it("k") + "!(" + it("n") + "−" + it("k") + ")!      " + it("i") + "=1                   ⌡0")
     row += 4
     rows.append(s.at(row, 16) + "⎡ " + it("a") + "  " + it("b") + " ⎤" + s.at(row, 33) + "d" + s.at(row, 57) + "⎧ " + it("x") + ",   " + it("x") + " > 0"
-                + label(row + 1, "matrix") + s.at(row + 1, 16) + "⎢      ⎥" + s.at(row + 1, 32) + "─── " + it("f") + "(" + it("x") + ")  =  " + it("f") + "′(" + it("x") + ")"
+                + label(row + 1, "Matrix") + s.at(row + 1, 16) + "⎢      ⎥" + s.at(row + 1, 32) + "─── " + it("f") + "(" + it("x") + ")  =  " + it("f") + "′(" + it("x") + ")"
                 + s.at(row + 1, 51) + "|" + it("x") + "| = ⎨"
                 + s.at(row + 2, 16) + "⎣ " + it("c") + "  " + it("d") + " ⎦" + s.at(row + 2, 32) + "d" + it("x") + s.at(row + 2, 57) + "⎩ −" + it("x") + ",  " + it("x") + " ≤ 0")
     row += 4
-    rows.append(label(row, "sup/sub") + "E = " + it("m") + it("c") + SUP + "2" + SOFF + "   H" + SUB + "2" + SOFF + "O   " + it("x") + SUP + "2" + SUB + "1" + SOFF
+    rows.append(label(row, "Sup/sub") + "E = " + it("m") + it("c") + SUP + "2" + SOFF + "   H" + SUB + "2" + SOFF + "O   " + it("x") + SUP + "2" + SUB + "1" + SOFF
                 + "   " + it("a") + SUP + it("n") + "+1" + SOFF + " = " + it("a") + SUB + it("n") + SOFF + " + " + it("d") + "   ∆" + it("t") + " → 0   " + it("λ") + " = " + it("c") + " ⁄ " + it("ν"))
-    rows.append(label(row + 1, "symbols") + "∀ ∃ ∈ ∉ ∩ ∪ ⊂ ⊃   ≈ ≠ ≡ ≤ ≥ ± × ÷ ∝   ⊕ ⊗ ⋅   ⌈x⌉ ⌊x⌋")
-    rows.append(label(row + 2, "ligatures") + "=> -> === <= >= :: |> <| ++ -- ... ///   " + note("fused by the face"))
+    rows.append(label(row + 1, "Symbols") + "∀ ∃ ∈ ∉ ∩ ∪ ⊂ ⊃   ≈ ≠ ≡ ≤ ≥ ± × ÷ ∝   ⊕ ⊗ ⋅   ⌈x⌉ ⌊x⌋")
+    rows.append(label(row + 2, "Ligatures") + "=> -> === <= >= :: |> <| ++ -- ... ///   " + note("Shaped by the font"))
     reveal(s, rows, hold)
     s.pause(reading)
     if s.short:
@@ -2106,21 +2106,21 @@ def chapter_typography(s):
     cut(s, THEME, "slide", hold=0.03)
     s.write(HIDE, masthead(s, "STYLES, RULES & COLOUR", "PLATE II", colours))
     s.pause(0.3)
-    rows = [label(4, "manner") + sgr(7) + " Inverse " + RESET + "   " + sgr(9) + "Struck" + RESET + "   " + sgr(53) + "Overlined" + RESET
+    rows = [label(4, "Manner") + sgr(7) + " Inverse " + RESET + "   " + sgr(9) + "Struck" + RESET + "   " + sgr(53) + "Overlined" + RESET
             + "   " + sgr(8) + "Concealed" + sgr(28) + note(" ← concealed")]
-    rows.append(label(6, "underline") + sgr("4:1") + "single" + RESET + "   " + sgr(21) + "double" + RESET + "   " + sgr("4:3") + "curly" + RESET
+    rows.append(label(6, "Underline") + sgr("4:1") + "single" + RESET + "   " + sgr(21) + "double" + RESET + "   " + sgr("4:3") + "curly" + RESET
                 + "   " + sgr("4:4") + "dotted" + RESET + "   " + sgr("4:5") + "dashed" + RESET + "   " + sgr(4, "58;5;160") + "carmine" + RESET
                 + "   " + sgr("4:3", "58;5;27") + "azure curl" + RESET)
-    rows.append(label(8, "ideogram") + sgr(60) + "下線" + sgr(65) + " under   " + sgr(61) + "二重" + sgr(65) + " double   " + sgr(62) + "上線" + sgr(65)
+    rows.append(label(8, "Ideogram") + sgr(60) + "下線" + sgr(65) + " under   " + sgr(61) + "二重" + sgr(65) + " double   " + sgr(62) + "上線" + sgr(65)
                 + " over   " + sgr(64) + "強調" + sgr(65) + " stress   " + note("SGR 60 to 64"))
-    rows.append(label(10, "link") + link("https://github.com/ubiquitty/ubiquitty", "an OSC 8 hyperlink, quietly ruled"))
+    rows.append(label(10, "Link") + link("https://github.com/ubiquitty/ubiquitty", "an OSC 8 hyperlink, quietly ruled"))
     ansi = "".join(CSI + "4%dm  " % i + CSI + "49m" for i in range(8)) + "  " + "".join(CSI + "10%dm  " % i + CSI + "49m" for i in range(8))
-    rows.append(label(12, "ansi") + ansi + "  " + note("SGR 40 to 47, 100 to 107"))
-    rows.append(label(13, "cube 16-79") + "".join(CSI + "48;5;%dm " % (16 + i) + CSI + "49m" for i in range(64)))
-    rows.append(label(14, "greys") + "".join(CSI + "48;5;%dm  " % (232 + i) + CSI + "49m" for i in range(24)))
-    rows.append(label(15, "truecolor") + "".join(bg(30 + i * 3, 50 + i * 2, 235 - i * 3) + " " for i in range(64)) + RESET)
-    rows.append(label(17, "blink") + sgr(5) + "slow" + sgr(25) + "   " + sgr(6) + "rapid" + sgr(25) + "   " + note("SGR 5 and 6, where the window blinks"))
-    rows.append(label(19, "colour") + "".join(CSI + "3%dm" % i + "text " for i in range(8)) + RESET + "  " + note("SGR 30 to 37"))
+    rows.append(label(12, "ANSI") + ansi + "  " + note("SGR 40 to 47, 100 to 107"))
+    rows.append(label(13, "Cube 16-79") + "".join(CSI + "48;5;%dm " % (16 + i) + CSI + "49m" for i in range(64)))
+    rows.append(label(14, "Greys") + "".join(CSI + "48;5;%dm  " % (232 + i) + CSI + "49m" for i in range(24)))
+    rows.append(label(15, "Truecolor") + "".join(bg(30 + i * 3, 50 + i * 2, 235 - i * 3) + " " for i in range(64)) + RESET)
+    rows.append(label(17, "Blink") + sgr(5) + "slow" + sgr(25) + "   " + sgr(6) + "rapid" + sgr(25) + "   " + note("SGR 5 and 6, where the window blinks"))
+    rows.append(label(19, "Colour") + "".join(CSI + "3%dm" % i + "text " for i in range(8)) + RESET + "  " + note("SGR 30 to 37"))
     reveal(s, rows, hold)
     s.pause(reading)
 
@@ -2129,19 +2129,19 @@ def chapter_typography(s):
         cut(s, THEME, "slide", hold=0.03)
         s.write(HIDE, masthead(s, "PROPORTIONAL RUNS", "PLATE III", colours))
         s.pause(0.3)
-        rows = [label(4, "heading") + BOLD + proportional("bold, one run", 13) + RESET]
-        rows.append(label(6, "body") + proportional("the run claims 23 cells", 23)
-                    + s.at(7, 15) + proportional("text may be less", 17) + "   " + note("the run still spans 17"))
-        rows.append(label(9, "buttons") + sgr(7) + " " + proportional("Cancel", 8, 2) + " " + RESET + "   " + bg(60, 100, 220) + fg(255, 255, 255)
-                    + " " + proportional("Install", 8, 2) + " " + RESET + "   " + note("centred in their 8 cells (h=2)"))
-        rows.append(label(11, "ladder") + proportional("iiii", 4) + "│ " + proportional("WWWW", 8) + "│ " + note("four narrow in four cells; four wide in eight"))
-        rows.append(label(12, "align") + proportional("left (h=0)", 14, 0) + "│" + proportional("right (h=1)", 14, 1) + "│"
-                    + proportional("centred (h=2)", 14, 2) + "│ " + note("three ways"))
-        rows.append(label(13, "justified") + proportional("word gaps open", 14, 3) + "│" + proportional("to the measure", 14, 3) + "│"
+        rows = [label(4, "Heading") + BOLD + proportional("bold, one run", 13) + RESET]
+        rows.append(label(6, "Body") + proportional("the run claims 23 cells", 23)
+                    + s.at(7, 15) + proportional("text may be less", 17) + "   " + note("The run still spans 17"))
+        rows.append(label(9, "Buttons") + sgr(7) + " " + proportional("Cancel", 8, 2) + " " + RESET + "   " + bg(60, 100, 220) + fg(255, 255, 255)
+                    + " " + proportional("Install", 8, 2) + " " + RESET + "   " + note("Centred in their 8 cells (h=2)"))
+        rows.append(label(11, "Ladder") + proportional("iiii", 4) + "│ " + proportional("WWWW", 8) + "│ " + note("Four narrow in four cells; four wide in eight"))
+        rows.append(label(12, "Align") + proportional("left (h=0)", 14, 0) + "│" + proportional("right (h=1)", 14, 1) + "│"
+                    + proportional("centred (h=2)", 14, 2) + "│ " + note("Three ways"))
+        rows.append(label(13, "Justified") + proportional("word gaps open", 14, 3) + "│" + proportional("to the measure", 14, 3) + "│"
                     + proportional("of each run", 14, 3) + "│ " + note("h=3"))
-        rows.append(label(15, "styled") + ITALIC + proportional("italic", 9) + RESET + "  " + BOLD + ITALIC + proportional("bold italic", 12) + RESET
+        rows.append(label(15, "Styled") + ITALIC + proportional("italic", 9) + RESET + "  " + BOLD + ITALIC + proportional("bold italic", 12) + RESET
                     + "  " + sgr("4:3", "58;5;27") + proportional("curly ruled", 13) + RESET + "  " + fg(230, 80, 80) + proportional("coloured", 8) + RESET)
-        rows.append(label(17, "mixed") + "grid text, then " + proportional("an aside", 10) + ", then grid: one baseline")
+        rows.append(label(17, "Mixed") + "grid text, then " + proportional("an aside", 10) + ", then grid: one baseline")
         reveal(s, rows, hold)
         s.pause(reading)
 
@@ -2153,66 +2153,24 @@ def chapter_typography(s):
             + s.at(5, 4) + "│ pty │ tty │   ┃ raw ┃ cmd ┃   ║ ssh ║ mux ║   │ tab │   ╍╍╍╍ ┅┅┅┅ ┉┉┉┉"
             + s.at(6, 4) + "├─────┼─────┤   ┣━━━━━╋━━━━━┫   ╠═════╬═════╣   ╰─────╯   ╱╲╱╲ ╳╳ ╲╱╲╱"
             + s.at(7, 4) + "└─────┴─────┘   ┗━━━━━┻━━━━━┛   ╚═════╩═════╝"]
-    rows.append(label(9, "mixed") + "┍━┑ ┎─┒ ┏┭┓ ┗┵┛  ╒═╕ ╓─╖  ┽ ╀ ╁ ╂ ┿ ╊ ╉   " + note("light meets heavy"))
-    rows.append(label(11, "linedraw") + ESC + "(0" + "lqqwqqk" + ESC + "(B" + "  SCS G0 line drawing  " + ESC + "(0" + "x" + ESC + "(B" + " pipes "
+    rows.append(label(9, "Mixed") + "┍━┑ ┎─┒ ┏┭┓ ┗┵┛  ╒═╕ ╓─╖  ┽ ╀ ╁ ╂ ┿ ╊ ╉   " + note("Light and heavy strokes"))
+    rows.append(label(11, "Linedraw") + ESC + "(0" + "lqqwqqk" + ESC + "(B" + "  SCS G0 line drawing  " + ESC + "(0" + "x" + ESC + "(B" + " pipes "
                 + ESC + "(0" + "x" + ESC + "(B" + "  " + ESC + "(0" + "mqqvqqj" + ESC + "(B")
-    rows.append(label(13, "scan") + "⎺⎺⎻⎻⎼⎼⎽⎽   corners ⎡ ⎤ ⎣ ⎦   brackets ⎴ ⎵")
-    rows.append(label(15, "blocks") + "▁▂▃▄▅▆▇█   ▏▎▍▌▋▊▉   ▀▄ ▖▗▘▝   ▙▚▛▜   ░░░▒▒▒▓▓▓")
-    rows.append(label(16, "sextants") + "🬀🬁🬂🬇🬎🬞🬺🬻   " + note("sextant fills tile with no seam between cells"))
+    rows.append(label(13, "Scan") + "⎺⎺⎻⎻⎼⎼⎽⎽   corners ⎡ ⎤ ⎣ ⎦   brackets ⎴ ⎵")
+    rows.append(label(15, "Blocks") + "▁▂▃▄▅▆▇█   ▏▎▍▌▋▊▉   ▀▄ ▖▗▘▝   ▙▚▛▜   ░░░▒▒▒▓▓▓")
+    rows.append(label(16, "Sextants") + "🬀🬁🬂🬇🬎🬞🬺🬻   " + note("Sextant fills meet at cell boundaries"))
     separators = "".join(chr(cp) + (" " if cp % 4 == 3 else "") for cp in range(0xE0B0, 0xE0C0))
-    rows.append(label(18, "separators") + separators + "  " + note("these tile edge to edge"))
-    rows.append(label(19, "segments") + CSI + "48;5;214;38;5;235m" + chr(0xE0B0) + CSI + "38;5;231m SRC " + CSI + "48;5;235;38;5;214m" + chr(0xE0B0)
+    rows.append(label(18, "Separators") + separators + "  " + note("These tile edge to edge"))
+    rows.append(label(19, "Segments") + CSI + "48;5;214;38;5;235m" + chr(0xE0B0) + CSI + "38;5;231m SRC " + CSI + "48;5;235;38;5;214m" + chr(0xE0B0)
                 + CSI + "38;5;245m " + chr(0xE0B1) + " BUILD " + CSI + "49;38;5;235m" + chr(0xE0B0) + RESET + "   "
                 + CSI + "38;5;235m" + chr(0xE0B2) + CSI + "48;5;235;38;5;245m LOG " + chr(0xE0B3) + " RUN " + CSI + "38;5;214m" + chr(0xE0B2)
-                + CSI + "48;5;214;38;5;231m OUT " + RESET + "   " + note("both ways, no seam"))
+                + CSI + "48;5;214;38;5;231m OUT " + RESET + "   " + note("Both directions, no seams"))
     artwork = " ".join(chr(c) for c in (0xE0A0, 0xE0A1, 0xE0A2, 0xE0A3)) + "   " + "".join(chr(c) for c in (0xE0C0, 0xE0C2, 0xE0C8, 0xE0CA)) \
         + "   " + "".join(chr(c) for c in (0xE0CC, 0xE0CD, 0xE0CE, 0xE0CF)) + "   " + "".join(chr(c) for c in (0xE0D0, 0xE0D1, 0xE0D2, 0xE0D4))
-    rows.append(label(20, "artwork") + artwork + "   " + note("routed to the symbols face"))
-    rows.append(s.at(22, 4) + note("these tables tile by construction: a seam or a drift shows first here."))
+    rows.append(label(20, "Artwork") + artwork + "   " + note("Drawn from the symbols font"))
+    rows.append(s.at(22, 4) + note("Adjacent cells should meet without gaps or misaligned strokes."))
     reveal(s, rows, hold)
     s.pause(reading)
-
-
-RAIN_GLYPHS = [chr(c) for c in range(0xFF66, 0xFF9E)] + list("0123456789")
-
-
-def rain_frames(count, seed=2026):
-    """Frames of falling glyphs: every column a stream with a head, a tail and a speed."""
-    rng = random.Random(seed)
-    heads = [rng.uniform(-30, STAGE_H) for _ in range(STAGE_W)]
-    speeds = [rng.uniform(0.6, 1.6) for _ in range(STAGE_W)]
-    tails = [rng.randint(5, 14) for _ in range(STAGE_W)]
-    frames = []
-    for _ in range(count):
-        for col in range(STAGE_W):
-            heads[col] += speeds[col]
-            if heads[col] - tails[col] > STAGE_H + 2:
-                heads[col] = rng.uniform(-12, 0)
-                speeds[col] = rng.uniform(0.6, 1.6)
-                tails[col] = rng.randint(5, 14)
-        rows = []
-        for row in range(1, STAGE_H + 1):
-            line = []
-            current = None
-            for col in range(STAGE_W):
-                depth = heads[col] - row
-                if depth < 0 or depth > tails[col]:
-                    if current is not None:
-                        line.append(RESET)
-                        current = None
-                    line.append(" ")
-                    continue
-                if depth < 1:
-                    colour = (220, 255, 230)
-                else:
-                    colour = lerp((120, 255, 140), (10, 60, 20), depth / tails[col])
-                if colour != current:
-                    line.append(fg(*colour))
-                    current = colour
-                line.append(rng.choice(RAIN_GLYPHS))
-            rows.append("".join(line) + RESET)
-        frames.append(rows)
-    return frames
 
 
 # ---------------------------------------------------------------------------
@@ -2367,24 +2325,24 @@ def scene_persistence(s):
         s.write(s.at(box_top + box_height - 1, box_left), fg(*colour), "╰", "─" * inner, "╯", RESET)
         s.write(s.at(box_top + box_height, box_left), CSI + "K", DIM, note, RESET, SYNC_OFF)
 
-    where = "a private ubiquitty-host, started for this scene" if private else "scripted: no ubiquitty-host was found here"
-    s.write(s.at(5, 4), DIM, "PERSISTENCE", RESET, "   the session lives on ubiquitty-host; clients come and go")
+    where = "A private ubiquitty-host, started for this scene" if private else "Simulated session"
+    s.write(s.at(5, 4), DIM, "PERSISTENCE", RESET, "   The session runs on ubiquitty-host; clients can disconnect.")
     prompt = "❯ ubq send " + ("-s %s " % private.session if private else "") + "'make hello'"
-    frame("client A · attached", (120, 200, 255), [prompt], "")
+    frame("Client A · attached", (120, 200, 255), [prompt], "")
     if private:
         private.build()
     started = time.monotonic()
     started_clock = s.clock
     sound(s, [E5, A5], 2, 2)
     while elapsed() < 1.8:
-        frame("client A · attached", (120, 200, 255), [prompt] + lines_now(), "the build runs in the session, and client A watches it")
+        frame("Client A · attached", (120, 200, 255), [prompt] + lines_now(), "Client A watches the build running in the session.")
         s.pause(0.25)
     # The drop: nobody is attached, and the build goes on regardless.
     sound(s, [C5, REST, C5], 3, 3)
     dropped = [prompt] + lines_now()
     for blink in range(3):
-        frame("client A · connection dropped", (255, 100, 100) if blink % 2 == 0 else (120, 60, 60), dropped,
-              "✂  the window is gone; nothing is watching; the host keeps building")
+        frame("Client A · connection dropped", (255, 100, 100) if blink % 2 == 0 else (120, 60, 60), dropped,
+              "The connection closes. The build continues on the host.")
         s.pause(0.4)
     s.pause(1.2)
     # Another client: the same session, everything that happened meanwhile.
@@ -2392,18 +2350,18 @@ def scene_persistence(s):
     seen_done = False
     while elapsed() < 9.0:
         lines = lines_now()
-        frame("client B · attached to the same session", (120, 255, 160), [prompt] + lines,
-              "client B reattached: the gap's lines are all here, and the build ends")
+        frame("Client B · attached to the same session", (120, 255, 160), [prompt] + lines,
+              "Client B reconnects to the completed build and its output.")
         if any("hello, world" in line for line in lines):
             seen_done = True
             break
         s.pause(0.25)
     if not seen_done:
-        frame("client B · attached to the same session", (120, 255, 160), [prompt] + lines_now(),
-              "client B reattached: the gap's lines are all here")
+        frame("Client B · attached to the same session", (120, 255, 160), [prompt] + lines_now(),
+              "Client B reconnects to the output recorded while disconnected.")
     s.pause(0.3)
-    s.write(s.at(box_top + box_height + 1, box_left), BOLD, "same session, same scrollback, nothing lost.", RESET)
-    s.write(s.at(box_top + box_height + 2, box_left), DIM, "ubiquitty-host keeps the Core; windows and agents are its clients", RESET)
+    s.write(s.at(box_top + box_height + 1, box_left), BOLD, "Same session. Complete scrollback.", RESET)
+    s.write(s.at(box_top + box_height + 2, box_left), DIM, "The host keeps the session running between connections.", RESET)
     s.write(s.at(box_top + box_height + 3, box_left), DIM, where, RESET)
     s.pause(2.0)
     if private:
@@ -2480,52 +2438,15 @@ def dialog_answer(s, top, left, seconds):
 
 
 def chapter_ubiquitty(s, pictures):
-    frames = rain_frames(76 if not s.short else 56)
     cut(s, THEME, "slide")
-    card(s, THEME, "X", "2026", "UBIQUITTY", "one terminal session, wherever the work runs", from_year="2013")
+    card(s, THEME, "X", "2026", "UBIQUITTY", "One terminal session, wherever the work runs", from_year="2013")
     s.write(HIDE)
     music(s, CLIMAX)
-    # The rain, paced: frames the eye can follow.
-    paced = 6 if s.reduced else (16 if s.short else 36)
-    for rows in frames[:paced]:
-        s.write(SYNC_ON)
-        for index, line in enumerate(rows):
-            s.write(s.at(index + 1, 1), line)
-        s.write(SYNC_OFF)
-        s.pause(0.06)
-    # Then the burst: forty frames handed over at once, and a cursor report
-    # asked for behind them. The reply comes back only after the terminal
-    # has drained every byte before it, which is what the clock measures.
-    burst_frames = frames[paced:]
-    burst = "".join(SYNC_ON + "".join(s.at(index + 1, 1) + line for index, line in enumerate(rows)) + SYNC_OFF for rows in burst_frames)
-    drained = None
-    if s.is_live:
-        started = time.monotonic()
-        s.write(burst)
-        if s.query(CSI + "6n", rb"\x1b\[\d+;\d+R", timeout=5.0):
-            drained = time.monotonic() - started
-    else:
-        s.write(SYNC_ON, "".join(s.at(index + 1, 1) + line for index, line in enumerate(burst_frames[-1])), SYNC_OFF)
-    # The reveal: the last frame stays, and the numbers land on it.
-    cells = len(burst_frames) * STAGE_W * STAGE_H
-    measure = "drained in %d ms" % round(drained * 1000) if drained else "synchronized output"
-    plate = bg(0, 0, 0) + fg(235, 235, 235)
-    if s.is_live:
-        s.write(SYNC_ON)
-        s.write(s.centred(11, plate + BOLD + "   %s cells  ·  %s bytes  ·  %s   " % (format(cells, ","), format(len(burst.encode("utf-8")), ","), measure) + RESET))
-        s.write(s.centred(12, plate + DIM + "  %d frames handed over at once, drawn faster than one could be seen  " % len(burst_frames) + RESET))
-        s.write(SYNC_OFF)
-    sound(s, [A6, E6, A5], 2, 2)
-    s.pause(1.8)
-    last = burst_frames[-1]
-    s.write(SYNC_ON, s.at(11, 1), last[10], s.at(12, 1), last[11], SYNC_OFF)
-    cut(s, THEME, "dissolve", hold=0.04)
-
     steps = 1 if s.reduced else 6
     for step in range(1, steps + 1):
         t = step / steps
         s.write(SYNC_ON, headline(s, 1, "UBIQUITTY", lerp(s.theme.background, ACCENT, t)))
-        s.write(s.centred(3, fg(*lerp(s.theme.background, s.theme.foreground, 0.6 * t)) + "one terminal session, wherever the work runs" + RESET), SYNC_OFF)
+        s.write(s.centred(3, fg(*lerp(s.theme.background, s.theme.foreground, 0.6 * t)) + "One terminal session, wherever the work runs" + RESET), SYNC_OFF)
         s.pause(0.06)
     s.pause(0.4)
 
@@ -2544,15 +2465,13 @@ def chapter_ubiquitty(s, pictures):
         s.write(SYNC_OFF)
         s.pause(0.05)
     s.write(CSI + "?7h")
-    if s.is_live:
-        s.write(s.at(5, 4), DIM, "throughput", RESET, "   %s cells in %d frames, %s" % (format(cells, ","), len(burst_frames), measure))
     if s.sized_text:
-        s.write(s.at(6, 4), DIM, "sized text", RESET, "   ", sized("2x", 2), " ", sized("3x", 3), "   ", DIM, "OSC 66 s=2 and s=3", RESET)
-    s.write(s.at(10, 4), DIM, "presentation", RESET, "   ", CSI + "76:1m", "☂ ☀ ✈ ❤ ⭐", CSI + "76m", "  colour")
-    s.write(s.at(11, 19), CSI + "76:2m", "☂ ☀ ✈ ❤ ⭐", CSI + "76m", "  text  ", DIM, "SGR 76", RESET)
-    s.write(s.at(13, 4), DIM, "password", RESET, "       password: ", CSI + "?7401h", "●●●●●●●●")
-    s.write(s.at(14, 19), DIM, "mode 7401 shows a lock", RESET)
-    s.write(s.at(17, 4), DIM, "session", RESET, "      ", DIM, where, RESET)
+        s.write(s.at(6, 4), DIM, "Sized text", RESET, "   ", sized("2x", 2), " ", sized("3x", 3), "   ", DIM, "OSC 66 s=2 and s=3", RESET)
+    s.write(s.at(10, 4), DIM, "Presentation", RESET, "   ", CSI + "76:1m", "☂ ☀ ✈ ❤ ⭐", CSI + "76m", "  Colour")
+    s.write(s.at(11, 19), CSI + "76:2m", "☂ ☀ ✈ ❤ ⭐", CSI + "76m", "  Text  ", DIM, "SGR 76", RESET)
+    s.write(s.at(13, 4), DIM, "Password", RESET, "       password: ", CSI + "?7401h", "●●●●●●●●")
+    s.write(s.at(14, 19), DIM, "Mode 7401 shows a lock", RESET)
+    s.write(s.at(17, 4), DIM, "Session", RESET, "      ", DIM, where, RESET)
     sound(s, [E5], 1, 2)
     answer = dialog_answer(s, 8, 43, 6.0)
     if not s.is_live:
@@ -2568,14 +2487,14 @@ def chapter_ubiquitty(s, pictures):
     state = {"1": "set", "2": "reset, so the mode is understood", "0": "not recognised: this is not Ubiquitty"}
     numbers = re.findall(r";(\d)", reply or "")
     verdict = state.get(numbers[0], "unclear") if numbers else "no answer, so the mode is unknown"
-    s.write(s.at(20, 4), DIM, "detection", RESET, "    DECRQM ?7402 → ", verdict)
+    s.write(s.at(20, 4), DIM, "Detection", RESET, "    DECRQM ?7402 → ", verdict)
     sound(s, [C6, G6], 3, 2)
-    s.write(s.at(21, 4), DIM, "hyperlinks", RESET, "   ", link("https://github.com/ubiquitty/ubiquitty", sgr(4) + "github.com/ubiquitty/ubiquitty" + RESET),
+    s.write(s.at(21, 4), DIM, "Hyperlinks", RESET, "   ", link("https://github.com/ubiquitty/ubiquitty", sgr(4) + "github.com/ubiquitty/ubiquitty" + RESET),
             "   ", DIM, "OSC 8: ⌘-click opens it", RESET)
     if s.short:
         s.pause(1.6)
         return
-    s.write(s.at(23, 4), DIM, "fullscreen", RESET, "   mode 7402 next: content edge to edge, no padding, for a moment")
+    s.write(s.at(23, 4), DIM, "Fullscreen", RESET, "   Next: an image fills the window (mode 7402).")
     s.pause(2.2)
 
 
@@ -2590,11 +2509,11 @@ def chapter_fullscreen(s, pictures):
 
 
 CREDITS = [
-    ("THE TERMINAL", 1.0), ("sixty years, one screen", 0.6), ("", 0), ("", 0),
+    ("THE TERMINAL", 1.0), ("Sixty years, one screen", 0.6), ("", 0), ("", 0),
     ("CAST, IN ORDER OF APPEARANCE", 0.5), ("", 0),
     ("Teletype Model 33 ASR  ·  1963", 1.0), ("Tektronix 4014  ·  1974", 1.0), ("DEC VT100  ·  1978", 1.0),
     ("DEC VT220, VT240, VT320  ·  1983", 1.0), ("xterm  ·  1996", 1.0), ("Unicode and UTF-8  ·  2003", 1.0),
-    ("truecolor  ·  2012", 1.0), ("inline pictures  ·  2013", 1.0), ("Ubiquitty and ubiquitty-host  ·  2026", 1.0), ("", 0), ("", 0),
+    ("Truecolor  ·  2012", 1.0), ("Inline pictures  ·  2013", 1.0), ("Ubiquitty and ubiquitty-host  ·  2026", 1.0), ("", 0), ("", 0),
     ("SEQUENCES", 0.5), ("", 0),
     ("OSC 10, 11, 12  ·  DECDHL, DECDWL  ·  SGR 1, 4, 5, 7  ·  BEL", 0.8),
     ("DECSET 38  ·  GS vectors  ·  US alpha text  ·  PAGE  ·  line styles", 0.8),
@@ -2605,8 +2524,8 @@ CREDITS = [
     ("UAX-29 clusters  ·  braille  ·  box drawing  ·  SGR 4:3, 58  ·  DECSET 2026", 0.8),
     ("SGR 38;2  ·  OSC 1337  ·  kitty graphics and animation", 0.8),
     ("OSC 133  ·  OSC 9;4  ·  OSC 21337  ·  OSC 8  ·  DSR", 0.8),
-    ("the Sync protocol  ·  ubiquitty-host  ·  ubq new, send, read", 0.8),
-    ("OSC 66  ·  SGR 1:n  ·  SGR 76  ·  DECRQM", 0.8),
+    ("The Sync protocol  ·  ubiquitty-host  ·  ubq new, send, read", 0.8),
+    ("OSC 66  ·  SGR 76  ·  DECRQM", 0.8),
     ("DECSET 7401, 7402  ·  OSC 7402  ·  CSI > 9 u", 0.8),
     ("", 0), ("", 0),
     ("MUSIC", 0.5), ("", 0),
