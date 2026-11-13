@@ -35,6 +35,7 @@
 //   - a running job is named by the program that makes it one, a hook by the shell
 //   - a program this process forked delivers fork/exec/exit edges to a notifier
 
+#include "Core/Input/ShellEscape.h"
 #include "Core/Screen/Addressing.h"
 #include "Core/Session/SessionPolicy.h"
 #include "Core/Terminal.h"
@@ -939,6 +940,16 @@ static constexpr const char* renamesItselfMarker = "--ubiquitty-renames-itself";
 // child does not start in this process's directory, so a relative argv[0]
 // names nothing there.
 static std::string executablePath;
+
+#if defined(__APPLE__)
+// The shell and its sleeper both carry the marker, so every fixture process
+// participates in its no-survivor assertion and marker-scoped cleanup.
+static std::string markedSleepCommand(const std::string& marker)
+{
+    return Input::shellEscapedPath(executablePath) + " " + sleepsMarker + " 1000 "
+        + Input::shellEscapedPath(marker) + "; : " + Input::shellEscapedPath(marker);
+}
+#endif
 
 // argv[0] made absolute against the directory this process started in. A
 // name with no slash was found on PATH and is kept, since the launch resolves
@@ -3815,6 +3826,7 @@ int main(int argc, char** argv)
         std::printf("[%s]", argv[0]);
         return failures == 0 ? 0 : 1;
     }
+    executablePath = absoluteExecutablePath(argv[0]);
 #if defined(__APPLE__)
     if (argc == 5 && std::strcmp(argv[1], hostDiesWithAPaneMarker) == 0) {
         char user[256];
@@ -3826,7 +3838,7 @@ int main(int argc, char** argv)
         std::vector<std::unique_ptr<PAL::Stream>> panes;
         for (unsigned long index = 0; index < paneCount; ++index) {
             auto stream = openArguments({ "/usr/bin/login", "-pfl", std::string(user, static_cast<std::size_t>(length)),
-                "/bin/sh", "-c", "sleep 1000; : " + std::string(argv[4]) + "-" + std::to_string(index) });
+                "/bin/sh", "-c", markedSleepCommand(std::string(argv[4]) + "-" + std::to_string(index)) });
             if (!stream)
                 return 3;
             panes.push_back(std::move(stream));
@@ -3842,7 +3854,7 @@ int main(int argc, char** argv)
         if (length <= 0)
             return 2;
         auto original = openArguments({ "/usr/bin/login", "-pfl", std::string(user, static_cast<std::size_t>(length)),
-            "/bin/sh", "-c", "sleep 1000; : " + std::string(argv[3]) });
+            "/bin/sh", "-c", markedSleepCommand(argv[3]) });
         if (!original)
             return 3;
         original->setProcessClosePolicy(PAL::ProcessClosePolicy::KeepRunning);
@@ -3854,7 +3866,7 @@ int main(int argc, char** argv)
         ::kill(::getpid(), SIGKILL);
         return 4;
     }
-    if (argc == 3 && std::strcmp(argv[1], sleepsMarker) == 0) {
+    if ((argc == 3 || argc == 4) && std::strcmp(argv[1], sleepsMarker) == 0) {
         std::this_thread::sleep_for(std::chrono::seconds(std::strtoul(argv[2], nullptr, 10)));
         return 0;
     }
@@ -3876,7 +3888,6 @@ int main(int argc, char** argv)
     }
 #endif
 
-    executablePath = absoluteExecutablePath(argv[0]);
     UBIQUITTY_TEST_PIN_PREFERENCES();
     return UbiquittyTest::runRegisteredCases(argc, argv);
 }
@@ -3957,7 +3968,7 @@ TEST(aLoginPaneClosedWhileItStartsLeavesNoProcess)
     for (const useconds_t delay : { 0u, 1000u, 5000u, 20000u, 100000u }) {
         for (int trial = 0; trial < 20; ++trial, ++index) {
             const std::string marker = uniqueMarker("close", index);
-            auto stream = openArguments({ "/usr/bin/login", "-pfl", user, "/bin/sh", "-c", "sleep 1000; : " + marker });
+            auto stream = openArguments({ "/usr/bin/login", "-pfl", user, "/bin/sh", "-c", markedSleepCommand(marker) });
             REQUIRE(stream);
             ::usleep(delay);
             stream.reset();
@@ -3972,7 +3983,7 @@ TEST(aLoginPaneClosedAfterItsShellRanLeavesNoProcess)
     REQUIRE(!user.empty());
     for (int trial = 0; trial < 5; ++trial) {
         const std::string marker = uniqueMarker("steady", trial);
-        auto stream = openArguments({ "/usr/bin/login", "-pfl", user, "/bin/sh", "-c", "echo up; sleep 1000; : " + marker });
+        auto stream = openArguments({ "/usr/bin/login", "-pfl", user, "/bin/sh", "-c", "echo up; " + markedSleepCommand(marker) });
         REQUIRE(stream);
         char buffer[1024];
         int status = 0;
@@ -4047,7 +4058,7 @@ TEST(aLoginPaneHandedOverInItsStartWindowSurvivesItsHost)
         panes.reserve(5);
         for (int trial = 0; trial < 5; ++trial, ++index) {
             const std::string marker = uniqueMarker("handover", index);
-            auto stream = openArguments({ "/usr/bin/login", "-pfl", user, "/bin/sh", "-c", "sleep 1000; : " + marker });
+            auto stream = openArguments({ "/usr/bin/login", "-pfl", user, "/bin/sh", "-c", markedSleepCommand(marker) });
             REQUIRE(stream);
             stream->setProcessClosePolicy(PAL::ProcessClosePolicy::KeepRunning);
             // The receiver of the handover holds the master, so no hangup arrives when the host lets go.
