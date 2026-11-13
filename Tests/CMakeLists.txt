@@ -281,6 +281,9 @@ set(test_ingest_loop_EXTRA_SOURCES     Source/Platform/POSIX/PTYStream.cpp
                                        Source/Platform/POSIX/SystemPAL.cpp
                                        Source/Platform/Host/HostPAL.cpp
                                        Source/Core/Session/ProcessSubtree.cpp)
+# Each wall-clock scenario keeps the ordinary deadlock bound. Partition the
+# suite so the accumulated pacing of fifty cases does not consume that bound.
+set(test_ingest_loop_SHARDS 4)
 # test_flood_start runs the ingest loop over a pipe, on the real clock, poll and waker.
 set(test_flood_start_EXTRA_SOURCES ${test_ingest_loop_EXTRA_SOURCES})
 # The frame cadence runs a real drain and a frontend tick on the real clock.
@@ -603,9 +606,13 @@ ubiquitty_set_test_entry_properties(test_presentation_launcher)
 # title edge's settle; test_pty waits on wall-clock deadlines while it starts
 # shells. Each runs alone for the reason above: beside the rest of the suite on
 # a three-core runner a one-millisecond sleep took about six and a half.
-if(TEST test_ingest_loop)
-    set_tests_properties(test_ingest_loop PROPERTIES RUN_SERIAL TRUE RESOURCE_LOCK timing)
-endif()
+math(EXPR _ubq_ingest_last_shard "${test_ingest_loop_SHARDS} - 1")
+foreach(_ubq_ingest_shard RANGE ${_ubq_ingest_last_shard})
+    if(TEST test_ingest_loop.${_ubq_ingest_shard})
+        set_tests_properties(test_ingest_loop.${_ubq_ingest_shard} PROPERTIES
+            RUN_SERIAL TRUE RESOURCE_LOCK timing)
+    endif()
+endforeach()
 if(TEST test_pty)
     set_tests_properties(test_pty PROPERTIES RUN_SERIAL TRUE RESOURCE_LOCK timing)
 endif()
