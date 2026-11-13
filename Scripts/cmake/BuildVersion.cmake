@@ -287,6 +287,8 @@ function(ubiquitty_build_version_configure_inputs source_dir out_list)
 endfunction()
 
 if(CMAKE_SCRIPT_MODE_FILE AND CMAKE_SCRIPT_MODE_FILE STREQUAL CMAKE_CURRENT_LIST_FILE)
+    # Standalone queries inherit no project's policy version.
+    cmake_policy(SET CMP0057 NEW)
     if(NOT UBIQUITTY_VERSION_SOURCE_DIR)
         get_filename_component(UBIQUITTY_VERSION_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
     endif()
