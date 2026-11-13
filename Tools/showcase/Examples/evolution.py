@@ -1650,7 +1650,7 @@ def chapter_vt100(s):
     title = "DIGITAL VT100"
     s.write(s.line_start(2), ESC + "#6", s.dwl_pad(title), BOLD, title, RESET)
     s.write(s.at(5, 4), DIM, "ATTRIBUTES", RESET, "   ", BOLD, "BOLD", RESET, "   ", sgr(4), "UNDERLINE", RESET,
-            "   ", sgr(5), "BLINK", RESET, "   ", sgr(7), " REVERSE ", RESET, "   ", sgr(1, 4, 7), " ALL AT ONCE ", RESET)
+            "   ", sgr(5), "BLINK", RESET, "   ", sgr(7), " REVERSE ", RESET, "   ", sgr(1, 4, 5, 7), " ALL AT ONCE ", RESET)
     s.pause(0.6)
 
     # The same program as the paper's, in a scroll region the frame stays
