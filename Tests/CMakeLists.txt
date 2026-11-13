@@ -871,6 +871,12 @@ function(ubq_schedule_run_tests_stanzas driver)
     # bound guards against a hang, and it is the stanza's own in run-tests.sh.
     set(shell_host_soak_TIMEOUT 900)
 
+    # This stanza compiles the terminal Core twice, for TSan and ASan. Give
+    # those cold builds a build's width and no competing tests, while keeping
+    # the same 600-second deadline for the builds and both stress runs.
+    set(shell_test_session_stress_JOBS ${UBIQUITTY_HOST_FIXTURE_JOBS})
+    set(shell_test_session_stress_RUN_SERIAL TRUE)
+
     # Frame-count and handoff deadlines require a quiet scheduler. The
     # sanitizer stanza also runs the ingest loop's timing cases inside its
     # instrumented binary, so it needs the same isolation as that unit test.
