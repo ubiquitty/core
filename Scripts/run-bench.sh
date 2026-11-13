@@ -71,11 +71,14 @@ source "$ROOT/Scripts/portable-core-lib.sh"
 # Flags must match the shipping app (-O3 + ThinLTO, as the app's build and the
 # CMake IPO block set them): a bench built at a different inline threshold ranks
 # call-overhead changes differently than production runs them. That parity
-# includes PGO: the app's build feeds the checked-in training profile to the
-# app, so the bench takes the same profile — or a bench without it would rank
-# inline/layout decisions against codegen production does not ship.
+# includes PGO on Core: the measured archive takes the same profile, or the
+# bench would rank inline/layout decisions against codegen production does not
+# ship. The non-shipping workload controller stays unprofiled in both arms.
 # UBIQUITTY_PGO=OFF disables both sides identically (the A/B escape hatch).
 SHIPPING_FLAGS="-O3 $(ubiquitty_lto_flag) -DNDEBUG"
+# The measured Core uses shipping PGO; the workload controller must have the
+# same compile inputs regardless of which Core profile is being measured.
+DRIVER_FLAGS="$SHIPPING_FLAGS"
 # UBQ_PGO_PROFILE points the build at a profile somewhere else, which is what an
 # A/B of two profiles needs. Without it the only way to compare them is to copy
 # each arm over the checked-in file between rounds — and that file is tracked
@@ -99,6 +102,7 @@ elif [ -f "$PGO_PROFILE" ] && [ "${UBIQUITTY_PGO:-ON}" != "OFF" ] \
     # Scripts/cmake/UbiquittyOptimize.cmake carries the reason GCC's -Wodr says
     # nothing actionable about it.
     SHIPPING_FLAGS="$SHIPPING_FLAGS -Wno-odr"
+    DRIVER_FLAGS="$DRIVER_FLAGS -Wno-odr"
 fi
 echo "Building libUbiquittyCore archive + bench_stack ($CXX, $SHIPPING_FLAGS) ..." >&2
 build_portable_core_archive "$BUILD" "$SHIPPING_FLAGS"
@@ -109,9 +113,13 @@ while IFS= read -r bench_include_flag; do
 done < <(ubiquitty_bench_include_flags "$ROOT")
 
 # shellcheck disable=SC2086
+$CXX_LAUNCHED -std=c++23 $DRIVER_FLAGS -fno-exceptions -fno-rtti -pthread \
+    ${BENCH_INCLUDES[@]+"${BENCH_INCLUDES[@]}"} \
+    -c "$ROOT/Tests/Performance/bench_stack.cpp" -o "$BUILD/bench_stack-driver.o"
+# shellcheck disable=SC2086
 $CXX_LAUNCHED -std=c++23 $SHIPPING_FLAGS -fno-exceptions -fno-rtti -pthread \
     ${BENCH_INCLUDES[@]+"${BENCH_INCLUDES[@]}"} \
-    "$ROOT/Tests/Performance/bench_stack.cpp" "$BUILD/bench_pal_stub.cpp" \
+    "$BUILD/bench_stack-driver.o" "$BUILD/bench_pal_stub.cpp" \
     "$PORTABLE_CORE_ARCHIVE" -o "$BUILD/bench_stack"
 
 # One discarded pass first, because the recorded one would otherwise be this

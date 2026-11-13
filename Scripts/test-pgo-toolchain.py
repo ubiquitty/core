@@ -7,8 +7,10 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,6 +18,66 @@ import unittest
 from unittest.mock import patch
 
 import pgo_toolchain
+
+
+class BenchmarkDriverTests(unittest.TestCase):
+    def test_only_core_and_the_link_receive_the_selected_profile(self):
+        source = Path(__file__).resolve().parent
+        for builder in ("build-perf-bench.sh", "run-bench.sh"):
+            with self.subTest(builder=builder), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                scripts = root / "Scripts"
+                scripts.mkdir()
+                shutil.copy2(source / builder, scripts / builder)
+                (scripts / "build-root.sh").write_text('export UBQ_BUILD_ROOT\n')
+                (scripts / "pgo-flags.sh").write_text('''ubiquitty_pgo_profile() { printf '%s' "$UBQ_PGO_PROFILE"; }
+ubiquitty_pgo_flags() { printf '%s' "-fprofile-use=$UBQ_PGO_PROFILE"; }
+''')
+                (scripts / "pgo-staleness.sh").write_text('pgo_staleness_warning() { :; }\n')
+                (scripts / "portable-core-lib.sh").write_text('''ubiquitty_lto_flag() { printf '%s' '-flto=thin'; }
+build_portable_core_archive() {
+    printf '%s' "$2" > "$UBQ_TEST_ARCHIVE_FLAGS"
+    PORTABLE_CORE_ARCHIVE="$1/libubiquitty-core.a"
+    touch "$PORTABLE_CORE_ARCHIVE"
+}
+ubiquitty_core_pal_stub_source() { touch "$1"; }
+ubiquitty_bench_include_flags() { printf '%s\\n' "-I$1/Source" "-I$1/Tests"; }
+''')
+                compiler = root / "compiler"
+                compiler.write_text("#!" + sys.executable + '''
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+with open(os.environ["UBQ_TEST_COMPILER_LOG"], "a") as output:
+    output.write(json.dumps(args) + "\\n")
+if "-c" not in args:
+    sys.exit(42)
+Path(args[args.index("-o") + 1]).touch()
+''')
+                compiler.chmod(0o755)
+                log = root / "compiler.jsonl"
+                archive = root / "archive-flags"
+                drivers = []
+                for profile in ("baseline", "candidate"):
+                    log.write_text("")
+                    profile_path = str(root / (profile + ".profdata"))
+                    environment = {**os.environ, "CXX": str(compiler), "UBQ_COMPILER_LAUNCHER": "",
+                                   "UBQ_BUILD_ROOT": str(root / "build"), "UBQ_PGO_PROFILE": profile_path,
+                                   "UBQ_TEST_COMPILER_LOG": str(log), "UBQ_TEST_ARCHIVE_FLAGS": str(archive)}
+                    result = subprocess.run(["bash", str(scripts / builder)], env=environment,
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 42, result.stderr)
+                    calls = [json.loads(line) for line in log.read_text().splitlines()]
+                    self.assertEqual(len(calls), 2)
+                    driver, link = calls
+                    self.assertIn("-c", driver)
+                    self.assertFalse(any(flag.startswith("-fprofile") for flag in driver))
+                    self.assertIn("-O3", driver)
+                    self.assertIn("-flto=thin", driver)
+                    self.assertIn("-fprofile-use=" + profile_path, link)
+                    self.assertIn("-fprofile-use=" + profile_path, archive.read_text())
+                    drivers.append(driver)
+                self.assertEqual(drivers[0], drivers[1])
 
 
 class ToolchainTests(unittest.TestCase):

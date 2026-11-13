@@ -72,6 +72,9 @@ if [ "${UBQ_BENCH_DEBUG_INFO:-}" = "1" ]; then
     SHIPPING_FLAGS="$SHIPPING_FLAGS -g"
     LDFLAGS_EXTRA="-Wl,-object_path_lto,$BUILD/lto-objects"
 fi
+# The Core profile must not change the benchmark's workload or contention
+# controller. Both arms compile that driver alike; Core retains shipping PGO.
+DRIVER_FLAGS="$SHIPPING_FLAGS"
 # Who may be handed the profile is one decision, and it lives beside the
 # profile rather than in each caller: the container's g++ compiles clean with a
 # .profdata path it cannot read, so a caller that checks only whether the file
@@ -93,9 +96,13 @@ if [ ${#TOOLS[@]} -eq 0 ] || [ -z "${TOOLS[0]}" ]; then
 fi
 for tool in "${TOOLS[@]}"; do
     # shellcheck disable=SC2086
+    $CXX_LAUNCHED -std=c++23 $DRIVER_FLAGS -fno-exceptions -fno-rtti -pthread \
+        ${BENCH_INCLUDES[@]+"${BENCH_INCLUDES[@]}"} \
+        -c "$ROOT/Tests/Performance/$tool.cpp" -o "$BUILD/$tool-driver.o"
+    # shellcheck disable=SC2086
     $CXX_LAUNCHED -std=c++23 $SHIPPING_FLAGS -fno-exceptions -fno-rtti -pthread \
         ${BENCH_INCLUDES[@]+"${BENCH_INCLUDES[@]}"} \
-        "$ROOT/Tests/Performance/$tool.cpp" "$BUILD/bench_pal_stub.cpp" \
+        "$BUILD/$tool-driver.o" "$BUILD/bench_pal_stub.cpp" \
         "$ROOT/Source/Platform/POSIX/PTYStream.cpp" \
         "$ROOT/Source/PAL/OutputQueue.cpp" \
         "$ROOT/Source/Platform/POSIX/PTYFacts.cpp" \
