@@ -1396,7 +1396,7 @@ std::expected<void, ApplyOutcome> decodeStateBlockWithNames(StateBlock block, st
             if (plan)
                 plan->paletteStackBytes = sizeof(Terminal::PaletteStack);
             else {
-                scratch.savedPalettes.reset(new (std::nothrow) Terminal::PaletteStack {});
+                scratch.savedPalettes.reset(new (std::nothrow) Terminal::PaletteStack());
                 if (!scratch.savedPalettes)
                     return std::unexpected(ApplyOutcome::AllocationRefused);
             }
