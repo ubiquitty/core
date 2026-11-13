@@ -180,13 +180,21 @@ fetch_pinned()
     local want_commit="$3"
     local url
     url="$(git -C "$directory" config --get remote.origin.url)"
-    if ! git -C "$directory" fetch --depth 1 origin "$want_commit"; then
-        echo "quic-deps: could not fetch $name $want_commit from $url" >&2
-        echo "  A fresh checkout downloads the pinned QUIC sources once, so its first" >&2
-        echo "  build needs network access to $url. Retry once it is reachable, or" >&2
-        echo "  point UBIQUITTY_QUIC_PREFIX at a prefix that already holds the libraries." >&2
-        exit 1
-    fi
+    local attempt
+    for attempt in 1 2 3; do
+        if git -C "$directory" fetch --depth 1 origin "$want_commit"; then
+            return 0
+        fi
+        if [ "$attempt" -lt 3 ]; then
+            echo "quic-deps: $name fetch attempt $attempt failed; retrying the pinned commit" >&2
+            sleep "$((attempt * 2))"
+        fi
+    done
+    echo "quic-deps: could not fetch $name $want_commit from $url after 3 attempts" >&2
+    echo "  A fresh checkout downloads the pinned QUIC sources once, so its first" >&2
+    echo "  build needs network access to $url. Retry once it is reachable, or" >&2
+    echo "  point UBIQUITTY_QUIC_PREFIX at a prefix that already holds the libraries." >&2
+    exit 1
 }
 
 checkout_source()

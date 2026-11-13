@@ -432,6 +432,70 @@ class FreshCheckoutQUICTests(unittest.TestCase):
     wrote one copy into the tree.
     """
 
+    def fetchPinned(self, failures, wrongCommit=False):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executables = root / "bin"
+            executables.mkdir()
+            source = root / "source"
+            (source / ".git").mkdir(parents=True)
+            wanted = "1" * 40
+            git = executables / "git"
+            git.write_text(
+                f"#!{sys.executable}\n"
+                "import json, os, pathlib, sys\n"
+                "root = pathlib.Path(os.environ['FETCH_FIXTURE'])\n"
+                "args = sys.argv[3:]\n"
+                "if args[0] == 'config':\n"
+                "    print('https://example.invalid/dependency'); sys.exit(0)\n"
+                "if args[0] == 'fetch':\n"
+                "    log = root / 'fetches.json'\n"
+                "    attempts = json.loads(log.read_text()) if log.exists() else []\n"
+                "    attempts.append(args); log.write_text(json.dumps(attempts))\n"
+                f"    sys.exit(128 if len(attempts) <= {failures} else 0)\n"
+                "if args[0] == 'rev-parse':\n"
+                "    if '--verify' in args: sys.exit(1)\n"
+                f"    print({'2' * 40 if wrongCommit else wanted!r}); sys.exit(0)\n"
+                "if 'switch' in args: sys.exit(0)\n"
+                "sys.exit('unexpected git command: ' + repr(args))\n")
+            git.chmod(0o755)
+            sleep = executables / "sleep"
+            sleep.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> "$FETCH_FIXTURE/sleeps"\n')
+            sleep.chmod(0o755)
+            text = (ROOT / "Scripts/fetch-quic-deps.sh").read_text()
+            functions = text[text.index("\nfetch_pinned()\n"):text.index("\n# ---- AWS-LC")]
+            script = 'set -euo pipefail\n' + functions + '\ncheckout_source fixture https://example.invalid/dependency v1 "$1" "$2"\nprintf verified > "$FETCH_FIXTURE/verified"\n'
+            environment = {**os.environ, "PATH": str(executables) + os.pathsep + os.environ["PATH"],
+                           "FETCH_FIXTURE": str(root)}
+            checked = subprocess.run(["/bin/bash", "-c", script, "fixture", str(source), wanted],
+                                     env=environment, text=True, capture_output=True, timeout=10)
+            fetches = json.loads((root / "fetches.json").read_text())
+            sleeps = (root / "sleeps").read_text().splitlines() if (root / "sleeps").exists() else []
+            return checked, fetches, sleeps, (root / "verified").exists()
+
+    def testFetchRetriesTheSamePinnedCommit(self):
+        checked, fetches, sleeps, verified = self.fetchPinned(1)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertTrue(verified)
+        self.assertEqual(fetches, [["fetch", "--depth", "1", "origin", "1" * 40]] * 2)
+        self.assertEqual(sleeps, ["2"])
+
+    def testFetchExhaustionStopsBeforeBuilding(self):
+        checked, fetches, sleeps, verified = self.fetchPinned(3)
+        self.assertNotEqual(checked.returncode, 0)
+        self.assertFalse(verified)
+        self.assertEqual(fetches, [["fetch", "--depth", "1", "origin", "1" * 40]] * 3)
+        self.assertEqual(sleeps, ["2", "4"])
+        self.assertIn("after 3 attempts", checked.stderr)
+
+    def testRetriedFetchStillRejectsADifferentCommit(self):
+        checked, fetches, sleeps, verified = self.fetchPinned(1, wrongCommit=True)
+        self.assertNotEqual(checked.returncode, 0)
+        self.assertFalse(verified)
+        self.assertEqual(len(fetches), 2)
+        self.assertEqual(sleeps, ["2"])
+        self.assertIn("is not the pinned commit", checked.stderr)
+
     def configure(self, buildRoot, *arguments):
         if shutil.which("cmake") is None or shutil.which("ninja") is None:
             self.skipTest("cmake and ninja are required")
@@ -478,6 +542,8 @@ class FreshCheckoutQUICTests(unittest.TestCase):
                 self.skipTest("cmake is unavailable")
             (executables / "go").write_text("#!/bin/sh\nexit 0\n")
             (executables / "go").chmod(0o755)
+            (executables / "sleep").write_text("#!/bin/sh\nexit 0\n")
+            (executables / "sleep").chmod(0o755)
             realGit = shutil.which("git")
             # Every git command works except reaching the network.
             (executables / "git").write_text(
