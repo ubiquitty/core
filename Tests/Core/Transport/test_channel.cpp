@@ -40,6 +40,18 @@
 
 using namespace Ubiquitty::Transport;
 
+namespace Ubiquitty::Transport {
+
+struct ChannelLifecycleAccess {
+    static bool ownerIsJoining(PollChannel& channel)
+    {
+        const std::unique_lock lock(channel.m_lifecycleMutex, std::try_to_lock);
+        return !lock.owns_lock() || channel.m_isJoining;
+    }
+};
+
+} // namespace Ubiquitty::Transport
+
 namespace {
 
 // Thread-safe event sink: the channel's I/O thread writes; the test thread
@@ -448,6 +460,68 @@ private:
     int m_peer = -1;
 };
 
+class StopDuringOwnerJoin final : public ChannelObserver {
+public:
+    explicit StopDuringOwnerJoin(Channel& channel)
+        : m_channel(channel)
+    {
+    }
+
+    void onConnect() override { }
+    void onData(std::span<const std::uint8_t>) override { }
+    void onClose(const std::string&) override
+    {
+        m_entered.store(true, std::memory_order_release);
+        while (!m_mayStop.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        m_channel.stop();
+        m_returned.store(true, std::memory_order_release);
+    }
+
+    bool hasEntered() const { return m_entered.load(std::memory_order_acquire); }
+    bool hasReturned() const { return m_returned.load(std::memory_order_acquire); }
+    void allowStop() { m_mayStop.store(true, std::memory_order_release); }
+
+private:
+    Channel& m_channel;
+    std::atomic<bool> m_entered { false };
+    std::atomic<bool> m_mayStop { false };
+    std::atomic<bool> m_returned { false };
+};
+
+TEST(aCloseCallbackCanStopWhileTheOwnerJoins)
+{
+    SocketPairChannel channel;
+    StopDuringOwnerJoin observer(channel);
+    if (!channel.start(&observer)) {
+        CHECK_MSG(false, "the channel did not start for the join barrier");
+        return;
+    }
+    CHECK(::shutdown(channel.peer(), SHUT_RDWR) == 0);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!observer.hasEntered() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (!observer.hasEntered()) {
+        observer.allowStop();
+        channel.stop();
+        CHECK_MSG(false, "the close callback did not reach the join barrier");
+        return;
+    }
+
+    // A join cycle cannot report from either blocked thread. Bound the probe
+    // itself, inside the unchanged per-binary deadlock deadline.
+    ::alarm(5);
+    std::thread releaseCallback([&] {
+        while (!ChannelLifecycleAccess::ownerIsJoining(channel))
+            std::this_thread::yield();
+        observer.allowStop();
+    });
+    channel.stop();
+    releaseCallback.join();
+    ::alarm(0);
+    CHECK_MSG(observer.hasReturned(), "the close callback stopped without blocking the owner's join");
+}
+
 // The lifetime half: a sender that has taken its reference to the waker — the
 // exact state send() is in between the validity test and the wake — must keep
 // that waker live, and its descriptor NUMBER un-recycled, across a complete
@@ -526,17 +600,21 @@ TEST(test_send_races_stop)
                     channel.send({ &byte, 1 });
             });
         }
-        std::thread stopper([&channel, &go] {
-            while (!go.load(std::memory_order_acquire))
-                std::this_thread::yield();
-            channel.stop();
-            channel.stop(); // idempotent, and concurrent with senders still in flight
-        });
+        std::vector<std::thread> stoppers;
+        for (int index = 0; index < 2; ++index) {
+            stoppers.emplace_back([&channel, &go] {
+                while (!go.load(std::memory_order_acquire))
+                    std::this_thread::yield();
+                channel.stop();
+                channel.stop(); // idempotent, and concurrent with senders still in flight
+            });
+        }
 
         go.store(true, std::memory_order_release);
         for (std::thread& sender : senders)
             sender.join();
-        stopper.join();
+        for (std::thread& stopper : stoppers)
+            stopper.join();
     }
     CHECK_MSG(true, "send-races-stop: senders and repeated stop ran to completion without a fault");
 }

@@ -566,6 +566,10 @@ ubiquitty_add_host_tests(
     ROOT ${UBIQUITTY_CORE_SOURCE_DIR} SOURCES ${UBIQUITTY_FUZZ_SOURCES}
     ${_ubq_host_test_lists})
 
+if(TEST test_channel)
+    set_property(TEST test_channel APPEND PROPERTY ENVIRONMENT UBQ_TEST_VERBOSE=1)
+endif()
+
 # test_sync_handles drives 100,000 bind and unbind round trips through a whole
 # Sync link. The count is the property under test: the handle slots stay at
 # three however many rebindings pass. It takes about 30 seconds in a Linux

@@ -12,6 +12,7 @@
 #include "PAL/UnixFileDescriptor.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -165,7 +166,10 @@ private:
     std::atomic<bool> m_isReadingSuspended { false }; // set by suspendReading(); the poll set drops Readable while it holds
     std::atomic<std::uint64_t> m_refusedBytes { 0 }; // bytes send() declined for want of room
     OverflowPolicy m_overflowPolicy { OverflowPolicy::CloseChannel };
-    std::mutex m_lifecycleMutex; // serializes joinAndCleanup across owner + callback stop()
+    std::mutex m_lifecycleMutex; // guards lifecycle state, never held across the join
+    std::condition_variable m_lifecycleCondition;
+    std::thread::id m_ioThreadID; // guarded by m_lifecycleMutex; cleared before the thread exits
+    bool m_isJoining = false; // guarded by m_lifecycleMutex
     bool m_cleanedUp = false; // guarded by m_lifecycleMutex
 
     std::unique_ptr<PAL::PollableByteStream> m_diagnosticStream;
@@ -188,6 +192,8 @@ private:
     // place the difference between "the backlog" and "every byte ever sent"
     // shows is here.
     friend struct OutboundRetentionAccess;
+    // The lifecycle probe holds a close callback until an owner starts joining.
+    friend struct ChannelLifecycleAccess;
 #endif
 
     mutable std::mutex m_outMutex;

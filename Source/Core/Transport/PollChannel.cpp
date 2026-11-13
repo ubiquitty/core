@@ -92,11 +92,17 @@ bool PollChannel::start(ChannelObserver* observer)
     }
 
     m_health.store(Health::Connected, std::memory_order_release);
-    // Assign m_thread under the lifecycle mutex: a transport that drops at once
-    // lets ioLoop reach joinAndCleanup (which reads m_thread) before this returns.
+    // An immediate callback can stop the channel before start returns. Its
+    // running identity is published under the same lock that stop reads, and
+    // cleared before exit so a recycled thread identity cannot bypass a join.
     {
         std::scoped_lock lock(m_lifecycleMutex);
-        m_thread = std::thread([this] { ioLoop(); });
+        m_thread = std::thread([this] {
+            ioLoop();
+            std::scoped_lock lock(m_lifecycleMutex);
+            m_ioThreadID = {};
+        });
+        m_ioThreadID = m_thread.get_id();
     }
     return true;
 }
@@ -195,18 +201,23 @@ void PollChannel::stop()
 
 void PollChannel::joinAndCleanup()
 {
-    // stop() may be called from the owner thread and re-entrantly from an observer
-    // callback on the I/O thread — serialize so the two never race on m_thread.
-    std::scoped_lock lock(m_lifecycleMutex);
-    // Self-join: a callback called stop() on the I/O thread. Skip the join (the loop
-    // unwinds on m_stopRequested); the owner's stop() / destructor do cleanup.
-    if (m_thread.joinable()) {
-        if (std::this_thread::get_id() == m_thread.get_id())
-            return;
-        m_thread.join();
-    }
+    std::unique_lock lock(m_lifecycleMutex);
+    // A callback must be able to finish while the owner joins its I/O thread.
+    // Other owners wait for that join and its cleanup, with the mutex released.
+    if (m_ioThreadID == std::this_thread::get_id())
+        return;
+    m_lifecycleCondition.wait(lock, [this] { return !m_isJoining; });
     if (m_cleanedUp)
         return;
+    if (m_thread.joinable()) {
+        m_isJoining = true;
+        std::thread joining = std::move(m_thread);
+        lock.unlock();
+        joining.join();
+        lock.lock();
+        m_isJoining = false;
+        m_lifecycleCondition.notify_all();
+    }
     m_cleanedUp = true;
     m_readStream.reset();
     m_writeStream.reset();
