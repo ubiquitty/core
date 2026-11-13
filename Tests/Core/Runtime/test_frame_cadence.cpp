@@ -700,6 +700,10 @@ public:
             askForFrameFromPrimitives();
         if (m_case.ticking == Ticking::EveryRefresh)
             recheckHoldIfDue();
+        // A frame decision can expire the update and publish its palette,
+        // as a frontend's expiry callback reports after publishing its write.
+        if (m_case.ticking == Ticking::OnWake)
+            reportColorsIfMoved();
     }
 
     [[nodiscard]] const std::vector<Present>& presents() const { return m_presents; }
@@ -994,6 +998,38 @@ private:
     std::vector<Present> m_presents;
     CallTimes m_times;
 };
+
+TEST(colorsExpiredByTheFrameDecisionAreReportedInThatTick)
+{
+    const auto release = [](TerminalSession* session) {
+        session->close();
+        releaseTerminalSession(session);
+    };
+    std::unique_ptr<TerminalSession, decltype(release)> session(TerminalSession::make(), release);
+    REQUIRE(session);
+    CadenceCase cadenceCase;
+    cadenceCase.selection = { .row = 0, .fromColumn = 0, .toColumn = 3 };
+    cadenceCase.ticking = Ticking::OnWake;
+    session->start(cadenceCase.rows, cadenceCase.columns);
+    session->feedBytes(std::span("text", 4));
+    session->setSyncFrameCaptureGeometry(captureGeometry(cadenceCase.rows, cadenceCase.columns));
+    session->setSyncFramePresentation(Runtime::PanePresentation::Presented);
+    Frontend frontend(*session, *session->modelLockPointer(), cadenceCase, Decision::TakeFrame);
+    REQUIRE(frontend.select());
+    constexpr std::string_view openAndColor = "\x1b[?2026h\x1b]11;rgb:00/77/77\x07";
+    session->feedBytes(std::span(openAndColor));
+    session->lockForRead();
+    Terminal* terminal = session->terminal();
+    terminal->modes.syncOutputTouchTicks = PAL::monotonicTicks().count - Modes::SyncOutput::maxHoldTicks - 1;
+    session->unlockForRead();
+    session->republishSnapshot();
+    Frontend::noteWake(&frontend);
+    frontend.tick(0, Clock::now());
+    REQUIRE(frontend.colorReports().size() == 1);
+    CHECK_EQ(frontend.colorReports()[0].background.red, 0x00);
+    CHECK_EQ(frontend.colorReports()[0].background.green, 0x77);
+    CHECK_EQ(frontend.colorReports()[0].background.blue, 0x77);
+}
 
 // What one case's run left behind for its checks.
 struct CadenceRun {
