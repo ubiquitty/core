@@ -146,7 +146,9 @@ ubiquitty_pgo_flags() {
     cache="${UBQ_BUILD_ROOT:-$(python3 "$root/Scripts/build_root.py" "$root")}/pgo"
     rooted="$(python3 "$root/Scripts/pgo_localize.py" "$profile" "$root" "$cache")" || rooted="$profile"
     echo "PGO:        using $profile as $rooted (UBIQUITTY_PGO=OFF to disable)" >&2
-    printf '%s' "-fprofile-use=$rooted -DUBIQUITTY_PGO_STAMP=$stamp -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date -Wno-backend-plugin"
+    local codegen
+    codegen="$(python3 "$root/Scripts/pgo_toolchain.py" codegen-flags "$compiler")" || return 1
+    printf '%s' "$codegen -fprofile-use=$rooted -DUBIQUITTY_PGO_STAMP=$stamp -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date -Wno-backend-plugin"
 }
 
 # The rule is shown to catch its case and to leave the near-miss alone.

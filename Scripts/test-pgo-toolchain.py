@@ -74,6 +74,23 @@ else:
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((temporary / "built").exists())
 
+    def test_codegen_policy_uses_the_compiler_target(self):
+        linux_x86 = "#define __clang__ 1\n#define __linux__ 1\n#define __x86_64__ 1\n"
+        with patch.object(pgo_toolchain, "compiler_output", return_value=linux_x86):
+            self.assertEqual(pgo_toolchain.codegen_flags("compiler"), ["-falign-functions=64"])
+        for macros in (linux_x86.replace("__x86_64__", "__aarch64__"),
+                       linux_x86.replace("__linux__", "__APPLE__"),
+                       linux_x86.replace("__clang__", "__GNUC__")):
+            with self.subTest(macros=macros), patch.object(pgo_toolchain, "compiler_output", return_value=macros):
+                self.assertEqual(pgo_toolchain.codegen_flags("compiler"), [])
+
+    def test_codegen_query_does_not_require_a_profile_or_container(self):
+        with patch.object(pgo_toolchain, "codegen_flags", return_value=["-falign-functions=64"]), \
+                patch.object(sys, "argv", ["pgo_toolchain.py", "codegen-flags", "compiler"]), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(pgo_toolchain.main(), 0)
+            self.assertEqual(output.getvalue(), "-falign-functions=64\n")
+
     def test_native_linux_enters_image(self):
         with patch.dict(os.environ, {}, clear=True), patch("platform.system", return_value="Linux"):
             self.assertTrue(pgo_toolchain.needs_image())

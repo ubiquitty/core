@@ -212,6 +212,19 @@ if(UBIQUITTY_BUILDS_OPTIMIZED)
                     $<${_ubiquitty_pgo_compiles}:-Wno-profile-instr-unprofiled>
                     $<${_ubiquitty_pgo_compiles}:-Wno-profile-instr-out-of-date>
                     $<${_ubiquitty_pgo_compiles}:-Wno-backend-plugin>)
+                # The shell builders and CMake use the same target policy.
+                # A profile can move an x86 hot loop across cache lines without
+                # changing its instructions; stable entries bound that drift.
+                execute_process(
+                    COMMAND ${Python3_EXECUTABLE} ${UBIQUITTY_CORE_SOURCE_DIR}/Scripts/pgo_toolchain.py
+                        codegen-flags "${CMAKE_CXX_COMPILER}"
+                    OUTPUT_VARIABLE _ubiquitty_pgo_codegen
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    COMMAND_ERROR_IS_FATAL ANY)
+                separate_arguments(_ubiquitty_pgo_codegen NATIVE_COMMAND "${_ubiquitty_pgo_codegen}")
+                foreach(_ubiquitty_pgo_option IN LISTS _ubiquitty_pgo_codegen)
+                    add_compile_options($<${_ubiquitty_pgo_compiles}:${_ubiquitty_pgo_option}>)
+                endforeach()
                 message(STATUS "PGO: using ${UBIQUITTY_PGO_PROFILE} as ${_ubiquitty_pgo_local}")
             endif()
         endif()

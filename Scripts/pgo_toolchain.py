@@ -59,6 +59,14 @@ def compiler_output(compiler: str, *arguments: str) -> str:
                           capture_output=True, text=True).stdout.strip()
 
 
+def codegen_flags(compiler: str) -> list[str]:
+    """Keep profiled Linux x86 function entries independent of layout drift."""
+    macros = compiler_output(compiler, "-dM", "-E", "-x", "c++", "/dev/null")
+    if all(f"#define {name} " in macros for name in ("__clang__", "__linux__", "__x86_64__")):
+        return ["-falign-functions=64"]
+    return []
+
+
 def is_linux_compiler(compiler: str) -> bool:
     """Use the compiler target, not the operating system running the driver."""
     return "#define __linux__ " in compiler_output(compiler, "-dM", "-E", "-x", "c++", "/dev/null")
@@ -113,12 +121,17 @@ def main() -> int:
         subparser = commands.add_parser(action)
         subparser.add_argument("profile")
         subparser.add_argument("compiler")
+    layout = commands.add_parser("codegen-flags")
+    layout.add_argument("compiler")
     arguments = parser.parse_args()
     try:
         if arguments.action == "run":
             if not arguments.command:
                 parser.error("run needs a command")
             enter_image(arguments.command)
+        if arguments.action == "codegen-flags":
+            print(" ".join(codegen_flags(arguments.compiler)))
+            return 0
         if arguments.action == "record":
             record(arguments.profile, arguments.compiler)
         else:
