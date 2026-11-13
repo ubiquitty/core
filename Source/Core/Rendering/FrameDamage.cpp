@@ -306,6 +306,7 @@ RetainedCapture planRetainedCapture(CellGrid& grid, const Terminal& terminal, Re
     capture.refresh.firstAbsoluteRow = Screen::scrollbackCount(&terminal) - viewOffset;
     capture.refresh.generationAfterDrain = capture.damage.generationAfterDrain;
     capture.refresh.baseGeneration = baseline.generation;
+    capture.refresh.baseViewOffset = baseline.viewOffset;
     capture.refresh.rowDirty = rowDirty;
 
     baseline.isInitialized = true;

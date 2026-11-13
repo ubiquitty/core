@@ -112,6 +112,40 @@ TEST(testCaptureFillsTheGridAndGeometry)
     t.reset();
 }
 
+TEST(captureSlotsValidateTheBaselineViewportWithoutModelWrites)
+{
+    auto terminal = makeTerminal(4, 8);
+    feed(*terminal, "a\r\nb\r\nc\r\nd\r\ne\r\nf");
+    RetainedFrameBaseline baseline;
+    RetainedCaptureRequest request;
+    request.rows = 4;
+    request.columns = 8;
+    request.viewOffset = 2;
+    std::array<std::uint8_t, 4> damage {};
+    TerminalSnapshotOptions options;
+    options.viewOffset = 2;
+    TerminalFrameInputs historySlot;
+    const auto history = planRetainedCapture(*terminal->grid, *terminal, baseline, request, damage);
+    REQUIRE(historySlot.capture(*terminal, options, unifontMetrics(), GlyphSlotGeometry {}, history.refresh));
+    CHECK_EQ(historySlot.inputs().cells[0].codePoint, std::uint32_t { 'a' });
+
+    request.viewOffset = 0;
+    options.viewOffset = 0;
+    TerminalFrameInputs tailSlot;
+    const auto tail = planRetainedCapture(*terminal->grid, *terminal, baseline, request, damage);
+    REQUIRE(tailSlot.capture(*terminal, options, unifontMetrics(), GlyphSlotGeometry {}, tail.refresh));
+    CHECK_EQ(tailSlot.inputs().cells[0].codePoint, std::uint32_t { 'c' });
+
+    const auto unchanged = planRetainedCapture(*terminal->grid, *terminal, baseline, request, damage);
+    REQUIRE(unchanged.refresh.canReuseRows);
+    REQUIRE(unchanged.refresh.baseGeneration == history.refresh.generationAfterDrain);
+    REQUIRE(std::ranges::all_of(damage, [](auto row) { return row == 0; }));
+    REQUIRE(historySlot.capture(*terminal, options, unifontMetrics(), GlyphSlotGeometry {}, unchanged.refresh));
+    CHECK_EQ(historySlot.viewOffset(), 0);
+    CHECK_EQ(historySlot.inputs().cells[0].codePoint, std::uint32_t { 'c' });
+    CHECK(std::memcmp(historySlot.inputs().cells, tailSlot.inputs().cells, 4 * 8 * sizeof(Cell)) == 0);
+}
+
 TEST(compactRowsReachFullAndRetainedCapturesWithoutBorrowingLiveStorage)
 {
     constexpr int rows = 3;

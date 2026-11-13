@@ -221,7 +221,8 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
     // clean describes a line this frame does not show.
     CapturedRowRefresh rows = refresh;
     if (!isSameShape || rows.viewOffset != viewOffset || rows.firstAbsoluteRow != firstAbsoluteRow
-        || (rows.baseGeneration != 0 && rows.baseGeneration != m_rowRefreshGeneration)) {
+        || (rows.baseGeneration != 0
+            && (rows.baseGeneration != m_rowRefreshGeneration || rows.baseViewOffset != m_viewOffset))) {
         rows.canReuseRows = false;
     }
     rows.viewOffset = viewOffset;

@@ -323,6 +323,9 @@ struct CapturedRowRefresh {
     std::uint64_t generationAfterDrain = 0;
     /// The retained frame this damage updates; zero when no lineage is supplied.
     std::uint64_t baseGeneration = 0;
+    /// The baseline viewport when a generation is supplied. Slots can capture
+    /// different viewports without a model write advancing that generation.
+    int baseViewOffset = 0;
     std::span<const std::uint8_t> rowDirty; // one byte per row, from the drain
 };
 
