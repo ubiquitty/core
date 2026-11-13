@@ -304,6 +304,9 @@ bool stopCurrentDaemon(const std::string& home, const std::string& socketName)
 
 int main(int argc, char** argv)
 {
+    // SubprocessChannel writes pipes: a disconnected bridge is EPIPE, as in
+    // the app process, rather than the default process-terminating SIGPIPE.
+    ::signal(SIGPIPE, SIG_IGN);
     if (argc < 2) {
         std::fprintf(stderr, "usage: %s <ubiquitty-host>\n", argv[0]);
         return 2;
