@@ -284,6 +284,7 @@ set(test_ingest_loop_EXTRA_SOURCES     Source/Platform/POSIX/PTYStream.cpp
 # Each wall-clock scenario keeps the ordinary deadlock bound. Partition the
 # suite so the accumulated pacing of fifty cases does not consume that bound.
 set(test_ingest_loop_SHARDS 4)
+set(test_flood_lock_bench_EXTRA_SOURCES Source/Platform/Host/HostPAL.cpp)
 # test_flood_start runs the ingest loop over a pipe, on the real clock, poll and waker.
 set(test_flood_start_EXTRA_SOURCES ${test_ingest_loop_EXTRA_SOURCES})
 # The frame cadence runs a real drain and a frontend tick on the real clock.

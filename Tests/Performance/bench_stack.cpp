@@ -17,6 +17,7 @@
 #include "Core/Screen/Addressing.h"
 #include "Core/Screen/LogicalPosition.h"
 #include "Core/VT/SoftFont.h"
+#include "FloodLockBench.h"
 #include "SearchMaintenanceBench.h"
 #include <memory>
 #include <span>
@@ -2828,31 +2829,9 @@ void frameTailBenches(std::vector<Ubiquitty::Bench::Result>& out, int rows, int 
     Ubiquitty::Bench::frameTailMilliseconds(out, "flood_frame_tail", std::move(frames));
 }
 
-// Lock-acquire wait under flood: the shape of the model-lock starvation class
-// (T7's motivating problem). One thread floods `processBytes` in lock-bracketed
-// chunks (mirroring the real ingest drain's per-chunk lock/unlock); a second
-// thread simulates a 60 Hz render loop trying to acquire the same lock on
-// schedule, timing only the WAIT (request → acquired), then holds it just long
-// enough to do a representative grid scan (getDisplayRow every row — the same
-// per-row work captureInto:'s damage-bounded copy does) before releasing.
-// Reports the wait distribution's tail (p99/max) — a rare long stall under
-// flood is exactly what "starvation" means; the mean hides it. This is the
-// "before" half of T7's before/after — a published-snapshot redesign is
-// expected to collapse this toward render_build's uncontended cost.
-//
-// It mirrors the drain's lock/unlock CADENCE and not its unlock. The shipping
-// path goes through `ModelLock::unlockForDrain`, which hands the lock to any
-// thread waiting on it — probe first, yield past a band. This lane takes a
-// plain `std::mutex` and reacquires immediately, so its number is what the
-// drain would cost with that handoff removed, not what a shipping session pays.
-//
-// The difference is the whole effect. Read this lane as the floor the handoff
-// is holding up, and do not quote it as a stall a user sees.
-//
-// The tail is also two adjacent order statistics rather than two numbers:
-// `quantileSeconds` indexes `size * 0.99`, and 2 seconds at 60 Hz is ~120
-// samples, so _p99 is the second largest and _max the largest. They tend to
-// agree closely because they are neighbours, not because the tail is flat.
+// Real parse and display work around the production model-lock handoff.
+// The raw-mutex counterexample is an opt-in diagnostic with separate names.
+template<Ubiquitty::Bench::FloodLockService service = Ubiquitty::Bench::FloodLockService::Production>
 void lockStarvationBenches(std::vector<Ubiquitty::Bench::Result>& out, int rows, int columns, double durationSeconds)
 {
     std::vector<char> flood;
@@ -2860,47 +2839,7 @@ void lockStarvationBenches(std::vector<Ubiquitty::Bench::Result>& out, int rows,
     const std::vector<char> scroll = scrollStream(1 * 1024 * 1024);
     flood.insert(flood.end(), plain.begin(), plain.end());
     flood.insert(flood.end(), scroll.begin(), scroll.end());
-    constexpr std::size_t chunkBytes = 4096; // ~one ingest-drain chunk
-
-    auto term = std::make_unique<Ubiquitty::Terminal>();
-    Ubiquitty::resize(*term, rows, columns);
-    std::mutex modelLock;
-    std::atomic<bool> stop { false };
-
-    std::thread producer([&] {
-        std::size_t off = 0;
-        while (!stop.load(std::memory_order_relaxed)) {
-            const std::size_t n = std::min(chunkBytes, flood.size() - off);
-            {
-                std::scoped_lock lock(modelLock);
-                Ubiquitty::processBytes(term.get(), std::string_view(flood.data() + off, static_cast<std::size_t>(n)));
-            }
-            off += n;
-            if (off >= flood.size())
-                off = 0; // wrap — a fixed deterministic stream replayed for the run's duration
-        }
-    });
-
-    std::vector<Ubiquitty::Cell> row(static_cast<std::size_t>(columns));
-    std::vector<double> waitSeconds;
-    const auto tickInterval = std::chrono::microseconds(16667); // 60 Hz cadence
-    const auto runUntil = std::chrono::steady_clock::now() + std::chrono::duration<double>(durationSeconds);
-    while (std::chrono::steady_clock::now() < runUntil) {
-        const auto tickStart = std::chrono::steady_clock::now();
-        const auto wantLock = std::chrono::steady_clock::now();
-        modelLock.lock();
-        const auto gotLock = std::chrono::steady_clock::now();
-        for (int r = 0; r < rows; ++r)
-            Ubiquitty::Screen::getDisplayRow(*term, 0, r, row.data(), columns);
-        modelLock.unlock();
-        waitSeconds.push_back(std::chrono::duration<double>(gotLock - wantLock).count());
-        std::this_thread::sleep_until(tickStart + tickInterval);
-    }
-
-    stop.store(true, std::memory_order_relaxed);
-    producer.join();
-    term.reset();
-    Ubiquitty::Bench::frameTailMilliseconds(out, "lock_wait_under_flood", std::move(waitSeconds));
+    Ubiquitty::Bench::measureFloodLockWait<service>(out, flood, rows, columns, durationSeconds);
 }
 
 } // namespace
@@ -3285,15 +3224,12 @@ int main(int argc, char** argv)
         latencyBenches(results, 50, 200, warmup, iters * 50);
     if (wanted("frametail"))
         frameTailBenches(results, 50, 200);
-    // Model-lock starvation under flood — T7's motivating problem, the "before"
-    // half of the one-data-path before/after.
-    // This external-mutex model omits shipping drain fairness and
-    // feeds bytes until a wall-clock deadline. Its Core work is already trained
-    // by parse_plain/parse_scroll, the 4096-byte frame-tail feed, shaped-row reads
-    // and live capture. Excluding it avoids load-dependent corpus weights without
-    // inventing a replacement ratio of parser calls to display captures.
+    // Wall-clock floods do not supply training weights. Their fixed parse and
+    // display work is covered by the parser, frame-tail and capture corpora.
     if (!Ubiquitty::Bench::isProfileTraining && wanted("lockstarvation"))
         lockStarvationBenches(results, 24, 80, floodSeconds);
+    if (!Ubiquitty::Bench::isProfileTraining && named("rawlockstarvation"))
+        lockStarvationBenches<Ubiquitty::Bench::FloodLockService::RawMutex>(results, 24, 80, floodSeconds);
 
     Ubiquitty::Bench::emitJSON(results, platform, commit);
     return 0;
