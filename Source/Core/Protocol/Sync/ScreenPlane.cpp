@@ -1352,6 +1352,13 @@ struct DecodedStatusRow {
     std::unique_ptr<Ubiquitty::Rendering::StatusRowStorage> cells;
 };
 
+// GCC cannot substitute this braced array allocation in a function template.
+// Inlining keeps the allocation in the decoder's profiled control flow.
+[[gnu::always_inline]] inline void allocatePaletteStack(std::unique_ptr<Terminal::PaletteStack>& stack)
+{
+    stack.reset(new (std::nothrow) Terminal::PaletteStack {});
+}
+
 // Decodes one state block into a scratch terminal and checks it against the
 // geometry it lands in. Only the members the block names are written; the
 // rest of the scratch terminal is whatever it held.
@@ -1396,7 +1403,7 @@ std::expected<void, ApplyOutcome> decodeStateBlockWithNames(StateBlock block, st
             if (plan)
                 plan->paletteStackBytes = sizeof(Terminal::PaletteStack);
             else {
-                scratch.savedPalettes.reset(new (std::nothrow) Terminal::PaletteStack());
+                allocatePaletteStack(scratch.savedPalettes);
                 if (!scratch.savedPalettes)
                     return std::unexpected(ApplyOutcome::AllocationRefused);
             }
