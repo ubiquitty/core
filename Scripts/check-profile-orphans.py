@@ -135,6 +135,7 @@ STRINGS_AND_COMMENTS = re.compile(r'//.*|/\*.*?\*/|"(?:[^"\\]|\\.)*"|\'(?:[^\'\\
 # (`class UBIQUITTY_NONCOPYABLE GlyphSlotCache {`), so the name is the LAST
 # identifier before the brace rather than the first after the keyword.
 AGGREGATE = re.compile(r'^\s*(?:class|struct)\s+(?:[A-Z_][A-Z0-9_]*\s+)*([A-Za-z_]\w*)\s*(?:final\s*)?[:{]')
+ALIGNMENT_SPECIFIER = re.compile(r'\balignas\s*\(')
 
 SOURCE_SUFFIXES = (".h", ".hpp", ".cpp", ".mm", ".m")
 IDENTIFIER = re.compile(r"\b[A-Za-z_]\w*\b")
@@ -278,6 +279,24 @@ def source_files(roots):
     return collected
 
 
+def aggregate_declaration(line):
+    """Matches an aggregate after removing balanced alignment specifiers.
+
+    - Parameters:
+      - line: A source line with comments and literals stripped.
+    - Returns: The aggregate match, or None for an incomplete specifier.
+    """
+    while match := ALIGNMENT_SPECIFIER.search(line):
+        depth, end = 1, match.end()
+        while end < len(line) and depth:
+            depth += (line[end] == "(") - (line[end] == ")")
+            end += 1
+        if depth:
+            return None
+        line = line[:match.start()] + " " + line[end:]
+    return AGGREGATE.match(line)
+
+
 def namespace_paths(root):
     """Every namespace and class path the tree declares, as `A::B::C` strings.
 
@@ -305,7 +324,7 @@ def namespace_paths(root):
                     paths.add("::".join(n for _, group in stack for n in group))
                     depth += bare.count("{") - bare.count("}")
                     continue
-                aggregate = AGGREGATE.match(line)
+                aggregate = aggregate_declaration(bare)
                 if aggregate:
                     prefix = [n for _, group in stack for n in group]
                     paths.add("::".join(prefix + [aggregate.group(1)]))
@@ -478,7 +497,7 @@ def scope_identifiers(root):
                     files["::".join(n for _, group in stack for n in group)].add(path)
                     depth += bare.count("{") - bare.count("}")
                     continue
-                aggregate = AGGREGATE.match(line)
+                aggregate = aggregate_declaration(bare)
                 if aggregate:
                     prefix = [n for _, group in stack for n in group]
                     files["::".join(prefix + [aggregate.group(1)])].add(path)
@@ -1002,6 +1021,12 @@ def selfTest():
                          "struct Lone : Base {\n"
                          "    int field;\n"
                          "};\n"
+                         "struct UBIQUITTY_ESCAPABLE alignas(16) Vec4 {\n"
+                         "    float value;\n"
+                         "};\n"
+                         "struct alignas(alignof(float)) NestedAlignment {\n"
+                         "    int nestedValue;\n"
+                         "};\n"
                          "} // namespace Ubiquitty\n")
         declared = namespace_paths(scratch)
         for path in ("Ubiquitty", "Ubiquitty::LineStore", "Ubiquitty::LineStore::BlockDirectory", "Ubiquitty::Lone"):
@@ -1009,6 +1034,19 @@ def selfTest():
                 failures.append(f"{path} is declared by the nested-aggregate source and was not recorded")
         if "Ubiquitty::Lone::BlockDirectory" in declared or "Ubiquitty::BlockDirectory" in declared:
             failures.append("a nested aggregate was recorded outside the class that encloses it")
+        for name, member in (("Vec4", "value"), ("NestedAlignment", "nestedValue")):
+            scope = "Ubiquitty::" + name
+            if scope not in declared or member not in scope_identifiers(scratch).get(scope, set()):
+                failures.append(f"an aligned type lost its scope or member: {scope}")
+        moved = os.path.join(scratch, "moved")
+        os.makedirs(os.path.join(moved, "Source"))
+        with open(os.path.join(moved, "Source", "Aligned.h"), "w", encoding="utf-8") as renamed:
+            renamed.write("namespace Ubiquitty {\n"
+                          "struct alignas(alignof(float)) MovedVec4 { int value; };\n"
+                          "} // namespace Ubiquitty\n")
+        moved_paths = namespace_paths(moved)
+        if "Ubiquitty::Vec4" in moved_paths or "Ubiquitty::MovedVec4" not in moved_paths:
+            failures.append("a renamed aligned type retained its old profile scope")
 
         # Exercise the verdict, including both failure paths, when the full
         # demangler echoes a compiler-generated name it cannot read.
