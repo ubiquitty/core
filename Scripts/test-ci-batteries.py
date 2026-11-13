@@ -2864,6 +2864,7 @@ class ReachTests(unittest.TestCase):
     def test_path_filters_preserve_platform_and_golden_reach(self):
         cases = (
             (["Docs/architecture.md", "README.md", "Scripts/check-bundled-fonts.py"], (False, False, False, False, False)),
+            (["README.rst"], (False, False, False, False, False)),
             (["Source/Core/CellGrid.cpp"], (True, True, True, False, True)),
             (["Source/Platform/macOS/UBTerminalView.mm"], (True, False, True, False, True)),
             (["Source/Platform/macOS/UBRuntimeBridge.h"], (True, True, True, False, True)),
@@ -3026,7 +3027,7 @@ class ReachTests(unittest.TestCase):
         self.assertTrue(reach.tip_verdict(jobs))
         self.assertFalse(reach.is_full_checkpoint(jobs))
 
-    def test_no_checkpoint_never_falls_back_to_before_sha(self):
+    def test_no_checkpoint_never_uses_a_code_push_parent_as_a_checkpoint(self):
         class EmptyGitHub:
             def __init__(self, environment):
                 pass
@@ -3035,9 +3036,97 @@ class ReachTests(unittest.TestCase):
             def jobs(self, run):
                 raise AssertionError("no run exists")
         environment = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_NAME": "main", "GITHUB_SHA": "current", "BEFORE_SHA": "docs-parent"}
-        result, reason = reach.decide(environment, EmptyGitHub, git=lambda *args: self.fail("unsafe parent diff"))
+        calls = []
+        def git(*args):
+            calls.append(args)
+            return "Source/Core/CellGrid.cpp\0" if args[0] == "diff" else ""
+        result, reason = reach.decide(environment, EmptyGitHub, git=git)
         self.assertEqual(result, reach.all_reach())
         self.assertIn("no fully successful checkpoint", reason)
+        self.assertFalse(any(call[0] == "diff" and "docs-parent" in call and "--no-renames" not in call
+                             for call in calls))
+
+    def test_documentation_push_skips_batteries_without_history_or_api(self):
+        for paths in (["README.md"], ["Docs/guide.md", "Docs/images/example.svg"],
+                      ["Docs/guide.rst", "Tests/README.md"]):
+            with self.subTest(paths=paths):
+                calls = []
+                def git(*args):
+                    calls.append(args)
+                    return "\0".join(paths) + "\0" if args[0] == "diff" else ""
+                result, reason = reach.decide(
+                    {"GITHUB_EVENT_NAME": "push", "BEFORE_SHA": "whole-push-base"},
+                    lambda *args: self.fail("documentation needs no history API"), git)
+                self.assertEqual({key: result[key] for key in reach.OUTPUTS}, reach.all_reach(False))
+                self.assertTrue(result["documentation"])
+                self.assertNotIn("preflight", result)
+                self.assertIn("documentation-only push", reason)
+                self.assertEqual(calls[-1], ("diff", "--no-renames", "--name-only", "-z", "whole-push-base", "HEAD"))
+
+    def test_documentation_shortcut_rejects_code_pins_gates_and_unknown_ranges(self):
+        class NoHistory:
+            def __init__(self, environment):
+                pass
+            def runs(self, branch):
+                return []
+            def jobs(self, run):
+                raise AssertionError("no run exists")
+        environment = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_NAME": "main",
+                       "GITHUB_SHA": "current", "BEFORE_SHA": "whole-push-base"}
+        for paths in ([], ["README.md", "Source/Core/CellGrid.cpp"],
+                      ["README.md", "Libraries/ubiquitty-core"],
+                      ["README.md", "Libraries/ubiquitty-kit"],
+                      ["README.md", "Scripts/check-docs.py"], ["Docs/example.py"],
+                      ["Docs/budget.json"], [".github/workflows/ci.yml"],
+                      ["CMakeLists.txt"], ["Source/old.cpp", "README.md"]):
+            with self.subTest(paths=paths):
+                result, _ = reach.decide(environment, NoHistory,
+                                        git=lambda *args: "\0".join(paths) + ("\0" if paths else ""))
+                self.assertEqual(result, reach.all_reach())
+        for before in ("", "0" * 40):
+            result, _ = reach.decide(dict(environment, BEFORE_SHA=before), NoHistory,
+                                    git=lambda *args: self.fail("no usable push range"))
+            self.assertEqual(result, reach.all_reach())
+        result, _ = reach.decide(environment, NoHistory,
+                                git=lambda *args: (_ for _ in ()).throw(subprocess.CalledProcessError(1, "git")))
+        self.assertEqual(result, reach.all_reach())
+
+    def test_documentation_push_uses_the_entire_real_git_range_and_both_rename_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*args):
+                return reach.git_output(*args, cwd=root)
+            git("init", "-q")
+            git("config", "user.name", "Fixture")
+            git("config", "user.email", "fixture@example.invalid")
+            (root / "README.md").write_text("guide\n")
+            (root / "source.cpp").write_text("int value = 1;\n")
+            git("add", "."); git("commit", "-qm", "base")
+            before = git("rev-parse", "HEAD").strip()
+            (root / "README.md").write_text("updated guide\n")
+            git("add", "."); git("commit", "-qm", "docs")
+            result = reach.documentation_push({"GITHUB_EVENT_NAME": "push", "BEFORE_SHA": before}, git)
+            self.assertTrue(result)
+            (root / "source.cpp").rename(root / "renamed.md")
+            git("add", "-A"); git("commit", "-qm", "rename")
+            self.assertIsNone(reach.documentation_push(
+                {"GITHUB_EVENT_NAME": "push", "BEFORE_SHA": before}, git))
+            (root / "README.md").write_text("another docs-only last commit\n")
+            git("add", "."); git("commit", "-qm", "more docs")
+            self.assertIsNone(reach.documentation_push(
+                {"GITHUB_EVENT_NAME": "push", "BEFORE_SHA": before}, git))
+
+    def test_documentation_success_does_not_claim_platform_coverage_or_stop_a_sweep(self):
+        jobs = full_jobs()
+        jobs[0]["steps"] = [{"name": reach.DOCUMENTATION_MARKER, "conclusion": "success"}]
+        for job in jobs[1:]:
+            job.update(conclusion="skipped", steps=[])
+        self.assertFalse(reach.is_full_checkpoint(jobs))
+        self.assertEqual(reach.tip_verdict(jobs), "")
+        run = {"id": 1, "head_sha": "current", "conclusion": "success"}
+        self.assertEqual(reach.select_history([run], "current", lambda run: jobs, sweep=True), ("", ""))
+        jobs[0]["conclusion"] = "failure"
+        self.assertEqual(reach.tip_verdict(jobs), reach.FAILED)
 
     def test_api_failure_is_conservative_and_visible(self):
         def unavailable(environment):
@@ -3351,6 +3440,13 @@ class EveryWorkflowTests(unittest.TestCase):
 
     def jobs(self):
         return workflow_jobs(Path(WORKFLOW).read_text())
+
+    @unittest.skipUnless(WORKFLOW, "pass --workflow to validate the live workflow contract")
+    def test_documentation_shortcut_receives_the_push_range_and_marks_partial_coverage(self):
+        preflight = self.jobs()["preflight"]
+        self.assertIn("BEFORE_SHA: ${{ github.event.before }}", preflight)
+        self.assertIn(f"name: {reach.DOCUMENTATION_MARKER}\n"
+                      "        if: steps.reach.outputs.documentation == 'true'\n", preflight)
 
     @unittest.skipUnless(WORKFLOW, "pass --workflow to validate the live workflow contract")
     def test_the_one_required_check_needs_every_other_job(self):

@@ -7,6 +7,9 @@
 A failed or cancelled battery did not execute all of its stages. It cannot
 become the diff baseline for a later push. An absent baseline or API failure
 runs the full batteries; the immediate parent is not a safe substitute.
+Documentation-only pushes run preflight without platform batteries, using the
+whole push range independently of checkpoint history. They do not establish a
+platform-coverage checkpoint or stop a later scheduled sweep.
 Scheduled sweeps stand down for a completed verdict on this exact tip,
 including a known failure, without calling that failure complete coverage.
 A battery runs as one job of its own name or as a matrix of jobs named
@@ -34,7 +37,9 @@ OUTPUTS = ("builds", "linux", "apple", "cmake", "code")
 JOBS = ("CI preflight", "Linux battery", "Apple battery")
 FULL_MARKERS = {"Linux battery": "Full Linux battery completed",
                 "Apple battery": "Full Apple battery completed"}
-SKIPPABLE = re.compile(r"^Docs/|\.md$|^Scripts/check-[a-z0-9-]+\.(py|sh)$|^\.github/ISSUE_TEMPLATE/|^Tests/coverage/covering-tests\.tsv$")
+DOCUMENTATION_MARKER = "Documentation-only change; platform coverage deferred"
+DOCUMENTATION = re.compile(r"\.(md|rst)$|^Docs/.*\.(png|svg|jpg|jpeg|gif|webp|avif)$")
+SKIPPABLE = re.compile(r"^Docs/|\.(md|rst)$|^Scripts/check-[a-z0-9-]+\.(py|sh)$|^\.github/ISSUE_TEMPLATE/|^Tests/coverage/covering-tests\.tsv$")
 APPLE_ONLY = re.compile(r"^Source/Platform/(macOS|iOS)/.*\.(mm|m|swift|metal|xib|storyboard|strings|entitlements|sdef|plist\.in)$|^Source/Platform/(macOS|iOS)/.*\.xcassets/|^Source/UbiquittyRenderKit/|^Source/UbiquittyKit/Swift/|^Tests/Snapshots/(known-failing|exempt)-(macos|swift|ios)\.txt$|^Tests/Snapshots/golden/native/coretext/")
 LINUX_ONLY = re.compile(r"^Source/Platform/(Linux|Wscons|Web|Wasm)/|^Tests/Web/|^Tests/Linux/|^Tests/Platform/test_linux_|^Tests/Snapshots/(known-failing|exempt)-(linux|web)\.txt$|^Tests/Snapshots/golden/native/freetype/")
 CMAKE = re.compile(r"(^|/)CMakeLists\.txt$|\.cmake$|^CMake/|^Scripts/generate-xcode-workspace\.sh$|^Ubiquitty(IOS)?\.xcworkspace/")
@@ -116,6 +121,9 @@ def tip_verdict(jobs):
         return FAILED
     if any(job.get("conclusion") not in ("success", "skipped") for job in jobs):
         return ""
+    if any(step.get("name") == DOCUMENTATION_MARKER and step.get("conclusion") == "success"
+           for job in indexed.get("CI preflight", []) for step in job.get("steps", [])):
+        return ""
     if (concluded(indexed, "CI preflight", ("success",))
             and all(concluded(indexed, name, ("success", "skipped")) for name in FULL_MARKERS)):
         return PASSED
@@ -166,10 +174,34 @@ def git_output(*arguments, cwd=None, environment=None):
                                    text=True, stderr=subprocess.DEVNULL)
 
 
+def documentation_push(environment, git):
+    """Returns only proven documentation paths across the whole push.
+
+    This range classifies documentation, never code coverage. Disabling rename
+    detection keeps a source file renamed to Markdown from hiding its deletion.
+    """
+    before = environment.get("BEFORE_SHA", "")
+    if environment.get("GITHUB_EVENT_NAME") != "push" or not before or not before.strip("0"):
+        return None
+    try:
+        git("cat-file", "-e", before + "^{commit}")
+        paths = git("diff", "--no-renames", "--name-only", "-z", before, "HEAD").split("\0")
+    except subprocess.CalledProcessError:
+        return None
+    paths = [path for path in paths if path]
+    if paths and all(DOCUMENTATION.search(path) for path in paths):
+        return paths
+    return None
+
+
 def decide(environment, github_factory=GitHub, git=git_output):
     event = environment.get("GITHUB_EVENT_NAME", "workflow_dispatch")
     if event == "workflow_dispatch":
         return all_reach(), "requested by hand: full batteries"
+    documentation = documentation_push(environment, git)
+    if documentation:
+        return ({**all_reach(False), "documentation": True},
+                f"documentation-only push ({len(documentation)} changed paths): preflight only")
     base = environment.get("BASE_SHA", "")
     if event in ("push", "schedule"):
         try:
@@ -212,6 +244,7 @@ def main(argv=()):
     if "history unavailable" in reason:
         print("::warning title=CI reach::Could not establish the prior verdict; running full batteries")
     rendered = "".join(f"{key}={str(reach[key]).lower()}\n" for key in OUTPUTS)
+    rendered += f"documentation={str(reach.get('documentation', False)).lower()}\n"
     rendered += f"preflight={str(reach.get('preflight', True)).lower()}\n"
     rendered += f"standing={reach.get('standing', '')}\n"
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
