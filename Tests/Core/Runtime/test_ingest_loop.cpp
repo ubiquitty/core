@@ -1785,12 +1785,23 @@ TEST(testAResizingViewGetsAFrameAtEachGeometry)
         SyncFrameCaptureGeometry geometry = captureGeometry();
         geometry.viewportSizeInPixels = { static_cast<float>(columns * 8), static_cast<float>(rows * 16) };
         session.setSyncFrameCaptureGeometry(geometry);
-        FrameSupply supply;
-        Ubiquitty::Rendering::FrameCapture* frame = session.takeFrame({ .nowTicks = Ubiquitty::PAL::monotonicTicks(), .isResizing = true }, supply);
-        if (supply.route == FrameRoute::Captured && frame && frame->rows() == rows && frame->columns() == columns)
+        // A model already owned by the ingest loop serves the nonblocking
+        // ask on that turn. Observe its answer within this display interval,
+        // rather than treating a legitimate AwaitingCapture as a lost frame.
+        const auto nextDisplay = std::chrono::steady_clock::now() + std::chrono::microseconds(16'667);
+        bool didCapture = false;
+        do {
+            FrameSupply supply;
+            auto* frame = session.takeFrame({ .nowTicks = Ubiquitty::PAL::monotonicTicks(), .isResizing = true }, supply);
+            didCapture = supply.route == FrameRoute::Captured && frame && frame->rows() == rows && frame->columns() == columns;
+            releaseFrameCapture(frame);
+            if (didCapture)
+                break;
+            std::this_thread::yield();
+        } while (std::chrono::steady_clock::now() < nextDisplay);
+        if (didCapture)
             ++served;
-        releaseFrameCapture(frame);
-        std::this_thread::sleep_for(std::chrono::microseconds(16'667));
+        std::this_thread::sleep_until(nextDisplay);
     }
     CHECK_MSG(served == 30, std::format("{} of 30 resize steps presented their own geometry", served).c_str());
 }
