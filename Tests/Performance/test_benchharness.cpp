@@ -133,7 +133,8 @@ TEST(repeat_once_opts_a_lane_out_of_repeating)
 
 TEST(jsonPreservesSubMicrosecondLatency)
 {
-    const std::unique_ptr<FILE, decltype(&std::fclose)> output(std::tmpfile(), &std::fclose);
+    const auto closeFile = [](FILE* file) { std::fclose(file); };
+    const std::unique_ptr<FILE, decltype(closeFile)> output(std::tmpfile(), closeFile);
     REQUIRE(output);
     Ubiquitty::PAL::UnixFileDescriptor previous(::dup(STDOUT_FILENO));
     REQUIRE(previous);
