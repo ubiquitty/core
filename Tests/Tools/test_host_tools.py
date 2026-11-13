@@ -50,6 +50,35 @@ class Completed:
 
 
 class BuildPrerequisiteTests(unittest.TestCase):
+    def testNativePTYCasesKeepSerialDeadlinesWithoutShellDuplication(self):
+        if shutil.which("cmake") is None or shutil.which("ninja") is None or shutil.which("ctest") is None:
+            self.skipTest("cmake, ninja and ctest are required")
+        with tempfile.TemporaryDirectory() as directory:
+            build = Path(directory) / "build"
+            checked = subprocess.run(
+                ["cmake", "-S", str(ROOT), "-B", str(build), "-G", "Ninja",
+                 "-DUBIQUITTY_FRONTEND=Core", "-DUBIQUITTY_BUILD_TESTS=ON",
+                 "-DUBIQUITTY_QUIC=OFF", "-DCMAKE_BUILD_TYPE=Debug"],
+                text=True, capture_output=True, timeout=300)
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+            executable = build / "Tests/test_pty"
+            executable.write_text("#!/bin/sh\nexit 0\n")
+            executable.chmod(0o755)
+            listing = json.loads(subprocess.check_output(
+                ["ctest", "--test-dir", str(build), "--show-only=json-v1"], text=True))
+            entries = {entry["name"]: entry for entry in listing["tests"]}
+            self.assertFalse("test_pty" in entries, "PTY cases must be scheduled as bounded shards")
+            self.assertFalse("shell_test_pty" in entries, "The PTY shell stanza duplicates the native target")
+            shards = {name: entry for name, entry in entries.items() if name.startswith("test_pty.")}
+            self.assertEqual(set(shards), {f"test_pty.{index}" for index in range(4)})
+            for index in range(4):
+                entry = shards[f"test_pty.{index}"]
+                self.assertEqual(entry["command"][-2:], ["--shard", f"{index}/4"])
+                properties = {item["name"]: item["value"] for item in entry["properties"]}
+                self.assertEqual(properties["TIMEOUT"], 60)
+                self.assertTrue(properties["RUN_SERIAL"])
+                self.assertIn("timing", properties["RESOURCE_LOCK"])
+
     def test_quic_requires_go_before_fetching_sources(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -98,6 +98,7 @@ set(test_preferences_backend_EXTRA_SOURCES    Source/Platform/POSIX/Preferences.
                                               Source/Platform/POSIX/SystemPAL.cpp)
 set(test_pty_EXTRA_SOURCES             Source/Platform/POSIX/PTYStream.cpp
                                        Source/Platform/POSIX/PTYFacts.cpp)
+set(test_pty_SHARDS 4)
 set(test_appruntime_EXTRA_SOURCES      Source/Core/App/AppRuntime.cpp)
 set(test_welcome_screen_EXTRA_SOURCES   Source/Core/App/WelcomeScreen.cpp)
 set(test_shell_integration_install_EXTRA_SOURCES Source/Core/App/ShellIntegrationInstall.cpp)
@@ -609,16 +610,15 @@ ubiquitty_set_test_entry_properties(test_presentation_launcher)
 # title edge's settle; test_pty waits on wall-clock deadlines while it starts
 # shells. Each runs alone for the reason above: beside the rest of the suite on
 # a three-core runner a one-millisecond sleep took about six and a half.
-math(EXPR _ubq_ingest_last_shard "${test_ingest_loop_SHARDS} - 1")
-foreach(_ubq_ingest_shard RANGE ${_ubq_ingest_last_shard})
-    if(TEST test_ingest_loop.${_ubq_ingest_shard})
-        set_tests_properties(test_ingest_loop.${_ubq_ingest_shard} PROPERTIES
-            RUN_SERIAL TRUE RESOURCE_LOCK timing)
-    endif()
+foreach(_ubq_serial_test IN ITEMS test_ingest_loop test_pty)
+    math(EXPR _ubq_serial_last_shard "${${_ubq_serial_test}_SHARDS} - 1")
+    foreach(_ubq_serial_shard RANGE ${_ubq_serial_last_shard})
+        if(TEST ${_ubq_serial_test}.${_ubq_serial_shard})
+            set_tests_properties(${_ubq_serial_test}.${_ubq_serial_shard} PROPERTIES
+                RUN_SERIAL TRUE RESOURCE_LOCK timing)
+        endif()
+    endforeach()
 endforeach()
-if(TEST test_pty)
-    set_tests_properties(test_pty PROPERTIES RUN_SERIAL TRUE RESOURCE_LOCK timing)
-endif()
 
 # ----------------------------------------------------------------------
 # The Rule-10 layer boundary, tried by the compiler.
@@ -663,6 +663,12 @@ ubq_add_layer_probe(test_layer_boundary probe_behaviour_from_model.cpp)
 # ----------------------------------------------------------------------
 function(ubq_schedule_run_tests_stanzas driver)
     ubiquitty_read_shell_stanzas(_stanzas DRIVER ${driver})
+    # This stanza runs the same CMake target with no additional setup or
+    # assertions. The native shards cover every registered PTY case.
+    get_property(_ubq_native_tests DIRECTORY PROPERTY UBIQUITTY_HOST_TESTS)
+    if("test_pty" IN_LIST _ubq_native_tests)
+        list(REMOVE_ITEM _stanzas test_pty)
+    endif()
     if(NOT UBIQUITTY_CTEST_SHELL_REMAINDER)
         ubiquitty_schedule_shell_stanzas(DRIVER ${driver} STANZAS ${_stanzas})
         return()
