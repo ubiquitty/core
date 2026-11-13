@@ -287,6 +287,13 @@ set(test_flood_start_EXTRA_SOURCES ${test_ingest_loop_EXTRA_SOURCES})
 set(test_frame_cadence_EXTRA_SOURCES ${test_ingest_loop_EXTRA_SOURCES} Tests/Platform/FrameCadence.cpp)
 # Reads the model lock's acquisition count around each frame decision.
 set(test_frame_cadence_EXTRA_DEFINES UBIQUITTY_ENABLE_TEST_HOOKS=1)
+if(APPLE)
+    # A service's inherited utility clamp still coalesces timed wakes after a
+    # thread requests interactive QoS. The display probe needs a UI job's
+    # process policy as well; its timing assertions remain the same.
+    set(test_frame_cadence_LAUNCHER ${Python3_EXECUTABLE}
+        ${UBIQUITTY_CORE_SOURCE_DIR}/Scripts/run-presentation-test.py)
+endif()
 # The settings fan-out runs against a started session, and a session is the
 # runtime whether or not the case opens a PTY: the same PAL set has to link.
 set(test_apply_terminal_preferences_EXTRA_SOURCES
@@ -586,6 +593,10 @@ endif()
 if(TEST test_frame_cadence)
     set_tests_properties(test_frame_cadence PROPERTIES RUN_SERIAL TRUE RESOURCE_LOCK timing)
 endif()
+
+add_test(NAME test_presentation_launcher
+    COMMAND ${Python3_EXECUTABLE} ${UBIQUITTY_CORE_SOURCE_DIR}/Scripts/test-presentation-launcher.py)
+ubiquitty_set_test_entry_properties(test_presentation_launcher)
 
 # test_ingest_loop paces writers a millisecond or so apart and holds the loop to
 # a one-millisecond quiet interval, an eight-millisecond frame interval and the
