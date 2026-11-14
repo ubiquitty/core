@@ -134,6 +134,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -1053,6 +1054,14 @@ bool Daemon::start(const char* socketPath, const char* processIDFilePath, const 
         sa.sa_handler = onIdleStopSignal;
         ::sigaction(SIGUSR2, &sa, nullptr);
     }
+    // An older launcher or a worker thread can pass a blocked mask through
+    // exec. The daemon owns these signals once their handlers are installed.
+    sigset_t controlSignals;
+    sigemptyset(&controlSignals);
+    for (const int signal : { SIGHUP, SIGUSR1, SIGTERM, SIGINT, SIGUSR2 })
+        sigaddset(&controlSignals, signal);
+    if (::pthread_sigmask(SIG_UNBLOCK, &controlSignals, nullptr) != 0)
+        return false;
 
     m_bindFailure = bindSocket(socketPath);
     if (m_bindFailure != BindFailure::None)

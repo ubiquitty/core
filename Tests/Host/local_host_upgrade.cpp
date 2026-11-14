@@ -82,6 +82,7 @@
 #include <fstream>
 #include <iterator>
 #include <optional>
+#include <pthread.h>
 #include <string>
 #include <sys/file.h>
 #include <sys/socket.h>
@@ -1064,6 +1065,42 @@ void admitsATeamSignedSuccessorWhereverItLies(const std::string& built)
 #endif
 }
 
+/// A host enables its control signals even when its launcher blocked them.
+void enablesControlSignalsInheritedFromItsLauncher(const std::string& built)
+{
+    Machine machine;
+    if (!machine.create("lhs-signals")) {
+        CHECK_MSG(false, "a private machine");
+        return;
+    }
+    machine.adopt();
+    CHECK_MSG(Install::copy(built, machine.bundledHost), "the bundled host is available");
+    sigset_t blocked;
+    sigemptyset(&blocked);
+    for (const int signal : { SIGTERM, SIGINT, SIGHUP, SIGUSR1, SIGUSR2 })
+        sigaddset(&blocked, signal);
+    sigset_t previous;
+    const int changed = ::pthread_sigmask(SIG_BLOCK, &blocked, &previous);
+    CHECK_MSG(changed == 0, "the launcher blocks control signals");
+    if (changed) {
+        machine.finish();
+        return;
+    }
+    // Raw fork/exec preserves the launcher's mask, including when the
+    // launcher is an older release with no child-mask policy.
+    const pid_t host = startDaemon(machine.holderAt(machine.bundledHost));
+    CHECK_MSG(::pthread_sigmask(SIG_SETMASK, &previous, nullptr) == 0, "the test restores its own mask");
+    const std::string socket = machine.home + "/" + Ubiquitty::Host::socketLeafForBinary(machine.bundledHost.c_str());
+    const bool ready = host > 0 && Ubiquitty::HostTest::waitForDaemonReady(socket);
+    CHECK_MSG(ready, "the host becomes ready with inherited blocked signals");
+    if (ready) {
+        CHECK_MSG(::kill(host, SIGTERM) == 0, "the host receives a termination request");
+        CHECK_MSG(waitForExit(host, 5000) == std::optional { 0 }, "the host enables and handles its termination signal");
+    }
+    endChildren();
+    machine.finish();
+}
+
 /// 7: an idle stop asked of a host from the moment its socket answers, and
 /// while a client is still greeting.
 void answersAnIdleStopOnlyWhenItCan(const std::string& built)
@@ -1255,6 +1292,11 @@ int main(int argc, char** argv)
 {
     if (argc == 3 && std::string_view(argv[1]) == "--greet-control")
         return greetAsTheApp(argv[2]);
+    if (argc == 3 && std::string_view(argv[1]) == "--check-inherited-signals") {
+        enablesControlSignalsInheritedFromItsLauncher(argv[2]);
+        endChildren();
+        return failures == 0 ? 0 : 1;
+    }
     if (argc != 2 && argc != 4) {
         std::fprintf(stderr, "usage: %s <ubiquitty-host> [<older ubiquitty-host> <older ubq>]\n", argv[0]);
         return 2;
@@ -1265,6 +1307,7 @@ int main(int argc, char** argv)
     const std::string self = std::filesystem::canonical(argv[0], selfError).string();
     upgradesAHostInstalledInTheControlDirectory(built, argc == 4 ? argv[2] : "", argc == 4 ? argv[3] : "");
     if (argc == 2) {
+        enablesControlSignalsInheritedFromItsLauncher(built);
         remoteUpdateKeepsLiveSessions(built, RemoteHolderPlacement::Installed);
         remoteUpdateKeepsLiveSessions(built, RemoteHolderPlacement::Elsewhere);
         upgradesAHostStartedFromAnEarlierBundle(built, InstallWay::Linked);

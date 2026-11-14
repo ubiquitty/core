@@ -58,9 +58,9 @@ int checkChildSignalMask(const char* mode)
         return 2;
     for (const int signal : { SIGTERM, SIGINT, SIGHUP, SIGUSR1, SIGUSR2 })
         CHECK_EQ(sigismember(&mask, signal), 0);
-    if (std::strcmp(mode, "--print-signal-mask") == 0 && !::UbiquittyTest::failures)
+    if (std::strcmp(mode, "--print-signal-mask") == 0 && !failures)
         std::puts("unblocked");
-    return ::UbiquittyTest::failures ? 1 : 0;
+    return failures ? 1 : 0;
 }
 
 } // namespace
