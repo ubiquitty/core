@@ -318,17 +318,14 @@ fi
 # sharing the path means whichever ran last decides what build/host/ubiquitty-host
 # is, and nothing at the point of use announces which one you got. A -O0 daemon
 # is indistinguishable from a slow one across the wire, so the cost surfaces as
-# frame rate rather than as a wrong binary. build/host-noquic and build/host-quic
-# separate the same cache over a different configure flag.
-#
-# Stanzas assign HOST_BUILD from this rather than using it directly, because the
-# variant stanzas point HOST_BUILD at their own directory and a later stanza
-# reading a leaked value would drive the wrong daemon.
+# frame rate rather than as a wrong binary. QUIC is always enabled, so both
+# binary consumers and object-linking consumers share this one Debug tree.
 #
 # UBQ_HOST_TEST_BUILD names another tree, for a driver that built the daemon
 # itself: Scripts/run-sanitized-tests.sh points the stanzas that run only the
 # binary at an instrumented one this way, with UBQ_HOST_PREBUILT=1.
-HOST_TEST_BUILD="${UBQ_HOST_TEST_BUILD:-$UBQ_BUILD_ROOT/host-tests}"
+HOST_TEST_BUILD="$UBQ_BUILD_ROOT/host-tests"
+HOST_TEST_BUILD="${UBQ_HOST_TEST_BUILD:-$HOST_TEST_BUILD}"
 
 # Remaining standalone compiles use the same compiler launcher as CMake.
 #
@@ -342,8 +339,8 @@ HOST_TEST_BUILD="${UBQ_HOST_TEST_BUILD:-$UBQ_BUILD_ROOT/host-tests}"
 # suite would ask for 136 concurrent clang processes and the machine stops
 # responding. Concurrent builds on a shared machine multiply it again.
 #
-# One generator for every directory this script configures — host-tests, host-quic,
-# host-noquic — and the same one Scripts/build-host.sh picks for build/host. A
+# One generator for every directory this script configures, including host-tests,
+# and the same one Scripts/build-host.sh picks for build/host. A
 # CMake cache records the generator that created it and refuses a different one
 # with "generator Ninja does not match Unix Makefiles", which is a configure
 # failure rather than a regenerate; ubq_reset_on_generator_change wipes the
@@ -551,8 +548,8 @@ QUIC_PREFIX="${UBIQUITTY_QUIC_PREFIX:-$UBQ_BUILD_ROOT/quic-deps}"
 # Every nested configure in this script funnels through here, so the coverage
 # knob reaches the ~31 `cmake -B` sites without each having to remember it —
 # including a stanza not yet written. The knob is passed explicitly in
-# both directions because the Host build roots (build/host-tests, build/host-quic) are
-# shared caches outside UBQ_OUT: a coverage run flips them ON, and a normal
+# both directions because the Host build is a shared cache outside UBQ_OUT:
+# a coverage run flips it ON, and a normal
 # run that stayed silent would inherit instrumented binaries from the cache
 # and never say so. `cmake --build` and `cmake -E` take no -D and pass
 # through untouched.
@@ -588,12 +585,8 @@ ubq_prebuilt_cmake() {
         previous="$argument"
     done
     case "$tree" in
-        "$UBQ_BUILD_ROOT/host-noquic")
-            enabled="${UBQ_HOST_NOQUIC_PREBUILT:-0}"
-            expected_quic=ON
-            ;;
-        "$UBQ_BUILD_ROOT/host-quic")
-            enabled="${UBQ_HOST_QUIC_PREBUILT:-0}"
+        "$HOST_TEST_BUILD")
+            enabled="${UBQ_HOST_PREBUILT:-0}"
             expected_quic=ON
             ;;
         *) return 1 ;;
@@ -1306,7 +1299,7 @@ ubq_host_binary() { # <build log>
         fi
     fi
     cmake -B "$HOST_TEST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" \
-            -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug >"$log" 2>&1 \
+            -DUBIQUITTY_FRONTEND=Host -DUBIQUITTY_QUIC=ON -DCMAKE_BUILD_TYPE=Debug >"$log" 2>&1 \
         && cmake --build "$HOST_TEST_BUILD" -j"$BUILD_JOBS" >>"$log" 2>&1 || return 1
     [ -f /.dockerenv ] && ubq_daemon_source_fingerprint >"$HOST_TEST_BUILD/.daemon-source-sha256"
     printf '%s' "$binary"
@@ -2093,33 +2086,6 @@ if wanted quic_test_fixture && quic_deps_present; then
         build_broken "QUIC test fixture build failed"
     fi
     RAN=$((RAN + 1))
-fi
-
-# These fixture stanzas build the two shared Host object trees once. CTest sets
-# the matching PREBUILT promise only for consumers ordered after the fixture;
-# a directly filtered stanza keeps its on-demand configure/build behavior.
-if wanted host_noquic_fixture; then
-    echo "=== host_noquic_fixture ==="
-    RAN=$((RAN + 1))
-    host_noquic_build="$UBQ_BUILD_ROOT/host-noquic"
-    UBQ_HOST_NOQUIC_PREBUILT=0 cmake -B "$host_noquic_build" -S "$ROOT" -G "$UBQ_GENERATOR" \
-        -DUBIQUITTY_FRONTEND=Host -DUBIQUITTY_QUIC=ON -DCMAKE_BUILD_TYPE=Debug \
-        >"$OUT/host-noquic-fixture.log" 2>&1 \
-        && UBQ_HOST_NOQUIC_PREBUILT=0 cmake --build "$host_noquic_build" -j"$BUILD_JOBS" \
-            >>"$OUT/host-noquic-fixture.log" 2>&1 \
-        || build_broken "host_noquic_fixture build failed (see $OUT/host-noquic-fixture.log)"
-fi
-
-if wanted host_quic_fixture && quic_deps_present; then
-    echo "=== host_quic_fixture ==="
-    RAN=$((RAN + 1))
-    host_quic_build="$UBQ_BUILD_ROOT/host-quic"
-    UBQ_HOST_QUIC_PREBUILT=0 cmake -B "$host_quic_build" -S "$ROOT" -G "$UBQ_GENERATOR" \
-        -DUBIQUITTY_FRONTEND=Host -DUBIQUITTY_QUIC=ON -DCMAKE_BUILD_TYPE=Debug \
-        >"$OUT/host-quic-fixture.log" 2>&1 \
-        && UBQ_HOST_QUIC_PREBUILT=0 cmake --build "$host_quic_build" -j"$BUILD_JOBS" \
-            >>"$OUT/host-quic-fixture.log" 2>&1 \
-        || build_broken "host_quic_fixture build failed (see $OUT/host-quic-fixture.log)"
 fi
 
 # sanitizer_guard — the guard that refuses a clean run from an uninstrumented
@@ -3621,11 +3587,11 @@ fi
 # --quic-port N`, dial it with an ngtcp2 client, and speak Sync over the stream
 # — one Greet must yield a Granted Welcome and an applied checkpoint/update.
 # The production client reader links the same-tree Host Core objects. Needs a
-# QUIC-enabled daemon, so it cmake-builds one under build/host-quic first.
+# QUIC-enabled daemon, supplied by the shared Host build.
 if wanted quic_session_relay && quic_deps_present && command -v cmake >/dev/null 2>&1; then
     echo "=== quic_session_relay ==="
     RAN=$((RAN + 1))
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     QUIC_RELAY_LINK_INPUTS=("${HOST_LINK_ARCHIVES[@]}")
     [ "$(uname)" = "Linux" ] && QUIC_RELAY_LINK_INPUTS+=(-lutil)
@@ -3662,7 +3628,7 @@ fi
 if wanted quic_user_identity && quic_deps_present && command -v cmake >/dev/null 2>&1; then
     echo "=== quic_user_identity ==="
     RAN=$((RAN + 1))
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-useridentity-host-build.log" 2>&1 \
@@ -3692,7 +3658,7 @@ if wanted quic_client_relay && quic_deps_present && command -v cmake >/dev/null 
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-relay-daemon-build.log" 2>&1 \
@@ -3725,7 +3691,7 @@ if wanted quic_resume_proof && quic_deps_present && command -v cmake >/dev/null 
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-resume-proof-host-build.log" 2>&1 \
@@ -3755,7 +3721,7 @@ if wanted quic_backlog_close && quic_deps_present && command -v cmake >/dev/null
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-backlog-close-host-build.log" 2>&1 \
@@ -3788,7 +3754,7 @@ if wanted quic_client_migration && quic_deps_present && command -v cmake >/dev/n
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-client-migration-host-build.log" 2>&1 \
@@ -3822,7 +3788,7 @@ if wanted quic_workspace_isolation && quic_deps_present && command -v cmake >/de
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-workspace-isolation-host-build.log" 2>&1 \
@@ -4008,7 +3974,7 @@ if wanted remote_session_quic_resume && quic_deps_present && command -v cmake >/
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/remote-session-quic-resume-host-build.log" 2>&1 \
@@ -4046,7 +4012,7 @@ if wanted workspace_reference_restore && quic_deps_present && command -v cmake >
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/workspace-reference-restore-host-build.log" 2>&1 \
@@ -4084,7 +4050,7 @@ if wanted vanished_instance_reresolve && quic_deps_present && command -v cmake >
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/vanished-instance-reresolve-host-build.log" 2>&1 \
@@ -4118,7 +4084,7 @@ if wanted restore_renumbered_workspace && quic_deps_present && command -v cmake 
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/restore-renumbered-workspace-host-build.log" 2>&1 \
@@ -4153,7 +4119,7 @@ if wanted quic_retry_validation && quic_deps_present && command -v cmake >/dev/n
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-retry-host-build.log" 2>&1 \
@@ -4186,7 +4152,7 @@ if wanted quic_client_datagram_upward && quic_deps_present && command -v cmake >
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-upward-host-build.log" 2>&1 \
@@ -4217,7 +4183,7 @@ if wanted quic_echo_one_packet && quic_deps_present && command -v cmake >/dev/nu
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-echo-packet-host-build.log" 2>&1 \
@@ -4298,7 +4264,7 @@ if wanted quic_token_uid_local && quic_deps_present && command -v cmake >/dev/nu
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-uidlocal-host-build.log" 2>&1 \
@@ -4332,7 +4298,7 @@ if wanted quic_output_capacity && quic_deps_present && command -v cmake >/dev/nu
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-outputcap-host-build.log" 2>&1 \
@@ -4365,7 +4331,7 @@ if wanted quic_ack_release && quic_deps_present && command -v cmake >/dev/null 2
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-ackrelease-host-build.log" 2>&1 \
@@ -4396,7 +4362,7 @@ if wanted quic_flow_credit && quic_deps_present && command -v cmake >/dev/null 2
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-flowcredit-host-build.log" 2>&1 \
@@ -4427,7 +4393,7 @@ if wanted quic_lossy_transfer && quic_deps_present && command -v cmake >/dev/nul
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-lossy-host-build.log" 2>&1 \
@@ -4457,7 +4423,7 @@ if wanted quic_timestamp_clamp && quic_deps_present && command -v cmake >/dev/nu
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-clamp-host-build.log" 2>&1 \
@@ -4491,7 +4457,7 @@ if wanted quic_preamble_capacity && quic_deps_present && command -v cmake >/dev/
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-preamblecap-host-build.log" 2>&1 \
@@ -4524,7 +4490,7 @@ if wanted quic_close_on_reap && quic_deps_present && command -v cmake >/dev/null
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quic-closereap-host-build.log" 2>&1 \
@@ -4562,7 +4528,7 @@ if wanted quic_cid_clamp && quic_deps_present && command -v cmake >/dev/null 2>&
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     # Real link+run ASan probe: some toolchains accept -fsanitize=address at compile
     # but ship no runtime, so a syntax-only check passes yet link/run fails.
@@ -5063,14 +5029,14 @@ fi
 # quic_token_ttl — QUIC bootstrap tokens expire: mint stamps a deadline,
 # consume rejects + GCs expired entries, prune runs even below the cap. The
 # token store lives behind the #ifdef UBIQUITTY_QUIC seam, so this links the
-# QUIC-ON daemon objects (built under build/host-quic) and the boringssl/AWS-LC
+# shared QUIC-enabled daemon objects and the boringssl/AWS-LC
 # libs, then unit-tests the token-store TTL logic via a friend seam.
 if wanted quic_token_ttl && quic_deps_present && command -v cmake >/dev/null 2>&1; then
     echo "=== quic_token_ttl ==="
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/quicttl-host-build.log" 2>&1 \
@@ -5102,7 +5068,7 @@ if wanted quic_token_mint_flood && quic_deps_present && command -v cmake >/dev/n
     RAN=$((RAN + 1))
     QUIC_FRAMEWORKS=""
     [ "$(uname)" = "Darwin" ] && QUIC_FRAMEWORKS="-framework CoreFoundation -framework Security"
-    HOSTQ_BUILD="$UBQ_BUILD_ROOT/host-quic"
+    HOSTQ_BUILD="$HOST_TEST_BUILD"
     HOSTQ_OBJDIR="$HOSTQ_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOSTQ_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 -DUBIQUITTY_QUIC=ON >"$OUT/mintflood-host-build.log" 2>&1 \
@@ -5134,7 +5100,7 @@ if wanted drop_defer && command -v cmake >/dev/null 2>&1; then
     # (Daemon.cpp), and QUIC-OFF compiles HostQUIC.cpp as an empty TU so the
     # loose-object link needs no ngtcp2/AWS-LC. A separate dir avoids clobbering
     # build/host's config.
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -5165,7 +5131,7 @@ fi
 if wanted grant_persistence && command -v cmake >/dev/null 2>&1; then
     echo "=== grant_persistence ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -5194,7 +5160,7 @@ fi
 if wanted consent_answer_attach && command -v cmake >/dev/null 2>&1; then
     echo "=== consent_answer_attach ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -5228,7 +5194,7 @@ fi
 if wanted daemon_startup && command -v cmake >/dev/null 2>&1; then
     echo "=== daemon_startup ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -5259,7 +5225,7 @@ fi
 if wanted create_session_refusal && command -v cmake >/dev/null 2>&1; then
     echo "=== create_session_refusal ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/create-session-refusal-host-build.log" 2>&1 \
@@ -5285,7 +5251,7 @@ fi
 if wanted session_sized_text && command -v cmake >/dev/null 2>&1; then
     echo "=== session_sized_text ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/session-sized-text-host-build.log" 2>&1 \
@@ -5313,7 +5279,7 @@ fi
 if wanted slow_client_withhold && command -v cmake >/dev/null 2>&1; then
     echo "=== slow_client_withhold ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/slow-client-withhold-host-build.log" 2>&1 \
@@ -5384,7 +5350,7 @@ fi
 if wanted two_client_pacing && command -v cmake >/dev/null 2>&1; then
     echo "=== two_client_pacing ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/two-client-pacing-host-build.log" 2>&1 \
@@ -5409,7 +5375,7 @@ fi
 if wanted sync_stress_mix && command -v cmake >/dev/null 2>&1; then
     echo "=== sync_stress_mix ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/sync-stress-mix-host-build.log" 2>&1 \
@@ -5440,7 +5406,7 @@ fi
 if wanted history_plane && command -v cmake >/dev/null 2>&1; then
     echo "=== history_plane ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/history-plane-host-build.log" 2>&1 \
@@ -5469,7 +5435,7 @@ fi
 if wanted interrupt_under_flood && command -v cmake >/dev/null 2>&1; then
     echo "=== interrupt_under_flood ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/interrupt-under-flood-host-build.log" 2>&1 \
@@ -5497,7 +5463,7 @@ fi
 if wanted capture_flood_busy && command -v cmake >/dev/null 2>&1; then
     echo "=== capture_flood_busy ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/capture-flood-busy-host-build.log" 2>&1 \
@@ -5524,7 +5490,7 @@ fi
 if wanted screen_lost_silence && command -v cmake >/dev/null 2>&1; then
     echo "=== screen_lost_silence ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/screen-lost-silence-host-build.log" 2>&1 \
@@ -5550,7 +5516,7 @@ fi
 if wanted resize_storm && command -v cmake >/dev/null 2>&1; then
     echo "=== resize_storm ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/resize-storm-host-build.log" 2>&1 \
@@ -5598,7 +5564,7 @@ fi
 if wanted input_mode_flip && command -v cmake >/dev/null 2>&1; then
     echo "=== input_mode_flip ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/input-mode-flip-host-build.log" 2>&1 \
@@ -5626,7 +5592,7 @@ fi
 if wanted input_settled_echo && command -v cmake >/dev/null 2>&1; then
     echo "=== input_settled_echo ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/input-settled-echo-host-build.log" 2>&1 \
@@ -5653,7 +5619,7 @@ fi
 if wanted resume_swap && command -v cmake >/dev/null 2>&1; then
     echo "=== resume_swap ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/resume-swap-host-build.log" 2>&1 \
@@ -5680,7 +5646,7 @@ fi
 if wanted move_reconnect && command -v cmake >/dev/null 2>&1; then
     echo "=== move_reconnect ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/move-reconnect-host-build.log" 2>&1 \
@@ -5707,7 +5673,7 @@ fi
 if wanted drop_under_load && command -v cmake >/dev/null 2>&1; then
     echo "=== drop_under_load ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/drop-under-load-host-build.log" 2>&1 \
@@ -5734,7 +5700,7 @@ fi
 if wanted several_clients && command -v cmake >/dev/null 2>&1; then
     echo "=== several_clients ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/several-clients-host-build.log" 2>&1 \
@@ -5761,7 +5727,7 @@ fi
 if wanted hostile_clients && command -v cmake >/dev/null 2>&1; then
     echo "=== hostile_clients ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/hostile-clients-host-build.log" 2>&1 \
@@ -5792,7 +5758,7 @@ fi
 if wanted geometry_follows_hands && command -v cmake >/dev/null 2>&1; then
     echo "=== geometry_follows_hands ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/geometry-follows-hands-host-build.log" 2>&1 \
@@ -5819,7 +5785,7 @@ fi
 if wanted sync_host_calls && command -v cmake >/dev/null 2>&1; then
     echo "=== sync_host_calls ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/sync-host-calls-host-build.log" 2>&1 \
@@ -5845,7 +5811,7 @@ fi
 if wanted background_refresh_storage && command -v cmake >/dev/null 2>&1; then
     echo "=== background_refresh_storage ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/background-refresh-storage-host-build.log" 2>&1 \
@@ -5872,7 +5838,7 @@ fi
 if wanted structure_calls && command -v cmake >/dev/null 2>&1; then
     echo "=== structure_calls ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/structure-calls-host-build.log" 2>&1 \
@@ -5900,7 +5866,7 @@ fi
 if wanted session_structure_listing && command -v cmake >/dev/null 2>&1; then
     echo "=== session_structure_listing ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/session-structure-listing-host-build.log" 2>&1 \
@@ -5928,7 +5894,7 @@ fi
 if wanted viewport_structure_cells && command -v cmake >/dev/null 2>&1; then
     echo "=== viewport_structure_cells ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/viewport-structure-cells-host-build.log" 2>&1 \
@@ -5955,7 +5921,7 @@ fi
 if wanted pane_records_published && command -v cmake >/dev/null 2>&1; then
     echo "=== pane_records_published ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/pane-records-published-host-build.log" 2>&1 \
@@ -5983,7 +5949,7 @@ fi
 if wanted pane_activity_stamps && command -v cmake >/dev/null 2>&1; then
     echo "=== pane_activity_stamps ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/pane-activity-stamps-host-build.log" 2>&1 \
@@ -6010,7 +5976,7 @@ fi
 if wanted attention_seen_on_focus && command -v cmake >/dev/null 2>&1; then
     echo "=== attention_seen_on_focus ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/attention-seen-on-focus-host-build.log" 2>&1 \
@@ -6038,7 +6004,7 @@ fi
 if wanted pane_activity_live_typing && command -v cmake >/dev/null 2>&1; then
     echo "=== pane_activity_live_typing ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/pane-activity-live-typing-host-build.log" 2>&1 \
@@ -6066,7 +6032,7 @@ fi
 if wanted pane_end_facts && command -v cmake >/dev/null 2>&1; then
     echo "=== pane_end_facts ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/pane-end-facts-host-build.log" 2>&1 \
@@ -6094,7 +6060,7 @@ fi
 if wanted label_record_persistence && command -v cmake >/dev/null 2>&1; then
     echo "=== label_record_persistence ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/label-record-persistence-host-build.log" 2>&1 \
@@ -6121,7 +6087,7 @@ fi
 if wanted layout_record_typed_line && command -v cmake >/dev/null 2>&1; then
     echo "=== layout_record_typed_line ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/layout-record-typed-line-host-build.log" 2>&1 \
@@ -6148,7 +6114,7 @@ fi
 if wanted owner_presents && command -v cmake >/dev/null 2>&1; then
     echo "=== owner_presents ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/owner-presents-host-build.log" 2>&1 \
@@ -6174,7 +6140,7 @@ fi
 if wanted rich_text_fit_attached && command -v cmake >/dev/null 2>&1; then
     echo "=== rich_text_fit_attached ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/rich-text-fit-attached-host-build.log" 2>&1 \
@@ -6200,7 +6166,7 @@ fi
 if wanted paste_bracket_owed && command -v cmake >/dev/null 2>&1; then
     echo "=== paste_bracket_owed ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/paste-bracket-owed-host-build.log" 2>&1 \
@@ -6226,7 +6192,7 @@ fi
 if wanted echo_context_facts && command -v cmake >/dev/null 2>&1; then
     echo "=== echo_context_facts ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/echo-context-facts-host-build.log" 2>&1 \
@@ -6252,7 +6218,7 @@ fi
 if wanted paste_abort_sigint && command -v cmake >/dev/null 2>&1; then
     echo "=== paste_abort_sigint ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/paste-abort-sigint-host-build.log" 2>&1 \
@@ -6278,7 +6244,7 @@ fi
 if wanted suspending_keeps_geometry && command -v cmake >/dev/null 2>&1; then
     echo "=== suspending_keeps_geometry ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/suspending-keeps-geometry-host-build.log" 2>&1 \
@@ -6304,7 +6270,7 @@ fi
 if wanted attachments_listed && command -v cmake >/dev/null 2>&1; then
     echo "=== attachments_listed ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/attachments-listed-host-build.log" 2>&1 \
@@ -6330,7 +6296,7 @@ fi
 if wanted paste_window_never_holds && command -v cmake >/dev/null 2>&1; then
     echo "=== paste_window_never_holds ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/paste-window-never-holds-host-build.log" 2>&1 \
@@ -6358,7 +6324,7 @@ fi
 if wanted attachment_grant_lifetime && command -v cmake >/dev/null 2>&1; then
     echo "=== attachment_grant_lifetime ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/attachment-grant-lifetime-host-build.log" 2>&1 \
@@ -6384,7 +6350,7 @@ fi
 if wanted session_handover_ledger && command -v cmake >/dev/null 2>&1; then
     echo "=== session_handover_ledger ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/session-handover-ledger-host-build.log" 2>&1 \
@@ -6409,7 +6375,7 @@ fi
 if wanted session_handover_facts && command -v cmake >/dev/null 2>&1; then
     echo "=== session_handover_facts ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/session-handover-facts-host-build.log" 2>&1 \
@@ -6434,7 +6400,7 @@ fi
 if wanted session_handover && command -v cmake >/dev/null 2>&1; then
     echo "=== session_handover ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/session-handover-host-build.log" 2>&1 \
@@ -6459,7 +6425,7 @@ fi
 if wanted host_table_handover && command -v cmake >/dev/null 2>&1; then
     echo "=== host_table_handover ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/host-table-handover-host-build.log" 2>&1 \
@@ -6484,7 +6450,7 @@ fi
 if wanted host_handover_candidate && command -v cmake >/dev/null 2>&1; then
     echo "=== host_handover_candidate ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/host-handover-candidate-host-build.log" 2>&1 \
@@ -6514,7 +6480,7 @@ fi
 if wanted pane_focus_event && command -v cmake >/dev/null 2>&1; then
     echo "=== pane_focus_event ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/pane-focus-event-host-build.log" 2>&1 \
@@ -6542,7 +6508,7 @@ fi
 if wanted interrupt_drops_queued_input && command -v cmake >/dev/null 2>&1; then
     echo "=== interrupt_drops_queued_input ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/interrupt-drops-queued-input-host-build.log" 2>&1 \
@@ -6570,7 +6536,7 @@ fi
 if wanted interrupt_past_unread_paste && command -v cmake >/dev/null 2>&1; then
     echo "=== interrupt_past_unread_paste ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/interrupt-past-unread-paste-host-build.log" 2>&1 \
@@ -6597,7 +6563,7 @@ fi
 if wanted echo_one_write && command -v cmake >/dev/null 2>&1; then
     echo "=== echo_one_write ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/echo-one-write-host-build.log" 2>&1 \
@@ -6626,7 +6592,7 @@ fi
 if wanted suspended_reader_ten_panes && command -v cmake >/dev/null 2>&1; then
     echo "=== suspended_reader_ten_panes ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/suspended-reader-host-build.log" 2>&1 \
@@ -6655,7 +6621,7 @@ fi
 if wanted flood_and_echo && command -v cmake >/dev/null 2>&1; then
     echo "=== flood_and_echo ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/flood-and-echo-host-build.log" 2>&1 \
@@ -6689,7 +6655,7 @@ fi
 if wanted pty_writeback && command -v cmake >/dev/null 2>&1; then
     echo "=== pty_writeback ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -6721,7 +6687,7 @@ fi
 if wanted scrollback_backfill && command -v cmake >/dev/null 2>&1; then
     echo "=== scrollback_backfill ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -6750,7 +6716,7 @@ fi
 if wanted sync_mirror_clear_and_reflow && command -v cmake >/dev/null 2>&1; then
     echo "=== sync_mirror_clear_and_reflow ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -6782,7 +6748,7 @@ fi
 if wanted service_pty_turn && command -v cmake >/dev/null 2>&1; then
     echo "=== service_pty_turn ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -6813,7 +6779,7 @@ fi
 if wanted consent_remote_clipboard && command -v cmake >/dev/null 2>&1; then
     echo "=== consent_remote_clipboard ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -6843,7 +6809,7 @@ fi
 if wanted consent_remote_effects && command -v cmake >/dev/null 2>&1; then
     echo "=== consent_remote_effects ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -6876,7 +6842,7 @@ fi
 if wanted resize_focus_frames && command -v cmake >/dev/null 2>&1; then
     echo "=== resize_focus_frames ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -6907,7 +6873,7 @@ fi
 if wanted region_read_text && command -v cmake >/dev/null 2>&1; then
     echo "=== region_read_text ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -6938,7 +6904,7 @@ fi
 if wanted event_stream && command -v cmake >/dev/null 2>&1; then
     echo "=== event_stream ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/eventstream-host-build.log" 2>&1 \
@@ -6968,7 +6934,7 @@ fi
 if wanted hello_auth_gate && command -v cmake >/dev/null 2>&1; then
     echo "=== hello_auth_gate ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -6999,7 +6965,7 @@ fi
 if wanted revoke_consent_actions && command -v cmake >/dev/null 2>&1; then
     echo "=== revoke_consent_actions ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7032,7 +6998,7 @@ fi
 if wanted message_gate_matrix && command -v cmake >/dev/null 2>&1; then
     echo "=== message_gate_matrix ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7061,7 +7027,7 @@ fi
 if wanted paste_push_landing && command -v cmake >/dev/null 2>&1; then
     echo "=== paste_push_landing ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7093,7 +7059,7 @@ fi
 if wanted origin_staleness && command -v cmake >/dev/null 2>&1; then
     echo "=== origin_staleness ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7125,7 +7091,7 @@ fi
 if wanted revoke_disconnect && command -v cmake >/dev/null 2>&1; then
     echo "=== revoke_disconnect ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7159,7 +7125,7 @@ fi
 if wanted hello_reentry_guard && command -v cmake >/dev/null 2>&1; then
     echo "=== hello_reentry_guard ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7190,7 +7156,7 @@ fi
 if wanted hello_wire_version_skew && command -v cmake >/dev/null 2>&1; then
     echo "=== hello_wire_version_skew ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7219,7 +7185,7 @@ fi
 if wanted hello_attach_only && command -v cmake >/dev/null 2>&1; then
     echo "=== hello_attach_only ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7250,7 +7216,7 @@ fi
 if wanted workspace_layout_projection && command -v cmake >/dev/null 2>&1; then
     echo "=== workspace_layout_projection ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7283,7 +7249,7 @@ fi
 if wanted hello_ssh_host && command -v cmake >/dev/null 2>&1; then
     echo "=== hello_ssh_host ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7319,7 +7285,7 @@ fi
 if wanted adopt_in_parts && command -v cmake >/dev/null 2>&1; then
     echo "=== adopt_in_parts ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7349,7 +7315,7 @@ fi
 if wanted inbound_holds && command -v cmake >/dev/null 2>&1; then
     echo "=== inbound_holds ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7380,7 +7346,7 @@ fi
 if wanted hello_field_bounds && command -v cmake >/dev/null 2>&1; then
     echo "=== hello_field_bounds ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7413,7 +7379,7 @@ fi
 if wanted inbound_kick_gate && command -v cmake >/dev/null 2>&1; then
     echo "=== inbound_kick_gate ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7442,7 +7408,7 @@ fi
 if wanted rowdelta_baseline_corruption && command -v cmake >/dev/null 2>&1; then
     echo "=== rowdelta_baseline_corruption ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7472,7 +7438,7 @@ fi
 if wanted overflowed_client_stays_unsynced && command -v cmake >/dev/null 2>&1; then
     echo "=== overflowed_client_stays_unsynced ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7500,7 +7466,7 @@ fi
 if wanted backlog_drop_says_why && command -v cmake >/dev/null 2>&1; then
     echo "=== backlog_drop_says_why ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7528,7 +7494,7 @@ fi
 if wanted lost_drop_says_why && command -v cmake >/dev/null 2>&1; then
     echo "=== lost_drop_says_why ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7560,7 +7526,7 @@ fi
 if wanted foreground_probe_budget && command -v cmake >/dev/null 2>&1; then
     echo "=== foreground_probe_budget ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7590,7 +7556,7 @@ fi
 if wanted sync_output_e2e && command -v cmake >/dev/null 2>&1; then
     echo "=== sync_output_e2e ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7622,7 +7588,7 @@ fi
 if wanted sync_prompt_mark_e2e && command -v cmake >/dev/null 2>&1; then
     echo "=== sync_prompt_mark_e2e ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7653,7 +7619,7 @@ fi
 if wanted sync_image_e2e && command -v cmake >/dev/null 2>&1; then
     echo "=== sync_image_e2e ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/syncimage-host-build.log" 2>&1 \
@@ -7685,7 +7651,7 @@ fi
 if wanted sync_output_withhold && command -v cmake >/dev/null 2>&1; then
     echo "=== sync_output_withhold ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7722,7 +7688,7 @@ fi
 if wanted consent_owner_gate && command -v cmake >/dev/null 2>&1; then
     echo "=== consent_owner_gate ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7753,7 +7719,7 @@ fi
 if wanted capability_prompt_cap && command -v cmake >/dev/null 2>&1; then
     echo "=== capability_prompt_cap ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/promptcap-host-build.log" 2>&1 \
@@ -7800,7 +7766,7 @@ ubq_sync_stream_fixture() {
 if wanted daemon_start_arbitration && command -v cmake >/dev/null 2>&1; then
     echo "=== daemon_start_arbitration ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/daemonarb-host-build.log" 2>&1 \
@@ -7824,11 +7790,11 @@ fi
 # by name and leaves no lock file behind. The limit differs per target (Darwin
 # 104, Linux 108), so the boundary is read from sizeof(sun_path): a literal
 # would assert nothing on the platform it was not written on. Reuses the same
-# host-noquic build the arbitration test above configures.
+# shared Host build the arbitration test above uses.
 if wanted daemon_socket_path_limit && command -v cmake >/dev/null 2>&1; then
     echo "=== daemon_socket_path_limit ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/sockpathlimit-host-build.log" 2>&1 \
@@ -7855,7 +7821,7 @@ fi
 if wanted capability_consent && command -v cmake >/dev/null 2>&1; then
     echo "=== capability_consent ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7885,7 +7851,7 @@ fi
 if wanted capability_grant_scope && command -v cmake >/dev/null 2>&1; then
     echo "=== capability_grant_scope ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7917,7 +7883,7 @@ fi
 if wanted consent_pending_toctou && command -v cmake >/dev/null 2>&1; then
     echo "=== consent_pending_toctou ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7952,7 +7918,7 @@ fi
 if wanted create_ownership_negative && command -v cmake >/dev/null 2>&1; then
     echo "=== create_ownership_negative ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -7982,7 +7948,7 @@ fi
 if wanted ssh_relay_origin && command -v cmake >/dev/null 2>&1; then
     echo "=== ssh_relay_origin ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 >"$OUT/sshrelay-host-build.log" 2>&1 \
@@ -8013,7 +7979,7 @@ fi
 if wanted aggregate_outbound_capacity && command -v cmake >/dev/null 2>&1; then
     echo "=== aggregate_outbound_capacity ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -8046,7 +8012,7 @@ fi
 if wanted flush_client_cursor && command -v cmake >/dev/null 2>&1; then
     echo "=== flush_client_cursor ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -8075,7 +8041,7 @@ fi
 if wanted origin_unlabeled_agent && command -v cmake >/dev/null 2>&1; then
     echo "=== origin_unlabeled_agent ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \
@@ -8106,7 +8072,7 @@ fi
 if wanted agent_classifier_origin_unify && command -v cmake >/dev/null 2>&1; then
     echo "=== agent_classifier_origin_unify ==="
     RAN=$((RAN + 1))
-    HOST_BUILD="$UBQ_BUILD_ROOT/host-noquic"
+    HOST_BUILD="$HOST_TEST_BUILD"
     HOST_OBJDIR="$HOST_BUILD/CMakeFiles/ubiquitty-host.dir"
     if cmake -B "$HOST_BUILD" -S "$ROOT" -G "$UBQ_GENERATOR" -DUBIQUITTY_FRONTEND=Host -DCMAKE_BUILD_TYPE=Debug \
                 \

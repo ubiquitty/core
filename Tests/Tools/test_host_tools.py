@@ -88,6 +88,23 @@ class BuildPrerequisiteTests(unittest.TestCase):
             properties = {item["name"]: item["value"] for item in presentation["properties"]}
             self.assertTrue(properties.get("RUN_SERIAL"), "The coalescing fixture must run without competing tests")
             self.assertIn("timing", properties["RESOURCE_LOCK"])
+            consumers = subprocess.check_output(
+                [str(ROOT / "Scripts/run-tests.sh"), "--list-host-binary-stanzas"],
+                cwd=ROOT, text=True).splitlines()
+            self.assertGreaterEqual(len(consumers), 54)
+            for consumer in consumers:
+                entry = entries["shell_" + consumer]
+                properties = {item["name"]: item["value"] for item in entry["properties"]}
+                self.assertIn("UBQ_HOST_PREBUILT=1", entry["command"], consumer)
+                self.assertIn("ubq_host_binary_fixture", properties["FIXTURES_REQUIRED"], consumer)
+                self.assertNotIn("ubq_build_host-tests", properties.get("RESOURCE_LOCK", []), consumer)
+            producer = entries["shell_host_binary"]
+            self.assertNotIn("UBQ_HOST_PREBUILT=1", producer["command"])
+            properties = {item["name"]: item["value"] for item in producer["properties"]}
+            self.assertIn("ubq_host_binary_fixture", properties["FIXTURES_SETUP"])
+            self.assertIn("ubq_quic_deps_fixture", properties["FIXTURES_REQUIRED"])
+            self.assertNotIn("shell_host_noquic_fixture", entries)
+            self.assertNotIn("shell_host_quic_fixture", entries)
 
     def test_quic_requires_go_before_fetching_sources(self):
         with tempfile.TemporaryDirectory() as directory:

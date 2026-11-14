@@ -49,7 +49,8 @@ mode == "host" || mode == "agent" || mode == "quic" {
         needs = 0
         name = stanzaName($0)
     }
-    if (name != "" && mode == "host" && $0 ~ /ubq_(agent_)?host_binary/) needs = 1
+    if (name != "" && mode == "host" &&
+        ($0 ~ /ubq_(agent_)?host_binary/ || $0 ~ /\$\{?HOST_TEST_BUILD\}?([^A-Za-z0-9_]|$)/)) needs = 1
     if (name != "" && mode == "agent" && $0 ~ /ubq_agent_binary/) needs = 1
     if (name != "" && mode == "quic" && $0 ~ /quic_deps_present/) needs = 1
     next

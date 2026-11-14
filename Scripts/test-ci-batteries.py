@@ -687,7 +687,7 @@ class BatteryTests(unittest.TestCase):
             self.assertTrue(any("invalid JSON" in failure
                                 for failure in batteries.validate_events("linux", manifest, path)))
 
-    def test_shared_host_trees_are_built_by_one_fixture_each(self):
+    def test_host_consumers_share_one_built_object_tree(self):
         listing = subprocess.run(
             [str(batteries.ROOT / "Scripts/run-tests.sh"), "--list-serial-stanzas"],
             cwd=CORE_TEST_SOURCES.subject, env=CORE_TEST_SOURCES.environment(os.environ),
@@ -696,24 +696,30 @@ class BatteryTests(unittest.TestCase):
         for line in listing:
             stanza, tree = line.split()
             by_tree.setdefault(tree, set()).add(stanza)
-        self.assertIn("host_noquic_fixture", by_tree["host-noquic"])
-        self.assertIn("host_quic_fixture", by_tree["host-quic"])
+        self.assertNotIn("host-noquic", by_tree)
+        self.assertNotIn("host-quic", by_tree)
+        consumers = subprocess.run(
+            [str(batteries.ROOT / "Scripts/run-tests.sh"), "--list-host-binary-stanzas"],
+            cwd=CORE_TEST_SOURCES.subject, env=CORE_TEST_SOURCES.environment(os.environ),
+            capture_output=True, text=True, check=True).stdout.splitlines()
+        self.assertTrue(by_tree["host-tests"].issubset(consumers))
+        self.assertNotIn("host_binary", consumers)
         stanzas = subprocess.run(
             [str(batteries.ROOT / "Scripts/run-tests.sh"), "--list-stanzas"],
             cwd=CORE_TEST_SOURCES.subject, env=CORE_TEST_SOURCES.environment(os.environ),
             capture_output=True, text=True, check=True).stdout.splitlines()
         self.assertIn("cache_sweep_fixture", stanzas)
         self.assertIn("quic_deps_fixture", stanzas)
-        self.assertGreaterEqual(len(by_tree["host-noquic"]), 40)
-        self.assertGreaterEqual(len(by_tree["host-quic"]), 14)
+        self.assertGreaterEqual(len(by_tree["host-tests"]), 54)
+        self.assertIn("host_binary", stanzas)
+        self.assertNotIn("host_noquic_fixture", stanzas)
+        self.assertNotIn("host_quic_fixture", stanzas)
 
         # run-tests.sh's own stanza graph is wired where its test tree calls
         # the scheduler, through the entries' shell_<stanza>_* settings.
         cmake = (batteries.ROOT / "Tests/CMakeLists.txt").read_text()
-        for tree, variable in (("host-noquic", "UBQ_HOST_NOQUIC_PREBUILT"),
-                               ("host-quic", "UBQ_HOST_QUIC_PREBUILT")):
-            self.assertIn(f"list(REMOVE_ITEM ${{_entry}}_RESOURCE_LOCK \"ubq_build_{tree}\")", cmake)
-            self.assertIn(f"list(APPEND ${{_entry}}_ENVIRONMENT {variable}=1)", cmake)
+        self.assertIn('list(REMOVE_ITEM ${_entry}_RESOURCE_LOCK "ubq_build_host-tests")', cmake)
+        self.assertIn('list(APPEND ${_entry}_ENVIRONMENT UBQ_HOST_PREBUILT=1)', cmake)
         self.assertIn("set(shell_cache_sweep_fixture_FIXTURES_SETUP ubq_cache_sweep_fixture)", cmake)
         self.assertIn("set(shell_quic_deps_fixture_FIXTURES_SETUP ubq_quic_deps_fixture)", cmake)
         self.assertRegex(cmake, r'_stanza STREQUAL "quic_deps_fixture"[\s\S]+?'
@@ -724,9 +730,6 @@ class BatteryTests(unittest.TestCase):
         self.assertRegex(cmake, r"list\(APPEND \$\{_entry\}_FIXTURES_REQUIRED\s+"
                                 r"ubq_build_fixture\s+ubq_cache_sweep_fixture\)")
         self.assertRegex(cmake, r'_stanza STREQUAL "host_binary"[\s\S]+?'
-                                r'UBQ_COVERAGE_BUILD_FIXTURE=1')
-        self.assertRegex(cmake, r'_stanza STREQUAL "host_noquic_fixture"[\s\S]+?'
-                                r'_stanza STREQUAL "host_quic_fixture"[\s\S]+?'
                                 r'UBQ_COVERAGE_BUILD_FIXTURE=1')
         self.assertRegex(cmake, r'_stanza STREQUAL "cache_sweep_fixture"[\s\S]+?'
                                 r'UBQ_COVERAGE_BUILD_FIXTURE=1')
@@ -889,7 +892,7 @@ class BatteryTests(unittest.TestCase):
 UBQ_BUILD_ROOT="$1"
 UBQ_COVERAGE=1
 QUIC_PREFIX="$1/quic"
-        for fixture in host_binary host_noquic_fixture host_quic_fixture quic_deps_fixture; do
+for fixture in host_binary quic_deps_fixture; do
     LLVM_PROFILE_FILE="$1/shell_${fixture}--%c%p.profraw"
     UBQ_COVERAGE_BUILD_FIXTURE=1
     export LLVM_PROFILE_FILE UBQ_COVERAGE_BUILD_FIXTURE
@@ -898,9 +901,10 @@ QUIC_PREFIX="$1/quic"
 done
 UBQ_COVERAGE_BUILD_FIXTURE=0
 LLVM_PROFILE_FILE="$1/shell_consumer--%c%p.profraw"
-UBQ_HOST_NOQUIC_PREBUILT=1
-export UBQ_COVERAGE_BUILD_FIXTURE LLVM_PROFILE_FILE UBQ_HOST_NOQUIC_PREBUILT
-cmake -B "$1/host-noquic" -S "$1/source"
+HOST_TEST_BUILD="$1/host-tests"
+UBQ_HOST_PREBUILT=1
+export UBQ_COVERAGE_BUILD_FIXTURE LLVM_PROFILE_FILE UBQ_HOST_PREBUILT
+cmake -B "$HOST_TEST_BUILD" -S "$1/source"
 test -e "$1/shell_consumer.expects-profile"
 HOST_TEST_BUILD="$1/host-tests"
 mkdir -p "$HOST_TEST_BUILD"
@@ -914,7 +918,7 @@ test -e "$1/shell_host_consumer.expects-profile"
 '''
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            tree = root / "host-noquic"
+            tree = root / "host-tests"
             (tree / "CMakeFiles/ubiquitty-host.dir").mkdir(parents=True)
             binary = tree / "ubiquitty-host"
             binary.touch()

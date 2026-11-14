@@ -710,11 +710,6 @@ function(ubq_schedule_run_tests_stanzas driver)
         string(REGEX REPLACE "^[^ ]+ (.*)$" "\\1" _pair_directory "${_pair}")
         # A stanza touching two trees needs both locks, so this accumulates.
         list(APPEND shell_${_pair_stanza}_RESOURCE_LOCK "ubq_build_${_pair_directory}")
-        if(_pair_directory STREQUAL "host-noquic")
-            list(APPEND _host_noquic_stanzas ${_pair_stanza})
-        elseif(_pair_directory STREQUAL "host-quic")
-            list(APPEND _host_quic_stanzas ${_pair_stanza})
-        endif()
     endforeach()
 
     # The Host fixture is a build, not a test, and every stanza that needs the
@@ -769,6 +764,7 @@ function(ubq_schedule_run_tests_stanzas driver)
         endif()
         if(_stanza IN_LIST _host_binary_stanzas)
             list(APPEND ${_entry}_ENVIRONMENT UBQ_HOST_PREBUILT=1)
+            list(REMOVE_ITEM ${_entry}_RESOURCE_LOCK "ubq_build_host-tests")
         elseif(_stanza STREQUAL "host_binary" OR _stanza STREQUAL "agent_binary")
             set(${_entry}_JOBS ${UBIQUITTY_HOST_FIXTURE_JOBS})
             # The fixture builds and runs nothing, and that is its design: the stanzas
@@ -788,21 +784,6 @@ function(ubq_schedule_run_tests_stanzas driver)
         # than relink it under the stanzas executing it.
         if(NOT _stanza STREQUAL "host_binary" AND NOT _stanza STREQUAL "agent_binary")
             list(APPEND ${_entry}_ENVIRONMENT UBQ_SHARED_BINARIES_FROM_FIXTURES=1)
-        endif()
-        if(_stanza IN_LIST _host_noquic_stanzas
-                AND NOT _stanza STREQUAL "host_noquic_fixture")
-            list(APPEND ${_entry}_ENVIRONMENT UBQ_HOST_NOQUIC_PREBUILT=1)
-            list(REMOVE_ITEM ${_entry}_RESOURCE_LOCK "ubq_build_host-noquic")
-        endif()
-        if(_stanza IN_LIST _host_quic_stanzas
-                AND NOT _stanza STREQUAL "host_quic_fixture")
-            list(APPEND ${_entry}_ENVIRONMENT UBQ_HOST_QUIC_PREBUILT=1)
-            list(REMOVE_ITEM ${_entry}_RESOURCE_LOCK "ubq_build_host-quic")
-        endif()
-        if(_stanza STREQUAL "host_noquic_fixture"
-                OR _stanza STREQUAL "host_quic_fixture")
-            set(${_entry}_JOBS ${UBIQUITTY_HOST_FIXTURE_JOBS})
-            list(APPEND ${_entry}_ENVIRONMENT UBQ_COVERAGE_BUILD_FIXTURE=1)
         endif()
         if(_stanza STREQUAL "cache_sweep_fixture")
             list(APPEND ${_entry}_ENVIRONMENT UBQ_COVERAGE_BUILD_FIXTURE=1)
@@ -832,17 +813,7 @@ function(ubq_schedule_run_tests_stanzas driver)
         if(_stanza IN_LIST _agent_binary_stanzas)
             list(APPEND ${_entry}_FIXTURES_REQUIRED ubq_agent_binary_fixture)
         endif()
-        if(_stanza IN_LIST _host_noquic_stanzas
-                AND NOT _stanza STREQUAL "host_noquic_fixture")
-            list(APPEND ${_entry}_FIXTURES_REQUIRED ubq_host_noquic_fixture)
-        endif()
-        if(_stanza IN_LIST _host_quic_stanzas
-                AND NOT _stanza STREQUAL "host_quic_fixture")
-            list(APPEND ${_entry}_FIXTURES_REQUIRED ubq_host_quic_fixture)
-        endif()
-        if(_stanza STREQUAL "host_binary"
-                OR _stanza STREQUAL "host_noquic_fixture"
-                OR _stanza STREQUAL "host_quic_fixture")
+        if(_stanza STREQUAL "host_binary")
             list(APPEND ${_entry}_FIXTURES_REQUIRED ubq_quic_deps_fixture)
         endif()
         if(_stanza IN_LIST _quic_dependency_stanzas)
@@ -888,14 +859,10 @@ function(ubq_schedule_run_tests_stanzas driver)
     set(shell_snapshot_renderer_fixture_TIMEOUT 1800)
     # This stanza builds and runs a separate instrumented tree.
     set(shell_sanitized_sync_TIMEOUT 1800)
-    set(shell_host_noquic_fixture_FIXTURES_SETUP ubq_host_noquic_fixture)
-    set(shell_host_noquic_fixture_TIMEOUT 900)
     set(shell_cache_sweep_fixture_FIXTURES_SETUP ubq_cache_sweep_fixture)
     set(shell_cache_sweep_fixture_TIMEOUT 60)
     set(shell_quic_deps_fixture_FIXTURES_SETUP ubq_quic_deps_fixture)
     set(shell_quic_deps_fixture_TIMEOUT 900)
-    set(shell_host_quic_fixture_FIXTURES_SETUP ubq_host_quic_fixture)
-    set(shell_host_quic_fixture_TIMEOUT 900)
     # The soak's thousand attaches each start a relay and a client, so it is
     # CPU-bound and takes as long as the cores the rest of the suite leaves
     # it. It asserts no timing, only resident growth and a clean exit, so its
