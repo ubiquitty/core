@@ -159,10 +159,10 @@ void FramePerfLog::noteFrame(const PerfFrameSample& sample, double now)
 
 void FramePerfLog::notePacing(std::uint64_t promoted, std::uint64_t overwritten, std::uint64_t discarded, std::uint64_t slippedVsyncs)
 {
-    m_pacingLatest[Promoted] = promoted;
-    m_pacingLatest[Overwritten] = overwritten;
-    m_pacingLatest[Discarded] = discarded;
-    m_pacingLatest[Slipped] = slippedVsyncs;
+    m_pacingLatest[Promoted] += promoted;
+    m_pacingLatest[Overwritten] += overwritten;
+    m_pacingLatest[Discarded] += discarded;
+    m_pacingLatest[Slipped] += slippedVsyncs;
 }
 
 void FramePerfLog::noteArm(std::uint64_t drawn, std::uint64_t declinedCaptures, std::uint64_t declinedEncodes,

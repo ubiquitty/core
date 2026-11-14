@@ -189,10 +189,29 @@ TEST(testPacingAndArmLinesPrintGrowth)
     CHECK_MSG(!hasLineStartingWith(log, "[perf-pace]"), "unchanged pacing prints no line");
     CHECK(!hasLineStartingWith(log, "[perf-arm]"));
 
-    log.notePacing(13, 2, 0, 1);
+    log.notePacing(3, 0, 0, 0);
     now += 0.6;
     log.noteFrame(frameAt60Hz(), now);
     CHECK(hasLineStartingWith(log, "[perf-pace] content promote=3 overwrite=0"));
+}
+
+TEST(pacingAddsIndependentSourceGrowthAcrossWindows)
+{
+    FramePerfLog log;
+    log.silence();
+    log.noteFrame(frameAt60Hz(), 1.0);
+    log.notePacing(10, 2, 0, 1);
+    log.notePacing(2, 0, 1, 0);
+    log.notePacing(3, 1, 0, 2);
+    log.noteFrame(frameAt60Hz(), 1.6);
+    CHECK(hasLineStartingWith(log, "[perf-pace] content promote=15 overwrite=3 discard=1 slip=3"));
+    log.notePacing(0, 0, 0, 0);
+    log.noteFrame(frameAt60Hz(), 2.2);
+    CHECK(!hasLineStartingWith(log, "[perf-pace]"));
+    log.notePacing(1, 0, 0, 0);
+    log.notePacing(2, 1, 0, 0);
+    log.noteFrame(frameAt60Hz(), 2.8);
+    CHECK(hasLineStartingWith(log, "[perf-pace] content promote=3 overwrite=1 discard=0 slip=0"));
 }
 
 } // namespace

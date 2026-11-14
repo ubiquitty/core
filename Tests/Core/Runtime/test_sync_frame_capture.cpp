@@ -3647,6 +3647,26 @@ TEST(aViewKeepingSearchLiveReadsTheModelAndLeavesTheCaptureWaiting)
     CHECK(plain.frame != nullptr);
 }
 
+TEST(aLiveSearchDoesNotRequestAnUnusedCapture)
+{
+    SessionFixture fixture(4, 20);
+    REQUIRE(fixture.isReady);
+    fixture.session->setSyncFrameCaptureGeometry(hoverGeometry());
+    fixture.drainSyncFrame("searched");
+    const auto attemptsBefore = fixture.session->syncFrameCaptureAttemptCount();
+    const FrameAsk waitingSearch = askForFrame(*fixture.session, { .keepsSearchLive = true });
+    CHECK(waitingSearch.supply.route == Runtime::FrameRoute::LiveRead);
+    CHECK_EQ(fixture.session->syncFrameCaptureAttemptCount(), attemptsBefore);
+    {
+        const FrameAsk plain = askForFrame(*fixture.session, {});
+        REQUIRE(plain.frame);
+    }
+    const auto attemptsAfterTake = fixture.session->syncFrameCaptureAttemptCount();
+    const FrameAsk emptySearch = askForFrame(*fixture.session, { .keepsSearchLive = true });
+    CHECK(emptySearch.supply.route == Runtime::FrameRoute::LiveRead);
+    CHECK_EQ(fixture.session->syncFrameCaptureAttemptCount(), attemptsAfterTake);
+}
+
 // With no capture waiting, a frame the coherence rule holds is declined for
 // the rule, and a view being resized does not wait for quiet output: the
 // asking thread, which drives this pane, captures the model the rule still

@@ -175,8 +175,11 @@ public:
     ///   - now: When the frame finished.
     void noteFrame(const PerfFrameSample& sample, double now);
 
-    /// Records the streamed-frame pacing counters, as absolute totals; the
-    /// window prints their growth on a `[perf-pace]` line.
+    /// Adds streamed-frame pacing growth since each source's last sample.
+    ///
+    /// Each session and present meter owns its checkpoint: absolute counters
+    /// from different sources have no shared baseline. Their deltas can be
+    /// interleaved here, and the window prints their sum on a `[perf-pace]` line.
     ///
     /// - Parameters:
     ///   - promoted: Frames that reached the screen.

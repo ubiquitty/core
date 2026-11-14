@@ -7010,7 +7010,7 @@ public:
         // the next frame the rule admits, whichever comes first.
         const bool isLaneServed = m_isSyncCaptureArmed.load(std::memory_order_acquire) && m_isSyncFramePresented.load(std::memory_order_relaxed);
         const bool hasOwnerLoop = isIngestLoopActive();
-        if (isLaneServed) {
+        if (isLaneServed && !demand.keepsSearchLive) {
             const FrameLane::DemandRule rule = demand.isResizing ? FrameLane::DemandRule::Resize : FrameLane::DemandRule::Coherence;
             static_cast<void>(m_frameLane.raiseDemand(PAL::monotonicMicros(), rule));
             // A resize needs this geometry's frame now. An idle pane's blink
