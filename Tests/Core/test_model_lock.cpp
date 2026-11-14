@@ -208,8 +208,8 @@ enum class SecondTurn : std::uint8_t {
     Offered,
     // The release found no waiter although the second one was still waiting.
     Unwanted,
-    // The second waiter took the lock before the drain could take it back, so
-    // this case saw no release while it waited.
+    // The second waiter took the lock before a drain release could observe
+    // its pending claim.
     Unobserved,
 };
 
