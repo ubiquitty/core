@@ -71,6 +71,14 @@ Ubiquitty::TermPalette paletteWithBackground(std::uint16_t red, std::uint16_t gr
     return palette;
 }
 
+// Observe presentation at the host's receipt. A full carrier round trip may
+// service acknowledgements until the coalescing window has already ended.
+void presentFacts(Daemon& host, std::size_t index, UbiquittyTest::ScreenClient& client, const Ubiquitty::TermPalette& palette)
+{
+    client.setThemePalette(Sync::ThemePalette { .live = palette, .baseline = palette });
+    Screen::receive(host, index, client.takeStream(Screen::now()));
+}
+
 } // namespace
 
 int main()
@@ -193,8 +201,11 @@ int main()
         settle();
         CHECK_MSG(session.term->palette.defaultBackground == dark.defaultBackground, "the fallback followed connection order rather than the latest human presentation");
 
-        other.setThemePalette(Sync::ThemePalette { .live = light, .baseline = light });
-        Screen::deliver(host, otherIndex, other);
+        // Open a fresh window on the current presenter, then inspect the
+        // other person's pending update before advancing either carrier.
+        presentFacts(host, liveIndex, live, green);
+        presentFacts(host, liveIndex, live, dark);
+        presentFacts(host, otherIndex, other, light);
         CHECK(session.presentedDueAt.has_value());
         Screen::supersedeScreen(host, otherIndex);
         settle();
@@ -390,8 +401,7 @@ int main()
         std::this_thread::sleep_for(std::chrono::microseconds(Sync::measuredGeometryPolicy().coalesceMicroseconds + 10'000));
         const auto present = [&](std::size_t index, const Ubiquitty::TermPalette& palette) {
             auto& client = index == firstIndex ? first : second;
-            client.setThemePalette(Sync::ThemePalette { .live = palette, .baseline = palette });
-            Screen::deliver(early, index, client);
+            presentFacts(early, index, client, palette);
         };
         const Ubiquitty::TermPalette firstTheme = paletteWithBackground(0x1111, 0x2222, 0x3333);
         const Ubiquitty::TermPalette secondTheme = paletteWithBackground(0xaaaa, 0xbbbb, 0xcccc);

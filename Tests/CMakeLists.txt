@@ -908,6 +908,10 @@ function(ubq_schedule_run_tests_stanzas driver)
     set(shell_test_session_stress_JOBS ${UBIQUITTY_HOST_FIXTURE_JOBS})
     set(shell_test_session_stress_RUN_SERIAL TRUE)
 
+    # The presentation fixture observes a coalescing window and bounds how
+    # often two typists change it, so it must not compete with other tests.
+    set(shell_owner_presents_RUN_SERIAL TRUE)
+    list(APPEND shell_owner_presents_RESOURCE_LOCK timing)
     # Frame-count, handoff and live tmux flood deadlines require a quiet
     # scheduler. The sanitizer stanza also runs the ingest loop's timing cases
     # inside its instrumented binary, so it needs that unit test's isolation.
