@@ -50,7 +50,8 @@ struct FrameDemand {
 enum class FrameRoute : std::uint8_t {
     /// The newest frame the drain captured, with the view's selection
     /// resolved for it. The grid may have moved on since the capture, so a
-    /// view that presents it asks for another frame; and it draws no search
+    /// view asks again when ``TerminalSession::hasFrameChangesAfter`` says it
+    /// has; and it draws no search
     /// matches, so the view stops keeping search live.
     Captured,
     /// No capture waits and nothing published holds the frame: the view reads

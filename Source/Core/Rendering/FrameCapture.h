@@ -52,6 +52,12 @@ struct UBIQUITTY_ESCAPABLE FrameRecordHeader {
     std::uint64_t paletteGeneration = 0;
     /// The registered view geometry generation represented by the capture.
     std::uint64_t viewGeneration = 0;
+    /// The scroll-position publication folded into this capture.
+    std::uint64_t viewOffsetGeneration = 0;
+    /// The hovered-run publication folded into this capture.
+    std::uint64_t hoverGeneration = 0;
+    /// The selection publication resolved into this capture's rich-text cuts.
+    std::uint64_t selectionGeneration = 0;
     /// The blink clock tick associated with the capture.
     std::uint32_t captureTicks = 0;
     /// Whether the record replaces or updates its baseline.
@@ -698,6 +704,15 @@ public:
 
     /// The registered view geometry generation represented by this frame.
     [[nodiscard]] std::uint64_t viewGeneration() const { return m_header.viewGeneration; }
+
+    /// The scroll-position publication represented by this frame.
+    [[nodiscard]] std::uint64_t viewOffsetGeneration() const { return m_header.viewOffsetGeneration; }
+
+    /// The hovered-run publication represented by this frame.
+    [[nodiscard]] std::uint64_t hoverGeneration() const { return m_header.hoverGeneration; }
+
+    /// The selection publication represented by this frame's rich-text cuts.
+    [[nodiscard]] std::uint64_t selectionGeneration() const { return m_header.selectionGeneration; }
 
     /// Whether this record replaces or updates its baseline.
     [[nodiscard]] FrameRecordKind recordKind() const { return m_header.kind; }

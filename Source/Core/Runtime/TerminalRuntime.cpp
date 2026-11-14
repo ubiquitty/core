@@ -1377,6 +1377,7 @@ void captureSnapshotOnlyState(const Ubiquitty::Terminal& term, RuntimeSnapshot& 
     out.linkColorGreen = static_cast<float>(link.green) / fullByte;
     out.linkColorBlue = static_cast<float>(link.blue) / fullByte;
     out.paletteEpoch = term.paletteEpoch;
+    out.modelGeneration = term.modelEpoch;
 }
 
 } // namespace

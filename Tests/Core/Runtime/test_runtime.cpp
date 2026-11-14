@@ -1785,7 +1785,12 @@ TEST(aPublishedRichTextCatalogRequestsOneReplacementFrame)
     Ubiquitty::RichText::TypographyFacts facts;
     facts.cellWidth = 8 * 64;
     facts.cellHeight = 16 * 64;
+    const auto generationBeforeTypography = session->readSnapshot().modelGeneration;
     CHECK(session->publishTypography(facts));
+    const auto generationAfterTypography = session->readSnapshot().modelGeneration;
+    CHECK(generationAfterTypography > generationBeforeTypography);
+    CHECK(session->publishTypography(facts));
+    CHECK_EQ(session->readSnapshot().modelGeneration, generationAfterTypography);
     CHECK(!session->fontCatalogBecameReady(1, 2));
     CHECK(terminal->richTextBlocks.tryReserve(Ubiquitty::ScreenMode::Primary, 1).has_value());
     Ubiquitty::RichText::Block block;
@@ -2637,7 +2642,9 @@ TEST(remoteRecordsPublishProgressAndTabStatusBeforeNotifyingTheFrontend)
     // A separate frontend operation can publish the new snapshot first;
     // that must not consume the progress notification owed by the records.
     session->clearScrollbackSearch();
+    const auto generationBeforeRecords = session->readSnapshot().modelGeneration;
     session->noteRemoteScreenChangedForTest();
+    CHECK(session->readSnapshot().modelGeneration > generationBeforeRecords);
     constexpr auto progressChanged = 1u << static_cast<unsigned>(Runtime::EventKind::ProgressChanged);
     constexpr auto statusChanged = 1u << static_cast<unsigned>(Runtime::EventKind::TabStatusChanged);
     CHECK(session->readSnapshot().progressState == OSC::ProgressIndeterminate);

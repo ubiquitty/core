@@ -3200,6 +3200,80 @@ FrameHoverLink firstRowHover()
     return hover;
 }
 
+TEST(aCurrentCaptureOwesNoFollowUpButPublishedChangesDo)
+{
+    SessionFixture fixture(4, 20);
+    REQUIRE(fixture.isReady);
+    fixture.session->setSyncFrameCaptureGeometry(hoverGeometry());
+    fixture.drainSyncFrame("LINK\r\nunchanged row");
+    FrameAsk initial = askForFrame(*fixture.session, {});
+    REQUIRE(initial.frame);
+    CHECK_EQ(fixture.session->readSnapshot().modelGeneration, initial.frame->modelGeneration());
+    CHECK(!fixture.session->hasFrameChangesAfter(*initial.frame));
+    static_cast<void>(fixture.session->takeEventFlags());
+    static_cast<void>(fixture.session->takeSyncFrameReady());
+    FrameAsk inlineFrame = askForFrame(*fixture.session, {});
+    REQUIRE(inlineFrame.frame);
+    CHECK(!fixture.session->takeSyncFrameReady());
+    CHECK((fixture.session->takeEventFlags() & (1u << static_cast<unsigned>(Runtime::EventKind::ScreenDirty))) == 0);
+    inlineFrame.frame.reset();
+    {
+        // A capture produced outside takeFrame still needs its publication wake.
+        fixture.session->setSyncFrameViewOffset(0, Input::ViewportHold::Follow, fixture.session->readSnapshot().history);
+        CHECK(fixture.session->takeSyncFrameReady());
+        CHECK((fixture.session->takeEventFlags() & (1u << static_cast<unsigned>(Runtime::EventKind::ScreenDirty))) != 0);
+        FrameAsk position = askForFrame(*fixture.session, {});
+        REQUIRE(position.frame);
+        CHECK(!fixture.session->hasFrameChangesAfter(*position.frame));
+    }
+
+    // A hover changes no parser batch, and still needs its own capture.
+    fixture.session->setSyncFrameHoverLink(firstRowHover());
+    CHECK(fixture.session->hasFrameChangesAfter(*initial.frame));
+    FrameAsk hovered = askForFrame(*fixture.session, {});
+    REQUIRE(hovered.frame);
+    CHECK_EQ(hovered.frame->modelGeneration(), initial.frame->modelGeneration());
+    CHECK(!fixture.session->hasFrameChangesAfter(*hovered.frame));
+
+    // A control-only batch changes no grid row but can move the cursor tier.
+    constexpr std::string_view cursor = "\033[?25l";
+    fixture.session->feedBytes(cursor);
+    CHECK(fixture.session->hasFrameChangesAfter(*hovered.frame));
+    initial.frame.reset();
+    FrameAsk updated = askForFrame(*fixture.session, {});
+    REQUIRE(updated.frame);
+    CHECK(updated.frame->modelGeneration() > hovered.frame->modelGeneration());
+    CHECK(!fixture.session->hasFrameChangesAfter(*updated.frame));
+
+    fixture.session->setSyncFrameHoverLink({});
+    CHECK(fixture.session->hasFrameChangesAfter(*updated.frame));
+    hovered.frame.reset();
+    FrameAsk cleared = askForFrame(*fixture.session, {});
+    REQUIRE(cleared.frame);
+    CHECK(!fixture.session->hasFrameChangesAfter(*cleared.frame));
+
+    Selection::Session selection;
+    Selection::init(selection);
+    fixture.session->lockForRead();
+    Selection::beginGesture(selection, *fixture.session->terminal(), 0, 0, 1, 0, {});
+    Selection::dragGesture(selection, *fixture.session->terminal(), 0, 2, 0);
+    Selection::endGesture(selection);
+    fixture.session->unlockForRead();
+    fixture.session->publishSelectionForCaptures(&selection);
+    CHECK(fixture.session->hasFrameChangesAfter(*cleared.frame));
+    updated.frame.reset();
+    FrameAsk selected = askForFrame(*fixture.session, { .selection = &selection });
+    REQUIRE(selected.frame);
+    CHECK(!fixture.session->hasFrameChangesAfter(*selected.frame));
+    fixture.session->publishSelectionForCaptures(&selection);
+    CHECK(!fixture.session->hasFrameChangesAfter(*selected.frame));
+
+    SyncFrameCaptureGeometry moved = hoverGeometry();
+    moved.originInPixels.x += 4;
+    fixture.session->setSyncFrameCaptureGeometry(moved);
+    CHECK(fixture.session->hasFrameChangesAfter(*cleared.frame));
+}
+
 std::vector<CellInstance> applyDamagedCells(const FrameCapture& delta, std::vector<CellInstance> retained)
 {
     std::erase_if(retained, [&](const CellInstance& cell) {

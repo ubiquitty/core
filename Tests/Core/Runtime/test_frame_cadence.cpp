@@ -1071,6 +1071,55 @@ bool waitForDrained(TerminalSession& session, std::uint64_t bytes)
     return drained >= bytes;
 }
 
+TEST(anIdleOwnerServesAViewOnlyFrameInOnePass)
+{
+    PAL::Context clockContext = PAL::context();
+    clockContext.monotonicClock = &PAL::monotonicTicks;
+    const PAL::ScopedContext clock(clockContext);
+    int pipeDescriptors[2] = { -1, -1 };
+    REQUIRE(::pipe(pipeDescriptors) == 0);
+    PAL::UnixFileDescriptor readEnd(pipeDescriptors[0]);
+    PAL::UnixFileDescriptor writeEnd(pipeDescriptors[1]);
+    REQUIRE(::fcntl(readEnd.get(), F_SETFL, ::fcntl(readEnd.get(), F_GETFL) | O_NONBLOCK) == 0);
+    PAL::CadenceInputLog inputLog;
+    TerminalSession* session = TerminalSession::make();
+    REQUIRE(session);
+    struct SessionRelease {
+        TerminalSession* session;
+        ~SessionRelease()
+        {
+            session->close();
+            releaseTerminalSession(session);
+        }
+    } release { session };
+    session->start(4, 20);
+    REQUIRE(session->adoptStream(std::make_unique<PAL::CadencePipeStream>(std::move(readEnd), inputLog)).has_value());
+    session->setSyncFrameCaptureGeometry(captureGeometry(4, 20));
+    session->setSyncFramePresentation(Runtime::PanePresentation::Presented);
+    REQUIRE(session->startIngest());
+    constexpr std::string_view prologue = "quiet";
+    REQUIRE(::write(writeEnd.get(), prologue.data(), prologue.size()) == static_cast<ssize_t>(prologue.size()));
+    REQUIRE(waitForDrained(*session, prologue.size()));
+    const auto deadline = Clock::now() + 2s;
+    while (!session->isPresentationIdleExpired() && Clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+    REQUIRE(session->isPresentationIdleExpired());
+    while (const TakenFrame pending { session->takeSyncFrame() }) {
+    }
+    static_cast<void>(session->takeSyncFrameReady());
+    static_cast<void>(session->takeEventFlags());
+
+    // A blink changes the view's clock, not its model or geometry. It still
+    // needs one captured frame, with no empty draw or wake back to itself.
+    Runtime::FrameSupply supply;
+    const TakenFrame frame { session->takeFrame({ .nowTicks = PAL::monotonicTicks() }, supply) };
+    REQUIRE(frame);
+    CHECK(supply.route == FrameRoute::Captured);
+    CHECK(!session->hasFrameChangesAfter(*frame));
+    CHECK(!session->takeSyncFrameReady());
+    CHECK((session->takeEventFlags() & (1u << static_cast<unsigned>(Runtime::EventKind::ScreenDirty))) == 0);
+}
+
 CadenceRun runCadence(const CadenceCase& cadenceCase, Decision decision)
 {
     CadenceRun run;

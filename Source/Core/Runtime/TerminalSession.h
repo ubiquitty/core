@@ -6969,9 +6969,9 @@ public:
     ///    asked the owner for one (``FrameLane::raiseDemand``), served by the
     ///    rule step 3 judged it by at the next frame the coherence rule admits
     ///    or the owner's next turn. A resizing view tries to serve its demand
-    ///    immediately, before the next geometry supersedes this step. A pane
-    ///    no loop drains has no turn but its caller's, so its asking thread
-    ///    also serves the demand itself, before step 3, and takes
+    ///    immediately, before the next geometry supersedes this step. After
+    ///    output has gone idle, or for a pane no loop drains, the asking
+    ///    thread also serves the demand itself, before step 3, and takes
     ///    what it captured (``serveFrameDemandHere``); one it could not serve
     ///    now, its model held by another thread, is declined
     ///    ``FrameDecline::AwaitingCapture`` and asked again next tick, since
@@ -6981,8 +6981,8 @@ public:
     ///
     /// Reads published state only, with two exceptions: while a synchronized
     /// update is open in a remote replica or a fed pane, step 3 judges the
-    /// block under the model lock, and a resize or a pane no loop drains is
-    /// served under a model lock its caller finds free.
+    /// block under the model lock, and a resize, idle output or a pane no loop
+    /// drains is served under a model lock its caller finds free.
     ///
     /// - Parameters:
     ///   - demand: The view's facts at this tick.
@@ -7013,10 +7013,11 @@ public:
         if (isLaneServed) {
             const FrameLane::DemandRule rule = demand.isResizing ? FrameLane::DemandRule::Resize : FrameLane::DemandRule::Coherence;
             static_cast<void>(m_frameLane.raiseDemand(PAL::monotonicMicros(), rule));
-            // A resize registers geometry and asks in the same display turn.
-            // Each geometry change retires captures left waiting at the old geometry,
-            // so a free model serves this step before the owner is woken.
-            if ((!hasOwnerLoop || demand.isResizing) && serveFrameDemandHere()) {
+            // A resize needs this geometry's frame now. An idle pane's blink
+            // or selection also owes one pass, rather than an empty pass to
+            // wake the owner and a second to take its capture. Try only a free
+            // model; flowing output keeps capture work on its owner.
+            if ((!hasOwnerLoop || demand.isResizing || isPresentationIdleExpired()) && serveFrameDemandHere(FrameWake::CallerTakes)) {
                 if (Rendering::FrameCapture* capture = takeWaitingCapture())
                     return capture;
             }
@@ -7044,6 +7045,28 @@ public:
         }
         supply.route = FrameRoute::LiveRead;
         return nullptr;
+    }
+
+    /// Whether published state or another capture has moved past a frame.
+    ///
+    /// A frontend checks after building a captured frame, instead of asking
+    /// for another draw unconditionally. Parser batches, palette changes and
+    /// view publications can move without a new screen-dirty delivery, while
+    /// an unchanged capture owes no verification loop or second blink pass.
+    /// Later output still wakes the view through its own delivery.
+    ///
+    /// - Parameter capture: The boundary frame the view just built.
+    /// - Returns: Whether another frame is owed, without taking the model lock.
+    [[nodiscard]] bool hasFrameChangesAfter(const Rendering::FrameCapture& capture) noexcept UBIQUITTY_NONBLOCKING
+    {
+        const RuntimeSnapshot snapshot = readSnapshot();
+        return m_frameLane.hasReadyCapture()
+            || snapshot.modelGeneration != capture.modelGeneration()
+            || snapshot.paletteEpoch != capture.paletteGeneration()
+            || m_registeredViewGeneration.load(std::memory_order_acquire) != capture.viewGeneration()
+            || m_viewOffsetRegister.version() != capture.viewOffsetGeneration()
+            || m_hoverRegister.version() != capture.hoverGeneration()
+            || m_selectionForCaptures.version() != capture.selectionGeneration();
     }
 
     /// The live read's own check, under the model lock the caller holds for
@@ -7352,8 +7375,11 @@ public:
             if (m_typography && *m_typography == facts)
                 return true;
             m_typography = std::make_shared<const RichText::TypographyFacts>(facts);
-            if (Ubiquitty::Terminal* term = modelTerm())
+            if (Ubiquitty::Terminal* term = modelTerm()) {
                 installTextMeasurer(*term);
+                ++term->modelEpoch;
+                republishModel();
+            }
         }
         // A remote pane's host measures for its programs, in this client's
         // fonts.
@@ -10327,6 +10353,9 @@ private:
         header.modelGeneration = term->modelEpoch;
         header.paletteGeneration = term->paletteEpoch;
         header.viewGeneration = m_syncViewGeneration;
+        header.viewOffsetGeneration = m_viewOffsetVersionFolded;
+        header.hoverGeneration = m_hoverVersionFolded;
+        header.selectionGeneration = m_selectionForCapturesVersionSeen;
         header.captureTicks = options.blinkTicks;
         header.kind = isDelta ? Rendering::FrameRecordKind::Delta : Rendering::FrameRecordKind::Full;
         if (!target->capture->captureRecord(*term, options, m_syncCaptureGeometry.metrics,
@@ -10345,20 +10374,28 @@ private:
         m_frameLane.markSupplied(servedDemand);
     }
 
-    /// Serves the view's demand on the asking thread, for a pane no ingest
-    /// loop drains or for a resize step whose geometry must present now.
+    /// Whether a served capture needs a publication wake or is taken inline.
+    enum class FrameWake : std::uint8_t {
+        Announce,
+        CallerTakes
+    };
+
+    /// Serves the view's demand on the asking thread, for idle output, a pane
+    /// no ingest loop drains, or a resize step whose geometry must present now.
     /// A fed pane's caller drives it; an adopted pane's other session owns
     /// its turns. A resize step takes a turn only while the model is free.
     ///
     /// Never waits: a model lock another thread holds is that thread's turn,
     /// and a pass it ends serves the demand at the frame the rule admits.
     ///
+    /// - Parameter wake: Announce a capture made outside a take; suppress the
+    ///   announcement when this caller takes it before returning.
     /// - Returns: Whether the demand was served here.
-    bool serveFrameDemandHere() UBIQUITTY_EXCLUDES(modelLockRole)
+    bool serveFrameDemandHere(FrameWake wake = FrameWake::Announce) UBIQUITTY_EXCLUDES(modelLockRole)
     {
         if (!tryLockForRead())
             return false;
-        serveViewLocked();
+        serveViewLocked(wake);
         unlockForRead();
         return true;
     }
@@ -10368,7 +10405,9 @@ private:
     /// demand for a frame. A commit asks for a frame of its own, so the view
     /// sees the committed tube even when a frame the rule admitted served its
     /// demand before the commit.
-    void serveViewLocked() UBIQUITTY_REQUIRES(modelLockRole)
+    ///
+    /// - Parameter wake: Whether a served capture needs a publication wake.
+    void serveViewLocked(FrameWake wake = FrameWake::Announce) UBIQUITTY_REQUIRES(modelLockRole)
     {
         if (m_isTekFrameCommitRequested.exchange(false, std::memory_order_acq_rel)) {
             Ubiquitty::Terminal* terminal = modelTerm();
@@ -10377,7 +10416,7 @@ private:
                 static_cast<void>(m_frameLane.raiseDemand(PAL::monotonicMicros(), FrameLane::DemandRule::Coherence));
             }
         }
-        serveFrameDemand();
+        serveFrameDemand(wake);
     }
 
     /// Serves the view's outstanding demand at the owner's turn, under the
@@ -10386,7 +10425,9 @@ private:
     /// A resizing view's demand is held only by what holds a resize
     /// (``resizeHoldUnderLock``), and captures the model as it stands. An
     /// open update is stamped or expired here, as the view's check would.
-    void serveFrameDemand() UBIQUITTY_REQUIRES(modelLockRole)
+    ///
+    /// - Parameter wake: Whether a served capture needs a publication wake.
+    void serveFrameDemand(FrameWake wake = FrameWake::Announce) UBIQUITTY_REQUIRES(modelLockRole)
     {
         m_ownerHeartbeatMicros.store(PAL::monotonicMicros() | 1u, std::memory_order_relaxed);
         if (!m_frameLane.isDemandOutstanding())
@@ -10409,6 +10450,11 @@ private:
         }
         captureSyncFrame();
         if (m_frameLane.isDemandOutstanding())
+            return;
+        // takeFrame is about to take this capture in the same call. Announcing
+        // it back to that caller would owe another draw, which would capture
+        // and announce again even when the terminal is entirely idle.
+        if (wake == FrameWake::CallerTakes)
             return;
         m_frameReady.store(true, std::memory_order_release);
         m_events.pending.fetch_or(1u << static_cast<unsigned>(EventKind::ScreenDirty), std::memory_order_release);
@@ -14030,7 +14076,9 @@ private:
         bool didTabStatusChange = false;
         {
             const ModelLockHold hold(*m_activeLock);
-            if (const Ubiquitty::Terminal* term = modelTerm()) {
+            if (Ubiquitty::Terminal* term = modelTerm()) {
+                // Sync applies state without the VT parser's batch stamp.
+                ++term->modelEpoch;
                 didProgressChange = term->progressState != m_remoteProgressSeen.state || term->progressValue != m_remoteProgressSeen.value;
                 m_remoteProgressSeen = { term->progressState, term->progressValue };
                 didTabStatusChange = term->tabStatusGeneration != m_remoteTabStatusGenerationSeen;

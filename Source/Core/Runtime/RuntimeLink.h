@@ -68,6 +68,8 @@ struct TabStatusColor {
 
 struct RuntimeSnapshot {
     std::uint64_t version = 0; // dimension generation (0 at init, +1 per resize)
+    /// The published model epoch, comparable to a frame's model generation.
+    std::uint64_t modelGeneration = 0;
     /// The find search's latest publication, independent of arriving output.
     Search::Status search;
 

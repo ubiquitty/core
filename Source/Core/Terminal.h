@@ -1332,7 +1332,7 @@ struct Terminal {
     uint8_t savedPalettePosition {};
     uint8_t savedPaletteCount {};
 
-    // Bumped once for every non-empty wire batch the parser applies. This is
+    // Bumped for parser batches, remote state and frontend typography changes. This is
     // the model epoch an immutable frame records: conservative control-only
     // batches may advance it, but two different applied batches never share an
     // epoch merely because no painter drained the grid between them.
