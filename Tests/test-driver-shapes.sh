@@ -23,10 +23,12 @@ fi
 shape() { # <description> <stanza>
     local what="$1" stanza="$2"
     printf '  %-14s %-26s ' "$what" "$stanza"
-    if ./Scripts/run-tests.sh "$stanza" >/dev/null 2>&1; then
+    local log="$LOG_DIRECTORY/$what.log"
+    if ./Scripts/run-tests.sh "$stanza" >"$log" 2>&1; then
         echo ok
     else
         echo FAILED
+        cat "$log" >&2
         FAILURES=$((FAILURES + 1))
     fi
 }
@@ -56,29 +58,29 @@ stanzas_of() { # <awk pattern matching a line inside the body>
         "${declared[@]}"
 }
 
-# The stanzas the suite runs under the timing lock, read from the registration
-# itself so the two cannot drift: a test named in a set_tests_properties call
-# whose RESOURCE_LOCK holds `timing`, and a stanza whose
-# shell_<stanza>_RESOURCE_LOCK does. Such a stanza bounds the wall clock and
-# runs alone in the suite; run here beside the rest, a red row would be about
-# its timing and not its route, so it is never a route's example.
-timing_locked_stanzas() {
+# Route examples must not re-enter a timing-sensitive or sharded suite beside
+# the rest of CTest. Read both from the registration: timing resource locks
+# and native <target>_SHARDS counts. The canonical entries run every partition;
+# invoking their shell stanza here would repeat the whole suite unpartitioned.
+isolated_stanzas() {
     local sources=() file
     while IFS= read -r file; do
         sources+=("$file")
     done < <(find Tests Scripts/cmake \( -name CMakeLists.txt -o -name '*.cmake' \) -type f 2>/dev/null | sort)
     [ "${#sources[@]}" -gt 0 ] || return 0
     cat "${sources[@]}" | tr '\n' ' ' \
-        | grep -oE 'set_tests_properties\([^)]*\)|(set|list)\([^)]*shell_[A-Za-z0-9_]+_RESOURCE_LOCK[^)]*\)' \
+        | grep -oE 'set_tests_properties\([^)]*\)|(set|list)\([^)]*shell_[A-Za-z0-9_]+_RESOURCE_LOCK[^)]*\)|set\([A-Za-z0-9_-]+_SHARDS[[:space:]][^)]*\)' \
         | awk -f Scripts/stanza-timing-locks.awk | sort -u
 }
 
 LIST_ROUTES=0
 [ "${1:-}" = "--routes" ] && LIST_ROUTES=1
-TIMING_LOCKED=" $(timing_locked_stanzas | tr '\n' ' ') "
+ISOLATED=" $(isolated_stanzas | tr '\n' ' ') "
 
 if [ "$LIST_ROUTES" -eq 0 ]; then
     echo "test-driver-shapes: one stanza per build route"
+    LOG_DIRECTORY="$(mktemp -d "${TMPDIR:-/tmp}/ubiquitty-driver-shapes.XXXXXX")" || exit 1
+    trap 'rm -rf "$LOG_DIRECTORY"' EXIT
 fi
 SHAPES=0
 
@@ -99,7 +101,7 @@ for pair in \
     locked=""
     while IFS= read -r candidate; do
         [ -n "$candidate" ] || continue
-        if [[ "$TIMING_LOCKED" == *" $candidate "* ]]; then
+        if [[ "$ISOLATED" == *" $candidate "* ]]; then
             locked+="${locked:+ }$candidate"
             continue
         fi
@@ -119,7 +121,7 @@ for pair in \
             echo "$what UNPROVEN"
         else
             echo "  FAILED   the $what route is unproven: every stanza with its shape" >&2
-            echo "           runs under the timing lock ($locked), and none of them" >&2
+            echo "           runs as an isolated or sharded suite ($locked), and none of them" >&2
             echo "           can prove the route beside the rest of the suite." >&2
         fi
         FAILURES=$((FAILURES + 1))

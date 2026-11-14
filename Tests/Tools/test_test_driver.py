@@ -633,6 +633,86 @@ fi
         self.assertFalse(custom.exists())
 
 
+class DriverShapeIsolationTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="ubiquitty-route-isolation-")
+        self.addCleanup(self.temporary.cleanup)
+        self.repository = Path(self.temporary.name)
+        for name in ("Scripts", "Tests"):
+            (self.repository / name).mkdir()
+        for name in ("stanza-declarations.awk", "stanza-inventories.awk", "stanza-timing-locks.awk"):
+            shutil.copyfile(ROOT / "Scripts" / name, self.repository / "Scripts" / name)
+        self.probe = self.repository / "Tests/test-driver-shapes.sh"
+        shutil.copyfile(ROOT / "Tests/test-driver-shapes.sh", self.probe)
+        self.driver = self.repository / "Scripts/run-tests.sh"
+        self.registration = self.repository / "Tests/CMakeLists.txt"
+        self.registration.write_text("set(test_pty_SHARDS 4)\n")
+        self.trace = self.repository / "route-trace"
+        self.environment = dict(os.environ, DRIVER_ROUTE_TRACE=str(self.trace))
+        self.writeDriver()
+
+    def writeDriver(self, includeOrdinary=True):
+        driver = ("#!/bin/bash\n"
+                  'printf "%s\\n" "$1" >> "$DRIVER_ROUTE_TRACE"\n'
+                  'if [ "$1" = test_pty ]; then echo "unpartitioned PTY sentinel" >&2; exit 97; fi\n'
+                  'if [ "${DRIVER_ROUTE_FAILURE:-}" = "$1" ]; then echo "controlled route assertion" >&2; exit 97; fi\n'
+                  "exit 0\n"
+                  "build_and_run inline_example Source/example.cpp\n"
+                  "if wanted test_pty; then\n    ubq_build_test test_pty output build-log\nfi\n")
+        if includeOrdinary:
+            driver += "if wanted ordinary_target; then\n    ubq_build_test ordinary_target output build-log\nfi\n"
+        driver += ("if wanted archive_example; then\n    ubq_libcore_consumer output\nfi\n"
+                   "if wanted external_example; then\n    ROOT/Tests/test-example.sh\nfi\n")
+        self.driver.write_text(driver)
+        self.driver.chmod(0o755)
+
+    def runProbe(self, *arguments):
+        return subprocess.run(["/bin/bash", str(self.probe), *arguments],
+                              cwd=self.repository, env=self.environment,
+                              capture_output=True, text=True, timeout=20, check=False)
+
+    def testPartitionedNativeSuiteCannotProveAParallelBuildRoute(self):
+        for count in ("2", "4", "10", '"16"'):
+            with self.subTest(count=count):
+                self.registration.write_text(f"set(test_pty_SHARDS\n    {count})\n")
+                result = self.runProbe("--routes")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("shared-target ordinary_target", result.stdout)
+                self.assertNotIn("shared-target test_pty", result.stdout)
+
+    def testTheOrdinaryRepresentativeStillExecutesAllFourRoutes(self):
+        result = self.runProbe()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.trace.read_text().splitlines(),
+                         ["inline_example", "archive_example", "ordinary_target", "external_example"])
+        self.assertIn("all 4 build routes passed", result.stdout)
+
+    def testOnlyAPartitionedRepresentativeLeavesItsRouteUnproven(self):
+        self.writeDriver(includeOrdinary=False)
+        result = self.runProbe("--routes")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("shared-target UNPROVEN", result.stdout)
+
+    def testAnUnpartitionedNativeTargetRemainsEligible(self):
+        self.registration.write_text("set(test_pty_SHARDS 1)\n")
+        result = self.runProbe("--routes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("shared-target test_pty", result.stdout)
+
+    def testTimingLockedUnpartitionedTargetsRemainIsolated(self):
+        self.registration.write_text("set_tests_properties(test_pty PROPERTIES RESOURCE_LOCK timing)\n")
+        result = self.runProbe("--routes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("shared-target ordinary_target", result.stdout)
+
+    def testAnEligibleRouteFailureReportsItsActualAssertion(self):
+        self.environment["DRIVER_ROUTE_FAILURE"] = "ordinary_target"
+        result = self.runProbe()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("controlled route assertion", result.stderr)
+        self.assertIn("1 of 4 build routes are broken", result.stderr)
+
+
 class BuildTestsDriverTests(unittest.TestCase):
     def setUp(self):
         scratch = tempfile.TemporaryDirectory(prefix="ubiquitty-build-tests-subject-")

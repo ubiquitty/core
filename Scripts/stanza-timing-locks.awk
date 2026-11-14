@@ -1,10 +1,11 @@
 # Copyright (C) 2026 Stanislav Yaglo
 # SPDX-License-Identifier: Apache-2.0
 
-# Names the tests and shell stanzas a CMake call holds under the `timing`
-# resource lock. Each input line is one call, joined onto a line by the caller:
+# Names the tests and shell stanzas a route probe must keep isolated: a CMake
+# timing resource lock or a native target partitioned into multiple shards. Each input line is one call, joined onto a line by the caller:
 #   set_tests_properties(<test>... PROPERTIES <PROPERTY> <value>... ...)
 #   set(shell_<stanza>_RESOURCE_LOCK <lock>...) or list(APPEND ... ...)
+#   set(<target>_SHARDS <count>)
 # A value is a CMake list, so `a;timing` holds it as `timing` does.
 
 function holdsTiming(value, parts, count, i) {
@@ -20,6 +21,14 @@ function holdsTiming(value, parts, count, i) {
     sub(/^[^(]*\(/, "", line)
     sub(/\)[[:space:]]*$/, "", line)
     count = split(line, tokens, /[[:space:]]+/)
+    shardCount = tokens[2]
+    gsub(/"/, "", shardCount)
+    if (tokens[1] ~ /_SHARDS$/ && shardCount ~ /^[0-9]+$/ && shardCount + 0 > 1) {
+        target = tokens[1]
+        sub(/_SHARDS$/, "", target)
+        print target
+        next
+    }
     if ($0 ~ /^set_tests_properties/) {
         names = ""
         i = 1
