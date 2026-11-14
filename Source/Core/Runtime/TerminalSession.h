@@ -10139,8 +10139,8 @@ private:
 
     /// The hold the model decides, under its lock: the decision stamps a
     /// block on first sight and expires it, so it writes the model. An expiry
-    /// the coherence rule's check makes wakes the drain once the lock is
-    /// released.
+    /// the coherence rule's check makes serves any waiting capture in this
+    /// same model turn, then wakes the drain once the lock is released.
     ///
     /// - Parameters:
     ///   - nowTicks: Now, on the 60 Hz monotonic clock.
@@ -10162,6 +10162,8 @@ private:
                 withhold = withholdCapture(*terminal, nowTicks);
                 if (withhold.isHeld)
                     budget = m_runtime->presentationHoldTicksRemaining(*terminal, nowTicks, nowMicros);
+                else if (withhold.didExpireBlock)
+                    serveViewLocked(FrameWake::CallerAnnounces);
             } else {
                 withhold.isHeld = m_runtime->shouldWithholdPresentation(nowMicros);
                 if (withhold.isHeld)
@@ -10374,10 +10376,12 @@ private:
         m_frameLane.markSupplied(servedDemand);
     }
 
-    /// Whether a served capture needs a publication wake or is taken inline.
+    /// Who announces a served capture: this service, its caller after releasing
+    /// the model lock, or nobody when the caller takes the capture inline.
     enum class FrameWake : std::uint8_t {
         Announce,
-        CallerTakes
+        CallerTakes,
+        CallerAnnounces
     };
 
     /// Serves the view's demand on the asking thread, for idle output, a pane
@@ -10406,7 +10410,7 @@ private:
     /// sees the committed tube even when a frame the rule admitted served its
     /// demand before the commit.
     ///
-    /// - Parameter wake: Whether a served capture needs a publication wake.
+    /// - Parameter wake: Who announces the served capture, if it needs a wake.
     void serveViewLocked(FrameWake wake = FrameWake::Announce) UBIQUITTY_REQUIRES(modelLockRole)
     {
         if (m_isTekFrameCommitRequested.exchange(false, std::memory_order_acq_rel)) {
@@ -10426,7 +10430,7 @@ private:
     /// (``resizeHoldUnderLock``), and captures the model as it stands. An
     /// open update is stamped or expired here, as the view's check would.
     ///
-    /// - Parameter wake: Whether a served capture needs a publication wake.
+    /// - Parameter wake: Who announces the served capture, if it needs a wake.
     void serveFrameDemand(FrameWake wake = FrameWake::Announce) UBIQUITTY_REQUIRES(modelLockRole)
     {
         m_ownerHeartbeatMicros.store(PAL::monotonicMicros() | 1u, std::memory_order_relaxed);
@@ -10458,7 +10462,8 @@ private:
             return;
         m_frameReady.store(true, std::memory_order_release);
         m_events.pending.fetch_or(1u << static_cast<unsigned>(EventKind::ScreenDirty), std::memory_order_release);
-        signalDrain();
+        if (wake == FrameWake::Announce)
+            signalDrain();
     }
 
     /// Resolves the latest hand-off of the view's selection for the frame

@@ -1031,6 +1031,58 @@ TEST(colorsExpiredByTheFrameDecisionAreReportedInThatTick)
     CHECK_EQ(frontend.colorReports()[0].background.blue, 0x77);
 }
 
+TEST(anExpiredFedUpdatePublishesItsWaitingCaptureBeforeWakingTheView)
+{
+    const auto release = [](TerminalSession* session) {
+        session->setDrainSignal(nullptr, nullptr);
+        session->close();
+        releaseTerminalSession(session);
+    };
+    std::unique_ptr<TerminalSession, decltype(release)> session(TerminalSession::make(), release);
+    REQUIRE(session);
+    session->start(4, 20);
+    session->setSyncFrameCaptureGeometry(captureGeometry(4, 20));
+    session->setSyncFramePresentation(Runtime::PanePresentation::Presented);
+    constexpr std::string_view openAndText = "\x1b[?2026htext\x1b]11;rgb:00/77/77\x07";
+    session->feedBytes(std::span(openAndText));
+    while (const TakenFrame pending { session->takeSyncFrame() }) {
+    }
+    Runtime::FrameSupply supply;
+    const TakenFrame held { session->takeFrame({ .nowTicks = PAL::monotonicTicks() }, supply) };
+    REQUIRE(!held);
+    REQUIRE(supply.decline == FrameDecline::HeldByPresentation);
+    session->lockForRead();
+    session->terminal()->modes.syncOutputTouchTicks = PAL::monotonicTicks().count - Modes::SyncOutput::maxHoldTicks - 1;
+    session->unlockForRead();
+    session->republishSnapshot();
+    static_cast<void>(session->takeSyncFrameReady());
+    static_cast<void>(session->takeEventFlags());
+    struct Wake {
+        TerminalSession& session;
+        int count = 0;
+        std::uint64_t publications = 0;
+    } wake { *session };
+    session->setDrainSignal(&wake, [](void* context) {
+        auto& wake = *static_cast<Wake*>(context);
+        ++wake.count;
+        wake.publications = wake.session.syncFramePublicationCount();
+    });
+    const std::uint64_t before = session->syncFramePublicationCount();
+    CHECK(!session->shouldWithholdFrame(PAL::monotonicTicks()));
+    CHECK_EQ(wake.count, 1);
+    CHECK_EQ(wake.publications, before + 1);
+    CHECK(session->takeSyncFrameReady());
+    const TakenFrame frame { session->takeSyncFrame() };
+    REQUIRE(frame);
+    CHECK(!session->hasFrameChangesAfter(*frame));
+    const auto colors = session->readCoherentColors();
+    CHECK_EQ(colors.colors.background.green, 0x77);
+    CHECK_EQ(colors.colors.background.blue, 0x77);
+    CHECK(!session->shouldWithholdFrame(PAL::monotonicTicks()));
+    CHECK_EQ(session->syncFramePublicationCount(), before + 1);
+    CHECK_EQ(wake.count, 1);
+}
+
 // What one case's run left behind for its checks.
 struct CadenceRun {
     bool didStart = false;
