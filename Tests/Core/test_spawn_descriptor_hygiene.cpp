@@ -12,9 +12,14 @@
 
 #include "Harness.h"
 
+#include "PAL/PAL.h"
 #include "PAL/Stream.h"
 
+#include <csignal>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <pthread.h>
 #include <string>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -43,6 +48,19 @@ std::string drainCommand(Ubiquitty::PAL::PipedCommand& command)
         break; // EndOfFile, Closed, Fatal, or a zero read all end the drain
     }
     return output;
+}
+
+/// Reports the exec'd child's mask before the test runner can change it.
+int checkChildSignalMask(const char* mode)
+{
+    sigset_t mask;
+    if (::pthread_sigmask(SIG_BLOCK, nullptr, &mask) != 0)
+        return 2;
+    for (const int signal : { SIGTERM, SIGINT, SIGHUP, SIGUSR1, SIGUSR2 })
+        CHECK_EQ(sigismember(&mask, signal), 0);
+    if (std::strcmp(mode, "--print-signal-mask") == 0 && !::UbiquittyTest::failures)
+        std::puts("unblocked");
+    return ::UbiquittyTest::failures ? 1 : 0;
 }
 
 } // namespace
@@ -104,8 +122,6 @@ TEST(closingOurEndsIsEnoughToEndTheChild)
     CHECK(said.empty());
 }
 
-UBIQUITTY_TEST_MAIN()
-
 TEST(capturedStandardErrorIsSeparateFromProtocolOutput)
 {
     auto command = Ubiquitty::PAL::spawnPipedCommand("printf protocol; printf 'Permission denied' >&2", Ubiquitty::PAL::CommandStandardError::Capture);
@@ -115,4 +131,46 @@ TEST(capturedStandardErrorIsSeparateFromProtocolOutput)
     CHECK(drainCommand(command) == "protocol");
     command.output = std::move(command.standardError);
     CHECK(drainCommand(command) == "Permission denied");
+}
+
+TEST(aSpawnedProcessDoesNotInheritTheCallersSignalMask)
+{
+    const char* executable = ::getenv("UBQ_SPAWN_TEST_EXECUTABLE");
+    CHECK(executable);
+    if (!executable)
+        return;
+    sigset_t blocked;
+    sigemptyset(&blocked);
+    for (const int signal : { SIGTERM, SIGINT, SIGHUP, SIGUSR1, SIGUSR2 })
+        sigaddset(&blocked, signal);
+    sigset_t previous;
+    const int changed = ::pthread_sigmask(SIG_BLOCK, &blocked, &previous);
+    CHECK_EQ(changed, 0);
+    if (changed)
+        return;
+    const char* const arguments[] = { executable, "--check-signal-mask", nullptr };
+    const int result = Ubiquitty::PAL::processSpawnAndWait(executable, arguments);
+    auto command = Ubiquitty::PAL::spawnPipedCommand("exec \"$UBQ_SPAWN_TEST_EXECUTABLE\" --print-signal-mask");
+    sigset_t after;
+    const int queried = ::pthread_sigmask(SIG_BLOCK, nullptr, &after);
+    CHECK_EQ(::pthread_sigmask(SIG_SETMASK, &previous, nullptr), 0);
+    CHECK_EQ(queried, 0);
+    CHECK_MSG(result == 0, "a daemon started from a worker must receive its control signals");
+    CHECK(static_cast<bool>(command));
+    if (command)
+        CHECK_MSG(drainCommand(command) == "unblocked\n", "a piped transport must receive its control signals");
+    if (!queried) {
+        for (const int signal : { SIGTERM, SIGINT, SIGHUP, SIGUSR1, SIGUSR2 })
+            CHECK_EQ(sigismember(&after, signal), 1);
+    }
+}
+
+int main(int argc, char** argv)
+{
+    if (argc == 2 && (std::strcmp(argv[1], "--check-signal-mask") == 0 || std::strcmp(argv[1], "--print-signal-mask") == 0))
+        return checkChildSignalMask(argv[1]);
+    if (::setenv("UBQ_SPAWN_TEST_EXECUTABLE", argv[0], 1) != 0)
+        return 2;
+    UBIQUITTY_TEST_PIN_PREFERENCES();
+    return ::UbiquittyTest::runRegisteredCases(argc, argv);
 }

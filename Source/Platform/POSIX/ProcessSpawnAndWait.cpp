@@ -16,6 +16,7 @@
 #include "PAL/PAL.h"
 
 #include <cerrno>
+#include <csignal>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -29,8 +30,21 @@ int processSpawnAndWait(const char* path, const char* const argv[])
     if (!path || path[0] == '\0' || !argv)
         return -1;
 
+    // A worker thread may block control signals. Its child is a new process,
+    // whose daemon must be able to receive those signals on its own threads.
+    posix_spawnattr_t attributes;
+    if (::posix_spawnattr_init(&attributes) != 0)
+        return -1;
+    sigset_t unblocked;
+    sigemptyset(&unblocked);
+    if (::posix_spawnattr_setsigmask(&attributes, &unblocked) != 0
+        || ::posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK) != 0) {
+        ::posix_spawnattr_destroy(&attributes);
+        return -1;
+    }
     pid_t processID = 0;
-    const int rc = ::posix_spawn(&processID, path, nullptr, nullptr, const_cast<char* const*>(argv), environ);
+    const int rc = ::posix_spawn(&processID, path, nullptr, &attributes, const_cast<char* const*>(argv), environ);
+    ::posix_spawnattr_destroy(&attributes);
     if (rc != 0)
         return -1;
 

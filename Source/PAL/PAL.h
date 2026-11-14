@@ -480,7 +480,8 @@ bool storageWriteTempFile(const char* directoryHint, const char* suffix, std::sp
 int fileCanonicalPathForDescriptor(int descriptor, char* outputBuffer, int outputCapacity);
 
 /// Spawns `path` with the null-terminated `argv`, inheriting the current
-/// environment, and waits for it.
+/// environment with no signals blocked, and waits for it. The calling
+/// thread's signal mask is unchanged.
 ///
 /// - Returns: The child's exit code on a normal exit; -1 when the spawn failed
 ///   or the child did not exit normally.

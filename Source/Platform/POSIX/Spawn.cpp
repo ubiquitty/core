@@ -206,14 +206,26 @@ PipedCommand spawnPipedCommand(std::string_view command, CommandStandardError st
     // can read and write that session. The pipe ends above are re-closed by
     // the default harmlessly; the dup2 targets survive it.
     posix_spawnattr_t attributes;
-    posix_spawnattr_init(&attributes);
+    if (posix_spawnattr_init(&attributes) != 0) {
+        posix_spawn_file_actions_destroy(&actions);
+        return result;
+    }
+    // A transport launched from a worker must receive termination
+    // and interrupt signals, independently of that worker's blocked mask.
+    sigset_t unblocked;
+    sigemptyset(&unblocked);
+    short spawnFlags = POSIX_SPAWN_SETSIGMASK;
 #if defined(__APPLE__)
-    short spawnFlags = 0;
-    posix_spawnattr_getflags(&attributes, &spawnFlags);
-    posix_spawnattr_setflags(&attributes, static_cast<short>(spawnFlags | POSIX_SPAWN_CLOEXEC_DEFAULT));
+    spawnFlags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
 #elif defined(__GLIBC__) && ((__GLIBC__ > 2) || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
     posix_spawn_file_actions_addclosefrom_np(&actions, STDERR_FILENO + 1);
 #endif
+    if (posix_spawnattr_setsigmask(&attributes, &unblocked) != 0
+        || posix_spawnattr_setflags(&attributes, spawnFlags) != 0) {
+        posix_spawn_file_actions_destroy(&actions);
+        posix_spawnattr_destroy(&attributes);
+        return result;
+    }
 
     const std::string commandLine(command);
     char shellPath[] = "/bin/sh";
