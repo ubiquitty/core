@@ -160,7 +160,20 @@ def failure_location(text, reporter=None):
         finding = reporter.finding_from_line(candidate) if reporter else None
         if finding:
             return finding.get("file", ""), finding.get("line"), finding["reason"][:500]
+        matched = re.match(r"^\s*[^:\n]+: (?:FAIL(?:ED)?|ERROR): (.+)$", candidate)
+        if matched:
+            return "", None, matched.group(1)[:500]
     return "", None, text.strip().split("\n", 1)[0][:500]
+
+
+def print_failure_context(name, body):
+    """Keeps each failed case visible after later tests fill the suite tail."""
+    lines = body.splitlines()
+    if len(lines) > 80:
+        lines = lines[:40] + [f"... {len(lines) - 80} output lines omitted ..."] + lines[-40:]
+    print(f"ctest: failure output — {name}", file=sys.stderr)
+    for line in lines:
+        print(f"  {line[:1000]}", file=sys.stderr)
 
 
 def read_junit(path):
@@ -373,6 +386,8 @@ def main(argv=None):
             location = f"{source}:{line}" if source and line else name
             reproduce = reproduce_command(options.build, name, environment)
             gate_report.finding(location, "ctest", f"{reason}; reproduce: {reproduce}")
+            if reporter.mode == "quiet":
+                print_failure_context(name, body)
         print(f"ctest: rerun — ctest --test-dir {portable_build_path(options.build, environment)} "
               "--rerun-failed --output-on-failure")
     if not_run and result.status != 0:

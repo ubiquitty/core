@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,7 @@ import unittest
 from unittest.mock import patch
 
 from gate_framework import EVENT_SCHEMA, Reporter
+import ctest_report
 
 
 def _is_gone(pid):
@@ -444,6 +446,43 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(stopped.exception.code, 128 + signal.SIGTERM)
         self.assertEqual(len(spawned), 1)
         self.assertTrue(_is_gone(spawned[0]))
+
+
+class CTestReporterTests(unittest.TestCase):
+    def test_early_shell_failure_keeps_its_assertion_after_the_suite_tail(self):
+        if not shutil.which("cmake") or not shutil.which("ctest"):
+            self.skipTest("CMake and CTest are required")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "fail.sh").write_text(
+                "#!/bin/sh\necho 'named_layout_restore: FAIL: a restored pane has its recorded grid'\nexit 1\n")
+            (root / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.21)\nproject(Reporting NONE)\nenable_testing()\n"
+                'add_test(NAME shell_named_layout_restore COMMAND /bin/sh "${CMAKE_SOURCE_DIR}/fail.sh")\n'
+                + "".join(f'add_test(NAME later_{index} COMMAND "${{CMAKE_COMMAND}}" -E true)\n'
+                          for index in range(90)))
+            build = root / "build"
+            subprocess.run(["cmake", "-S", str(root), "-B", str(build)],
+                           capture_output=True, check=True)
+            environment = {**os.environ, "UBQ_REPORT_MODE": "quiet"}
+            result = subprocess.run(
+                [sys.executable, str(Path(ctest_report.__file__)), "--build", str(build)],
+                env=environment, text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("ctest: failure output — shell_named_layout_restore", result.stderr)
+            self.assertIn("named_layout_restore: FAIL: a restored pane has its recorded grid", result.stderr)
+            self.assertIn("ctest: a restored pane has its recorded grid; reproduce:", result.stderr)
+
+    def test_failure_context_is_bounded_and_keeps_both_ends(self):
+        output = io.StringIO()
+        with redirect_stderr(output):
+            ctest_report.print_failure_context("flood", "\n".join(str(index) * 2000 for index in range(100)))
+        lines = output.getvalue().splitlines()
+        self.assertEqual(len(lines), 82)
+        self.assertIn("20 output lines omitted", output.getvalue())
+        self.assertTrue(all(len(line) <= 1002 for line in lines))
+        self.assertTrue(lines[1].startswith("  000"))
+        self.assertTrue(lines[-1].startswith("  999"))
 
 
 if __name__ == "__main__":
