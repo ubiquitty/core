@@ -258,8 +258,14 @@ SecondTurn secondWaitersTurn()
     SecondTurn turn = SecondTurn::Unobserved;
     for (;;) {
         if (lock.try_lock()) {
+            const auto acquisitions = lock.acquisitionCountForTest();
             const ModelLockRelease release = lock.unlockForDrain();
-            turn = release.handoff == ModelLockHandoff::Unwanted ? SecondTurn::Unwanted : SecondTurn::Offered;
+            // The second waiter can take the unlocked mutex before the
+            // release reads its count. That completed turn is no lost claim.
+            if (release.handoff != ModelLockHandoff::Unwanted)
+                turn = SecondTurn::Offered;
+            else if (lock.acquisitionCountForTest() == acquisitions)
+                turn = SecondTurn::Unwanted;
             break;
         }
         if (holder.load(std::memory_order_acquire) == 1 - firstHolder)
