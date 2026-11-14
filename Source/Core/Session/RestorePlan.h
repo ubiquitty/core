@@ -62,19 +62,15 @@ enum class QuitReason : std::uint8_t {
 }
 
 /// The facts an update must prove before Sparkle may replace the running app.
-/// A successful socket preflight is not an adoption, and a started successor
-/// is not proof that it took every session the app placed in its predecessor.
+/// Adoption and an attached session prove that the current host owns each
+/// local pane. Its adoption outcomes remain authoritative until the app exits;
+/// the relaunched app transfers hosts before restoring those saved references.
 struct UpdateRelaunchFacts {
     std::size_t localPaneCount = 0;
     std::size_t adoptedLocalPaneCount = 0;
     std::size_t attachedLocalPaneCount = 0;
-    std::size_t movedLocalPaneCount = 0;
     std::size_t unresolvedAdoptionCount = 0;
     bool isNewHostVerified = false;
-    bool isNewHostInstalled = false;
-    bool isNewHostAnswering = false;
-    std::size_t olderHostCount = 0;
-    std::size_t pendingSessionCount = 0;
 };
 
 /// Whether the app may relinquish its old binary to Sparkle.
@@ -82,9 +78,7 @@ struct UpdateRelaunchFacts {
 {
     return facts.adoptedLocalPaneCount == facts.localPaneCount
         && facts.attachedLocalPaneCount == facts.localPaneCount
-        && facts.movedLocalPaneCount == facts.localPaneCount && !facts.unresolvedAdoptionCount
-        && facts.isNewHostVerified && facts.isNewHostInstalled && facts.isNewHostAnswering
-        && !facts.olderHostCount && !facts.pendingSessionCount;
+        && !facts.unresolvedAdoptionCount && facts.isNewHostVerified;
 }
 
 /// Selects the installation path allowed by the terminal ownership evidence.

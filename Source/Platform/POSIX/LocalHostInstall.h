@@ -152,6 +152,13 @@ struct LocalHostUpgradeOutcome {
     std::size_t refusingHostCount = 0;
 };
 
+/// Checks a verified executable's stated version without installing or starting a daemon.
+/// - Parameters:
+///   - hostPath: The already signature-verified update host.
+///   - version: The archive's checked version.
+/// - Returns: Whether a bounded version probe reports that exact valid version.
+[[nodiscard]] bool isLocalHostAtVersion(const std::string& hostPath, const std::string& version);
+
 /// Runs the install and takeover for a verified host from an update archive.
 /// Its version is the archive's checked CFBundleShortVersionString, not the old app's.
 [[nodiscard]] LocalHostUpgradeOutcome upgradeLocalHostForUpdate(const std::string& hostPath, LocalHostBuild build, const std::string& version);

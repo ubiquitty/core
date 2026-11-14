@@ -56,10 +56,9 @@ TEST(anUpdateRelaunchRequiresEveryLocalPaneAndTheNewHostToBeSettled)
     facts.localPaneCount = 2;
     facts.adoptedLocalPaneCount = 2;
     facts.attachedLocalPaneCount = 2;
-    facts.movedLocalPaneCount = 2;
     facts.isNewHostVerified = true;
-    facts.isNewHostInstalled = true;
-    facts.isNewHostAnswering = true;
+    // The old host still owns both panes; its adoption ledger can retire only
+    // after this app exits. The successor takes them during the next launch.
     CHECK(S::mayInstallUpdateAndRelaunch(facts));
 
     facts.adoptedLocalPaneCount = 1;
@@ -68,24 +67,9 @@ TEST(anUpdateRelaunchRequiresEveryLocalPaneAndTheNewHostToBeSettled)
     facts.attachedLocalPaneCount = 1;
     CHECK(!S::mayInstallUpdateAndRelaunch(facts));
     facts.attachedLocalPaneCount = 2;
-    facts.movedLocalPaneCount = 1;
-    CHECK(!S::mayInstallUpdateAndRelaunch(facts));
-    facts.movedLocalPaneCount = 2;
     facts.unresolvedAdoptionCount = 1;
     CHECK(!S::mayInstallUpdateAndRelaunch(facts));
     facts.unresolvedAdoptionCount = 0;
-    facts.olderHostCount = 1;
-    CHECK(!S::mayInstallUpdateAndRelaunch(facts));
-    facts.olderHostCount = 0;
-    facts.pendingSessionCount = 1;
-    CHECK(!S::mayInstallUpdateAndRelaunch(facts));
-    facts.pendingSessionCount = 0;
-    facts.isNewHostAnswering = false;
-    CHECK(!S::mayInstallUpdateAndRelaunch(facts));
-    facts.isNewHostAnswering = true;
-    facts.isNewHostInstalled = false;
-    CHECK(!S::mayInstallUpdateAndRelaunch(facts));
-    facts.isNewHostInstalled = true;
     facts.isNewHostVerified = false;
     CHECK(!S::mayInstallUpdateAndRelaunch(facts));
 }

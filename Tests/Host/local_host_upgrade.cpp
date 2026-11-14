@@ -692,6 +692,12 @@ void refusesAnUpdateHostWhoseBinaryStatesAnotherVersion(const std::string& built
     }
     machine.adopt();
     CHECK_MSG(Install::copy(built, machine.bundledHost), "premise: the update archive carries a host");
+    CHECK_MSG(Session::isLocalHostAtVersion(machine.bundledHost, std::string(Sync::appVersion())), "the version probe accepts the exact candidate");
+    CHECK_MSG(!Session::isLocalHostAtVersion(machine.bundledHost, "0.0.0"), "the version probe rejects another version");
+    CHECK_MSG(!Session::isLocalHostAtVersion(machine.bundledHost, "not-a-version"), "the version probe rejects an invalid version");
+    CHECK_MSG(!Session::isLocalHostAtVersion(machine.home + "/missing-host", std::string(Sync::appVersion())), "the version probe rejects a missing executable");
+    CHECK_MSG(::access(machine.installPath.c_str(), F_OK) != 0, "version checks leave the existing install alone");
+    CHECK_MSG(!detachedHost(machine.home, machine.holderAt(machine.bundledHost).socketLeaf()), "version checks start no daemon");
     const auto outcome = Session::upgradeLocalHostForUpdate(machine.bundledHost, Session::LocalHostBuild::Release, "0.0.0");
     CHECK_MSG(outcome.install.kind == Session::LocalHostInstallKind::Refused, "a host stating another version cannot be installed for the update");
     CHECK_MSG(::access(machine.installPath.c_str(), F_OK) != 0, "the mismatched host changed no install");

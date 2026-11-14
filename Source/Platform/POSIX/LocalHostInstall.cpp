@@ -797,9 +797,14 @@ LocalHostUpgradeOutcome upgradeLocalHost(const std::string& bundledHostPath, Loc
     return upgradeLocalHostAtVersion(bundledHostPath, build, Protocol::Sync::appVersion());
 }
 
+bool isLocalHostAtVersion(const std::string& hostPath, const std::string& version)
+{
+    return Protocol::Sync::parseAppVersion(version).has_value() && statedVersion(hostPath).version == version;
+}
+
 LocalHostUpgradeOutcome upgradeLocalHostForUpdate(const std::string& bundledHostPath, LocalHostBuild build, const std::string& version)
 {
-    if (!Protocol::Sync::parseAppVersion(version) || statedVersion(bundledHostPath).version != version) {
+    if (!isLocalHostAtVersion(bundledHostPath, version)) {
         LocalHostUpgradeOutcome outcome;
         outcome.install = { .kind = LocalHostInstallKind::Refused, .reason = "the host does not state the update's version" };
         return outcome;
