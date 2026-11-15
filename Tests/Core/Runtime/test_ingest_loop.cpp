@@ -66,10 +66,8 @@ namespace Ubiquitty::PAL {
 // over one is capacity-limited by construction, whatever else the machine is
 // running: the flood pipeline's election needs no writer to keep up.
 //
-// The shape caps what one read returns, as a pty does: a macOS pty answers
-// every read with at most 1024 bytes however long the reader waits, where a
-// Linux pty read taken too soon catches the line discipline mid-copy and a
-// read taken once the slab has landed takes all of it.
+// The shape models a fixed read quantum or a transport whose reads grow when
+// the reader lets a slab accumulate. Neither shape is a message boundary.
 // The scheduling band the calling thread runs in, as the platform names it:
 // the QoS class on Darwin, the nice value on Linux.
 int currentThreadBand()
@@ -109,6 +107,7 @@ struct ReadShape {
     // find nothing; 0 for a writer that never pauses.
     int pauseEveryBytes = 0;
     int pauseReads = 0;
+    ShortReadWaitStrategy shortReadWaitStrategy = ShortReadWaitStrategy::Accumulate;
 };
 
 // What the stream's program reads back: every reply the runtime writes.
@@ -184,6 +183,7 @@ public:
     [[nodiscard]] bool hasPendingWrite() const override { return false; }
     [[nodiscard]] int lastError() const override { return 0; }
     [[nodiscard]] FileDescriptor& handle() override { return m_descriptor; }
+    [[nodiscard]] ShortReadWaitStrategy shortReadWaitStrategy() const override { return m_shape.shortReadWaitStrategy; }
 
     // Duplicates share the file offset, so the loop's endpoint, the reader's
     // endpoint and the Stream all consume one sequence, as the PTY's do.
@@ -2374,7 +2374,7 @@ TEST(testAFixedReadQuantumTakesOneAccumulateWaitPerBurst)
     CHECK_MSG(outcome.accumulateWaits <= outcome.bursts, "a wait that did not grow the next read ends the burst's waits");
 }
 
-// Where a wait lets the slab land (a Linux pty), the next read grows and the
+// Where a wait lets a slab land, the next read grows and the
 // reader keeps waiting after short reads for the whole burst.
 TEST(testASlabThatLandsKeepsTheAccumulateWait)
 {
@@ -2382,6 +2382,25 @@ TEST(testASlabThatLandsKeepsTheAccumulateWait)
     CHECK_EQ(outcome.deliveredBytes, outcome.totalBytes);
     CHECK_MSG(outcome.bursts >= 1, "the flood rode the pipeline, so the reader's wait was in play");
     CHECK_MSG(outcome.accumulateWaits > outcome.bursts, "a wait that grew the next read is taken again");
+}
+
+// A Linux PTY's 4095-byte quantum is below the generic short-read threshold.
+// Reading it frees the N_TTY ring for the next refill; waiting does not enlarge
+// that ring. The endpoint's policy must also cover reads below that quantum.
+// Empty refills interrupt the generic wait's size comparison, so that
+// comparison alone cannot reject repeated waits on a fixed ring.
+TEST(testImmediateShortReadsDrainWithoutAccumulateWaits)
+{
+    for (const int quantum : { 4095, 512 }) {
+        const ShapedFloodOutcome outcome = runShapedFlood({ .quantumBytes = quantum,
+            .pauseEveryBytes = quantum,
+            .pauseReads = 1,
+            .shortReadWaitStrategy = Ubiquitty::PAL::ShortReadWaitStrategy::ReadImmediately });
+        CHECK_EQ(outcome.deliveredBytes, outcome.totalBytes);
+        CHECK_MSG(outcome.bursts >= 1, "the flood rode the pipeline behind a slow parser");
+        CHECK_EQ(outcome.accumulateWaits, 0u);
+        CHECK(outcome.didReachTail);
+    }
 }
 
 TEST(testTimedPipelinePassesKeepTheReaderAndEveryUnreadByte)

@@ -22,9 +22,8 @@
 // out of the Metal arm's bridge so the tuning is written down once rather than
 // re-derived by the next frontend. Every decision here was measured there.
 //
-// The Metal arm is the only consumer today. The GTK arm drives Core straight
-// from the PTY on its main loop and has no ingest thread to give this, so the
-// flood pipeline does not reach it.
+// TerminalSession uses this loop for both Metal and GTK. Refill policy comes
+// from the PAL endpoint so each platform can tune its transport independently.
 //
 // The OS lives behind PAL: the wait is ``PAL::waitForReadiness`` and the
 // cross-thread wake is a ``PAL::Waker``, so this header names no descriptor
@@ -310,9 +309,9 @@ public:
     /// How many short-read accumulate waits the flood reader has taken,
     /// cumulatively.
     ///
-    /// A transport whose reads do not grow after a wait (a fixed read
-    /// quantum) takes at most one per burst; a scenario pins that against
-    /// ``floodBurstCount()``.
+    /// A non-growing read immediately after a wait disables further waits
+    /// for that burst. An empty refill interrupts that comparison. An
+    /// endpoint whose short-read policy forbids accumulation records zero.
     ///
     /// - Returns: The wait count since construction.
     [[nodiscard]] std::uint64_t floodAccumulateWaitCount() const { return m_floodAccumulateWaitCount.load(std::memory_order_relaxed); }
@@ -904,7 +903,9 @@ private:
         // see ``floodShortReadBytes`` for why a read that does not grow past
         // it ends the waits for the burst.
         int bytesBeforeAccumulateWait = 0;
-        bool isAccumulateWaitRefuted = false;
+        // A fixed-ring endpoint already refutes the premise: draining it
+        // admits more bytes, while waiting cannot enlarge the kernel ring.
+        bool isAccumulateWaitRefuted = m_floodEndpoint->shortReadWaitStrategy() == PAL::ShortReadWaitStrategy::ReadImmediately;
         for (;;) {
             if (m_stop.load(std::memory_order_relaxed) || m_runtime.isIngestHeld() || m_runtime.isDecodeFenceRaised())
                 break; // hold: the frontend answers a detected transfer; the kernel queue keeps the frame for its agent

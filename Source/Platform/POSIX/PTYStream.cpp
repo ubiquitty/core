@@ -317,6 +317,17 @@ public:
     [[nodiscard]] int lastError() const override { return m_hasReachedEndOfFile ? 0 : m_endpoint->lastError(); }
     [[nodiscard]] FileDescriptor& handle() override { return m_endpoint->handle(); }
     [[nodiscard]] ReadinessWaitStrategy readinessWaitStrategy() const override { return m_endpoint->readinessWaitStrategy(); }
+    [[nodiscard]] ShortReadWaitStrategy shortReadWaitStrategy() const override
+    {
+#if defined(__linux__)
+        // N_TTY exposes a 4096-byte ring, normally returning 4095 bytes.
+        // Reading frees that ring for the flip-buffer worker; waiting after
+        // a short read cannot increase its capacity.
+        return ShortReadWaitStrategy::ReadImmediately;
+#else
+        return ShortReadWaitStrategy::Accumulate;
+#endif
+    }
 
     [[nodiscard]] std::unique_ptr<PollableByteStream> duplicateAsPollableStream() override
     {

@@ -1172,18 +1172,18 @@ is [ubq.md](ubq.md).
 
 ### Linux
 
-`Source/Platform/Linux/` is a GTK4 frontend over the same portable Core and
-Runtime. It can run a live local terminal today: a POSIX PTY is polled from the
-GLib main loop, `TerminalRuntime::drainAvailable` mutates Core on the GTK
-thread, and the visible grid is painted through the shared software/Vulkan
-raster paths. The host / sync attach path uses the same `Source/Core/Protocol/Sync`
-wire model. This is the live forcing function for Core portability.
+The GTK4 frontend uses the same portable Core and `TerminalSession`.
+Local PTY reads and parsing run off the main thread through `IngestLoop`;
+the GLib main loop services native events and presents captured frames through
+the software/Vulkan raster paths. The host / sync attach path uses the same
+`Source/Core/Protocol/Sync` wire model. This is the live forcing function for
+Core portability.
 
 ---
 
 ## 11. Threading Model
 
-- **macOS**: PTY read and parse for a local pane run **off the main thread** on a
+- **macOS and Linux**: PTY read and parse for a local pane run **off the main thread** on a
   per-pane queue driven by `IngestLoop` (`Core/Runtime/IngestLoop.h`), parsing
   under the model lock in bounded bites; a sustained flood moves reads to a
   reader thread. The `Terminal`/`CellGrid` model is guarded by a per-pane
@@ -1364,6 +1364,15 @@ The same shape scales to a megabyte paste: a drain pass reads up to
 local display. A burst that spends the byte budget enters the flood pipeline,
 `emitASCIIRun` + the scroll lane absorb it, and exactly one diff'd set of
 runs reaches the GPU per frame.
+
+The flood reader selects `PAL::PollableByteStream::shortReadWaitStrategy` once
+per burst. Linux PTY duplicates compile with `ReadImmediately`: the N_TTY
+ring commonly returns 4095-byte chunks, below the generic short-read
+threshold, and waiting cannot enlarge that ring. A read can still span
+concurrent refills; neither its size nor a short read is a frame boundary.
+Other platforms retain adaptive short-read accumulation. Empty reads still
+use bounded refill probes followed by readiness waits, and frame coherence
+is independent of this transport policy.
 
 ---
 
