@@ -2431,6 +2431,8 @@ std::optional<LineStore::LogicalLineRows> rowsOfLine(const LineStore& store, std
 /// - Returns: False when the allocation was refused.
 bool ensureRewrapRing(HistoryRewrapJob& job, int rows)
 {
+    if (rows <= 0 || job.newColumns <= 0 || job.newColumns > static_cast<int>(maxColumns))
+        return false;
     if (job.ringCapacity >= rows)
         return true;
     std::unique_ptr<ReflowRow[]> ring(new (std::nothrow) ReflowRow[static_cast<std::size_t>(rows)] {});

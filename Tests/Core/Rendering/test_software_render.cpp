@@ -46,6 +46,21 @@ struct Pixel {
     int red, green, blue, alpha;
 };
 
+// A native provider's phase contract for the procedural Braille tests. Its
+// glyph pixels are irrelevant: the builder emits each dot as geometry.
+struct BraillePhaseRasterizer final : GlyphRasterizer {
+    CellMetrics cellMetrics() const override { return m_unifont.cellMetrics(); }
+    int glyphPhaseCount() const override { return 4; }
+    bool rasterizeGlyph(std::uint32_t codePoint, FontFace face, std::uint32_t weight,
+        int width, int height, std::uint8_t* coverage) override
+    {
+        return m_unifont.rasterizeGlyph(codePoint, face, weight, width, height, coverage);
+    }
+
+private:
+    UnifontRasterizer m_unifont;
+};
+
 Pixel at(const std::vector<std::uint8_t>& rgba, int width, int x, int y)
 {
     const std::size_t o = (static_cast<std::size_t>(y) * width + x) * 4;
@@ -1079,7 +1094,8 @@ TEST(testBrailleSquareCoverageRetainsFractionalHorizontalAndVerticalPositions)
     input.viewportSizeInPixels = { 84.0f, 100.0f };
     input.subpixelPhaseCount = 4;
     input.subpixelPhaseRounding = PhaseRounding::Floor;
-    SoftwareRenderer renderer(16, 31);
+    BraillePhaseRasterizer rasterizer;
+    SoftwareRenderer renderer(16, 31, rasterizer);
     std::vector<std::uint8_t> pixels;
     int width = 0;
     int height = 0;
@@ -1128,7 +1144,8 @@ TEST(testBrailleRoundStylesCompositeFractionalDotsAndGuides)
     input.viewportSizeInPixels = { 52.0f, 68.0f };
     input.subpixelPhaseCount = 4;
     input.subpixelPhaseRounding = PhaseRounding::Floor;
-    SoftwareRenderer renderer(16, 31);
+    BraillePhaseRasterizer rasterizer;
+    SoftwareRenderer renderer(16, 31, rasterizer);
     std::vector<std::uint8_t> pixels;
     int width = 0;
     int height = 0;

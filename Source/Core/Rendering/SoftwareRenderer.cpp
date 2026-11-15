@@ -1509,6 +1509,9 @@ void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, std::vec
     const float baseAlpha = d.color.w;
     if (sizeX <= 0.0f || sizeY <= 0.0f || baseAlpha <= 0.0f)
         return;
+    const int foregroundRed = channelToByte(d.color.x);
+    const int foregroundGreen = channelToByte(d.color.y);
+    const int foregroundBlue = channelToByte(d.color.z);
 
     int x0 = static_cast<int>(std::floor(minX));
     int x1 = static_cast<int>(std::ceil(d.bottomRightInPixels.x));
@@ -1655,13 +1658,16 @@ void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, std::vec
 
             if (m_isBitmapFace)
                 alpha = quantizedCoverage(alpha);
-            if (alpha <= 0.0f)
+            // Native target blending consumes an eight-bit coverage. Resolve
+            // that byte before mixing so partial glyph ink under a rule does
+            // not take a different rounding path in the CPU oracle.
+            const int coverage = channelToByte(alpha);
+            if (coverage == 0)
                 continue;
             const std::size_t o = (static_cast<std::size_t>(y) * surface.width + x) * 4;
-            rgba[o] = channelToByte(rgba[o] / 255.0f * (1.0f - alpha) + d.color.x * alpha);
-            rgba[o + 1] = channelToByte(rgba[o + 1] / 255.0f * (1.0f - alpha) + d.color.y * alpha);
-            rgba[o + 2] = channelToByte(rgba[o + 2] / 255.0f * (1.0f - alpha) + d.color.z * alpha);
-            rgba[o + 3] = 255;
+            rgba[o] = mixCoverage(rgba[o], foregroundRed, coverage);
+            rgba[o + 1] = mixCoverage(rgba[o + 1], foregroundGreen, coverage);
+            rgba[o + 2] = mixCoverage(rgba[o + 2], foregroundBlue, coverage);
         }
     }
 }
