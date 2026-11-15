@@ -99,6 +99,22 @@ bool rasteriseWideGlyph(void*, std::uint32_t, FontFace, std::uint32_t variant, i
     return hookLog.policy == RasterPolicy::Fills;
 }
 
+// The wide hook records the raster variant; the mono provider publishes the
+// frame's native phase grid, as it does for a production backend.
+struct WidePhaseRasterizer final : GlyphRasterizer {
+    int phases = 1;
+    CellMetrics cellMetrics() const override { return m_unifont.cellMetrics(); }
+    int glyphPhaseCount() const override { return phases; }
+    bool rasterizeGlyph(std::uint32_t codePoint, FontFace face, std::uint32_t weight,
+        int width, int height, std::uint8_t* coverage) override
+    {
+        return m_unifont.rasterizeGlyph(codePoint, face, weight, width, height, coverage);
+    }
+
+private:
+    UnifontRasterizer m_unifont;
+};
+
 struct Scene {
     TermPalette palette;
     std::vector<Cell> cells { static_cast<std::size_t>(rows) * columns, defaultBlankCell };
@@ -107,7 +123,8 @@ struct Scene {
     std::vector<OverlayInstance> boxFillsOut { static_cast<std::size_t>(rows) * columns * 8 };
     BuildInputs in;
     InstanceBuffers out;
-    SoftwareRenderer renderer { 8, 16 };
+    WidePhaseRasterizer rasterizer;
+    SoftwareRenderer renderer { 8, 16, rasterizer };
     GlyphSlotCache cache { slotCapacity, slotBuckets, slotColumns };
 
     Scene()
@@ -275,7 +292,7 @@ TEST(aWideGlyphIsPlacedAtItsPensPhase)
     constexpr float wideSlotWidth = 2.0f * 8.0f + 2.0f * margin;
     scene.in.metrics.cellWidth = advance;
     scene.in.subpixelGlyphs = true;
-    scene.in.subpixelPhaseCount = 4;
+    scene.rasterizer.phases = 4;
     scene.in.glyphReferenceAdvanceInPixels = advance;
     scene.in.glyphBoxWidthInPixels = 8.0f;
     scene.in.glyphMarginInPixels = { margin, margin };
@@ -319,7 +336,7 @@ TEST(aWideGlyphIsKeyedAtTheWidePagesOwnPhaseCount)
     scene.in.metrics.skipInk = true;
     scene.in.metrics.skipInkPadding = 1.0f;
     scene.in.subpixelGlyphs = true;
-    scene.in.subpixelPhaseCount = 3;
+    scene.rasterizer.phases = 3;
     scene.in.widePhaseCount = 2;
     scene.in.subpixelPhaseRounding = Ubiquitty::Rendering::PhaseRounding::Floor;
     scene.in.glyphReferenceAdvanceInPixels = advance;
@@ -366,7 +383,7 @@ TEST(aWideGlyphIsKeyedAtItsOwnPenGrid)
     scene.in.metrics.skipInk = true;
     scene.in.metrics.skipInkPadding = 1.0f;
     scene.in.subpixelGlyphs = true;
-    scene.in.subpixelPhaseCount = 3;
+    scene.rasterizer.phases = 3;
     scene.in.widePhaseCount = 2;
     scene.in.subpixelPhaseRounding = Ubiquitty::Rendering::PhaseRounding::Floor;
     scene.in.glyphReferenceAdvanceInPixels = advance;
@@ -412,7 +429,7 @@ TEST(aRuleUnderAWideGlyphTapsTheWideSheetColumnByColumn)
     scene.in.metrics.skipInk = true;
     scene.in.metrics.skipInkPadding = 1.0f;
     scene.in.subpixelGlyphs = true;
-    scene.in.subpixelPhaseCount = 4;
+    scene.rasterizer.phases = 4;
     scene.in.glyphReferenceAdvanceInPixels = advance;
     scene.in.glyphBoxWidthInPixels = advance;
     scene.in.glyphMarginInPixels = { margin, margin };
@@ -456,7 +473,7 @@ TEST(anIdeographicUnderRuleTapsAWideGlyphColumnByColumn)
     scene.in.metrics.skipInk = true;
     scene.in.metrics.skipInkPadding = 1.0f;
     scene.in.subpixelGlyphs = true;
-    scene.in.subpixelPhaseCount = 4;
+    scene.rasterizer.phases = 4;
     scene.in.glyphReferenceAdvanceInPixels = advance;
     scene.in.glyphBoxWidthInPixels = advance;
     scene.in.glyphMarginInPixels = { margin, margin };
@@ -500,7 +517,7 @@ TEST(aWideGlyphsColumnTapIsMeasuredInSlotTexelsUnderCharacterSpacing)
     scene.in.metrics.skipInk = true;
     scene.in.metrics.skipInkPadding = 1.0f;
     scene.in.subpixelGlyphs = true;
-    scene.in.subpixelPhaseCount = 4;
+    scene.rasterizer.phases = 4;
     scene.in.glyphReferenceAdvanceInPixels = advance;
     scene.in.glyphBoxWidthInPixels = advance;
     scene.in.glyphMarginInPixels = { margin, margin };
