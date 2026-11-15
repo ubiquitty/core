@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <ranges>
 
@@ -228,8 +229,8 @@ LigatureSheet::RunOutcome LigatureSheet::rasteriseRunInto(int slot, std::span<co
             return RunOutcome::Unligated;
     }
 
-    // Every glyph is placed at its own CELL, computed from its cluster, rather
-    // than at wherever a running pen has reached.
+    // Each cluster is anchored to its cell. Glyphs within that cluster retain
+    // their native advances and offsets relative to the cluster's first pen.
     //
     // The pen is what the shaper's advances describe, and they are the wrong
     // ruler here: `advanceInPixels` is whole pixels rounded from the face's own
@@ -244,10 +245,11 @@ LigatureSheet::RunOutcome LigatureSheet::rasteriseRunInto(int slot, std::span<co
     // [margin + K*cell, margin + (K+1)*cell) — so a glyph anywhere else does not
     // merely look shifted, it puts its neighbour's edge in cell K.
     //
-    // `cluster` is what makes this survive substitution, where an index cannot:
-    // a ligature's glyphs share one cluster, so they anchor together at the
-    // column the run started on and the shaper's offsets do the relative work
-    // inside it, which is the one job those offsets are right for.
+    // A cluster can contain several advancing glyphs. Monaspace's `//` has a
+    // blank advancing glyph followed by a wide glyph with a negative bearing;
+    // collapsing both pens to the cluster origin moves the slashes left over
+    // the preceding character. The cluster's first pen is the common shift,
+    // preserving every subsequent native position within it.
     //
     // The leading context falls out rather than being subtracted: its clusters
     // are below `leadingContext`, so it lands at negative x and the clip drops
@@ -260,15 +262,21 @@ LigatureSheet::RunOutcome LigatureSheet::rasteriseRunInto(int slot, std::span<co
     // the strip beside it.
     //
     // The advances are left truthful and the offset absorbs them: the pen the
-    // rasterizer keeps is part of its contract, so this cancels the pen's
-    // contribution for this glyph instead of zeroing the advances to defeat it.
+    // rasterizer keeps is part of its contract, so the common shift cancels
+    // the cluster's leading pen while preserving its internal advances.
     std::vector<GlyphRasterizer::ShapedGlyph> placed(shaped.begin(), shaped.end());
     int penInPixels = 0;
+    int clusterPenInPixels = 0;
+    int previousCluster = -1;
     for (GlyphRasterizer::ShapedGlyph& glyph : placed) {
+        if (glyph.cluster != previousCluster) {
+            previousCluster = glyph.cluster;
+            clusterPenInPixels = penInPixels;
+        }
         const int column = glyph.cluster - leadingContext;
         const int cellOriginInPixels = m_marginXInPixels
             + static_cast<int>(std::lround(static_cast<double>(column) * static_cast<double>(cellAdvanceInPixels)));
-        glyph.offsetXInPixels += cellOriginInPixels - penInPixels;
+        glyph.offsetXInPixels += cellOriginInPixels - clusterPenInPixels;
         penInPixels += glyph.advanceInPixels;
     }
     m_inkScratch.assign(placed.size(), GlyphRasterizer::GlyphInkExtent {});
@@ -459,28 +467,16 @@ void LigatureSheet::shapeRow(LigatureRowSpan row, float cellAdvanceInPixels,
             // Context and drawn cells together, in shaping order. The context is
             // what lets the font's rules see across a chunk split; it is shaped and
             // then clipped away.
-            const int first = candidate.startColumn - candidate.leftContext;
             const int total = candidate.leftContext + candidate.length + candidate.rightContext;
-            // The row edge shapes as a space, per the flank predicates: an
-            // OpenType backtrack cannot match past the run's first glyph, so
-            // a word at the margin would otherwise heal differently from the
-            // same word after a real space. A glyph neighbour still shapes as
-            // itself.
-            const bool shouldStandLeftSpace = ligatureRunFlanksRowStart(candidate);
-            const bool shouldStandRightSpace = ligatureRunFlanksRowEnd(candidate, columns);
-            m_runCodePoints.clear();
-            m_runCodePoints.reserve(static_cast<std::size_t>(total) + 2);
-            if (shouldStandLeftSpace)
-                m_runCodePoints.push_back(0x20u);
-            for (int i = 0; i < total; ++i) {
-                const int column = first + i;
-                if (column < 0 || column >= columns)
-                    return; // the candidate's context ran off the row: leave it unligatured
-                m_runCodePoints.push_back(row[static_cast<std::size_t>(column)].codePoint);
-            }
-            if (shouldStandRightSpace)
-                m_runCodePoints.push_back(0x20u);
-            const int shapedLeftContext = candidate.leftContext + (shouldStandLeftSpace ? 1 : 0);
+            m_answerKey.resize(static_cast<std::size_t>(total) + 7);
+            const int keyCount = writeLigatureRunKey(row.data(), columns, candidate,
+                m_answerKey.data(), static_cast<int>(m_answerKey.size()));
+            if (keyCount == 0)
+                return;
+            m_answerKey.resize(static_cast<std::size_t>(keyCount));
+            const int sourceCount = keyCount - 3;
+            m_runCodePoints.assign(m_answerKey.begin(), m_answerKey.begin() + sourceCount);
+            const int shapedLeftContext = static_cast<int>(m_answerKey[static_cast<std::size_t>(sourceCount)]);
             const std::uint32_t weight = (row[static_cast<std::size_t>(candidate.startColumn)].shape & ligatureShapeBold) != 0 ? 7u : 0u;
 
             // The run's answers by identity, asked for before the strip: keyed
@@ -489,10 +485,6 @@ void LigatureSheet::shapeRow(LigatureRowSpan row, float cellAdvanceInPixels,
             // answered from then on. A `.notdef` or a joined cluster is a run
             // with no answer, and that verdict is held too, so the strip alone
             // is not re-derived every frame.
-            m_answerKey.assign(m_runCodePoints.begin(), m_runCodePoints.end());
-            m_answerKey.push_back(static_cast<std::uint32_t>(shapedLeftContext));
-            m_answerKey.push_back(static_cast<std::uint32_t>(candidate.length));
-            m_answerKey.push_back(weight);
             ShapedCellSpan answers = m_answers.lookup(m_answerKey, 0u);
             const bool isKnownUnanswered = answers.empty() && m_answers.holdsNoAnswer(m_answerKey, 0u);
 
@@ -500,11 +492,14 @@ void LigatureSheet::shapeRow(LigatureRowSpan row, float cellAdvanceInPixels,
             // one long stretch carry the same code points and differ only in their
             // context, so a lossy key cannot separate them and both can be live in
             // one frame.
-            const std::uint32_t key = coverageClusterKey(m_runCodePoints.data(),
-                static_cast<int>(m_runCodePoints.size()), 0u, FontFace::Regular);
+            m_answerKey.push_back(weight);
+            m_answerKey.push_back(std::bit_cast<std::uint32_t>(cellAdvanceInPixels));
+            const std::uint32_t key = coverageClusterKey(m_answerKey.data(),
+                static_cast<int>(m_answerKey.size()), 0u, FontFace::Regular);
             bool isFresh = false;
-            const int slot = m_cache.slotForKeyVerified(key, m_runCodePoints.data(),
-                static_cast<int>(m_runCodePoints.size()), &isFresh);
+            const int slot = m_cache.slotForKeyVerified(key, m_answerKey.data(),
+                static_cast<int>(m_answerKey.size()), &isFresh);
+            m_answerKey.resize(static_cast<std::size_t>(keyCount));
             if (slot < 0)
                 return; // the sheet is full of strips this frame already placed
 
