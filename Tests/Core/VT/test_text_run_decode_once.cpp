@@ -192,4 +192,41 @@ TEST(testBatchedTextPlacesTheSameGridAsBytesOneAtATime)
     }
 }
 
+TEST(testWideRowsDoNotDecodeTheFollowingRowsTail)
+{
+    for (const std::uint32_t base : { 0x4E00u, 0x20000u, 0x3001u }) {
+        std::string text;
+        for (int index = 0; index < 4096; ++index)
+            Ubiquitty::Unicode::appendUTF8(text, base + static_cast<std::uint32_t>(index % 2));
+        text += "\r\n";
+        for (const int columns : { 78, 80, 82, 200, 202, 204 }) {
+            const std::uint64_t decoded = decodedBytes(text, columns);
+            CHECK_MSG(decoded <= text.size(),
+                ("decoded " + std::to_string(decoded) + " bytes at " + std::to_string(columns)
+                    + " columns from " + std::to_string(text.size()) + " input bytes")
+                    .c_str());
+        }
+    }
+}
+
+TEST(testWideDecodeBoundPreservesMixedTailsAcrossChunks)
+{
+    std::string wide;
+    for (int index = 0; index < 160; ++index) {
+        Ubiquitty::Unicode::appendUTF8(wide, index % 3 == 0 ? 0x20000u : index % 3 == 1 ? 0x4E00u
+                                                                                        : 0x3002u);
+    }
+    const std::string text = wide + "é😀́👩🏽‍💻x"
+        + "\xE0\x80\xAF\xED\xA0\x80\xF4\x90\x80\x80\xE2!"
+        + wide + "\x1BT\x1B[2b\r\n";
+    for (const int columns : { 79, 80, 81, 201, 202, 203 }) {
+        for (const char* setup : { "", "\x1B[?1049h", "\x1B[4h", "\x1B[?7l", "\x1B[?69h\x1B[3;77s\x1B[1;3H" }) {
+            const std::string input = setup + text;
+            const Grid scalar = feed(input, 12, columns, 1);
+            for (const int chunkSize : { 3, 119, 120, 121, 302, 303, 304, static_cast<int>(input.size()) })
+                CHECK(feed(input, 12, columns, chunkSize) == scalar);
+        }
+    }
+}
+
 UBIQUITTY_TEST_MAIN()

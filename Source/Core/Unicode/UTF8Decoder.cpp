@@ -6,6 +6,7 @@
 
 #include "simdutf.h"
 
+#include <bit>
 #include <cstdint>
 #include <cstring>
 
@@ -23,23 +24,36 @@ std::uint64_t simdRunCountForTest = 0;
 std::uint64_t decodedBytesForTest = 0;
 #endif
 
-// End of the leading non-ASCII span: index of the first byte < 0x80, or
-// `length`. Only BOUNDS the span handed to the SIMD converter; validates nothing.
-static inline int nonASCIISpanEnd(std::span<const char> bytes)
+// Bound the converter by output positions as well as input bytes. Every
+// non-continuation byte starts at most one output, even in malformed input;
+// the converter validates the resulting span and retains its scalar fallback.
+static inline int nonASCIISpanEnd(std::span<const char> bytes, int capacity)
 {
     const char* in = bytes.data();
     const int length = static_cast<int>(bytes.size());
     int i = 0;
+    int leadingBytes = 0;
+    constexpr std::uint64_t highBits = 0x8080808080808080ull;
     while (i + 8 <= length) {
         std::uint64_t word;
         std::memcpy(&word, in + i, 8);
-        const std::uint64_t asciiHighBits = ~word & 0x8080808080808080ull;
+        const std::uint64_t asciiHighBits = ~word & highBits;
         if (asciiHighBits)
-            return i + (__builtin_ctzll(asciiHighBits) >> 3); // little-endian: low byte maps to low bits
+            break;
+        const int wordLeadingBytes = std::popcount(word & (word << 1) & highBits);
+        if (wordLeadingBytes >= capacity - leadingBytes)
+            break; // locate the output boundary within this word
+        leadingBytes += wordLeadingBytes;
         i += 8;
     }
-    while (i < length && static_cast<std::uint8_t>(in[i]) >= 0x80)
+    while (i < length && static_cast<std::uint8_t>(in[i]) >= 0x80) {
+        if (static_cast<std::uint8_t>(in[i]) >= 0xC0) {
+            if (leadingBytes == capacity)
+                break;
+            ++leadingBytes;
+        }
         ++i;
+    }
     return i;
 }
 
@@ -204,18 +218,19 @@ int utf8DecodeRun(std::span<const char> input, std::span<std::uint32_t> out, int
     const int length = static_cast<int>(input.size());
     std::uint32_t* outputBuffer = out.data();
     const int maxOut = static_cast<int>(out.size());
-    // SIMD fast path: cap the span at maxOut*2 bytes (every sequence is >= 2
-    // bytes, so the cap can never decode past maxOut codepoints), trim a
+    // SIMD fast path: stop before a sequence would exceed maxOut, trim a
     // boundary-split trailing sequence, then validate+convert in one shot.
     // Length gate (~96 bytes): simdutf's per-call cost loses to the scalar loop
     // on short runs. Invalid spans fall through to scalar.
     {
         constexpr int simdMinBytes = 96;
-        if (maxOut * 2 >= simdMinBytes) {
+        if (maxOut >= simdMinBytes / 4) {
             // Bound the scan before running it: an unbounded scan over a
             // multibyte flood would walk the whole remaining chunk per call.
-            const int scanLimit = (length < maxOut * 2) ? length : maxOut * 2;
-            int mb = nonASCIISpanEnd(input.first(static_cast<std::size_t>(scanLimit)));
+            // Four bytes per output also bounds malformed continuation runs.
+            // Multiply only when the result cannot exceed the input length.
+            const int scanLimit = maxOut > length / 4 ? length : maxOut * 4;
+            int mb = nonASCIISpanEnd(input.first(static_cast<std::size_t>(scanLimit)), maxOut);
             if (mb == 0) {
                 *bytesConsumed = 0;
                 return 0;

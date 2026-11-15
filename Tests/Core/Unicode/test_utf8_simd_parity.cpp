@@ -15,6 +15,7 @@
 //       Tests/Core/Unicode/test_utf8_simd_parity.cpp Source/Core/Unicode/UTF8Decoder.cpp \
 //       Source/ThirdParty/simdutf/simdutf.cpp -o /tmp/ptest && /tmp/ptest
 #include "Core/Unicode/UTF8Decoder.h"
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -129,12 +130,9 @@ static void testOutputCapacityUsesSequenceCount()
 
 /// The caller's output capacity, not the content, decides which path decodes.
 ///
-/// `VT.cpp` sizes `codePointCapacity` as `min(4096, rightMargin - column + 1)`,
-/// so the span the converter may scan is twice the cells left on the row. The
-/// converter needs 96 contiguous non-ASCII bytes. On an 80-column row that
-/// admits it at the left margin and forbids it from column 34 onward, and the
-/// same bytes then decode through two different mechanisms depending on where
-/// the cursor stands.
+/// The converter needs 96 contiguous non-ASCII bytes, bounded by output
+/// positions. Three-byte text reaches that boundary with 32 outputs; a wide
+/// row's 40 outputs must still use it, without decoding another row's tail.
 ///
 /// Both arms of that are asserted here, and the second assertion is what keeps
 /// the first from being vacuous: identical output is the answer a build with no
@@ -148,14 +146,13 @@ static void testTheOutputCapacityDecidesWhichPathDecodes()
         emit(cjk, 0x4E00 + static_cast<std::uint32_t>(i));
     const int length = static_cast<int>(cjk.size());
 
-    // The gate admits a span of `maxOut * 2` bytes when it reaches 96, so 48
-    // cells is the last capacity that clears it and 47 is the first that does
-    // not. Written as the boundary rather than as one value on each side: a
+    // Thirty-two three-byte sequences reach 96 bytes, while 31 do not.
+    // Written as the boundary rather than as one value on each side: a
     // capacity picked with slack cannot tell a moved gate from a gate that
     // stopped being reached at all.
-    const int atLeftMargin = 80;
-    const int lastCapacityThatAdmits = 48;
-    const int pastTheWindow = 47;
+    const int atLeftMargin = 40;
+    const int lastCapacityThatAdmits = 32;
+    const int pastTheWindow = 31;
 
     std::uint32_t wide[128];
     std::uint32_t narrow[128];
@@ -176,9 +173,8 @@ static void testTheOutputCapacityDecidesWhichPathDecodes()
     int admittedConsumed = 0;
     const int admittedCount = Ubiquitty::Unicode::utf8DecodeRun(std::span { cjk.data(), static_cast<std::size_t>(length) }, std::span { admitted, static_cast<std::size_t>(lastCapacityThatAdmits) }, &admittedConsumed);
     CHECK(Ubiquitty::Unicode::simdRunCountForTest > afterNarrow);
-    // 96 bytes of 3-byte sequences, so the span fills before the capacity does
-    // and the call stops at 32 rather than 48. The gate is spelled in bytes and
-    // the caller counts cells, which is why the two numbers differ at all.
+    // The scan reaches the output bound exactly, rather than a conservative
+    // byte limit leaving a third of the output span unused.
     CHECK(admittedCount == 32);
     CHECK(admittedConsumed == 96);
     CHECK(std::memcmp(wide, admitted, static_cast<std::size_t>(admittedCount) * sizeof(std::uint32_t)) == 0);
@@ -210,14 +206,13 @@ static void testTheOutputCapacityDecidesWhichPathDecodes()
     CHECK(std::memcmp(walked.data(), wide, static_cast<std::size_t>(wideCount) * sizeof(std::uint32_t)) == 0);
 }
 
-// The SIMD path bounds its span by BYTES (maxOut*2), so a call may legally
-// return FEWER than maxOut codePoints with more decodable input remaining.
-// Pin the boundary math: whatever is returned must be a whole-sequence prefix
+// The SIMD path bounds its byte scan by output positions. Pin the boundary
+// math: whatever is returned must be a whole-sequence prefix
 // that byte-for-byte matches the scalar reference, and looping the calls must
 // reproduce the reference decode of the whole run.
 static void testByteLimitReturnsWholeSequencePrefix()
 {
-    std::vector<char> cjk; // 3-byte sequences: maxOut*2 = 98 is never sequence-aligned
+    std::vector<char> cjk; // output boundaries fall on different word alignments
     for (int i = 0; i < 256; ++i)
         emit(cjk, 0x4E00 + static_cast<std::uint32_t>(i));
 
@@ -247,6 +242,62 @@ static void testByteLimitReturnsWholeSequencePrefix()
     }
     CHECK(total == refN);
     CHECK(p == refConsumed);
+}
+
+static void testBoundedOutputSurvivesMalformedAndTruncatedSpans()
+{
+    for (const int capacity : { 0, 23, 24, 31, 32, 39, 40, 41, 47, 48, 100, 101, 102 }) {
+        const auto check = [capacity](const std::vector<char>& input) {
+            constexpr std::uint32_t canary = 0xDEADBEEF;
+            // SIMD error paths can store a prefix before reporting failure.
+            // Guard both sides of the whole output capacity, including stores
+            // the scalar fallback does not subsequently overwrite.
+            std::vector<std::uint32_t> guarded(static_cast<std::size_t>(capacity + 64), canary);
+            std::vector<std::uint32_t> expected(static_cast<std::size_t>(capacity));
+            int consumed = 0;
+            int expectedConsumed = 0;
+            const int count = Ubiquitty::Unicode::utf8DecodeRun(input,
+                { guarded.data() + 16, static_cast<std::size_t>(capacity) }, &consumed);
+            const int expectedCount = refDecode(input.data(), static_cast<int>(input.size()), expected.data(), capacity, &expectedConsumed);
+            CHECK_EQ(count, expectedCount);
+            CHECK_EQ(consumed, expectedConsumed);
+            REQUIRE(count >= 0 && count <= capacity);
+            for (int index = 0; index < count; ++index)
+                CHECK_EQ(guarded[static_cast<std::size_t>(16 + index)], expected[static_cast<std::size_t>(index)]);
+            for (int index = 0; index < 16; ++index)
+                CHECK_EQ(guarded[static_cast<std::size_t>(index)], canary);
+            for (std::size_t index = static_cast<std::size_t>(16 + capacity); index < guarded.size(); ++index)
+                CHECK_EQ(guarded[index], canary);
+        };
+        for (const std::uint32_t codePoint : { 0xE9u, 0x4E00u, 0x20000u }) {
+            std::vector<char> input;
+            for (int index = 0; index < capacity + 32; ++index)
+                emit(input, codePoint);
+            check(input);
+            const std::vector<char> whole = input;
+            for (std::size_t length = 0; length < whole.size(); ++length) {
+                input.assign(whole.begin(), whole.begin() + static_cast<std::ptrdiff_t>(length));
+                check(input);
+            }
+        }
+        std::vector<char> input;
+        for (int index = 0; index < capacity + 32; ++index)
+            emit(input, index % 3 ? 0x4E00u : 0x20000u);
+        const std::vector<char> whole = input;
+        for (std::size_t position = 0; position < input.size(); position += 7) {
+            for (unsigned byte = 0; byte < 256; ++byte) {
+                input[position] = static_cast<char>(byte);
+                check(input); // ASCII, invalid lead and invalid continuation
+            }
+            input[position] = whole[position];
+        }
+        for (const unsigned byte : { 0x80u, 0xBFu, 0xC0u, 0xC1u, 0xF5u, 0xFFu }) {
+            input.assign(static_cast<std::size_t>(capacity * 4 + 32), static_cast<char>(byte));
+            check(input);
+            input[0] = static_cast<char>(0xE4);
+            check(input);
+        }
+    }
 }
 
 // A sequence split by the END of the input (a PTY read boundary) must not
@@ -298,6 +349,7 @@ int main()
     testOutputCapacityUsesSequenceCount();
     testTheOutputCapacityDecidesWhichPathDecodes();
     testByteLimitReturnsWholeSequencePrefix();
+    testBoundedOutputSurvivesMalformedAndTruncatedSpans();
     testSplitTailAtEndOfInput();
     testInvalidInteriorFallsToScalarStop();
     const int ITERS = 400000;

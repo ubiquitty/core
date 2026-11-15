@@ -6052,9 +6052,15 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
 
     // Decode only the row-fit prefix. Plain glyphs consume at least one cell, so
     // anything beyond the remaining cell count cannot be placed by this call and
-    // would be decoded again after the wrap.
+    // would be decoded again after the wrap. A plain-wide lead budgets pairs,
+    // including punctuation outside the ideograph ranges. A mixed-width tail
+    // may leave room for another run, but never consumes an unplaced glyph.
     std::array<std::uint32_t, Ubiquitty::maxColumns> codePoints;
-    const int codePointCapacity = std::min<int>(static_cast<int>(std::size(codePoints)), writableColumns);
+    const auto firstCodePoint = peekMultibyteUTF8CodePoint({ buffer + start, static_cast<std::size_t>(length - start) });
+    const int rowCodePointCapacity = firstCodePoint && isPlainWideGraphic(firstCodePoint->codePoint, t.ambiguousWidth)
+        ? std::max(1, writableColumns / 2)
+        : writableColumns;
+    const int codePointCapacity = std::min<int>(static_cast<int>(std::size(codePoints)), rowCodePointCapacity);
     int nDec = 0;
     // The input bytes each decoded code point stands for, kept only once a
     // substitute is among them: a substitute's are the malformed bytes it
