@@ -20,9 +20,12 @@
 
 #include "Harness.h"
 
+#include "Core/Rendering/CellDecisions.h"
 #include "Core/Rendering/LigatureSheet.h"
 
 #include <algorithm>
+#include <array>
+#include <string>
 #include <vector>
 
 namespace {
@@ -237,6 +240,205 @@ TEST(testARunAnswersByIdentityBesideItsStripAndStaysAnswered)
     shape();
     CHECK_MSG(sheet.answers().hitsThisFrame() == 1, "a run that scrolls back after three frames is still answered");
     CHECK_EQ(face.rasterCalls, rastersAfterFirst);
+}
+
+// Monaspace's slash pair shapes as an advancing blank followed by a wide
+// glyph in the same cluster. An independent cluster beside it keeps the
+// native pen and the terminal grid distinguishable in the assertion.
+class SharedClusterFace final : public GlyphRasterizer {
+public:
+    explicit SharedClusterFace(int blankAdvance)
+        : m_blankAdvance(blankAdvance)
+    {
+    }
+
+    CellMetrics cellMetrics() const override { return { cellWidth, cellHeight, cellHeight - 4 }; }
+    bool rasterizeGlyph(std::uint32_t, FontFace, std::uint32_t, int, int, std::uint8_t*) override { return true; }
+    bool hasLigatureShaping() const override { return true; }
+
+    int shapeTextRun(std::span<const std::uint32_t> codePoints, std::uint32_t, std::span<ShapedGlyph> glyphsOut) override
+    {
+        const int count = static_cast<int>(std::min(codePoints.size(), glyphsOut.size()));
+        for (int index = 0; index < count; ++index) {
+            auto& glyph = glyphsOut[static_cast<std::size_t>(index)];
+            glyph = {};
+            glyph.glyph = codePoints[static_cast<std::size_t>(index)];
+            glyph.advanceInPixels = 7;
+            glyph.cluster = index;
+        }
+        for (int index = 0; index + 1 < count; ++index) {
+            if (codePoints[static_cast<std::size_t>(index)] != '/' || codePoints[static_cast<std::size_t>(index + 1)] != '/')
+                continue;
+            auto& blank = glyphsOut[static_cast<std::size_t>(index)];
+            blank.glyph = blankGlyph;
+            blank.advanceInPixels = m_blankAdvance;
+            auto& joined = glyphsOut[static_cast<std::size_t>(index + 1)];
+            joined.glyph = joinedGlyph;
+            joined.cluster = index;
+            joined.offsetXInPixels = 2;
+            ++index;
+        }
+        return count;
+    }
+
+    bool rasteriseShapedRun(std::span<const ShapedGlyph> glyphs, int, int, std::span<std::uint8_t>) override
+    {
+        placedGlyphs.assign(glyphs.begin(), glyphs.end());
+        return true;
+    }
+
+    int placedPosition(unsigned int glyphID) const
+    {
+        int pen = 0;
+        for (const auto& glyph : placedGlyphs) {
+            if (glyph.glyph == glyphID)
+                return pen + glyph.offsetXInPixels;
+            pen += glyph.advanceInPixels;
+        }
+        return -10000;
+    }
+
+    static constexpr unsigned int blankGlyph = 1000;
+    static constexpr unsigned int joinedGlyph = 1001;
+    std::vector<ShapedGlyph> placedGlyphs;
+
+private:
+    int m_blankAdvance;
+};
+
+TEST(sharedClustersKeepNativePenOffsetsWhileOtherClustersStayOnTheirCells)
+{
+    for (int blankAdvance : { 0, 7 }) {
+        SharedClusterFace face(blankAdvance);
+        LigatureSheet sheet(cellWidth, cellHeight, marginX, marginY, &face);
+        const auto row = operatorRow("://+");
+        std::vector<LigatureRun> runs(row.size());
+        sheet.shapeRow(row, static_cast<float>(cellWidth), runs);
+        REQUIRE(!face.placedGlyphs.empty());
+        const int colon = face.placedPosition(':');
+        const int blank = face.placedPosition(SharedClusterFace::blankGlyph);
+        const int joined = face.placedPosition(SharedClusterFace::joinedGlyph);
+        const int following = face.placedPosition('+');
+        CHECK_EQ(blank - colon, cellWidth);
+        CHECK_EQ(joined - blank, blankAdvance + 2);
+        CHECK_EQ(following - colon, 3 * cellWidth);
+    }
+}
+
+class HealingKeyFace final : public GlyphRasterizer {
+public:
+    CellMetrics cellMetrics() const override { return { cellWidth, cellHeight, cellHeight - 4 }; }
+    bool rasterizeGlyph(std::uint32_t, FontFace, std::uint32_t, int, int, std::uint8_t*) override { return true; }
+    bool hasLigatureShaping() const override { return true; }
+
+    int shapeTextRun(std::span<const std::uint32_t> codePoints, std::uint32_t weight, std::span<ShapedGlyph> output) override
+    {
+        const int count = static_cast<int>(std::min(codePoints.size(), output.size()));
+        for (int index = 0; index < count; ++index) {
+            auto& glyph = output[static_cast<std::size_t>(index)];
+            glyph = {};
+            glyph.glyph = codePoints[static_cast<std::size_t>(index)] + (count > 1 ? 0x10000u : 0u) + weight * 0x100000u;
+            glyph.advanceInPixels = cellWidth;
+            glyph.cluster = index;
+        }
+        return count;
+    }
+
+    bool rasteriseShapedRunMeasured(std::span<const ShapedGlyph> glyphs, int width, int height,
+        std::span<std::uint8_t> coverage, std::span<GlyphInkExtent> ink) override
+    {
+        std::fill(coverage.begin(), coverage.end(), 0);
+        int pen = 0;
+        for (std::size_t index = 0; index < glyphs.size(); ++index) {
+            const auto& glyph = glyphs[index];
+            ink[index] = {};
+            if ((glyph.glyph & 0xffffu) != 0x20u) {
+                const int left = std::max(0, pen + glyph.offsetXInPixels + 1);
+                const int right = std::min(width, left + (glyph.glyph >= 0x100000u ? 4 : 2));
+                if (right > left) {
+                    ink[index] = { left, right };
+                    for (int x = left; x < right; ++x) {
+                        if (height > 3)
+                            coverage[static_cast<std::size_t>(3 * width + x)] = 255;
+                    }
+                }
+            }
+            pen += glyph.advanceInPixels;
+        }
+        return true;
+    }
+};
+
+std::vector<LigatureRun> shapeKeyRow(LigatureSheet& sheet, const std::vector<LigatureCell>& row, float pitch)
+{
+    std::vector<LigatureRun> runs(row.size());
+    sheet.beginFrame();
+    sheet.shapeRow(row, pitch, runs);
+    return runs;
+}
+
+void compareKeyRowWithColdSheet(LigatureSheet& warm, HealingKeyFace& face, const std::vector<LigatureCell>& row, float pitch)
+{
+    const auto actual = shapeKeyRow(warm, row, pitch);
+    LigatureSheet cold(cellWidth, cellHeight, marginX, marginY, &face);
+    const auto expected = shapeKeyRow(cold, row, pitch);
+    REQUIRE(actual.size() == expected.size());
+    for (std::size_t column = 0; column < actual.size(); ++column) {
+        CHECK_EQ(actual[column].hasOwnedInk, expected[column].hasOwnedInk);
+        CHECK_EQ(actual[column].ownInkLeftInAtlasPixels, expected[column].ownInkLeftInAtlasPixels);
+        CHECK_EQ(actual[column].ownInkRightInAtlasPixels, expected[column].ownInkRightInAtlasPixels);
+        CHECK_EQ(actual[column].hasShapedGlyph, expected[column].hasShapedGlyph);
+        if (expected[column].hasShapedGlyph) {
+            CHECK_EQ(actual[column].shaped.glyphID, expected[column].shaped.glyphID);
+            CHECK_EQ(actual[column].shaped.coveredCells, expected[column].shaped.coveredCells);
+        }
+    }
+}
+
+TEST(healedCoverageKeepsTheDrawnWindowAcrossWarmResizeAndTailEdits)
+{
+    HealingKeyFace face;
+    LigatureSheet warm(cellWidth, cellHeight, marginX, marginY, &face);
+    // These windows have identical source context but different left contexts
+    // (1 and 8) and drawn lengths (16 and 9). Reusing their strip moves W by
+    // seven cells even though its local text is unchanged.
+    const auto first = operatorRow("       Wwwwww    ");
+    const auto second = operatorRow("           Wwwwww   ");
+    compareKeyRowWithColdSheet(warm, face, first, cellWidth);
+    compareKeyRowWithColdSheet(warm, face, second, cellWidth);
+    compareKeyRowWithColdSheet(warm, face, first, cellWidth);
+    for (int columns : { 31, 32, 33, 63, 64, 33, 17, 64, 31 }) {
+        std::string text = "   Wwwwww";
+        text.resize(static_cast<std::size_t>(columns), ' ');
+        compareKeyRowWithColdSheet(warm, face, operatorRow(text.c_str()), cellWidth);
+        text.back() = 'w';
+        compareKeyRowWithColdSheet(warm, face, operatorRow(text.c_str()), cellWidth);
+    }
+}
+
+TEST(healedCoverageSeparatesNativeWeightAndDestinationPitch)
+{
+    HealingKeyFace face;
+    LigatureSheet warm(cellWidth, cellHeight, marginX, marginY, &face);
+    auto row = operatorRow("Wwwwww ");
+    compareKeyRowWithColdSheet(warm, face, row, cellWidth);
+    for (auto& cell : row)
+        cell.shape = 0;
+    compareKeyRowWithColdSheet(warm, face, row, cellWidth);
+    compareKeyRowWithColdSheet(warm, face, row, cellWidth + 1.0f);
+    compareKeyRowWithColdSheet(warm, face, row, cellWidth);
+}
+
+TEST(sharedLigatureKeyPreservesTheNativeFaceMaskAndWindowLayout)
+{
+    const auto row = operatorRow("ab");
+    const LigatureRunCandidate candidate { 0, 2, 0, 0 };
+    std::array<std::uint32_t, 7> key {};
+    CHECK_EQ(writeLigatureRunKey(row.data(), static_cast<int>(row.size()), candidate, key.data(), static_cast<int>(key.size())), 7);
+    const std::array<std::uint32_t, 7> expected { 0x20, 'a', 'b', 0x20, 1, 2, 6 };
+    CHECK(key == expected);
+    CHECK_EQ(writeLigatureRunKey(row.data(), static_cast<int>(row.size()), candidate, key.data(), 6), 0);
+    CHECK_EQ(writeLigatureRunKey(row.data(), static_cast<int>(row.size()), { 1, 2, 0, 0 }, key.data(), 7), 0);
 }
 
 } // namespace

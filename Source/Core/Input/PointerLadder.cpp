@@ -722,7 +722,7 @@ PointerReportingState pointerReportingState(const PointerMoment& moment, const P
     state.isMouseReporting = moment.isMouseReporting;
     state.isSelectionOverrideModifierArmed = chordArmed(moment.held, policy.selectChord);
     state.isBlockSelectionOverrideModifierArmed = moment.isBlockSelectionInFlight || chordArmed(moment.held, policy.blockSelectChord);
-    state.isLinkModifierArmed = chordArmed(moment.held, linkChord)
+    state.isLinkModifierArmed = chordArmed(moment.held, policy.linkChord)
         && !(moment.isMouseReporting && state.isSelectionOverrideModifierArmed);
     state.isControlModePane = policy.isControlModePane;
     state.isLinkOverrideEnabled = policy.isLinkOverrideEnabled

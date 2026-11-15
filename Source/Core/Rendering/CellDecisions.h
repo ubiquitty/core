@@ -1301,6 +1301,53 @@ inline bool ligatureRunFlanksRowEnd(const LigatureRunCandidate& candidate, int c
     return candidate.startColumn + candidate.length == columns && candidate.rightContext == 0;
 }
 
+/// Writes a shaping key containing the complete context and its drawn window.
+///
+/// Identical source text can be drawn from different positions within its
+/// context. The left context, drawn length and per-character face mask keep
+/// those windows distinct in both identity and coverage caches. The final
+/// three words follow the source text in that order.
+///
+/// - Parameters:
+///   - row: The distilled row the candidate came from.
+///   - columns: The number of readable cells in the row.
+///   - candidate: The drawn window and surrounding shaping context.
+///   - output: Receives source text, virtual flank spaces and metadata.
+///   - capacity: The number of writable words; context length plus five suffices.
+/// - Returns: The number of words written, or zero for invalid bounds or capacity.
+inline int writeLigatureRunKey(const LigatureCell* row, int columns, const LigatureRunCandidate& candidate,
+    std::uint32_t* output, int capacity)
+{
+    if (!row || !output || columns <= 0 || capacity < 5
+        || candidate.startColumn < 0 || candidate.startColumn > columns
+        || candidate.length <= 0 || candidate.length > columns - candidate.startColumn
+        || candidate.leftContext < 0 || candidate.leftContext > candidate.startColumn
+        || candidate.rightContext < 0 || candidate.rightContext > columns - candidate.startColumn - candidate.length)
+        return 0;
+    const int sourceCount = candidate.leftContext + candidate.length + candidate.rightContext;
+    if (sourceCount > capacity - 5)
+        return 0;
+    const bool hasLeftSpace = ligatureRunFlanksRowStart(candidate);
+    const bool hasRightSpace = ligatureRunFlanksRowEnd(candidate, columns);
+    int written = 0;
+    if (hasLeftSpace)
+        output[written++] = 0x20u;
+    std::uint32_t faceMask = 0;
+    const int first = candidate.startColumn - candidate.leftContext;
+    for (int offset = 0; offset < sourceCount; ++offset) {
+        const LigatureCell& cell = row[first + offset];
+        if (written < 32 && (cell.shape & ligatureShapeBold) != 0)
+            faceMask |= 1u << written;
+        output[written++] = cell.codePoint;
+    }
+    if (hasRightSpace)
+        output[written++] = 0x20u;
+    output[written++] = static_cast<std::uint32_t>(candidate.leftContext + (hasLeftSpace ? 1 : 0));
+    output[written++] = static_cast<std::uint32_t>(candidate.length);
+    output[written++] = faceMask;
+    return written;
+}
+
 /// The walk above, filling a caller's buffer instead of calling back.
 ///
 /// For callers a function template cannot reach — Swift sees no

@@ -963,7 +963,7 @@ SkipInkTap wideSkipInkTap(const BuildInputs& in, const GlyphBackend& atlas, cons
     int rowBase, int column, const CellMetrics& metrics, std::uint32_t askingVariant, const LetterExtent* rowLetters)
 {
     SkipInkTap tap;
-    if (!in.subpixelGlyphs || !wide.cache || !atlas.rasteriseWideGlyph || column < 0 || column >= in.columns)
+    if (!in.subpixelGlyphs || column < 0 || column >= in.columns)
         return tap;
     int anchorColumn = column;
     if (Ubiquitty::cellPen(in.cells[static_cast<std::size_t>(rowBase + column)]).attributes.contains(Ubiquitty::VT::Attribute::WideContinuation))
@@ -982,6 +982,26 @@ SkipInkTap wideSkipInkTap(const BuildInputs& in, const GlyphBackend& atlas, cons
     const float anchorLeft = rowLetters ? in.originInPixels.x + rowLetters[anchorColumn].leftInPixels : in.originInPixels.x + anchorColumn * metrics.cellWidth;
     const float columnLeft = rowLetters ? in.originInPixels.x + rowLetters[column].leftInPixels : in.originInPixels.x + column * metrics.cellWidth;
     const float columnWidth = rowLetters ? rowLetters[column].advanceInPixels : metrics.cellWidth;
+    if (!wide.cache || !atlas.rasteriseWideGlyph) {
+        // A combined atlas can draw its wide glyph through the legacy hook
+        // without publishing a separately keyed wide page. Tap that exact
+        // rendered box, with each column taking its own half, rather than
+        // dropping skip-ink for both columns. The coverage selector names a
+        // wide source even when a frontend stores it in the mono image.
+        if (!atlas.wideGlyph || !(metrics.cellWidth > 0.0f))
+            return tap;
+        const AtlasGlyph glyph = atlas.wideGlyph(atlas.context, anchor.codePoint, face);
+        if (!glyph.present || glyph.maxUV.x <= glyph.minUV.x || glyph.maxUV.y <= glyph.minUV.y)
+            return tap;
+        const float atlasPerDevice = (glyph.maxUV.x - glyph.minUV.x) / (2.0f * metrics.cellWidth);
+        tap.inkMinUV = { glyph.minUV.x + (columnLeft - anchorLeft) * atlasPerDevice, glyph.minUV.y };
+        tap.inkMaxUV = { tap.inkMinUV.x + columnWidth * atlasPerDevice, glyph.maxUV.y };
+        tap.boxMinUV = glyph.minUV;
+        tap.boxMaxUV = glyph.maxUV;
+        tap.present = true;
+        tap.sheet = SkipInkSheet::Wide;
+        return tap;
+    }
     const SubpixelPhase snap = phaseForPen(anchorLeft, widePhaseCount(in, atlas, anchor.codePoint, face), in.subpixelPhaseRounding);
     const std::uint32_t phase = static_cast<std::uint32_t>(snap.phase);
     const std::uint32_t variant = makeRasterVariant(phase, variantTier(askingVariant));
@@ -1413,10 +1433,14 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
         in.shadeStyle,
         shadePhase(static_cast<int>(std::round(in.originInPixels.x)), static_cast<int>(std::round(in.originInPixels.y))),
     };
-    const BrailleLattice brailleLattice = textAlignedBrailleLattice(
-        { in.originInPixels.x, in.originInPixels.y, metrics.cellWidth, metrics.cellHeight, in.brailleStyle,
-            in.subpixelPhaseCount, in.subpixelPhaseRounding },
-        metrics.baselineFromTop, metrics.xHeight);
+    // Plot dots share the full cell's 2x4 grid, including line spacing. Their
+    // positions cannot follow the text baseline without shifting every plot.
+    // Procedural positions retain the frame's phase policy even when its font
+    // stores only an integer-phase mask.
+    const BrailleLattice brailleLattice {
+        in.originInPixels.x, in.originInPixels.y, metrics.cellWidth, metrics.cellHeight, in.brailleStyle,
+        std::clamp(requested.subpixelPhaseCount, 1, subpixelPhaseCount), requested.subpixelPhaseRounding
+    };
     // The atlas texel size is not read here. Every use of it was a
     // multiplication carrying an atlas-pixel quantity into UV space — the
     // dilation pad, the subpixel quad's margins — and the rects this builder
@@ -1678,7 +1702,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
 
     // Push one decoration rule. `top`/`bottom` are device-px y; the rule spans
     // the cell's advance box (cellLeft..cellRight) so a run reads as one
-    // continuous line. `shouldMaskInk` attaches the skip-ink coverage band so
+    // continuous line. A present mask attaches the skip-ink coverage band so
     // glyph ink crossing it cuts a clean gap (underline rules only).
     // The cell's own coverage tap and its two neighbours', refreshed per cell.
     // Held out here so the rule emitter reads them without seventeen call sites
@@ -1691,7 +1715,11 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
     const float atlasToDevice = atlasToDeviceScale(metrics);
     const Vec2 skipInkPadInAtlasPixels { skipInkReachInDevicePixels.horizontal / atlasToDevice, skipInkReachInDevicePixels.vertical / atlasToDevice };
     const float skipInkTaps = static_cast<float>(skipInkReachInDevicePixels.steps);
-    auto emitRule = [&](DecorationSite site, float cellLeft, float cellRight, float cellTop, float cellHeight, float top, float bottom, Vec4 color, DecorationKind kind, float thickness, bool shouldMaskInk, bool haveInkMask, Vec2 inkTopLeft, Vec2 inkBottomRight) {
+    enum class InkMask {
+        Absent,
+        Present,
+    };
+    auto emitRule = [&](DecorationSite site, float cellLeft, float cellRight, float cellTop, float cellHeight, float top, float bottom, Vec4 color, DecorationKind kind, float thickness, InkMask mask) {
         // Recorded before the capacity check: the site was REACHED whether or
         // not the instance fitted, and a coverage answer that changed with the
         // caller's buffer size would report a scene as uncovered for running
@@ -1707,8 +1735,8 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
         d.kind = static_cast<float>(kind);
         d.dashPeriodInPixels = metrics.cellWidth;
         d.thicknessInPixels = thickness;
-        d.skipInk = (shouldMaskInk && haveInkMask) ? 1.0f : 0.0f;
-        if (shouldMaskInk && haveInkMask) {
+        d.skipInk = mask == InkMask::Present ? 1.0f : 0.0f;
+        if (mask == InkMask::Present) {
             // The band is the rule's own rect, so every pixel of the rule
             // samples the ink at its own height and the halo is measured from
             // where the rule is drawn. A curl's crest or a dot's top sits above
@@ -1765,8 +1793,6 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
             d.rightInk = { 0.0f, 0.0f, 0.0f, 0.0f };
             d.rightBox = { 0.0f, 0.0f, 0.0f, 0.0f };
         }
-        (void)inkTopLeft;
-        (void)inkBottomRight;
     };
 
     // Resolved-colour memo, frame-wide rather than per row: a run of one pen
@@ -2338,7 +2364,10 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
             // cell's own quad stays the size of its letter. A row whose letters
             // reach past the edge has nothing left to paint.
             if (isLetterRow && !rowLetters.empty() && metrics.cellWidth > 0.0f) {
-                const LetterExtent& last = rowLetters[static_cast<std::size_t>(in.columns - 1)];
+                // A doubled row visits only columns beginning inside the pane,
+                // including the final partial column when its width is odd.
+                const int visibleColumns = (in.columns + rowScale.widthScale - 1) / rowScale.widthScale;
+                const LetterExtent& last = rowLetters[static_cast<std::size_t>(visibleColumns - 1)];
                 const float rowEndCells = (last.leftInPixels + last.advanceInPixels) / metrics.cellWidth;
                 if (rowEndCells < static_cast<float>(in.columns)) {
                     const std::size_t index = (ablate & AblateCellWrite) ? out.cellCapacity : counts.cells++;
@@ -3277,6 +3306,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                                             } else {
                                                 const GlyphUV uv = monoSlotUV(slot, isSubpixelGlyph);
                                                 glyph = { { uv.minU, uv.minV }, { uv.maxU, uv.maxV }, true };
+                                                attachMeasuredInk(glyph, mono, slot);
                                             }
                                         }
                                     } else if (atlas.clusterGlyph) {
@@ -5618,9 +5648,9 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
 
                 const auto emitCellRule = [&](DecorationSite site, float left, float right, float topOfCell, float cellHeight,
                                               float top, float bottom, Vec4 color, DecorationKind kind, float thickness,
-                                              bool shouldMaskInk, bool hasMask, Vec2 minInk, Vec2 maxInk) { // bool-ok: masking policy and available coverage are independent predicates.
+                                              InkMask mask) {
                     if (!hasFraction) [[likely]] {
-                        emitRule(site, left, right, topOfCell, cellHeight, top, bottom, color, kind, thickness, shouldMaskInk, hasMask, minInk, maxInk);
+                        emitRule(site, left, right, topOfCell, cellHeight, top, bottom, color, kind, thickness, mask);
                         return;
                     }
                     const Vec2 areaOrigin = fractionArea.map(fractionBlockOrigin, fractionBlockOrigin);
@@ -5659,7 +5689,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         return;
                     const std::size_t index = counts.decorations;
                     emitRule(site, left, right, std::round(areaOrigin.y), cellHeight * verticalScale,
-                        top, bottom, color, kind, thickness * verticalScale, shouldMaskInk, hasMask, minInk, maxInk);
+                        top, bottom, color, kind, thickness * verticalScale, mask);
                     if (index < out.decorationCapacity && out.decorations)
                         out.decorations[index].dashPeriodInPixels *= horizontalScale;
                 };
@@ -5778,8 +5808,10 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         if (neighbourColumn < 0 || neighbourColumn >= in.columns)
                             return false;
                         const Pen& neighbourPen = in.cells[static_cast<std::size_t>(row * in.columns + neighbourColumn)].pen;
+                        const LinkState neighbourLink = linkRow ? static_cast<LinkState>(linkRow[neighbourColumn]) : LinkState::None;
                         return neighbourPen.attributes.contains(Ubiquitty::VT::Attribute::Underline)
-                            || penUnderlineShape(&neighbourPen) != Ubiquitty::VT::underlineNone;
+                            || penUnderlineShape(&neighbourPen) != Ubiquitty::VT::underlineNone
+                            || (neighbourLink != LinkState::None && neighbourLink != LinkState::RestingAction && neighbourLink != LinkState::HoveredAction);
                     };
                     const float leftOverhang = cellLeft - inkScreenLeft;
                     const float rightOverhang = inkScreenRight - cellRight;
@@ -5804,32 +5836,27 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     underlineRight = proportionalTextRight;
                     patternedRuleLeft = cellLeft + std::floor((proportionalTextLeft - cellLeft) / metrics.cellWidth) * metrics.cellWidth;
                 }
-                // The skip-ink tap spans the rule, so a widened rule widens its
-                // window by the same pixels: an atlas pixel is a device pixel on
-                // the mono path.
-                const Vec2 inkTopLeft = { selfTap.inkMinUV.x - (cellLeft - underlineLeft), selfTap.inkMinUV.y };
-                const Vec2 inkBottomRight = { selfTap.inkMaxUV.x + (underlineRight - cellRight), selfTap.inkMaxUV.y };
                 // The shader maps a rule's width onto its tap's box, and a point a
                 // fraction across it onto the neighbours' boxes a whole box to
-                // either side. A rule covering only part of its box, as a run's
-                // text beside its alignment slack does, narrows all three to that
-                // part, so each point still samples the ink above it.
-                auto narrowTapsTo = [&](float left, float right, float boxLeft, float boxRight) {
+                // either side. A shortened or expanded rule remaps all three
+                // windows, so each pixel still samples the ink above it. The
+                // neighbour offsets retain the shader's +1/-1 cell convention.
+                auto remapTapsTo = [&](float left, float right, float boxLeft, float boxRight) {
                     const float boxWidth = boxRight - boxLeft;
-                    if (boxWidth <= 0.0f || (left <= boxLeft && right >= boxRight))
+                    if (boxWidth <= 0.0f || (left == boxLeft && right == boxRight))
                         return;
                     const float offset = (left - boxLeft) / boxWidth;
                     const float share = (right - left) / boxWidth;
-                    auto narrow = [&](SkipInkTap& tap, float boxesToTheRight) {
+                    auto remap = [&](SkipInkTap& tap, float boxesToTheRight) {
                         if (!tap.present)
                             return;
                         const float span = tap.inkMaxUV.x - tap.inkMinUV.x;
                         tap.inkMinUV.x += (offset + boxesToTheRight * (1.0f - share)) * span;
                         tap.inkMaxUV.x = tap.inkMinUV.x + share * span;
                     };
-                    narrow(selfTap, 0.0f);
-                    narrow(leftTap, 1.0f);
-                    narrow(rightTap, -1.0f);
+                    remap(selfTap, 0.0f);
+                    remap(leftTap, 1.0f);
+                    remap(rightTap, -1.0f);
                 };
 
                 // A rule that is cut by ink. Over a claim drawn glyph by glyph it
@@ -5840,12 +5867,13 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                 // cell's, and a segment starting mid-cell would restart it. A strip's
                 // claim and a mono cell keep their one rule and its taps.
                 //
-                // A phased two-cell glyph is ruled the same way, a column at a
-                // time, each column tapping its half of the glyph: a tap is one cell
+                // A two-cell glyph with coverage is ruled the same way, a column
+                // at a time, each column tapping its half of the glyph. This also
+                // covers a wide slot held in a combined sheet: a tap is one cell
                 // wide wherever the shader maps a neighbour onto it.
                 const bool isPerGlyphClaim = metrics.skipInk
                     && ((!proportionalPerGlyphClaims.empty() && proportionalPerGlyphClaims[static_cast<std::size_t>(column)] != 0u)
-                        || isWidePhased);
+                        || isWidePhased || (isWide && selfTap.sheet == SkipInkSheet::Wide));
                 // The per-glyph arm, apart from the rule every other cell takes, so
                 // the call sites inline the common rule and only a claim drawn
                 // glyph by glyph reaches the loop.
@@ -5871,8 +5899,8 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         leftTap = tapFor(tapColumn - 1);
                         rightTap = tapFor(tapColumn + 1);
                         const bool hasMask = selfTap.present || leftTap.present || rightTap.present;
-                        narrowTapsTo(segmentLeft, segmentRight, tapLeft, tapRight);
-                        emitCellRule(site, segmentLeft, segmentRight, cellTop, metrics.cellHeight, top, bottom, color, kind, thickness, true, hasMask, selfTap.inkMinUV, selfTap.inkMaxUV);
+                        remapTapsTo(segmentLeft, segmentRight, tapLeft, tapRight);
+                        emitCellRule(site, segmentLeft, segmentRight, cellTop, metrics.cellHeight, top, bottom, color, kind, thickness, hasMask ? InkMask::Present : InkMask::Absent);
                     }
                     selfTap = savedSelf;
                     leftTap = savedLeft;
@@ -5880,16 +5908,16 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                 };
                 auto emitMaskedRule = [&] [[gnu::always_inline]] (DecorationSite site, float left, float right, float top, float bottom, Vec4 color, DecorationKind kind, float thickness) {
                     if (!isPerGlyphClaim) [[likely]] {
-                        if (hasProportionalTextExtent) [[unlikely]] {
+                        if (left != cellLeft || right != cellRight) [[unlikely]] {
                             const SkipInkTap savedSelf = selfTap, savedLeft = leftTap, savedRight = rightTap;
-                            narrowTapsTo(left, right, cellLeft, cellRight);
-                            emitCellRule(site, left, right, cellTop, metrics.cellHeight, top, bottom, color, kind, thickness, true, haveInkMask, inkTopLeft, inkBottomRight);
+                            remapTapsTo(left, right, cellLeft, cellRight);
+                            emitCellRule(site, left, right, cellTop, metrics.cellHeight, top, bottom, color, kind, thickness, haveInkMask ? InkMask::Present : InkMask::Absent);
                             selfTap = savedSelf;
                             leftTap = savedLeft;
                             rightTap = savedRight;
                             return;
                         }
-                        emitCellRule(site, left, right, cellTop, metrics.cellHeight, top, bottom, color, kind, thickness, true, haveInkMask, inkTopLeft, inkBottomRight);
+                        emitCellRule(site, left, right, cellTop, metrics.cellHeight, top, bottom, color, kind, thickness, haveInkMask ? InkMask::Present : InkMask::Absent);
                         return;
                     }
                     emitPerGlyphRule(site, left, right, top, bottom, color, kind, thickness);
@@ -6093,13 +6121,13 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     // than the underline colour.
                     const float strikeSnap = snapped(strikeThick);
                     const float strikeRow = strikeTop(baselineY, metrics.xHeight, strikeSnap);
-                    emitCellRule(DecorationSite::Strike, ruleLeft, ruleRight, cellTop, metrics.cellHeight, strikeRow, strikeRow + strikeSnap, foreground, DecorationKind::Solid, thick, false, false, inkTopLeft, inkBottomRight);
+                    emitCellRule(DecorationSite::Strike, ruleLeft, ruleRight, cellTop, metrics.cellHeight, strikeRow, strikeRow + strikeSnap, foreground, DecorationKind::Solid, thick, InkMask::Absent);
                 }
 
                 if (attributes.contains(Ubiquitty::VT::Attribute::Overline)) {
                     const float overlineWeight = snapped(thick);
                     const float overlineTop = std::round(cellTop);
-                    emitCellRule(DecorationSite::Overline, ruleLeft, ruleRight, cellTop, metrics.cellHeight, overlineTop, overlineTop + overlineWeight, underlineColor, DecorationKind::Solid, thick, false, false, inkTopLeft, inkBottomRight);
+                    emitCellRule(DecorationSite::Overline, ruleLeft, ruleRight, cellTop, metrics.cellHeight, overlineTop, overlineTop + overlineWeight, underlineColor, DecorationKind::Solid, thick, InkMask::Absent);
                 }
 
                 if (attributes.containsAny({ Ubiquitty::VT::Attribute::Framed, Ubiquitty::VT::Attribute::Encircled })) {
@@ -6110,13 +6138,13 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     const float boxBottom = std::round(cellBottom);
                     const float boxLeft = std::round(cellLeft);
                     const float boxRight = std::round(cellRight);
-                    emitCellRule(DecorationSite::FramedTop, cellLeft, cellRight, cellTop, metrics.cellHeight, boxTop, boxTop + boxWeight, underlineColor, DecorationKind::Solid, thick, false, false, inkTopLeft, inkBottomRight);
-                    emitCellRule(DecorationSite::FramedBottom, cellLeft, cellRight, cellTop, metrics.cellHeight, boxBottom - boxWeight, boxBottom, underlineColor, DecorationKind::Solid, thick, false, false, inkTopLeft, inkBottomRight);
+                    emitCellRule(DecorationSite::FramedTop, cellLeft, cellRight, cellTop, metrics.cellHeight, boxTop, boxTop + boxWeight, underlineColor, DecorationKind::Solid, thick, InkMask::Absent);
+                    emitCellRule(DecorationSite::FramedBottom, cellLeft, cellRight, cellTop, metrics.cellHeight, boxBottom - boxWeight, boxBottom, underlineColor, DecorationKind::Solid, thick, InkMask::Absent);
                     // The two vertical edges carry the snapped weight, because their
                     // narrow x span is the stroke rather than a band the shader
                     // fills.
-                    emitCellRule(DecorationSite::FramedLeft, boxLeft, boxLeft + boxWeight, cellTop, metrics.cellHeight, boxTop, boxBottom, underlineColor, DecorationKind::Solid, boxWeight, false, false, inkTopLeft, inkBottomRight);
-                    emitCellRule(DecorationSite::FramedRight, boxRight - boxWeight, boxRight, cellTop, metrics.cellHeight, boxTop, boxBottom, underlineColor, DecorationKind::Solid, boxWeight, false, false, inkTopLeft, inkBottomRight);
+                    emitCellRule(DecorationSite::FramedLeft, boxLeft, boxLeft + boxWeight, cellTop, metrics.cellHeight, boxTop, boxBottom, underlineColor, DecorationKind::Solid, boxWeight, InkMask::Absent);
+                    emitCellRule(DecorationSite::FramedRight, boxRight - boxWeight, boxRight, cellTop, metrics.cellHeight, boxTop, boxBottom, underlineColor, DecorationKind::Solid, boxWeight, InkMask::Absent);
                 }
 
                 if (ideogram != Ubiquitty::VT::ideogramNone) {
@@ -6169,9 +6197,9 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         // is the previous row, and a rule that grows into it reads as
                         // that row's underline.
                         const float top = std::round(cellTop);
-                        emitCellRule(DecorationSite::IdeogramOverLeft, cellLeft, cellRight, cellTop, metrics.cellHeight, top, top + t, underlineColor, DecorationKind::Solid, t, false, false, inkTopLeft, inkBottomRight);
+                        emitCellRule(DecorationSite::IdeogramOverLeft, cellLeft, cellRight, cellTop, metrics.cellHeight, top, top + t, underlineColor, DecorationKind::Solid, t, InkMask::Absent);
                         if (ideogram == Ubiquitty::VT::ideogramDoubleOverline)
-                            emitCellRule(DecorationSite::IdeogramOverRight, cellLeft, cellRight, cellTop, metrics.cellHeight, top + t + gap, top + t + gap + t, underlineColor, DecorationKind::Solid, t, false, false, inkTopLeft, inkBottomRight);
+                            emitCellRule(DecorationSite::IdeogramOverRight, cellLeft, cellRight, cellTop, metrics.cellHeight, top + t + gap, top + t + gap + t, underlineColor, DecorationKind::Solid, t, InkMask::Absent);
                     } else { // ideogramStress
                         // Emphasis marking: the CJK convention is a dot ABOVE each
                         // character in horizontal setting — kenten, the same mark CSS
@@ -6210,7 +6238,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         const float side = std::max(2.0f * metrics.deviceScale, std::round(metrics.cellWidth * 0.25f));
                         const float centreX = std::round((cellLeft + cellRight) * 0.5f);
                         const float top = std::round(cellTop);
-                        emitCellRule(DecorationSite::IdeogramStress, centreX - side * 0.5f, centreX + side * 0.5f, cellTop, metrics.cellHeight, top, top + side, foreground, DecorationKind::Solid, side, false, false, inkTopLeft, inkBottomRight);
+                        emitCellRule(DecorationSite::IdeogramStress, centreX - side * 0.5f, centreX + side * 0.5f, cellTop, metrics.cellHeight, top, top + side, foreground, DecorationKind::Solid, side, InkMask::Absent);
                     }
                 }
             }

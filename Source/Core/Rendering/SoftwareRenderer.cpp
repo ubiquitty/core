@@ -142,6 +142,30 @@ inline void writeInkPixel(std::uint8_t* out, const std::uint8_t* ground, int for
     writeMixedPixel(out, ground[0], ground[1], ground[2], ground[3], foregroundRed, foregroundGreen, foregroundBlue, coverage);
 }
 
+// The integer pixels covered by a cell and the width its texture mapping uses.
+struct CellCompositeSpan {
+    int left;
+    int right;
+    float samplingWidth;
+};
+
+// Native rasterizers cover pixel centres in [left, right), retaining the
+// floating origin used by the Metal and Vulkan cell vertices. At an exact
+// half-pixel pen the centre on the left belongs to this cell, so lround's
+// tie-away-from-zero rule starts one pixel too late. The bitmap tier retains
+// its established rounded-edge contract.
+CellCompositeSpan cellCompositeSpan(const CellInstance& instance, int cellWidth, CoverageSampling sampling)
+{
+    const float left = instance.gridPosition.x * static_cast<float>(cellWidth);
+    if (sampling == CoverageSampling::Bitmap) {
+        const int first = static_cast<int>(std::lround(left));
+        const int end = static_cast<int>(std::lround((instance.gridPosition.x + instance.widthCells) * static_cast<float>(cellWidth)));
+        return { first, end, static_cast<float>(end - first) };
+    }
+    const float width = instance.widthCells * static_cast<float>(cellWidth);
+    return { static_cast<int>(std::ceil(left - 0.5f)), static_cast<int>(std::ceil(left + width - 0.5f)), width };
+}
+
 // The inline span-column table. A cell spans at most four times its width (a
 // wide cell on a doubled row), so this covers every cell geometry a font
 // produces; past it the table is taken from the heap instead.
@@ -158,6 +182,16 @@ SoftwareRenderer::Atlas::Atlas(int capacityIn, int columns, int slotWidthInPixel
     , bytesPerPixel(bytesPerPixelIn > 0 ? bytesPerPixelIn : 1)
 {
     pixels.assign(static_cast<std::size_t>(atlasWidth) * atlasHeight * bytesPerPixel, 0);
+    inkBoxes.assign(bytesPerPixel == 1 ? static_cast<std::size_t>(capacity) : 0, unmeasuredGlyphInkBox());
+}
+
+void SoftwareRenderer::Atlas::recordInkBox(int slot, CoveragePlaneSpan coverage, int widthInPixels, int heightInPixels)
+{
+    if (slot < 0 || static_cast<std::size_t>(slot) >= inkBoxes.size())
+        return;
+    inkBoxes[static_cast<std::size_t>(slot)] = coverage.empty()
+        ? emptyGlyphInkBox()
+        : measureInkBox(coverage, widthInPixels, heightInPixels);
 }
 
 namespace {
@@ -492,8 +526,11 @@ void SoftwareRenderer::rasterizeInto(Atlas& atlas, int slot, std::uint32_t codeP
 
     const bool present = m_rasterizer.rasterizeGlyphAtPhase(codePoint, face,
         /*weight=*/0, phaseInPixels, slotWidthInPixels, slotHeightInPixels, m_slotScratch.data());
-    writeAtlasCoverage(atlas.pixels, atlas.atlasWidth, { x0, y0, slotWidthInPixels, slotHeightInPixels },
-        present ? std::span<const std::uint8_t>(m_slotScratch).first(static_cast<std::size_t>(slotWidthInPixels) * slotHeightInPixels) : std::span<const std::uint8_t> {});
+    const CoveragePlaneSpan plane = present
+        ? CoveragePlaneSpan(m_slotScratch).first(static_cast<std::size_t>(slotWidthInPixels) * slotHeightInPixels)
+        : CoveragePlaneSpan {};
+    writeAtlasCoverage(atlas.pixels, atlas.atlasWidth, { x0, y0, slotWidthInPixels, slotHeightInPixels }, plane);
+    atlas.recordInkBox(slot, plane, slotWidthInPixels, slotHeightInPixels);
 }
 
 bool SoftwareRenderer::stageMonoCoverage(int slot, std::span<const std::uint8_t> coverage)
@@ -512,6 +549,7 @@ bool SoftwareRenderer::stageMonoCoverage(int slot, std::span<const std::uint8_t>
     const int x0 = (slot % geometry.columns) * slotWidth;
     const int y0 = (slot / geometry.columns) * slotHeight;
     writeAtlasCoverage(m_mono.pixels, m_mono.atlasWidth, { x0, y0, slotWidth, slotHeight }, coverage);
+    m_mono.recordInkBox(slot, coverage, slotWidth, slotHeight);
     return true;
 }
 
@@ -530,6 +568,7 @@ void SoftwareRenderer::rasterizeClusterInto(Atlas& atlas, int slot, std::span<co
     const bool inked = m_rasterizer.rasterizeClusterAtPhase(codePoints.data(), static_cast<int>(codePoints.size()), face, weight, static_cast<double>(variantPhase(variant)) / std::max(1, m_rasterizer.glyphPhaseCount()), width, height, m_slotScratch.data());
     const std::span<const std::uint8_t> plane = inked ? std::span<const std::uint8_t>(m_slotScratch).first(static_cast<std::size_t>(width) * static_cast<std::size_t>(height)) : std::span<const std::uint8_t> {};
     writeAtlasCoverage(atlas.pixels, atlas.atlasWidth, region, plane);
+    atlas.recordInkBox(slot, plane, width, height);
 }
 
 // Reached by no unit test. The builder probes the cache itself and asks for a
@@ -589,6 +628,7 @@ void SoftwareRenderer::rasteriseSizedWindowInto(Atlas& atlas, int slot, std::uin
         const std::span<const std::uint8_t> sourceRow = window.subspan(static_cast<std::size_t>(y) * static_cast<std::size_t>(canvas.width), static_cast<std::size_t>(canvas.width));
         std::ranges::copy(sourceRow, atlas.pixels.begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(y0 + y) * static_cast<std::size_t>(atlas.atlasWidth) + static_cast<std::size_t>(x0)));
     }
+    atlas.recordInkBox(slot, window, canvas.width, canvas.height);
 }
 
 AtlasGlyph SoftwareRenderer::faultSizedWindow(Atlas& atlas, std::uint32_t codePoint, FontFace face, std::uint32_t weight, std::uint32_t phase, SizedTile tile)
@@ -645,6 +685,7 @@ MonoAtlasBinding SoftwareRenderer::bindMonoAtlas()
     binding.cache = &m_mono.cache;
     binding.geometry = m_mono.geometry;
     binding.slotCapacity = m_mono.capacity;
+    binding.inkBoxForSlot = m_isBitmapFace ? nullptr : m_mono.inkBoxes.data();
     binding.weight = 0u;
     return binding;
 }
@@ -994,64 +1035,32 @@ void SoftwareRenderer::compositeColorGlyph(const GlyphInstance& g, std::vector<s
 
 float SoftwareRenderer::sampleMonoCoverage(float x, float y) const
 {
-    // The coordinate is the texel index.
-    if (m_mono.atlasWidth <= 0 || m_mono.atlasHeight <= 0)
-        return 0.0f;
-    int ax = static_cast<int>(x);
-    int ay = static_cast<int>(y);
-    if (ax < 0)
-        ax = 0;
-    if (ay < 0)
-        ay = 0;
-    if (ax >= m_mono.atlasWidth)
-        ax = m_mono.atlasWidth - 1;
-    if (ay >= m_mono.atlasHeight)
-        ay = m_mono.atlasHeight - 1;
-    return m_mono.pixels[static_cast<std::size_t>(ay) * m_mono.atlasWidth + ax] / 255.0f;
+    return sampleAtlasCoverage(m_mono.pixels, m_mono.atlasWidth, m_mono.atlasHeight, x, y,
+        m_isBitmapFace ? CoverageSampling::Bitmap : CoverageSampling::Native);
+}
+
+float SoftwareRenderer::sampleWideCoverage(float x, float y) const
+{
+    return sampleAtlasCoverage(m_wide.pixels, m_wide.atlasWidth, m_wide.atlasHeight, x, y,
+        m_isBitmapFace ? CoverageSampling::Bitmap : CoverageSampling::Native);
 }
 
 float SoftwareRenderer::sampleStripCoverage(float x, float y) const
 {
-    const std::span<const std::uint8_t> sheet = m_ligature.coverage();
-    const int width = m_ligature.widthInPixels();
-    const int height = m_ligature.heightInPixels();
-    if (width <= 0 || height <= 0 || sheet.size() < static_cast<std::size_t>(width) * static_cast<std::size_t>(height))
-        return 0.0f;
-    int ax = static_cast<int>(x);
-    int ay = static_cast<int>(y);
-    if (ax < 0)
-        ax = 0;
-    if (ay < 0)
-        ay = 0;
-    if (ax >= width)
-        ax = width - 1;
-    if (ay >= height)
-        ay = height - 1;
-    return sheet[static_cast<std::size_t>(ay) * static_cast<std::size_t>(width) + static_cast<std::size_t>(ax)] / 255.0f;
+    return sampleAtlasCoverage(m_ligature.coverage(), m_ligature.widthInPixels(), m_ligature.heightInPixels(), x, y,
+        m_isBitmapFace ? CoverageSampling::Bitmap : CoverageSampling::Native);
 }
 
 float SoftwareRenderer::sampleProportionalStripCoverage(float x, float y) const
 {
-    const std::span<const std::uint8_t> sheet = m_proportionalStrip.coverage();
-    const int width = m_proportionalStrip.widthInPixels();
-    const int height = m_proportionalStrip.heightInPixels();
-    if (width <= 0 || height <= 0 || sheet.size() < static_cast<std::size_t>(width) * static_cast<std::size_t>(height))
-        return 0.0f;
-    int atlasX = std::clamp(static_cast<int>(x), 0, width - 1);
-    int atlasY = std::clamp(static_cast<int>(y), 0, height - 1);
-    return sheet[static_cast<std::size_t>(atlasY) * static_cast<std::size_t>(width) + static_cast<std::size_t>(atlasX)] / 255.0f;
+    return sampleAtlasCoverage(m_proportionalStrip.coverage(), m_proportionalStrip.widthInPixels(), m_proportionalStrip.heightInPixels(), x, y,
+        m_isBitmapFace ? CoverageSampling::Bitmap : CoverageSampling::Native);
 }
 
 float SoftwareRenderer::sampleProportionalCoverage(float x, float y) const
 {
-    const std::span<const std::uint8_t> sheet = m_proportional.coverage();
-    const int width = m_proportional.widthInPixels();
-    const int height = m_proportional.heightInPixels();
-    if (width <= 0 || height <= 0 || sheet.size() < static_cast<std::size_t>(width) * static_cast<std::size_t>(height))
-        return 0.0f;
-    const int atlasX = std::clamp(static_cast<int>(x), 0, width - 1);
-    const int atlasY = std::clamp(static_cast<int>(y), 0, height - 1);
-    return sheet[static_cast<std::size_t>(atlasY) * static_cast<std::size_t>(width) + static_cast<std::size_t>(atlasX)] / 255.0f;
+    return sampleAtlasCoverage(m_proportional.coverage(), m_proportional.widthInPixels(), m_proportional.heightInPixels(), x, y,
+        m_isBitmapFace ? CoverageSampling::Bitmap : CoverageSampling::Native);
 }
 
 void SoftwareRenderer::composite(const CellInstance& instance, IntPoint gridOriginInPixels, std::vector<std::uint8_t>& rgba, IntSize surface, int rowScale, CellPaint paint) const
@@ -1063,14 +1072,12 @@ void SoftwareRenderer::composite(const CellInstance& instance, IntPoint gridOrig
     // as letters (LetterLayout.h), where a cell stands at its letter's pen.
     // Painted linearly: reading it as a narrow-or-wide flag paints two cells
     // for every one of those and leaves the rest of a doubled cell holding
-    // whatever the surface had. The span runs from the rounded left edge to
-    // the rounded right edge rather than a rounded width from a rounded
-    // left: two letters meeting on a fractional boundary then share the pixel
-    // column between them, where rounding each on its own leaves a column
-    // nothing paints or paints one twice.
-    const int cellLeft = static_cast<int>(std::lround(instance.gridPosition.x * static_cast<float>(m_cellWidth)));
-    const int cellRight = static_cast<int>(std::lround((instance.gridPosition.x + instance.widthCells) * static_cast<float>(m_cellWidth)));
-    const int spanWidth = cellRight - cellLeft;
+    // whatever the surface had. Both endpoints resolve through one boundary
+    // rule, so adjacent letters neither leave a gap nor paint a column twice.
+    const CellCompositeSpan span = cellCompositeSpan(instance, m_cellWidth,
+        m_isBitmapFace ? CoverageSampling::Bitmap : CoverageSampling::Native);
+    const int cellLeft = span.left;
+    const int spanWidth = span.right - span.left;
     // Which SHEET the cell's glyph came from, which the span cannot answer on
     // its own: a wide cell and a narrow cell on a doubled row both span two.
     // The row's scale divides out, leaving the cell's own width. A doubled
@@ -1140,7 +1147,7 @@ void SoftwareRenderer::composite(const CellInstance& instance, IntPoint gridOrig
     // per-pixel form — the arithmetic is the lambda either way, so the two
     // schedules cannot answer differently.
     const auto texelColumnFor = [&](int px) {
-        const float u = instance.atlasTopLeft.x + (px + 0.5f) / spanWidth * spanU;
+        const float u = instance.atlasTopLeft.x + (px + 0.5f) / span.samplingWidth * spanU;
         // Atlas pixels: the interpolated coordinate is the texel.
         return clampInt(static_cast<int>(u), 0, atlas.atlasWidth - 1);
     };
@@ -1191,9 +1198,10 @@ void SoftwareRenderer::compositeWithCoverage(const CellInstance& instance, IntPo
 
 void SoftwareRenderer::compositeWithOpacity(const CellInstance& instance, IntPoint gridOriginInPixels, std::vector<std::uint8_t>& rgba, IntSize surface, int rowScale, CellPaint paint) const
 {
-    const int cellLeft = static_cast<int>(std::lround(instance.gridPosition.x * static_cast<float>(m_cellWidth)));
-    const int cellRight = static_cast<int>(std::lround((instance.gridPosition.x + instance.widthCells) * static_cast<float>(m_cellWidth)));
-    const int spanWidth = cellRight - cellLeft;
+    const CellCompositeSpan span = cellCompositeSpan(instance, m_cellWidth,
+        m_isBitmapFace ? CoverageSampling::Bitmap : CoverageSampling::Native);
+    const int cellLeft = span.left;
+    const int spanWidth = span.right - span.left;
     // Which SHEET the cell's glyph came from, which the span cannot answer on
     // its own: a wide cell and a narrow cell on a doubled row both span two.
     // The row's scale divides out, leaving the cell's own width. A doubled
@@ -1263,7 +1271,7 @@ void SoftwareRenderer::compositeWithOpacity(const CellInstance& instance, IntPoi
     // per-pixel form — the arithmetic is the lambda either way, so the two
     // schedules cannot answer differently.
     const auto texelColumnFor = [&](int px) {
-        const float u = instance.atlasTopLeft.x + (px + 0.5f) / spanWidth * spanU;
+        const float u = instance.atlasTopLeft.x + (px + 0.5f) / span.samplingWidth * spanU;
         // Atlas pixels: the interpolated coordinate is the texel.
         return clampInt(static_cast<int>(u), 0, atlas.atlasWidth - 1);
     };
@@ -1499,9 +1507,10 @@ void SoftwareRenderer::compositeGlyph(const GlyphInstance& g, const Atlas& atlas
 // edges feather in sRGB rather than the GPU's linear space).
 void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, std::vector<std::uint8_t>& rgba, IntSize surface) const
 {
-    // A skip-ink tap's nudge off the texel grid, shared with every GPU arm's
-    // decoration shader so the two read the same texel.
+    // The bitmap tier nudges nearest taps off texel boundaries. Native taps
+    // retain their exact coordinates for bilinear sampling.
     constexpr float skipInkTapBias = 1.0f / 128.0f;
+    const float tapBias = m_isBitmapFace ? skipInkTapBias : 0.0f;
     const float minX = d.topLeftInPixels.x;
     const float minY = d.topLeftInPixels.y;
     const float sizeX = d.bottomRightInPixels.x - minX;
@@ -1596,8 +1605,7 @@ void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, std::vec
                 // Three base-8 digits select the sheet holding the ink each of
                 // this cell, its left and its right neighbour draws: mono,
                 // proportional strip, ligature strip, or the proportional glyph
-                // sheet. The two-cell sheet's digit never arrives here: this
-                // renderer binds no wide cache to tap.
+                // sheet, or the wide sheet's own coverage plane.
                 const int selectors = static_cast<int>(d.pad1.y + 0.5f);
                 // The cut is the glyph's coverage dilated by a disc of radius
                 // padInAtlas, taken on a grid whose taps stay about a pixel
@@ -1619,12 +1627,12 @@ void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, std::vec
                             // diagonal by up to the square root of two.
                             if (ddx * ddx + ddy * ddy > steps * steps)
                                 continue;
-                            // Nudged off the texel grid: a tap's offsets are
-                            // eighths of a texel and land on texel edges
-                            // exactly, where the GPU's interpolated coordinate
-                            // and this one round to different sides.
-                            const float tapX = centreX + static_cast<float>(ddx) * stepX + skipInkTapBias;
-                            const float tapY = centreY + static_cast<float>(ddy) * stepY + skipInkTapBias;
+                            // Bitmap taps move off exact texel boundaries,
+                            // where CPU arithmetic and interpolated GPU
+                            // coordinates can choose opposite texels. Native
+                            // taps keep the unmodified bilinear position.
+                            const float tapX = centreX + static_cast<float>(ddx) * stepX + tapBias;
+                            const float tapY = centreY + static_cast<float>(ddy) * stepY + tapBias;
                             // Only the glyph's own slot answers. The sheet packs
                             // glyphs side by side, and a tap that walked past
                             // this slot's edge read the neighbour in the SHEET,
@@ -1635,6 +1643,7 @@ void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, std::vec
                             const float tap = sheetSelector == 1 ? sampleProportionalStripCoverage(tapX, tapY)
                                 : sheetSelector == 2             ? sampleStripCoverage(tapX, tapY)
                                 : sheetSelector == 3             ? sampleProportionalCoverage(tapX, tapY)
+                                : sheetSelector == 4             ? sampleWideCoverage(tapX, tapY)
                                                                  : sampleMonoCoverage(tapX, tapY);
                             strongest = std::max(strongest, tap);
                         }
@@ -2449,7 +2458,6 @@ bool SoftwareRenderer::render(const BuildInputs& in, std::vector<std::uint8_t>& 
     reserveSheetsForScreen(in.rows * in.columns);
 
     BuildInputs local = in;
-    local.subpixelPhaseCount = std::clamp(m_rasterizer.glyphPhaseCount(), 1, subpixelPhaseCount);
     // A zero cell means the caller has no metrics of its own — the Unifont
     // rasterizer returns the fixed 8x16 cell, a FreeType one returns the
     // font-derived box. A caller that did supply metrics keeps them.

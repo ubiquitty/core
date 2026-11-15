@@ -1459,6 +1459,34 @@ TEST(configuredSelectionModifiersBypassMouseReporting)
     }
 }
 
+TEST(nativeLinkChordsKeepExactMatchingAndSelectionPrecedence)
+{
+    PointerMoment moment;
+    moment.isMouseReporting = true;
+    PointerPolicy macOS;
+    macOS.isLinkOverrideEnabled = false;
+    moment.held.hasCommand = true;
+    CHECK(pointerReportingState(moment, macOS).isLinkModifierArmed);
+    moment.held = { .hasControl = true };
+    CHECK(!pointerReportingState(moment, macOS).isLinkModifierArmed);
+
+    PointerPolicy linuxPolicy;
+    linuxPolicy.isLinkOverrideEnabled = false;
+    linuxPolicy.linkChord = { .hasControl = true };
+    CHECK(pointerReportingState(moment, linuxPolicy).isLinkModifierArmed);
+    CHECK(linkProbe(pointerReportingState(moment, linuxPolicy), false) == LinkProbe::Any);
+    moment.held.hasShift = true;
+    CHECK(!pointerReportingState(moment, linuxPolicy).isLinkModifierArmed);
+    moment.held = { .hasCommand = true };
+    CHECK(!pointerReportingState(moment, linuxPolicy).isLinkModifierArmed);
+    moment.held = { .hasControl = true };
+    linuxPolicy.selectChord = moment.held;
+    const auto selection = pointerReportingState(moment, linuxPolicy);
+    CHECK(selection.isSelectionOverrideModifierArmed);
+    CHECK(!selection.isLinkModifierArmed);
+    CHECK(!allowsLocalLinkInteraction(selection));
+}
+
 TEST(readlineButtonOneMovesPointOnlyAfterACleanClick)
 {
     Bench bench;

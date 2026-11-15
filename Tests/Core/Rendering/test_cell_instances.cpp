@@ -2974,7 +2974,8 @@ TEST(testBrailleTakesTheLatticeAndTheSettingTakesItBackToTheFont)
         CHECK(counts.cells == static_cast<std::size_t>(columns));
         CHECK_MSG(counts.boxFills == static_cast<std::size_t>(columns) * brailleDotsPerCell,
             "every raised dot of every cell is a quad");
-        CHECK(std::fabs(boxFills[0].plA.y - 2.825f) < 0.001f);
+        CHECK(std::fabs(boxFills[0].plA.y - 1.825f) < 0.001f);
+        CHECK(std::fabs((boxFills[0].plA.y + boxFills[3].plA.w) * 0.5f - in.metrics.cellHeight * 0.5f) < 0.001f);
         // Background only: the dots are the cell's whole ink, so a glyph quad
         // over them would draw the face's braille on top of the lattice.
         for (int column = 0; column < columns; ++column)
@@ -3027,6 +3028,105 @@ TEST(testBrailleTakesTheLatticeAndTheSettingTakesItBackToTheFont)
         CHECK(counts.boxFills == 0);
         for (int column = 0; column < columns; ++column)
             CHECK(cells[column].atlasBottomRight.x > cells[column].atlasTopLeft.x);
+    }
+}
+
+TEST(testProceduralBrailleCentersItsFullGridIndependentlyOfTheFontMetrics)
+{
+    TermPalette palette;
+    palette.seedDefaults();
+    constexpr std::array patterns { 0x28FFu, 0x2801u, 0x2880u, 0x2848u };
+    std::array<Cell, patterns.size()> row {};
+    for (std::size_t column = 0; column < patterns.size(); ++column) {
+        row[column].codePoint = patterns[column];
+        row[column].pen.foregroundIndex = colorDefault;
+        row[column].pen.backgroundIndex = colorDefault;
+        row[column].pen.underlineIndex = colorDefault;
+    }
+    std::array<CellInstance, patterns.size()> cells {};
+    std::array<DecorationInstance, patterns.size() * 8> decorations {};
+    std::array<OverlayInstance, patterns.size() * brailleDotsPerCell> dots {};
+    InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
+    buffers.boxFills = dots.data();
+    buffers.boxFillCapacity = dots.size();
+    BuildInputs input;
+    input.cells = row.data();
+    input.rows = 1;
+    input.columns = static_cast<int>(row.size());
+    input.palette = &palette;
+    input.drawsBrailleGrid = true;
+    input.originInPixels = { 0.3f, 0.7f };
+    input.subpixelPhaseCount = 4;
+    for (const float scale : { 1.0f, 2.0f, 3.0f }) {
+        for (const float spacing : { 0.0f, 0.5f, 1.0f }) {
+            input.metrics.cellWidth = 8.0f * scale;
+            input.metrics.cellHeight = (16.2f + spacing) * scale;
+            for (const float baseline : { 0.0f, input.metrics.cellHeight * 0.8f, input.metrics.cellHeight }) {
+                input.metrics.baselineFromTop = baseline;
+                for (const float xHeight : { 0.0f, 7.0f * scale, 10.0f * scale }) {
+                    input.metrics.xHeight = xHeight;
+                    CacheBackend backend;
+                    const InstanceCounts counts = buildCellInstances(input, backend.backend(), buffers);
+                    REQUIRE(counts.boxFills == 12);
+                    const float fullTop = dots[0].plA.y;
+                    const float fullBottom = dots[3].plA.w;
+                    const float cellCenter = input.originInPixels.y + input.metrics.cellHeight * 0.5f;
+                    CHECK(std::fabs((fullTop + fullBottom) * 0.5f - cellCenter) < 0.001f);
+                    std::size_t index = brailleDotsPerCell;
+                    for (std::size_t cellColumn = 1; cellColumn < patterns.size(); ++cellColumn) {
+                        for (int dotColumn = 0; dotColumn < brailleDotColumns; ++dotColumn) {
+                            for (int dotRow = 0; dotRow < brailleDotRows; ++dotRow) {
+                                if (!isBrailleDotRaised(patterns[cellColumn], dotColumn, dotRow))
+                                    continue;
+                                const auto& full = dots[static_cast<std::size_t>(dotColumn * brailleDotRows + dotRow)];
+                                const auto& partial = dots[index++];
+                                CHECK_EQ(partial.plA.y, full.plA.y);
+                                CHECK_EQ(partial.plA.w, full.plA.w);
+                                CHECK(std::fabs(partial.plA.x - full.plA.x - static_cast<float>(cellColumn) * input.metrics.cellWidth) < 0.001f);
+                                CHECK(std::fabs(partial.plA.z - full.plA.z - static_cast<float>(cellColumn) * input.metrics.cellWidth) < 0.001f);
+                            }
+                        }
+                    }
+                    CHECK_EQ(index, counts.boxFills);
+                }
+            }
+        }
+    }
+}
+
+TEST(testBrailleUsesTheFramePhaseWhenTheFontKeepsOnlyOneMask)
+{
+    TermPalette palette;
+    palette.seedDefaults();
+    Cell cell = defaultBlankCell;
+    cell.codePoint = 0x28FF;
+    CellInstance outputCell {};
+    std::array<DecorationInstance, 8> decorations {};
+    std::array<OverlayInstance, brailleDotsPerCell> dots {};
+    InstanceBuffers buffers { &outputCell, 1, decorations.data(), decorations.size() };
+    buffers.boxFills = dots.data();
+    buffers.boxFillCapacity = dots.size();
+    BuildInputs input;
+    input.cells = &cell;
+    input.rows = input.columns = 1;
+    input.palette = &palette;
+    input.drawsBrailleGrid = true;
+    input.metrics.cellWidth = 15.25f;
+    input.metrics.cellHeight = 31.0f;
+    input.originInPixels = { 2.125f, 2.0f };
+    input.subpixelPhaseRounding = PhaseRounding::Floor;
+    for (const int phases : { 4, 8 }) {
+        input.subpixelPhaseCount = phases;
+        CacheBackend backend;
+        GlyphBackend glyphs = backend.backend();
+        glyphs.bindMonoAtlas = [](void* context) {
+            auto binding = CacheBackend::monoBinding(*static_cast<CacheBackend*>(context));
+            binding.phaseCount = 1;
+            return binding;
+        };
+        REQUIRE(buildCellInstances(input, glyphs, buffers).boxFills == brailleDotsPerCell);
+        const float expected = std::floor(5.9375f * phases) / phases;
+        CHECK_EQ((dots[0].plA.x + dots[0].plA.z) * 0.5f, expected);
     }
 }
 
@@ -9639,4 +9739,173 @@ TEST(testARefusedSizedBlockLeavesItsSlotsToTheCellsAfterIt)
     CHECK_MSG(blankLetters == 0, blank.c_str());
     const std::string fitted = std::to_string(sharpLetters) + " letters drawn sharp, wanting some but not all";
     CHECK_MSG(sharpLetters > 0 && sharpLetters < letters, fitted.c_str());
+}
+
+namespace {
+struct MeasuredRuleAtlas : FakeAtlas {
+    std::vector<GlyphInkBox> inkBoxes { 1024 };
+    MonoAtlasBinding bindMonoAtlas()
+    {
+        MonoAtlasBinding binding;
+        binding.cache = &monoCache;
+        binding.geometry = { 32, 12, 20, 8, { 2, 2 } };
+        binding.slotCapacity = 1024;
+        binding.inkBoxForSlot = inkBoxes.data();
+        return binding;
+    }
+    bool rasteriseMonoGlyph(std::uint32_t, FontFace, std::uint32_t, int slot)
+    {
+        inkBoxes[static_cast<std::size_t>(slot)] = { { 0.0f, 2.0f }, { 12.0f, 18.0f } };
+        return true;
+    }
+};
+
+BuildInputs measuredRuleInputs(std::span<const Cell> cells, const TermPalette& palette)
+{
+    BuildInputs in;
+    in.cells = cells.data();
+    in.rows = 1;
+    in.columns = static_cast<int>(cells.size());
+    in.palette = &palette;
+    in.subpixelGlyphs = true;
+    in.metrics.cellWidth = 8;
+    in.metrics.cellHeight = 20;
+    in.metrics.baselineFromTop = 15;
+    in.metrics.underlineThickness = 1;
+    in.metrics.underlineDrop = 1;
+    in.metrics.shouldUnderlineFollowInk = true;
+    in.glyphMarginInPixels = { 2, 2 };
+    in.glyphSlotWidthInPixels = 12;
+    in.glyphSlotHeightInPixels = 20;
+    return in;
+}
+} // namespace
+
+// Measured ink extends one pixel beyond an eight-pixel cell. Underlining a
+// link run must extend only its outer ends, just like an SGR-underlined run;
+// interior boundaries already meet and must not overlap their neighbours.
+TEST(linkUnderlinesFollowInkOnlyAtTheirRunEnds)
+{
+    constexpr int columns = 3;
+    TermPalette palette;
+    palette.seedDefaults();
+    std::vector<Cell> grid(columns, defaultBlankCell);
+    for (int column = 0; column < columns; ++column)
+        setCell(grid, columns, 0, column, static_cast<std::uint32_t>('a' + column), {}, colorDefault, colorDefault);
+    BuildInputs in = measuredRuleInputs(grid, palette);
+    in.linkUnderlineStyle = VT::underlineSingle;
+    in.linkUnderlineStyleFile = VT::underlineSingle;
+    in.linkUnderlineStyleMailto = VT::underlineSingle;
+    in.linkColor = { 0.2f, 0.4f, 1, 1 };
+    in.linkHoverColor = in.linkColor;
+    std::array<std::uint8_t, columns> links {};
+    in.linkCells = links.data();
+    std::array<CellInstance, columns> cells {};
+    std::array<GlyphInstance, columns> glyphs {};
+    std::array<DecorationInstance, columns * 8> decorations {};
+    InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
+    buffers.glyphs = glyphs.data();
+    buffers.glyphCapacity = glyphs.size();
+    for (const auto state : { LinkState::Resting, LinkState::Hovered, LinkState::RestingFile, LinkState::RestingMailto }) {
+        links.fill(static_cast<std::uint8_t>(state));
+        MeasuredRuleAtlas atlas;
+        const auto counts = buildCellInstances(in, UbiquittyTest::glyphBackendFor(atlas), buffers);
+        REQUIRE(counts.decorations == 3);
+        CHECK(approx(decorations[0].topLeftInPixels.x, -1));
+        CHECK(approx(decorations[0].bottomRightInPixels.x, 8));
+        CHECK(approx(decorations[1].topLeftInPixels.x, 8));
+        CHECK(approx(decorations[1].bottomRightInPixels.x, 16));
+        CHECK(approx(decorations[2].topLeftInPixels.x, 16));
+        CHECK(approx(decorations[2].bottomRightInPixels.x, 25));
+    }
+    links = { static_cast<std::uint8_t>(LinkState::Resting), static_cast<std::uint8_t>(LinkState::RestingAction), static_cast<std::uint8_t>(LinkState::Resting) };
+    MeasuredRuleAtlas atlas;
+    const auto counts = buildCellInstances(in, UbiquittyTest::glyphBackendFor(atlas), buffers);
+    REQUIRE(counts.decorations == 2);
+    CHECK(approx(decorations[0].bottomRightInPixels.x, 9));
+    CHECK(approx(decorations[1].topLeftInPixels.x, 15));
+}
+
+// An italic's outer rule expands by a pixel each side. Reading that expanded
+// rule at any screen pixel must still sample the glyph directly above it,
+// including the two neighbouring glyphs whose halos can reach the same pixel.
+TEST(expandedUnderlineWindowsPreserveTheirScreenCoordinates)
+{
+    constexpr int columns = 3;
+    TermPalette palette;
+    palette.seedDefaults();
+    std::vector<Cell> grid(columns, defaultBlankCell);
+    setCell(grid, columns, 0, 0, 'g', {}, colorDefault, colorDefault);
+    setCell(grid, columns, 0, 1, 'f', { VT::Attribute::Underline, VT::Attribute::Italic }, colorDefault, colorDefault);
+    setCell(grid, columns, 0, 2, 'y', {}, colorDefault, colorDefault);
+    BuildInputs in = measuredRuleInputs(grid, palette);
+    in.metrics.skipInk = true;
+    in.metrics.skipInkPadding = 1;
+    std::array<CellInstance, columns> cells {};
+    std::array<GlyphInstance, columns> glyphs {};
+    std::array<DecorationInstance, columns * 8> decorations {};
+    InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
+    buffers.glyphs = glyphs.data();
+    buffers.glyphCapacity = glyphs.size();
+    MeasuredRuleAtlas atlas;
+    const auto counts = buildCellInstances(in, UbiquittyTest::glyphBackendFor(atlas), buffers);
+    REQUIRE(counts.decorations == 1);
+    const auto& rule = decorations[0];
+    REQUIRE(approx(rule.topLeftInPixels.x, 7) && approx(rule.bottomRightInPixels.x, 17));
+    REQUIRE(rule.skipInk > 0.5f);
+    for (const float screenX : { 7.5f, 8.5f, 12.5f, 15.5f, 16.5f }) {
+        const float fraction = (screenX - rule.topLeftInPixels.x) / (rule.bottomRightInPixels.x - rule.topLeftInPixels.x);
+        const float self = rule.inkTopLeft.x + fraction * (rule.inkBottomRight.x - rule.inkTopLeft.x) - rule.glyphSlotTopLeftUV.x;
+        const float left = rule.leftInk.x + (fraction + 1) * (rule.leftInk.y - rule.leftInk.x) - rule.leftBox.x;
+        const float right = rule.rightInk.x + (fraction - 1) * (rule.rightInk.y - rule.rightInk.x) - rule.rightBox.x;
+        CHECK(approx(self, screenX - 6));
+        CHECK(approx(left, screenX + 2));
+        CHECK(approx(right, screenX - 14));
+    }
+}
+
+TEST(aClusterCacheHitKeepsItsMeasuredInkBounds)
+{
+    struct ClusterBoundsAtlas : MeasuredRuleAtlas {
+        int clusterWrites = 0;
+        GlyphBackend glyphBackend()
+        {
+            auto backend = UbiquittyTest::glyphBackendFor(static_cast<MeasuredRuleAtlas&>(*this));
+            backend.rasteriseClusterGlyph = [](void* context, ClusterSpan codePoints, FontFace face, std::uint32_t variant, int slot) {
+                auto& fixture = *static_cast<ClusterBoundsAtlas*>(static_cast<MeasuredRuleAtlas*>(context));
+                return fixture.rasteriseClusterGlyph(codePoints, face, variant, slot);
+            };
+            return backend;
+        }
+        bool rasteriseClusterGlyph(ClusterSpan, FontFace, std::uint32_t, int slot)
+        {
+            ++clusterWrites;
+            inkBoxes[static_cast<std::size_t>(slot)] = { { 3, 4 }, { 9, 16 } };
+            return true;
+        }
+    };
+    constexpr int columns = 3;
+    TermPalette palette;
+    palette.seedDefaults();
+    std::vector<Cell> grid(columns, defaultBlankCell);
+    setCell(grid, columns, 0, 1, 'e', {}, colorDefault, colorDefault);
+    grid[1].combining[0] = 0x301u;
+    grid[1].setCombiningLength(1);
+    BuildInputs in = measuredRuleInputs(grid, palette);
+    std::array<CellInstance, columns> cells {};
+    std::array<GlyphInstance, columns> glyphs {};
+    std::array<DecorationInstance, columns * 8> decorations {};
+    InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
+    buffers.glyphs = glyphs.data();
+    buffers.glyphCapacity = glyphs.size();
+    ClusterBoundsAtlas atlas;
+    for (int frame = 0; frame < 2; ++frame) {
+        const auto counts = buildCellInstances(in, UbiquittyTest::glyphBackendFor(atlas), buffers);
+        REQUIRE(counts.glyphs == 1);
+        CHECK(approx(glyphs[0].originInPixels.x, 9));
+        CHECK(approx(glyphs[0].originInPixels.y, 2));
+        CHECK(approx(glyphs[0].sizeInPixels.x, 6));
+        CHECK(approx(glyphs[0].sizeInPixels.y, 12));
+    }
+    CHECK(atlas.clusterWrites == 1);
 }

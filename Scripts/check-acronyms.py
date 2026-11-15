@@ -43,7 +43,7 @@ VENDORED = re.compile(r"(^|/)ThirdParty/")
 
 # A vendor call is not our name. `g_child_watch_add(` is GLib's; a `g`-prefixed
 # name this project chose is not, and the difference is the paren.
-VENDOR_CALL = re.compile(r"(^|[^A-Za-z0-9_])(g|gtk|gdk|glib)_[a-z0-9_]+ *\(")
+VENDOR_CALL = re.compile(r"(?<![A-Za-z0-9_])(?:g|gtk|gdk|glib)_[a-z0-9_]+(?= *\()")
 ADDRESS_MODE = re.compile(r"addressMode[UVW]([^A-Za-z0-9_])")
 # A vendor field reached through the struct that owns it is not our name.
 # FreeType spells `FT_Affine23`'s and `FT_PaintTranslate`'s offsets `dx`/`dy`
@@ -173,15 +173,16 @@ def added_word_lines(lines):
     # A vendor symbol whose call paren is on the NEXT word-diff line is a call,
     # and the word diff has split it in two. Drop the symbol so it cannot read
     # as a name of ours.
-    vendorSymbol = re.compile(r"^[+ ][ \t]*(g|gtk|gdk|glib)_[a-z0-9_]+$")
+    vendorSymbol = re.compile(r"(?<![A-Za-z0-9_])(?:g|gtk|gdk|glib)_[a-z0-9_]+$")
     opensCall = re.compile(r"^[+ ][ \t]*\(")
     endsLabel = re.compile(r"\bd[xy]$")
     continuesLabel = re.compile(r"^[+ ][ \t]*:")
     kept = []
     for index, line in enumerate(lines):
         following = lines[index + 1] if index + 1 < len(lines) else ""
-        if vendorSymbol.match(line) and opensCall.match(following):
-            kept.append(line[:1])
+        vendor = vendorSymbol.search(line)
+        if vendor and opensCall.match(following):
+            kept.append(line[:vendor.start()] + "vendorCall")
             continue
         # Word diff can leave an unchanged colon outside the added label.
         # Retain that punctuation for the same label rule used on whole calls.
@@ -199,7 +200,7 @@ def ratchet_hits(added, pattern):
     compiled = re.compile(pattern)
     found = []
     for line in added:
-        masked = ADDRESS_MODE.sub(r"addressMode\\1", VENDOR_CALL.sub(r"\\1(", line))
+        masked = ADDRESS_MODE.sub(r"addressMode\\1", VENDOR_CALL.sub("vendorCall", line))
         masked = VENDOR_FIELD.sub(r"vendor\\1field", masked)
         masked = VENDOR_LABEL.sub(r"labelD\1:", masked)
         masked = VENDOR_FONTCONFIG.sub("Fc", masked)
@@ -264,6 +265,13 @@ def _self_test():
     vendor = ["+    g_child_watch_add(processID, onExit, nullptr);"]
     ours = ["+int g_counter = 0;"]
     pattern = RATCHETS[0][0]
+
+    nestedVendor = ["+    g_variant_dict_lookup(g_application_command_line_get_options_dict(commandLine), key, format, &value);"]
+    splitAssignment = added_word_lines(["+    GSimpleAction* action = g_simple_action_new", " (name, nullptr);"])
+    splitOwnName = added_word_lines(["+    auto g_counter = g_simple_action_new", " (name, nullptr);"])
+    if ratchet_hits(nestedVendor, pattern) or ratchet_hits(splitAssignment, pattern) or not ratchet_hits(splitOwnName, pattern):
+        print(f"{GATE} self-test: FAIL — vendor call context hid a project name or rejected a call")
+        status = 1
 
     if not ratchet_hits(vendor, pattern):
         print(f"{GATE} self-test: ok — a newly written GLib call is not a "

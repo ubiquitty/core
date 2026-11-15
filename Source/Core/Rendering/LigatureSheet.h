@@ -320,7 +320,7 @@ private:
     // The answers are derived from the strip's own measured raster on a fresh
     // slot, kept across frames, and asked for before the strip each frame.
     ShapedCellCache m_answers;
-    std::vector<std::uint32_t> m_answerKey; // the run's words, then its context, length and weight
+    std::vector<std::uint32_t> m_answerKey; // the run's words, then its context, length and face mask
     std::vector<ShapedCell> m_answerScratch; // one per drawn cell, reused per run
 };
 

@@ -36,7 +36,7 @@ struct PointerReportingState {
     // and gets two.
     bool isSelectionOverrideModifierArmed = false; // configured modifier: reach a selection through a tracking app
     bool isBlockSelectionOverrideModifierArmed = false; // [selection] block_select_modifier: the same reach, rectangular
-    bool isLinkModifierArmed = false; // Command: reach a link
+    bool isLinkModifierArmed = false; // native link chord: reach a link
     bool isControlModePane = false; // the pane is a tmux -CC surface we render
     // [selection] links_override_reporting: unmodified link hover + click-open stay
     // LOCAL even under mouse reporting. Defaults false here (conservative — an
@@ -61,8 +61,8 @@ inline DragOwner plainDragDefaultOwner(const PointerReportingState& s)
 }
 
 // Local LINK interaction (hover reveal + click-open) may run when the app isn't
-// reporting, when Command is held, or when links_override_reporting keeps links
-// local under reporting. Command is unconditional here because it is the
+// reporting, when the native link chord is held, or when links_override_reporting
+// keeps links local under reporting. The link chord is unconditional because it is the
 // platform's own gesture for following a link and carries no other meaning on a
 // link; links_override_reporting governs the PLAIN click instead. LINK-only: a
 // plain drag under reporting still forwards; only a click/hover ON a link is local.

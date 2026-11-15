@@ -232,10 +232,9 @@ inline constexpr bool linksOverrideReporting = true;
 // on both. An ssh, sftp, ftp or ftps link needs the modifier even so, since it
 // connects to a host the program named (LinkRun::requiresLinkModifier). A
 // regex-guessed link needs the modifier — the program never said that text was
-// a URL, the terminal decided it. The one exception is on macOS:
-// a strict http(s) guess under mouse reporting with links_override_reporting,
-// which Input::plainClickOpenableUnderReporting admits. Linux opens no link
-// while a program reports the mouse. Either way the target then passes
+// a URL, the terminal decided it. A strict http(s)/file URL under mouse
+// reporting with links_override_reporting is admitted by
+// Input::plainClickOpenableUnderReporting on every frontend. The target passes
 // LinkRun's rules for what an opener may be handed.
 inline constexpr bool osc8ClickOpens = true;
 inline constexpr bool restrictSelectionToText = false;
