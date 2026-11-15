@@ -180,6 +180,11 @@ struct PointerPolicy {
     /// own and could not outlive.
     HeldModifiers blockSelectChord { .hasAlternate = true };
     HeldModifiers selectChord { .hasShift = true };
+    /// The native chord that reaches a link, matched exactly.
+    ///
+    /// Command is the default; a Linux frontend supplies Control because the
+    /// desktop reserves Super for window manipulation.
+    HeldModifiers linkChord { .hasCommand = true };
     /// The PTY erase character; absent when VERASE is disabled.
     std::optional<std::uint8_t> readlineEraseCharacter = 0x7f;
 };
@@ -491,11 +496,6 @@ enum class WindowChrome : uint8_t {
 ///   - chrome: Whether the window has a title bar.
 /// - Returns: Whether a drag now would move the window.
 [[nodiscard]] bool windowDragArmed(HeldModifiers modifiers, std::string_view dragModifierSpec, WindowChrome chrome);
-
-/// The chord that reaches a link through an application holding the mouse.
-/// Command, and not a preference: it is the platform's own gesture for
-/// following one.
-inline constexpr HeldModifiers linkChord { .hasCommand = true };
 
 /// What a frontend sees at one pointer moment.
 ///

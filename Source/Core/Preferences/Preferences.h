@@ -609,8 +609,9 @@ struct Values {
     // Plain click (no modifier) opens an OSC 8 hyperlink and shows its hover
     // affordance without Cmd. Off reverts OSC 8 to Cmd-hover + Cmd-click. An
     // ssh, sftp, ftp or ftps link needs Cmd even so. A regex- or path-detected
-    // link needs Cmd, but for a strict http(s) guess under mouse reporting with
-    // links_override_reporting on macOS (Input::plainClickOpenableUnderReporting).
+    // link needs the native link modifier, except for a strict http(s)/file URL
+    // under mouse reporting with links_override_reporting
+    // (Input::plainClickOpenableUnderReporting).
     // Default on.
     std::optional<bool> osc8ClickOpens;
     // Document-style pointer: I-beam only over printed text, arrow over blank area.

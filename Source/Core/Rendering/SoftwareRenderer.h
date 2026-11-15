@@ -84,11 +84,11 @@ public:
     ///   - rgbaOut: The destination pixels, with row stride `4 * widthOut`.
     ///   - widthOut: The rendered viewport width.
     ///   - heightOut: The rendered viewport height.
-    ///   - paddingColor: The margin color. It is painted after the grid, image
-    ///     and cursor layers, which clips them to the grid box, and before the
-    ///     overlays, which alone may reach into the margin.
+    ///   - paddingColor: The straight-alpha margin color, painted before ink.
+    ///     Glyphs and overlays may overhang their cells into that margin;
+    ///     inline images retain the grid clip of their resolved placements.
     ///   - blocks: The frame's rich text blocks, drawn after the grid and its
-    ///     images and before the cursor tier, the margin and the overlays.
+    ///     images and before the cursor tier and the overlays.
     /// - Returns: Whether the frame dimensions are valid and rendering succeeds.
     bool render(const BuildInputs& in, std::vector<std::uint8_t>& rgbaOut, int& widthOut, int& heightOut,
         std::array<std::uint8_t, 4> paddingColor = {}, BlockLayer blocks = {});
@@ -428,6 +428,7 @@ private:
         GlyphSlotCache cache;
         GlyphSlotGeometry geometry;
         std::vector<std::uint8_t> pixels; // atlasWidth*atlasHeight*bytesPerPixel
+        std::vector<GlyphInkBox> inkBoxes; // measured only when a coverage slot is written
         int capacity;
         int atlasWidth;
         int atlasHeight;
@@ -438,6 +439,17 @@ private:
         /// — the key, the eviction, the slot geometry, the UV — is identical, and
         /// a parallel struct would duplicate all of it to vary the stride.
         int bytesPerPixel;
+        /// Records the coverage a slot now owns, including a declined raster.
+        ///
+        /// Called on writes rather than frame reads. Replacing a cache key
+        /// replaces its box before any reader can consume the new slot.
+        /// - Parameters:
+        ///   - slot: The slot whose plane was written.
+        ///   - coverage: Its row-major R8 pixels, or empty for a blank slot.
+        ///   - widthInPixels: The plane's width.
+        ///   - heightInPixels: The plane's height.
+        void recordInkBox(int slot, CoveragePlaneSpan coverage, int widthInPixels, int heightInPixels);
+
         /// Builds one atlas: a slot grid, and the glyph box inside each slot.
         ///
         /// A `glyphWidthInPixels` of zero or less makes the glyph box fill the
@@ -720,28 +732,35 @@ private:
     ///   - rgba: The destination surface, RGBA8.
     ///   - surface: Its extent in pixels.
     void compositeBoxFill(const OverlayInstance&, std::vector<std::uint8_t>& rgba, IntSize surface) const;
-    // Bilinear-free nearest sample of the mono coverage atlas at a UV, for
-    // the decoration skip-ink mask. Clamped to the atlas.
-    /// One texel of the mono coverage sheet, addressed in atlas pixels.
+    /// Samples mono coverage using the frame's native or bitmap convention.
+    ///
+    /// - Parameters:
+    ///   - x: The sample column in atlas pixels.
+    ///   - y: The sample row in atlas pixels.
+    /// - Returns: Normalized coverage, 0…1.
     [[nodiscard]] float sampleMonoCoverage(float x, float y) const;
-    /// One texel of the ligature strip sheet, addressed in its atlas pixels;
-    /// the skip-ink tap for a cell a ligature run covers. Zero without a
-    /// sheet.
+    /// Samples wide-glyph coverage using the frame's filtering convention.
+    ///
+    /// - Parameters:
+    ///   - x: The sample column in atlas pixels.
+    ///   - y: The sample row in atlas pixels.
+    /// - Returns: Normalized coverage, 0…1.
+    [[nodiscard]] float sampleWideCoverage(float x, float y) const;
+    /// Samples ligature-strip coverage for a rule under a shaped run.
     ///
     /// - Parameters:
     ///   - x: The texel column.
     ///   - y: The texel row.
     /// - Returns: The coverage, 0…1.
     [[nodiscard]] float sampleStripCoverage(float x, float y) const;
-    /// One texel of the proportional fallback-strip sheet.
+    /// Samples proportional fallback-strip coverage for its skip-ink rule.
     ///
     /// - Parameters:
     ///   - x: The texel column.
     ///   - y: The texel row.
     /// - Returns: The coverage, 0…1.
     [[nodiscard]] float sampleProportionalStripCoverage(float x, float y) const;
-    /// One texel of the dedicated proportional glyph sheet, addressed in
-    /// atlas pixels: what a rule under a run drawn glyph by glyph taps.
+    /// Samples the dedicated proportional glyph sheet for its skip-ink rule.
     ///
     /// - Parameters:
     ///   - x: The texel column.

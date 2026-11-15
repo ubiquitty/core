@@ -12,6 +12,9 @@
 // where Unifont has ink (and background in an empty corner), and a wide cell's
 // second half is painted (the continuation isn't a gap).
 
+#include "Core/Rendering/AtlasCoverage.h"
+#include "Core/Rendering/FrameCapture.h"
+#include "Core/Rendering/FrameDamage.h"
 #include "Core/Rendering/SizedMaster.h"
 #include "Core/Rendering/SoftwareRenderer.h"
 #include "Core/Rendering/TerminalFrameInputs.h"
@@ -1067,6 +1070,145 @@ TEST(testViewportSurface)
         CHECK_MSG(firstRedColumn(rgba, width) == gutter,
             "and rounds DOWN below the half — a rule that always rounded up would pass the case above");
     }
+}
+
+// A contextual or italic glyph can reach past every edge of its cell. The
+// drawable includes that ink when padding leaves room for it; painting the
+// padding after the glyph would erase the four witness pixels below.
+TEST(nativeGlyphInkMayReachIntoTheInternalPadding)
+{
+    struct PaddingInkRasterizer final : GlyphRasterizer {
+        CellMetrics cellMetrics() const override { return UnifontRasterizer {}.cellMetrics(); }
+        GlyphOverhangInputs glyphOverhang() const override
+        {
+            return { .advanceWidth = 8, .ascent = 13, .descent = 3, .lineHeight = 16, .primaryBboxX = -1, .primaryBboxY = -4, .primaryBboxWidth = 10, .primaryBboxHeight = 18 };
+        }
+        bool rasterizeGlyph(std::uint32_t codePoint, FontFace, std::uint32_t,
+            int width, int height, std::uint8_t* coverage) override
+        {
+            std::fill_n(coverage, static_cast<std::size_t>(width) * height,
+                static_cast<std::uint8_t>(codePoint == 'X' ? 255 : 0));
+            return true;
+        }
+    };
+
+    for (const std::uint8_t backgroundAlpha : { std::uint8_t { 255 }, std::uint8_t { 128 } }) {
+        for (const std::uint8_t foregroundAlpha : { std::uint8_t { 255 }, std::uint8_t { 128 } }) {
+            PaddingInkRasterizer rasterizer;
+            SoftwareRenderer renderer(renderCellWidth, renderCellHeight, rasterizer);
+            TermPalette palette;
+            palette.seedDefaults();
+            palette.indexed[0] = { 19 * 257, 31 * 257, 47 * 257 };
+            palette.indexed[15] = { 65535, 65535, 65535 };
+            palette.indexedAlpha[15] = foregroundAlpha;
+            std::vector<Cell> cells(1, defaultBlankCell);
+            setCell(cells, 1, 0, 0, 'X', 0, 15, 0);
+            BuildInputs input;
+            input.cells = cells.data();
+            input.rows = input.columns = 1;
+            input.palette = &palette;
+            input.paletteForegroundAlpha = palette.indexedAlpha.data();
+            input.backgroundOpacity = backgroundAlpha / 255.0f;
+            input.originInPixels = { 4, 4 };
+            input.viewportSizeInPixels = { 16, 24 };
+            input.subpixelGlyphs = true;
+            input.glyphMarginInPixels = { 1, 1 };
+            input.glyphSlotWidthInPixels = 10;
+            input.glyphSlotHeightInPixels = 18;
+            const std::array<std::uint8_t, 4> padding { 19, 31, 47, backgroundAlpha };
+            const Pixel untouched { 19, 31, 47, backgroundAlpha };
+            const auto mixed = [foregroundAlpha](int background) {
+                return (background * (255 - foregroundAlpha) + 255 * foregroundAlpha + 127) / 255;
+            };
+            const Pixel ink { mixed(19), mixed(31), mixed(47), mixed(backgroundAlpha) };
+            std::vector<std::uint8_t> pixels;
+            int width = 0, height = 0;
+            REQUIRE(renderer.render(input, pixels, width, height, padding));
+            REQUIRE(width == 16 && height == 24);
+            for (const auto point : { IntPoint { 3, 10 }, IntPoint { 12, 10 }, IntPoint { 8, 3 }, IntPoint { 8, 20 } })
+                CHECK(isSamePixel(at(pixels, width, point.x, point.y), ink));
+            for (const auto point : { IntPoint { 0, 0 }, IntPoint { 15, 0 }, IntPoint { 0, 23 }, IntPoint { 15, 23 } })
+                CHECK(isSamePixel(at(pixels, width, point.x, point.y), untouched));
+
+            cells[0].codePoint = ' ';
+            REQUIRE(renderer.render(input, pixels, width, height, padding));
+            for (int y = 0; y < height; ++y)
+                for (int x = 0; x < width; ++x)
+                    CHECK(isSamePixel(at(pixels, width, x, y), untouched));
+
+            // A viewport with no padding still clips the same full slot at its
+            // final drawable boundary, rather than writing across row ends.
+            cells[0].codePoint = 'X';
+            input.originInPixels = {};
+            input.viewportSizeInPixels = { 8, 16 };
+            REQUIRE(renderer.render(input, pixels, width, height, padding));
+            REQUIRE(width == 8 && height == 16);
+            CHECK(pixels.size() == static_cast<std::size_t>(width) * height * 4);
+            CHECK(isSamePixel(at(pixels, width, 0, 0), ink));
+            CHECK(isSamePixel(at(pixels, width, 7, 15), ink));
+        }
+    }
+}
+
+// Removing the late padding fill must not let a scrolling inline picture
+// acquire the glyphs' overhang permission. Its resolved quad retains the grid
+// clip for both image bands, with untouched themed padding on every side.
+TEST(inlinePicturesRetainTheirGridClipInsideAPaddedDrawable)
+{
+    for (const int depth : { -1, 0 }) {
+        auto terminal = std::make_unique<Terminal>();
+        resize(*terminal, 1, 1);
+        processBytes(terminal.get(), "\x1b_Ga=T,f=24,s=1,v=1,c=3,r=3,C=1,q=2;/wAA\x1b\\");
+        REQUIRE(Image::placementCount(terminal.get()) == 1);
+        terminal->images.placements[0].cursorY = -1;
+        terminal->images.placements[0].zIndex = depth;
+        const auto cells = displayRows(*terminal);
+        BuildInputs input;
+        input.cells = cells.data();
+        input.rows = input.columns = 1;
+        input.palette = &terminal->palette;
+        input.originInPixels = { 4, 4 };
+        input.viewportSizeInPixels = { 16, 24 };
+        input.images = terminal->images.stored.data();
+        input.imageCount = Image::maxTerminalImageCount;
+        input.placements = terminal->images.placements.data();
+        input.placementCount = Image::maxTerminalImagePlacementCount;
+        SoftwareRenderer renderer(renderCellWidth, renderCellHeight);
+        std::vector<std::uint8_t> pixels;
+        int width = 0, height = 0;
+        constexpr std::array<std::uint8_t, 4> padding { 19, 31, 47, 128 };
+        REQUIRE(renderer.render(input, pixels, width, height, padding));
+        REQUIRE(width == 16 && height == 24);
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                const Pixel expected = x >= 4 && x < 12 && y >= 4 && y < 20
+                    ? Pixel { 255, 0, 0, 255 }
+                    : Pixel { 19, 31, 47, 128 };
+                CHECK(isSamePixel(at(pixels, width, x, y), expected));
+            }
+        }
+    }
+}
+
+TEST(capturedPaddingColorKeepsItsPaletteOpacityAndReverseVideo)
+{
+    auto terminal = std::make_unique<Terminal>();
+    resize(*terminal, 1, 1);
+    terminal->palette.defaultBackground = { 19 * 257, 31 * 257, 47 * 257 };
+    terminal->palette.defaultForeground = { 101 * 257, 113 * 257, 127 * 257 };
+    std::unique_ptr<FrameCapture> capture(FrameCapture::make());
+    REQUIRE(capture != nullptr);
+    TerminalSnapshotOptions options;
+    options.style.backgroundOpacity = 128.0f / 255.0f;
+    REQUIRE(capture->capture(*terminal, options, UnifontRasterizer {}.cellMetrics(), {}));
+    const std::array<std::uint8_t, 4> original { 19, 31, 47, 128 };
+    CHECK(capture->paddingColor() == original);
+    terminal->palette.defaultBackground = { 0, 0, 0 };
+    CHECK(capture->paddingColor() == original);
+    processBytes(terminal.get(), "\x1b[?5h");
+    REQUIRE(capture->capture(*terminal, options, UnifontRasterizer {}.cellMetrics(), {}));
+    const std::array<std::uint8_t, 4> reversed { 101, 113, 127, 128 };
+    CHECK(capture->paddingColor() == reversed);
 }
 
 TEST(testBrailleSquareCoverageRetainsFractionalHorizontalAndVerticalPositions)
@@ -2293,6 +2435,88 @@ TEST(testABoldCellReachesTheRasterizerAsBold)
     CHECK(seen[1] == FontFace::Bold);
 }
 
+TEST(skipInkSamplesNativeAndBitmapCoverageAndBothWideColumns)
+{
+    // Black glyphs over black expose only the green underline. The raster's
+    // vertical stems make the horizontal half-texel interpolation analytic;
+    // the second stem lies exclusively in a wide glyph's continuation cell.
+    struct DescenderRasterizer final : GlyphRasterizer {
+        CellMetrics cellMetrics() const override
+        {
+            CellMetrics metrics;
+            metrics.cellWidth = 8.0f;
+            metrics.cellHeight = 16.0f;
+            metrics.baselineFromTop = 13.0f;
+            metrics.underlineDrop = 1.0f;
+            metrics.underlineThickness = 1.0f;
+            metrics.skipInkPadding = 0.5f;
+            return metrics;
+        }
+        bool rasterizeGlyph(std::uint32_t, FontFace, std::uint32_t, int width, int height, std::uint8_t* coverage) override
+        {
+            std::fill_n(coverage, static_cast<std::size_t>(width) * height, 0);
+            for (int row = 0; row < height; ++row) {
+                coverage[row * width + 3] = 255;
+                if (width >= 16)
+                    coverage[row * width + 11] = 255;
+            }
+            return true;
+        }
+    } rasterizer;
+    TermPalette palette;
+    palette.seedDefaults();
+    palette.indexed[2] = { 0, 65535, 0 };
+    enum class GlyphWidth {
+        SingleCell,
+        TwoCells
+    };
+    for (auto glyphWidth : { GlyphWidth::SingleCell, GlyphWidth::TwoCells }) {
+        const bool isWide = glyphWidth == GlyphWidth::TwoCells;
+        std::array<Cell, 2> cells { defaultBlankCell, defaultBlankCell };
+        for (Cell& cell : cells) {
+            cell.pen.foregroundIndex = 0;
+            cell.pen.backgroundIndex = 0;
+            cell.pen.underlineIndex = 2;
+            cell.pen.attributes.add(VT::Attribute::Underline);
+        }
+        cells[0].codePoint = isWide ? 0x4E2Du : 'g';
+        cells[1].codePoint = isWide ? 0u : 'g';
+        if (isWide) {
+            cells[0].pen.attributes.add(VT::Attribute::Wide);
+            cells[1].pen.attributes.add(VT::Attribute::WideContinuation);
+        }
+        BuildInputs input;
+        input.cells = cells.data();
+        input.rows = 1;
+        input.columns = 2;
+        input.palette = &palette;
+        input.metrics = rasterizer.cellMetrics();
+        input.subpixelGlyphs = true;
+        input.glyphReferenceAdvanceInPixels = 8.0f;
+        input.glyphReferenceLineHeightInPixels = 16.0f;
+        SoftwareRenderer renderer(8, 16, rasterizer);
+        for (auto sampling : { CoverageSampling::Native, CoverageSampling::Bitmap }) {
+            const bool isBitmapFace = sampling == CoverageSampling::Bitmap;
+            input.isBitmapFace = isBitmapFace;
+            input.metrics.skipInk = false;
+            std::vector<std::uint8_t> unmasked;
+            int width = 0;
+            int height = 0;
+            REQUIRE(renderer.render(input, unmasked, width, height));
+            REQUIRE(width == 16 && height == 16);
+            input.metrics.skipInk = true;
+            std::vector<std::uint8_t> masked;
+            REQUIRE(renderer.render(input, masked, width, height));
+            for (int stem : { 3, 11 }) {
+                CHECK_EQ(at(unmasked, width, stem, 14).green, 255);
+                CHECK_EQ(at(masked, width, stem, 14).green, 0);
+                CHECK_EQ(at(masked, width, stem - 1, 14).green, isBitmapFace ? 0 : 128);
+                CHECK_EQ(at(masked, width, stem + 1, 14).green, isBitmapFace ? 255 : 128);
+            }
+        }
+    }
+}
+
 TEST(testTrackingMovesGlyphInkWithoutChangingItsCoverage)
 {
     struct StemRasterizer final : GlyphRasterizer {
@@ -3504,4 +3728,369 @@ TEST(testSoftwareTextBlinkAndConcealKeepTheGroundVisible)
     const Pixel ground = at(hidden, width, renderCellWidth, 0);
     const Pixel ink = at(hidden, width, renderCellWidth / 2, renderCellHeight / 2);
     CHECK(ground.red == ink.red && ground.green == ink.green && ground.blue == ink.blue);
+}
+
+// A proportional prefix places a doubled wide glyph at exactly 8.5 px. Native
+// vertices retain that pen, so the pixel centred at 8.5 belongs to the glyph.
+// Bitmap cells keep their existing rounded origin. The mask lights only its
+// first column, making the two-pixel stretch reveal a one-pixel placement error.
+TEST(testNativeWideCellsIncludeTheirHalfPixelLeftEdge)
+{
+    struct HalfPixelWideRasterizer final : GlyphRasterizer {
+        float prefixAdvanceInPixels = 4.25f;
+
+        CellMetrics cellMetrics() const override { return UnifontRasterizer {}.cellMetrics(); }
+        FontMetrics::FacePitch primaryFacePitch() const override { return FontMetrics::FacePitch::Proportional; }
+        int shapePrimaryRun(std::span<const std::uint32_t> codePoints, FontFace, std::uint32_t,
+            std::span<ProportionalShapedGlyph> glyphs) override
+        {
+            if (codePoints.size() > glyphs.size())
+                return 0;
+            for (std::size_t index = 0; index < codePoints.size(); ++index) {
+                glyphs[index].glyph = codePoints[index];
+                glyphs[index].cluster = static_cast<std::uint16_t>(index);
+                glyphs[index].advanceInPixels = prefixAdvanceInPixels;
+            }
+            return static_cast<int>(codePoints.size());
+        }
+        bool rasterizeGlyph(std::uint32_t codePoint, FontFace, std::uint32_t,
+            int width, int height, std::uint8_t* coverage) override
+        {
+            std::fill_n(coverage, static_cast<std::size_t>(width) * height, std::uint8_t { 0 });
+            if (codePoint == 0x4E2Du) {
+                for (int row = 0; row < height; ++row)
+                    coverage[static_cast<std::size_t>(row) * width] = 255;
+            }
+            return true;
+        }
+    };
+
+    for (const auto sampling : { CoverageSampling::Native, CoverageSampling::Bitmap }) {
+        for (const float prefixAdvance : { 4.0f, 4.25f }) {
+            for (const std::uint8_t alpha : { std::uint8_t { 255 }, std::uint8_t { 128 } }) {
+                constexpr int columns = 8;
+                std::vector<Cell> cells(columns, defaultBlankCell);
+                setCell(cells, columns, 0, 0, 'A', 0, 15, 0);
+                setCell(cells, columns, 0, 1, 0x4E2Du, 0, 15, 0);
+                cells[1].pen.attributes.add(VT::Attribute::Wide);
+                cells[2].codePoint = wideContinuationSentinelCodePoint;
+                cells[2].pen.attributes.add(VT::Attribute::WideContinuation);
+                TermPalette palette;
+                palette.seedDefaults();
+                palette.indexed[0] = { 0, 0, 0 };
+                palette.indexed[15] = { 65535, 65535, 65535 };
+                palette.indexedAlpha[15] = alpha;
+                const std::array<std::uint8_t, 1> attributes { lineAttributeDoubleWidth };
+                BuildInputs input;
+                input.cells = cells.data();
+                input.rows = 1;
+                input.columns = columns;
+                input.palette = &palette;
+                input.paletteForegroundAlpha = palette.indexedAlpha.data();
+                input.lineAttributes = attributes.data();
+                input.subpixelGlyphs = true;
+                input.isBitmapFace = sampling == CoverageSampling::Bitmap;
+                HalfPixelWideRasterizer rasterizer;
+                rasterizer.prefixAdvanceInPixels = prefixAdvance;
+                SoftwareRenderer renderer(renderCellWidth, renderCellHeight, rasterizer);
+                std::vector<std::uint8_t> pixels;
+                int width = 0, height = 0;
+                REQUIRE(renderer.render(input, pixels, width, height));
+                REQUIRE(renderer.rowLetters(0).size() > 1);
+                CHECK(renderer.rowLetters(0)[1].leftInPixels == prefixAdvance * 2);
+                const int first = sampling == CoverageSampling::Native || prefixAdvance == 4.0f ? 8 : 9;
+                CHECK(at(pixels, width, first - 1, 8).red == 0);
+                CHECK(at(pixels, width, first, 8).red == alpha);
+                CHECK(at(pixels, width, first + 1, 8).red == alpha);
+                CHECK(at(pixels, width, first + 2, 8).red == 0);
+            }
+        }
+    }
+}
+
+// A doubled row visits only the logical columns beginning inside its pane.
+// The remaining unvisited storage must not decide where the pane's background
+// starts. Odd viewport widths still include the final partial logical column.
+TEST(testDoubledProportionalRowsPaintTheirRightTail)
+{
+    for (const int columns : { 47, 48 }) {
+        TermPalette palette;
+        palette.seedDefaults();
+        std::vector<Cell> cells(static_cast<std::size_t>(columns), defaultBlankCell);
+        for (int column = 0; column < 9; ++column)
+            setCell(cells, columns, 0, column, 'i', 0, colorDefault, colorDefault);
+        const std::array<std::uint8_t, 1> attributes { lineAttributeDoubleWidth };
+        BuildInputs input;
+        input.cells = cells.data();
+        input.rows = 1;
+        input.columns = columns;
+        input.palette = &palette;
+        input.lineAttributes = attributes.data();
+        input.subpixelGlyphs = true;
+        ProportionalPitchRasterizer rasterizer;
+        SoftwareRenderer renderer(renderCellWidth, renderCellHeight, rasterizer);
+        std::vector<std::uint8_t> pixels;
+        int width = 0, height = 0;
+        REQUIRE(renderer.render(input, pixels, width, height));
+        REQUIRE(width == columns * renderCellWidth);
+        for (int x = width - 2 * renderCellWidth; x < width; ++x) {
+            const Pixel pixel = at(pixels, width, x, renderCellHeight / 2);
+            CHECK(pixel.red == 0x10 && pixel.green == 0x10 && pixel.blue == 0x14 && pixel.alpha == 255);
+        }
+    }
+}
+
+// A retained row may become a compact blank DECDWL row without invalidating
+// its target or crossing a row edge. Every pixel the old letters occupied
+// must be repainted, including the unvisited storage half's visible tail.
+TEST(testRetainedBlankDoubledRowsEraseTheProportionalTail)
+{
+    struct ContainedNativeLetters final : GlyphRasterizer {
+        CellMetrics cellMetrics() const override { return UnifontRasterizer {}.cellMetrics(); }
+        GlyphOverhangInputs glyphOverhang() const override
+        {
+            return { .advanceWidth = 8, .ascent = 13, .descent = 3, .lineHeight = 16, .primaryBboxX = -1, .primaryBboxY = -4, .primaryBboxWidth = 10, .primaryBboxHeight = 18 };
+        }
+        FontMetrics::FacePitch primaryFacePitch() const override { return FontMetrics::FacePitch::Proportional; }
+        bool rasterizeGlyph(std::uint32_t codePoint, FontFace, std::uint32_t,
+            int width, int height, std::uint8_t* coverage) override
+        {
+            std::fill_n(coverage, static_cast<std::size_t>(width) * height, std::uint8_t { 0 });
+            if (codePoint == 'W') {
+                const int left = (width - renderCellWidth) / 2;
+                const int top = (height - renderCellHeight) / 2;
+                for (int y = top + 4; y < top + 12; ++y)
+                    for (int x = left + 1; x < left + 7; ++x)
+                        coverage[static_cast<std::size_t>(y) * width + x] = 255;
+            }
+            return true;
+        }
+        int shapePrimaryRun(std::span<const std::uint32_t> codePoints, FontFace, std::uint32_t,
+            std::span<ProportionalShapedGlyph> glyphs) override
+        {
+            if (glyphs.size() < codePoints.size())
+                return 0;
+            for (std::size_t index = 0; index < codePoints.size(); ++index) {
+                glyphs[index].glyph = codePoints[index];
+                glyphs[index].cluster = static_cast<std::uint16_t>(index);
+                glyphs[index].advanceInPixels = codePoints[index] == 'W' ? 12.0f : 4.0f;
+            }
+            return static_cast<int>(codePoints.size());
+        }
+    };
+
+    constexpr int rows = 3;
+    for (const int columns : { 47, 48 }) {
+        auto terminal = std::make_unique<Terminal>();
+        resize(*terminal, rows, columns);
+        terminal->palette.defaultBackground = { 19 * 257, 31 * 257, 47 * 257 };
+        terminal->palette.defaultForeground = { 65535, 65535, 65535 };
+        const std::string letters = "\x1b[?25l\x1b[2;1H" + std::string(static_cast<std::size_t>(columns), 'W');
+        processBytes(terminal.get(), letters);
+        std::vector<Cell> captured(static_cast<std::size_t>(rows) * columns);
+        std::array<std::uint8_t, rows> attributes {}, marks {}, dirty {};
+        RetainedFrameBaseline baseline;
+        RetainedFrameRequest request;
+        request.rows = rows;
+        request.columns = columns;
+        request.cellHeightInPixels = renderCellHeight;
+        request.textureHeightInPixels = rows * renderCellHeight;
+        request.isGridCacheEnabled = true;
+        const auto firstPlan = planRetainedFrame(*terminal, baseline, request, dirty);
+        REQUIRE(!firstPlan.shouldLoadRetainedTarget);
+        refreshCapturedRows(*terminal, firstPlan.refresh, captured, attributes, marks);
+
+        ContainedNativeLetters rasterizer;
+        SoftwareRenderer renderer(renderCellWidth, renderCellHeight, rasterizer);
+        renderer.reserveSheetsForScreen(rows * columns);
+        const auto slot = renderer.bindMonoAtlas().geometry;
+        BuildInputs input;
+        input.cells = captured.data();
+        input.rows = rows;
+        input.columns = columns;
+        input.palette = &terminal->palette;
+        input.lineAttributes = attributes.data();
+        input.metrics = rasterizer.cellMetrics();
+        input.subpixelGlyphs = true;
+        input.glyphMarginInPixels = { static_cast<float>(slot.glyphMarginInPixels.width), static_cast<float>(slot.glyphMarginInPixels.height) };
+        input.glyphSlotWidthInPixels = static_cast<float>(slot.slotWidthInPixels);
+        input.glyphSlotHeightInPixels = static_cast<float>(slot.slotHeightInPixels);
+        input.glyphBoxWidthInPixels = renderCellWidth;
+        input.glyphReferenceAdvanceInPixels = renderCellWidth;
+        input.glyphReferenceLineHeightInPixels = renderCellHeight;
+        input.uniformDefaultBackground = { 19 / 255.0f, 31 / 255.0f, 47 / 255.0f, 1 };
+        std::vector<std::uint8_t> pixels;
+        int width = 0, height = 0;
+        REQUIRE(renderer.render(input, pixels, width, height));
+        const auto countTailInk = [&] {
+            int ink = 0;
+            for (int x = width / 2; x < width; ++x) {
+                const Pixel pixel = at(pixels, width, x, renderCellHeight + 8);
+                ink += pixel.red == 255 && pixel.green == 255 && pixel.blue == 255;
+            }
+            return ink;
+        };
+        REQUIRE(countTailInk() > 0);
+
+        // Match the native adapter's supplied streams and measured mono boxes.
+        // The blank doubled row declines doubleGlyph, so its zero crossings
+        // are independent of how a backend stores nonblank doubled masters.
+        const auto crossingsFor = [&](std::array<std::uint8_t, rows + 1>& crossings) {
+            const std::size_t capacity = captured.size() + rows;
+            std::vector<CellInstance> cells(capacity);
+            std::vector<GlyphInstance> glyphs(capacity), doubles(capacity);
+            InstanceBuffers buffers;
+            buffers.cells = cells.data();
+            buffers.cellCapacity = cells.size();
+            buffers.glyphs = glyphs.data();
+            buffers.glyphCapacity = glyphs.size();
+            buffers.doubleGlyphs = doubles.data();
+            buffers.doubleGlyphCapacity = doubles.size();
+            buffers.rowInkCrossings = crossings.data();
+            buffers.rowInkCrossingCapacity = crossings.size();
+            renderer.lendLetters(input, buffers);
+            return buildCellInstances(input, renderer.glyphBackend(), buffers);
+        };
+        std::array<std::uint8_t, rows + 1> targetCrossings {}, blankCrossings {};
+        REQUIRE(crossingsFor(targetCrossings).glyphs > 0);
+        REQUIRE(std::all_of(targetCrossings.begin(), targetCrossings.end(), [](auto value) { return value == 0; }));
+
+        const std::string blank = "\x1b[2;1H" + std::string(static_cast<std::size_t>(columns), ' ') + "\x1b[2;1H\x1b#6";
+        processBytes(terminal.get(), blank);
+        request.isTargetMatching = true;
+        const auto nextPlan = planRetainedFrame(*terminal, baseline, request, dirty);
+        REQUIRE(nextPlan.shouldLoadRetainedTarget);
+        refreshCapturedRows(*terminal, nextPlan.refresh, captured, attributes, marks);
+        REQUIRE(attributes[1] == lineAttributeDoubleWidth);
+        REQUIRE(std::all_of(captured.begin(), captured.end(), [](const Cell& cell) { return cell.codePoint == 0 || cell.codePoint == ' '; }));
+        input.dirtyRows = dirty.data();
+        const auto blankCounts = crossingsFor(blankCrossings);
+        REQUIRE(blankCounts.glyphs == 0 && blankCounts.doubleGlyphs == 0);
+        REQUIRE(std::all_of(blankCrossings.begin(), blankCrossings.end(), [](auto value) { return value == 0; }));
+        REQUIRE(settleRowInkCrossings(dirty, targetCrossings, blankCrossings,
+            nextPlan.damage.scrollTop, nextPlan.damage.scrollBottom, nextPlan.damage.scrollDelta));
+
+        // Load the same output vector, as the native retained pass does.
+        REQUIRE(renderer.render(input, pixels, width, height));
+        const std::string stale = std::to_string(columns) + " columns retained " + std::to_string(countTailInk()) + " old ink pixels";
+        CHECK_MSG(countTailInk() == 0, stale.c_str());
+        std::vector<std::uint8_t> expected(pixels.size());
+        for (std::size_t offset = 0; offset < expected.size(); offset += 4) {
+            expected[offset] = 19;
+            expected[offset + 1] = 31;
+            expected[offset + 2] = 47;
+            expected[offset + 3] = 255;
+        }
+        CHECK(pixels == expected);
+    }
+}
+
+TEST(testNativeInkMetadataTracksSlotWritesAndRebuilds)
+{
+    struct InkMetadataRasterizer final : GlyphRasterizer {
+        int glyphWrites = 0;
+        CellMetrics cellMetrics() const override { return UnifontRasterizer {}.cellMetrics(); }
+        static void stamp(int width, int height, int x, int y, std::uint8_t* coverage)
+        {
+            std::fill_n(coverage, static_cast<std::size_t>(width) * height, std::uint8_t { 0 });
+            coverage[static_cast<std::size_t>(y) * width + x] = 255;
+        }
+        bool rasterizeGlyph(std::uint32_t codePoint, FontFace, std::uint32_t,
+            int width, int height, std::uint8_t* coverage) override
+        {
+            ++glyphWrites;
+            if (codePoint == '?')
+                return false;
+            stamp(width, height, 2, 3, coverage);
+            return true;
+        }
+        bool rasterizeCluster(const std::uint32_t*, int, FontFace, std::uint32_t,
+            int width, int height, std::uint8_t* coverage) override
+        {
+            stamp(width, height, 4, 5, coverage);
+            return true;
+        }
+        bool rasterisesScaledGlyphsSharply() const override { return true; }
+        bool rasterizeSizedMaster(std::uint32_t, FontFace, std::uint32_t, const SizedMaster&,
+            int width, int height, std::uint8_t* coverage) override
+        {
+            stamp(width, height, 2, 3, coverage);
+            return true;
+        }
+    };
+    InkMetadataRasterizer rasterizer;
+    SoftwareRenderer renderer(rasterizer);
+    auto binding = renderer.bindMonoAtlas();
+    REQUIRE(binding.inkBoxForSlot != nullptr);
+    bool isFresh = false;
+    const int slot = binding.cache->slotForKey(0x1234u, &isFresh);
+    REQUIRE(slot >= 0 && isFresh);
+    CHECK(binding.inkBoxForSlot[slot].minInPixels.x > binding.inkBoxForSlot[slot].maxInPixels.x);
+    REQUIRE(renderer.rasteriseMonoGlyph('x', FontFace::Regular, 0, slot));
+    CHECK(binding.inkBoxForSlot[slot].minInPixels.x == 1 && binding.inkBoxForSlot[slot].minInPixels.y == 2);
+    CHECK(binding.inkBoxForSlot[slot].maxInPixels.x == 4 && binding.inkBoxForSlot[slot].maxInPixels.y == 5);
+    const int writes = rasterizer.glyphWrites;
+    (void)renderer.bindMonoAtlas();
+    CHECK(rasterizer.glyphWrites == writes);
+
+    const auto slotOf = [&](const AtlasGlyph& glyph) {
+        return static_cast<int>(glyph.minUV.y) / binding.geometry.slotHeightInPixels * binding.geometry.columns
+            + static_cast<int>(glyph.minUV.x) / binding.geometry.slotWidthInPixels;
+    };
+    const std::array<std::uint32_t, 2> cluster { 'x', 0x301u };
+    const auto combined = renderer.clusterGlyph(cluster.data(), static_cast<int>(cluster.size()), FontFace::Regular, 0, 0);
+    REQUIRE(combined.present);
+    const int clusterSlot = slotOf(combined);
+    CHECK(binding.inkBoxForSlot[clusterSlot].minInPixels.x == 3 && binding.inkBoxForSlot[clusterSlot].minInPixels.y == 4);
+    CHECK(binding.inkBoxForSlot[clusterSlot].maxInPixels.x == 6 && binding.inkBoxForSlot[clusterSlot].maxInPixels.y == 7);
+
+    SizedTile tile { 1, 0, 0 };
+    tile.widthScale = 2;
+    tile.step = SizedWindowStep::CellBox;
+    const auto sized = renderer.sizedGlyph('x', FontFace::Regular, 0, 0, tile);
+    REQUIRE(sized.present);
+    const int sizedSlot = slotOf(sized);
+    CHECK(binding.inkBoxForSlot[sizedSlot].minInPixels.x == 1 && binding.inkBoxForSlot[sizedSlot].maxInPixels.x == 4);
+
+    std::vector<std::uint8_t> staged(static_cast<std::size_t>(binding.geometry.slotWidthInPixels) * binding.geometry.slotHeightInPixels);
+    staged[6 * binding.geometry.slotWidthInPixels + 3] = 255;
+    auto backend = renderer.glyphBackend();
+    REQUIRE(backend.stageMonoCoverage(backend.context, slot, staged));
+    CHECK(binding.inkBoxForSlot[slot].minInPixels.x == 2 && binding.inkBoxForSlot[slot].minInPixels.y == 5);
+    CHECK(binding.inkBoxForSlot[slot].maxInPixels.x == 5 && binding.inkBoxForSlot[slot].maxInPixels.y == 8);
+
+    binding.cache->beginFrame();
+    for (int index = 0; index < binding.slotCapacity; ++index) {
+        const int filled = binding.cache->slotForKey(0x100000u + static_cast<std::uint32_t>(index), &isFresh);
+        REQUIRE(filled >= 0);
+        REQUIRE(renderer.rasteriseMonoGlyph('x', FontFace::Regular, 0, filled));
+    }
+    binding.cache->beginFrame();
+    const int reused = binding.cache->slotForKey(0x200000u, &isFresh);
+    REQUIRE(reused >= 0 && isFresh);
+    REQUIRE(binding.inkBoxForSlot[reused].maxInPixels.x > binding.inkBoxForSlot[reused].minInPixels.x);
+    REQUIRE(renderer.rasteriseMonoGlyph('?', FontFace::Regular, 0, reused));
+    CHECK(binding.inkBoxForSlot[reused].minInPixels.x == 0 && binding.inkBoxForSlot[reused].maxInPixels.x == 0);
+
+    const int capacity = binding.slotCapacity;
+    renderer.reserveSheetsForScreen(capacity * 2);
+    binding = renderer.bindMonoAtlas();
+    REQUIRE(binding.slotCapacity > capacity);
+    CHECK(binding.inkBoxForSlot[0].minInPixels.x > binding.inkBoxForSlot[0].maxInPixels.x);
+
+    TermPalette palette;
+    palette.seedDefaults();
+    Cell blank = defaultBlankCell;
+    BuildInputs input;
+    input.cells = &blank;
+    input.rows = input.columns = 1;
+    input.palette = &palette;
+    input.isBitmapFace = true;
+    std::vector<std::uint8_t> pixels;
+    int width = 0, height = 0;
+    REQUIRE(renderer.render(input, pixels, width, height));
+    CHECK(renderer.bindMonoAtlas().inkBoxForSlot == nullptr);
+    input.isBitmapFace = false;
+    REQUIRE(renderer.render(input, pixels, width, height));
+    CHECK(renderer.bindMonoAtlas().inkBoxForSlot != nullptr);
 }

@@ -199,6 +199,7 @@ Source/Core/Rendering/OverlayFacts.cpp
 Source/Core/Rendering/OverlayGeometry.cpp
 Source/Core/Rendering/OverlaySpanGather.cpp
 Source/Core/Rendering/PNGEncoder.cpp
+Source/Core/Rendering/PaddingGeometry.cpp
 Source/Core/Rendering/PerceptualContrast.cpp
 Source/Core/Rendering/ProportionalGlyphSheet.cpp
 Source/Core/Rendering/ProportionalOutline.cpp

@@ -16,6 +16,7 @@
 
 #include "Core/Rendering/BrailleLattice.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -124,16 +125,29 @@ TEST(invalidStyleSerializesAsTheDefault)
     CHECK(brailleStyleToString(static_cast<BrailleStyle>(-1)) == brailleStyleToString(defaultBrailleStyle));
 }
 
-TEST(theLatticeTracksTheTextCenter)
+TEST(theFullDotGridIsCenteredAtEveryScaleAndLineSpacing)
 {
-    const BrailleLattice grid { 0.0f, 0.0f, 16.0f, 32.0f };
-    const BrailleLattice aligned = textAlignedBrailleLattice(grid, 25.0f, 14.0f);
-    const BrailleDotRect top = brailleDotRect(aligned, 0, 0, 0, 0);
-    const BrailleDotRect bottom = brailleDotRect(aligned, 0, 0, 0, 3);
-    CHECK_EQ((top.top + bottom.bottom) * 0.5f, 18.0f);
-    CHECK_EQ(aligned.originY, 2.0f);
-    CHECK_EQ(textAlignedBrailleLattice(grid, 21.0f, 14.0f).originY, -2.0f);
-    CHECK_EQ(textAlignedBrailleLattice(grid, 25.0f, 0.0f).originY, 0.0f);
+    for (const float scale : { 1.0f, 2.0f, 3.0f }) {
+        for (const float spacing : { 0.0f, 0.5f, 1.0f }) {
+            for (const BrailleStyle style : { BrailleStyle::Regular, BrailleStyle::Square,
+                     BrailleStyle::Outline6Dot, BrailleStyle::Outline8Dot,
+                     BrailleStyle::Pinpoint6Dot, BrailleStyle::Pinpoint8Dot }) {
+                const BrailleLattice grid { 0.3f, 0.7f, 8.4f * scale, (16.2f + spacing) * scale, style };
+                OverlayInstance dots[brailleDotsPerCell] {};
+                REQUIRE(emitBrailleDots(0x28FF, grid, 3, 2, { 1, 1, 1, 1 }, dots, brailleDotsPerCell) == brailleDotsPerCell);
+                float top = dots[0].plA.y;
+                float bottom = dots[0].plA.w;
+                for (const auto& dot : dots) {
+                    top = std::min(top, dot.plA.y);
+                    bottom = std::max(bottom, dot.plA.w);
+                }
+                const float cellTop = grid.originY + 2 * grid.cellHeight;
+                const float cellBottom = cellTop + grid.cellHeight;
+                CHECK(std::fabs((top + bottom) * 0.5f - (cellTop + cellBottom) * 0.5f) < 0.001f);
+                CHECK(std::fabs((top - cellTop) - (cellBottom - bottom)) < 0.001f);
+            }
+        }
+    }
 }
 
 TEST(guideStylesPreserveRaisedDotsAndLimitGuidesToTheirRows)
@@ -173,22 +187,17 @@ TEST(guideStylesPreserveRaisedDotsAndLimitGuidesToTheirRows)
     }
 }
 
-TEST(textAlignmentPreservesTheLatticeAndContainsEveryDot)
+TEST(theCellCenteredGridPreservesItsPitchAndContainsEveryDot)
 {
     for (float height : { 8.0f, 30.6f, 31.0f, 32.0f, 33.0f, 35.0f, 47.3f }) {
         const BrailleLattice grid { 0.3f, 0.7f, fractionalCellWidth, height };
-        for (float baseline : { 0.0f, height * 0.8f, height }) {
-            const BrailleLattice aligned = textAlignedBrailleLattice(grid, baseline, 12.0f);
-            CHECK(pitchSpread(rowEdges(aligned, 20)) < 0.001f);
-            CHECK(pitchSpread(columnEdges(aligned, 40)) <= 0.126f);
-            for (int row = 0; row < 20; ++row) {
-                for (int dotRow = 0; dotRow < brailleDotRows; ++dotRow) {
-                    const BrailleDotRect original = brailleDotRect(grid, 0, row, 0, dotRow);
-                    const BrailleDotRect dot = brailleDotRect(aligned, 0, row, 0, dotRow);
-                    CHECK(std::fabs(dot.top - original.top - (aligned.originY - grid.originY)) < 0.001f);
-                    CHECK(dot.top >= grid.originY + row * height - 0.001f);
-                    CHECK(dot.bottom <= grid.originY + (row + 1) * height + 0.001f);
-                }
+        CHECK(pitchSpread(rowEdges(grid, 20)) < 0.001f);
+        CHECK(pitchSpread(columnEdges(grid, 40)) <= 0.126f);
+        for (int row = 0; row < 20; ++row) {
+            for (int dotRow = 0; dotRow < brailleDotRows; ++dotRow) {
+                const BrailleDotRect dot = brailleDotRect(grid, 0, row, 0, dotRow);
+                CHECK(dot.top >= grid.originY + row * height - 0.001f);
+                CHECK(dot.bottom <= grid.originY + (row + 1) * height + 0.001f);
             }
         }
     }
@@ -200,7 +209,6 @@ TEST(rasterSubcellsTileWithoutSeamsAndSquaresKeepTheirGaps)
     lattice.originX = 0.3f;
     lattice.originY = 0.7f;
     lattice.style = BrailleStyle::Raster;
-    CHECK_EQ(textAlignedBrailleLattice(lattice, 24.0f, 14.0f).originY, lattice.originY);
     for (int row = 0; row < 20; ++row) {
         for (int cell = 0; cell < 40; ++cell) {
             const auto left = brailleDotRect(lattice, cell, row, 0, 0);

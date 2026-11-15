@@ -10,6 +10,7 @@
 #include "Core/Kitty/UnicodePlaceholders.h"
 #include "Core/Rendering/BoxDrawing.h"
 #include "Core/Rendering/CellInstanceBuilder.h"
+#include "Core/Rendering/ColorResolve.h"
 #include "Core/Rendering/OverlayGeometry.h"
 #include "Core/Rendering/TerminalFrameInputs.h"
 #include "Core/Tek/TubeFrame.h"
@@ -470,6 +471,19 @@ public:
     /// the same frame, and the two disagree exactly when a style knob reaches
     /// one of them first.
     [[nodiscard]] FrameUniforms uniforms() const { return deriveFrameUniforms(m_frame->inputs()); }
+
+    /// Returns the padding clear from this capture's owned palette and opacity.
+    ///
+    /// The caller may release the live model before allocating or submitting
+    /// the drawable: the clear belongs to the same frame as its glyphs.
+    /// - Returns: Straight-alpha RGBA8, including reverse-video background.
+    [[nodiscard]] std::array<std::uint8_t, 4> paddingColor() const
+    {
+        const auto& inputs = m_frame->inputs();
+        const RGB8 background = resolvePaletteColor(*inputs.palette, colorDefault, inputs.screenReverse);
+        return { background.red, background.green, background.blue,
+            static_cast<std::uint8_t>(std::lround(std::clamp(inputs.backgroundOpacity, 0.0f, 1.0f) * 255.0f)) };
+    }
 
     using FontPreparationBits = std::span<std::uint64_t>;
     using FontPreparationKeys = std::vector<std::uint64_t>;

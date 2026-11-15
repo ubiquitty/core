@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 // Source/Core/Rendering/PaddingGeometry.h — portable window-padding geometry.
@@ -134,6 +135,25 @@ enum class RowClamp : std::uint8_t {
     };
 }
 
+/// Resolves whole-pixel content edges inside a device-pixel viewport.
+///
+/// Insets are clamped by the shared content policy before the resulting edges
+/// are rounded. A collapsed axis stays empty, including when opposing insets
+/// consume a viewport with an odd number of pixels.
+/// - Parameters:
+///   - viewport: The whole drawable extent, in device pixels.
+///   - insets: Requested device-pixel padding on each edge.
+/// - Returns: The rounded content origin and nonnegative device-pixel extent.
+[[nodiscard]] inline FloatRect pixelAlignedGridContentRect(FloatSize viewport, EdgeInsets insets)
+{
+    const FloatRect content = resolveGridContentRect(viewport, insets, 0);
+    const float left = std::round(content.origin.x);
+    const float top = std::round(content.origin.y);
+    const float right = std::round(content.origin.x + content.size.width);
+    const float bottom = std::round(content.origin.y + content.size.height);
+    return { { left, top }, { std::max(0.0f, right - left), std::max(0.0f, bottom - top) } };
+}
+
 // Padding-geometry companions.
 //
 // The structs above describe where the grid sits; the functions below give the
@@ -199,6 +219,29 @@ struct UBIQUITTY_ESCAPABLE GridBox {
     int height = 0;
 };
 
+/// Resolves the four non-overlapping rectangles outside an image's grid.
+///
+/// Renderers fill these regions on a fresh frame or preserve them before a
+/// retained scroll moves grid rows. A newly exposed row still owns the full
+/// border, beyond the smaller glyph-overhang restoration strips.
+/// - Parameters:
+///   - image: The image extent, in whole device pixels.
+///   - grid: The grid box, clamped to the image.
+/// - Returns: Top, bottom, left and right border rectangles; empty ones are zero-sized.
+[[nodiscard]] inline std::array<IntRect, 4> imageBorderRects(IntSize image, GridBox grid)
+{
+    if (image.width <= 0 || image.height <= 0)
+        return {};
+    const int left = std::clamp(grid.left, 0, image.width);
+    const int top = std::clamp(grid.top, 0, image.height);
+    const int right = std::clamp(grid.left + grid.width, left, image.width);
+    const int bottom = std::clamp(grid.top + grid.height, top, image.height);
+    return { IntRect { { 0, 0 }, { image.width, top } },
+        IntRect { { 0, bottom }, { image.width, image.height - bottom } },
+        IntRect { { 0, top }, { left, bottom - top } },
+        IntRect { { right, top }, { image.width - right, bottom - top } } };
+}
+
 /// Paints the region of an image outside its grid box with one color.
 ///
 /// The complement of a composite that drew into the grid box: what a renderer
@@ -216,24 +259,14 @@ inline void fillImageBorder(std::vector<std::uint8_t>& rgba, int width, int heig
 {
     if (width <= 0 || height <= 0 || rgba.size() < static_cast<std::size_t>(width) * height * 4)
         return;
-    const int gridLeft = std::clamp(grid.left, 0, width);
-    const int gridTop = std::clamp(grid.top, 0, height);
-    const int gridRight = std::clamp(grid.left + grid.width, gridLeft, width);
-    const int gridBottom = std::clamp(grid.top + grid.height, gridTop, height);
-
     const auto paintSpan = [&](int y, int firstColumn, int lastColumn) {
         std::uint8_t* out = rgba.data() + (static_cast<std::size_t>(y) * width + firstColumn) * 4;
         for (int x = firstColumn; x < lastColumn; ++x, out += 4)
             std::copy_n(background.data(), background.size(), out);
     };
-    for (int y = 0; y < gridTop; ++y)
-        paintSpan(y, 0, width);
-    for (int y = gridBottom; y < height; ++y)
-        paintSpan(y, 0, width);
-    for (int y = gridTop; y < gridBottom; ++y) {
-        paintSpan(y, 0, gridLeft);
-        paintSpan(y, gridRight, width);
-    }
+    for (const IntRect& border : imageBorderRects({ width, height }, grid))
+        for (int y = border.origin.y; y < border.origin.y + border.size.height; ++y)
+            paintSpan(y, border.origin.x, border.origin.x + border.size.width);
 }
 
 /// A frame's grid box and the cell that fills it.
@@ -650,6 +683,19 @@ inline CellPosition pointToCell(FloatPoint point, FloatPoint gridOrigin, FloatSi
     }
     return coord;
 }
+
+/// Maps a native view point to a cell only when that point is over the grid.
+///
+/// Horizontal bounds are tested in the view's double precision before the
+/// shared float cell mapping. Its unclamped row preserves the same rounding
+/// as report hit testing while rejecting points above or below the grid.
+/// - Parameters:
+///   - point: The view point, in a top-left coordinate system.
+///   - gridOrigin: The grid's top-left in the same space.
+///   - cell: One drawn cell's extent, in that same unit.
+///   - grid: The model owner's column and row counts.
+/// - Returns: The cell accepted by the native bounds, otherwise no value.
+[[nodiscard]] std::optional<CellPosition> pointToCellIfInside(DoublePoint point, DoublePoint gridOrigin, DoubleSize cell, GridSize grid);
 
 /// A text caret: a row of the grid, and a cell BOUNDARY on it.
 struct CaretPosition {

@@ -87,19 +87,6 @@ float brailleDotSide(const BrailleLattice& lattice)
     return std::max(1.0f, std::min(side, ceiling));
 }
 
-BrailleLattice textAlignedBrailleLattice(BrailleLattice lattice, float baselineFromTop, float xHeight)
-{
-    if (lattice.style == BrailleStyle::Raster || lattice.cellWidth <= 0.0f || lattice.cellHeight <= 0.0f || xHeight <= 0.0f) {
-        return lattice;
-    }
-    const float textCenter = baselineFromTop - xHeight * 0.5f;
-    const float offset = std::round(textCenter - lattice.cellHeight * 0.5f);
-    const float minimumPitch = std::floor(lattice.cellHeight / static_cast<float>(brailleDotRows));
-    const float margin = std::max(0.0f, std::floor((minimumPitch - brailleDotSide(lattice)) * 0.5f));
-    lattice.originY += std::clamp(offset, -margin, margin);
-    return lattice;
-}
-
 BrailleDotRect brailleDotRect(const BrailleLattice& lattice, int gridX, int gridY, int column, int row)
 {
     BrailleDotRect rect;

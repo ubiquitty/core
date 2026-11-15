@@ -86,8 +86,7 @@ inline constexpr int brailleDotsPerCell = brailleDotColumns * brailleDotRows;
 /// interpolating inside a rect whose width alternates 14 and 15 puts the dots
 /// on the alternating pitch this file opens with.
 struct BrailleLattice {
-    /// The grid's top-left corner in device pixels, including the shared
-    /// vertical text-alignment shift when applied.
+    /// The grid's top-left corner in device pixels.
     float originX { 0.0f };
     float originY { 0.0f };
     /// One cell's extent in device pixels, fractional as measured.
@@ -106,19 +105,6 @@ struct BrailleDotRect {
     float right { 0.0f };
     float bottom { 0.0f };
 };
-
-/// Aligns the lattice with the text's x-height center without changing its pitch.
-///
-/// The uniform pixel shift stays within the outer dot margins so dots remain
-/// inside their terminal rows, including at the viewport edges.
-/// Raster cells have no margins and retain the cell origin to tile exactly.
-///
-/// - Parameters:
-///   - lattice: The unshifted cell grid in device pixels.
-///   - baselineFromTop: The text baseline relative to the cell top.
-///   - xHeight: The text's measured x-height in device pixels.
-/// - Returns: The lattice with a shared vertical origin for every pattern.
-[[nodiscard]] BrailleLattice textAlignedBrailleLattice(BrailleLattice lattice, float baselineFromTop, float xHeight);
 
 /// The side every dot on the grid is drawn at, in whole device pixels.
 ///
