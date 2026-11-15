@@ -48,9 +48,15 @@
 
 #include "Core/Runtime/TerminalSession.h"
 
+#include <algorithm>
+#include <array>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -151,6 +157,27 @@ struct ViewSelection {
     }
 };
 
+// Counts the bytes cat's output becomes under the PTY's default ONLCR mode.
+// Outside the timed region: a missing suffix must fail the benchmark rather
+// than count as a shorter, faster flood. File payloads need the same check as
+// generated ones, including each CR inserted before an LF.
+std::optional<std::uint64_t> expandedPayloadBytes(const char* path)
+{
+    const auto closeFile = [](std::FILE* file) { std::fclose(file); };
+    std::unique_ptr<std::FILE, decltype(closeFile)> file(std::fopen(path, "rb"), closeFile);
+    if (!file)
+        return std::nullopt;
+    std::array<char, 64 * 1024> buffer;
+    std::uint64_t total = 0;
+    for (;;) {
+        const std::size_t count = std::fread(buffer.data(), 1, buffer.size(), file.get());
+        const std::span<const char> bytes(buffer.data(), count);
+        total += count + static_cast<std::uint64_t>(std::ranges::count(bytes, '\n'));
+        if (count < buffer.size())
+            return std::ferror(file.get()) ? std::nullopt : std::optional { total };
+    }
+}
+
 // Polls until the child's exit reaches the flags, accumulating what the loop
 // drained, and takes each published capture as the frame drive would.
 // Returns the byte count; `didExit` reports whether the budget held, and
@@ -239,6 +266,13 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "bench_ingest_flood: the payload could not be written\n");
         return 1;
     }
+    const std::optional<std::uint64_t> expectedBytes = expandedPayloadBytes(floodFile ? floodFile : payloadPath.c_str());
+    if (!expectedBytes) {
+        if (!floodFile)
+            ::unlink(payloadPath.c_str());
+        std::fprintf(stderr, "bench_ingest_flood: the payload could not be read\n");
+        return 1;
+    }
 
     // One call is one flood: launch, drain to the child's exit, tear down. The
     // harness repeats the call rather than a region inside it, so Repeat::Once
@@ -315,8 +349,9 @@ int main(int argc, char** argv)
         selectedFrames = selection.drawnFrames;
         session.stopIngest();
         screenPublications = session.searchStatus().screenGeneration - initialScreenGeneration;
-        const std::uint64_t expected = floodFile ? 0 : static_cast<std::uint64_t>(megabytes) * 1024 * 1024 / 2;
-        if (!didExit || drained < expected) {
+        if (!didExit || drained != *expectedBytes) {
+            std::fprintf(stderr, "bench_ingest_flood: drained %llu bytes, expected %llu; child exited=%d\n",
+                static_cast<unsigned long long>(drained), static_cast<unsigned long long>(*expectedBytes), didExit);
             didFail = true;
             return;
         }

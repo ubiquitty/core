@@ -30,6 +30,12 @@ workloads. Use the build and run instructions beside each harness. Core-only
 measurements exclude the cost of platform shaping, GPU submission, and display
 presentation.
 
+`bench_ingest_flood` requires the child to exit and the ingest loop to report
+the complete expected byte count before it publishes a throughput result.
+It counts generated and file payloads before timing, including the carriage
+returns the PTY's default ONLCR processing inserts before newlines. An unreadable
+payload or a missing or duplicated suffix fails the run.
+
 ## Native rendering and energy
 
 A native measurement identifies the renderer, application revision, display
