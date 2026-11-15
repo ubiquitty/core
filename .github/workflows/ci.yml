@@ -17,8 +17,9 @@ name: CI
 # there is a commit that nothing else will re-verify, and a cancelled run would
 # leave it without a verdict, which is what bisecting a regression across three
 # repositories needs. Scheduled sweeps have a group of their own.
+# Main commits have distinct groups so a new push cannot evict a pending run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'sweep' || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'sweep' || github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 on:
