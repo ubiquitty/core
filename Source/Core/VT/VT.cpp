@@ -5783,9 +5783,7 @@ static inline bool shouldPeekClusterLead(const char* buffer, int start, int leng
 // the routing gate and the run batcher ask it the same question.
 static inline bool pictographStandsAloneBefore(uint32_t codePoint, uint32_t successor)
 {
-    Ubiquitty::Unicode::GraphemeState probe;
-    Ubiquitty::Unicode::graphemeStateReset(&probe, codePoint);
-    return !Ubiquitty::Unicode::graphemeExtendsHot(&probe, codePoint, successor);
+    return !Ubiquitty::Unicode::doesGraphemeExtendFromBase(codePoint, successor);
 }
 
 // The code point beginning at `start`, if the buffer holds it whole. A lead
@@ -6588,8 +6586,7 @@ template<GraphicCapture Capture> static int emitClusterRun(Ubiquitty::Terminal& 
     int batch = clusterDecodeFirst;
     for (;;) {
         int rbytes = 0;
-        const int nDec = Ubiquitty::Unicode::utf8DecodeRun(
-            std::span { buffer + p, static_cast<std::size_t>(length - p) },
+        const int nDec = Ubiquitty::Unicode::utf8DecodeRun(std::span { buffer + p, static_cast<std::size_t>(length - p) },
             std::span { codePoints, static_cast<std::size_t>(batch) }, &rbytes);
         const auto tailCapture = graphicCaptureBefore<Capture>(buffer, p + rbytes, length);
         int ci = 0;

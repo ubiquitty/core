@@ -9,12 +9,48 @@
 #include "Harness.h"
 
 #include "Core/Unicode/GraphemeBreak.h"
+#include <array>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 
 using Ubiquitty::Unicode::graphemeExtends;
 using Ubiquitty::Unicode::GraphemeState;
 using Ubiquitty::Unicode::graphemeStateReset;
+
+TEST(freshBaseBoundaryProbeMatchesStatefulEngine)
+{
+    // Every GCB class, both Hangul syllable forms, emoji and text-default
+    // pictographs, and controls that override all of the joining classes.
+    constexpr std::array bases {
+        0x61u, 0x301u, 0x200Du, 0x903u, 0x600u, 0x1F1E6u,
+        0x1100u, 0x1161u, 0x11A8u, 0xAC00u, 0xAC01u, 0x915u,
+        0x1F600u, 0x2764u, 0xDu, 0xAu, 0u, 0x7Fu, 0x9Fu,
+        0x2028u, 0x2029u, 0x110000u, std::numeric_limits<std::uint32_t>::max()
+    };
+    for (const auto base : bases) {
+        const auto doesSuccessorMatch = [base](std::uint32_t next) {
+            GraphemeState state;
+            graphemeStateReset(&state, base);
+            const bool shouldExtend = graphemeExtends(&state, base, next);
+            const bool doesExtend = Ubiquitty::Unicode::doesGraphemeExtendFromBase(base, next);
+            if (doesExtend != shouldExtend)
+                std::printf("fresh base U+%04X successor U+%04X\n", base, next);
+            CHECK_EQ(doesExtend, shouldExtend);
+            return doesExtend == shouldExtend;
+        };
+        // Include surrogates as well: the property API accepts uint32_t and
+        // agrees with its stateful counterpart even for non-scalar values.
+        for (std::uint32_t next = 0; next <= 0x110000; ++next) {
+            if (!doesSuccessorMatch(next))
+                return;
+        }
+        for (const auto next : { 0x110001u, 0x80000000u, std::numeric_limits<std::uint32_t>::max() }) {
+            if (!doesSuccessorMatch(next))
+                return;
+        }
+    }
+}
 
 /// Segment a codePoint sequence into clusters by walking graphemeExtends,
 /// exactly as emitCharacter does. Returns the cluster count and, optionally,
