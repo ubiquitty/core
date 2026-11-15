@@ -95,15 +95,28 @@ extern std::uint8_t unicodeProps[0x110000];
     return (graphemeBreakRawByte(codePoint) & detail::propGraphemeRelevantMask) != 0;
 }
 
-// GCB classes whose join rules are inlined by graphemeExtendsHot below.
+// GCB classes whose join rules are inlined by the boundary probes below.
 // Pinned to GraphemeBreak.cpp's full class enum by static_asserts there.
 inline constexpr std::uint8_t graphemeClassExtend = 1;
 inline constexpr std::uint8_t graphemeClassZWJ = 2;
+inline constexpr std::uint8_t graphemeClassSpacingMark = 3;
+
+namespace detail {
+/// Reports whether a grapheme class joins through GB9.
+///
+/// Extend and ZWJ join before any context-dependent rule is considered.
+/// - Parameter graphemeClass: The class from the packed property table.
+/// - Returns: Whether the class is Extend or ZWJ.
+[[nodiscard]] inline bool isGraphemeExtendOrZWJ(std::uint8_t graphemeClass) noexcept
+{
+    return graphemeClass == graphemeClassExtend || graphemeClass == graphemeClassZWJ;
+}
+} // namespace detail
 
 /// The Prepend class as the property table stores it.
 ///
 /// Pinned to GraphemeBreak.cpp's class enum by a static_assert there, as the
-/// two classes above are.
+/// classes above are.
 inline constexpr std::uint8_t graphemeClassPrepend = 4;
 
 /// Reports whether a code point is Grapheme_Cluster_Break=Prepend.
@@ -190,7 +203,7 @@ inline constexpr std::uint8_t graphemeClassPrepend = 4;
     }
     const std::uint8_t rawNext = graphemeBreakRawByte(next);
     const std::uint8_t nextClass = detail::PropGCBClassField::get(rawNext);
-    if (nextClass == graphemeClassExtend || nextClass == graphemeClassZWJ) {
+    if (detail::isGraphemeExtendOrZWJ(nextClass)) {
         if (nextClass == graphemeClassZWJ) {
             // GB11's Extend run precedes the ZWJ, so the arming must not
             // survive one after it: a diaeresis between the joiner and the next
@@ -217,6 +230,35 @@ inline constexpr std::uint8_t graphemeClassPrepend = 4;
         return true;
     }
     return graphemeExtends(st, prev, next);
+}
+
+/// Reports whether `next` joins a cluster containing only `base`.
+///
+/// A fresh Other-class base has no regional-indicator, Hangul, Prepend, pending
+/// ZWJ or armed Indic context. After the control and unconditional joining
+/// rules, its successor starts a new cluster. Other base classes use the same
+/// stateful engine as a cluster that has already grown.
+///
+/// - Parameters:
+///   - base: The cluster's only code point.
+///   - next: The code point whose boundary is being probed.
+/// - Returns: The boundary decision without constructing persistent state.
+[[nodiscard]] inline bool doesGraphemeExtendFromBase(std::uint32_t base, std::uint32_t next) noexcept
+{
+    bool isControlPair = false;
+    const bool shouldJoinControlPair = graphemeControlDecision(base, next, isControlPair);
+    if (isControlPair)
+        return shouldJoinControlPair;
+
+    const auto nextClass = detail::PropGCBClassField::get(graphemeBreakRawByte(next));
+    if (detail::isGraphemeExtendOrZWJ(nextClass) || nextClass == graphemeClassSpacingMark)
+        return true; // GB9 / GB9a do not depend on a fresh base's state
+    if ((graphemeBreakRawByte(base) & detail::PropGCBClassField::mask) == 0)
+        return false; // GB999: a fresh Other-class base carries no joining context
+
+    GraphemeState state;
+    graphemeStateReset(&state, base);
+    return graphemeExtendsHot(&state, base, next);
 }
 
 } // namespace Ubiquitty::Unicode

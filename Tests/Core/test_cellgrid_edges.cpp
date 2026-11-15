@@ -177,6 +177,218 @@ TEST(compactASCIIRowsMatchMaterializedWritesAndExpandWithoutLosingBytes)
     }
 }
 
+TEST(shortRecycledASCIIRowsStayCompactAndMatchMaterializedWrites)
+{
+    for (const auto screen : { ScreenMode::Primary, ScreenMode::Alternate }) {
+        for (const int columns : { 8, 80, 202 }) {
+            for (const int oldWidth : { 1, columns / 2, columns - 1 }) {
+                for (const int firstColumn : { 0, oldWidth }) {
+                    for (const int writer : { 0, 1, 2 }) {
+                        if (writer != 0 && firstColumn + 1 < oldWidth)
+                            continue;
+                        CellGrid actual;
+                        CellGrid expected;
+                        for (auto* grid : { &actual, &expected }) {
+                            grid->init(4, columns);
+                            grid->setAlternateActive(screen);
+                            grid->writeASCIIRun(Row(0), Column(0), defaultBlank(), std::string(static_cast<std::size_t>(oldWidth), 'a'));
+                            (void)grid->rowCells(Row(0));
+                            grid->scrollFullViewportUpOneDefaultBlank();
+                        }
+                        (void)expected.rowCells(Row(3));
+                        const std::string text(static_cast<std::size_t>(oldWidth), 'x');
+                        const auto write = [&](CellGrid& grid) {
+                            if (writer == 0)
+                                grid.writeASCIIRun(Row(3), Column(firstColumn), defaultBlank(), text);
+                            else if (writer == 1)
+                                grid.setCell(Row(3), Column(firstColumn), letter('x'));
+                            else
+                                grid.setCellKnownDiff(Row(3), Column(firstColumn), letter('x'));
+                        };
+                        write(actual);
+                        write(expected);
+                        CHECK(actual.compactASCIIRow(Row(3)).has_value());
+                        CHECK_EQ(actual.rowContentWidth(Row(3)), expected.rowContentWidth(Row(3)));
+                        CHECK_EQ(actual.contentGeneration(), expected.contentGeneration());
+                        CHECK_EQ(actual.rowGeneration(3), expected.rowGeneration(3));
+                        for (int column = 0; column < columns; ++column) {
+                            const auto cell = actual.logicalCellValueAt(Row(3), Column(column));
+                            CHECK(cell.has_value());
+                            CHECK(std::memcmp(&*cell, expected.cellAt(Row(3), Column(column)), sizeof(Cell)) == 0);
+                        }
+                        const auto generation = actual.contentGeneration();
+                        if (writer != 2) {
+                            write(actual);
+                            CHECK_EQ(actual.contentGeneration(), generation);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST(shortASCIIRowsMatchMaterializedWritesAfterResizingToEightyColumns)
+{
+    for (const auto screen : { ScreenMode::Primary, ScreenMode::Alternate }) {
+        for (const bool shouldResize : { false, true }) {
+            CellGrid actual;
+            CellGrid expected;
+            for (auto* grid : { &actual, &expected }) {
+                grid->init(4, shouldResize ? 81 : 80);
+                grid->setAlternateActive(screen);
+                if (shouldResize)
+                    grid->resize(4, 80, Modes::ReflowMode::Fixed);
+                for (int row = 0; row < 4; ++row)
+                    grid->writeASCIIRun(Row(row), Column(0), defaultBlank(), std::string(79, static_cast<char>('A' + row)));
+            }
+            for (int step = 0; step < 7; ++step) {
+                actual.scrollFullViewportUpOneDefaultBlank();
+                expected.scrollFullViewportUpOneDefaultBlank();
+                (void)expected.rowCells(Row(3));
+                const std::string text(79, static_cast<char>('a' + step));
+                actual.writeASCIIRun(Row(3), Column(0), defaultBlank(), text);
+                expected.writeASCIIRun(Row(3), Column(0), defaultBlank(), text);
+                CHECK(actual.compactASCIIRow(Row(3)).has_value());
+                CHECK_EQ(actual.contentGeneration(), expected.contentGeneration());
+                for (int row = 0; row < 4; ++row) {
+                    CHECK_EQ(actual.rowContentWidth(Row(row)), expected.rowContentWidth(Row(row)));
+                    CHECK_EQ(actual.rowGeneration(row), expected.rowGeneration(row));
+                    for (int column = 0; column < 80; ++column) {
+                        const auto cell = actual.logicalCellValueAt(Row(row), Column(column));
+                        CHECK(cell.has_value());
+                        CHECK(std::memcmp(&*cell, expected.cellAt(Row(row), Column(column)), sizeof(Cell)) == 0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST(shortRecycledASCIIRowsKeepNoncanonicalVisibleSuffixes)
+{
+    for (const auto screen : { ScreenMode::Primary, ScreenMode::Alternate }) {
+        for (const int suffixKind : { 0, 1, 2, 3, 4 }) {
+            Cell suffix = defaultBlank();
+            if (suffixKind == 0)
+                suffix.codePoint = 'q';
+            else if (suffixKind == 1)
+                suffix.pen.backgroundIndex = 4;
+            else if (suffixKind == 2)
+                suffix.pen.foregroundRed = 1;
+            else if (suffixKind == 3) {
+                suffix.combining[0] = 0x301;
+                suffix.setCombiningLength(1);
+            } else
+                suffix.setLinkID(7);
+            CellGrid actual;
+            CellGrid expected;
+            for (auto* grid : { &actual, &expected }) {
+                grid->init(4, 10);
+                grid->setAlternateActive(screen);
+                grid->setCell(Row(0), Column(9), suffix);
+                grid->resize(4, 4, Modes::ReflowMode::Fixed);
+                grid->eraseRowRange(Row(0), Column(0), Column(3), defaultBlank());
+                grid->writeASCIIRun(Row(0), Column(0), defaultBlank(), "ab");
+                grid->resize(4, 10, Modes::ReflowMode::Fixed);
+                grid->scrollFullViewportUpOneDefaultBlank();
+            }
+            (void)expected.rowCells(Row(3));
+            actual.writeASCIIRun(Row(3), Column(0), defaultBlank(), "xy");
+            expected.writeASCIIRun(Row(3), Column(0), defaultBlank(), "xy");
+            CHECK(!actual.compactASCIIRow(Row(3)).has_value());
+            CHECK_EQ(actual.rowContentWidth(Row(3)), expected.rowContentWidth(Row(3)));
+            CHECK_EQ(actual.contentGeneration(), expected.contentGeneration());
+            CHECK(std::memcmp(actual.cellAt(Row(3), Column(9)), &suffix, sizeof(Cell)) == 0);
+            CHECK(std::memcmp(actual.rowCells(Row(3)).data, expected.rowCells(Row(3)).data, 10 * sizeof(Cell)) == 0);
+        }
+    }
+}
+
+TEST(shortASCIIPrefixesDoNotCompactLongerRecycledRows)
+{
+    for (const auto screen : { ScreenMode::Primary, ScreenMode::Alternate }) {
+        CellGrid grid;
+        grid.init(4, 10);
+        grid.setAlternateActive(screen);
+        grid.writeASCIIRun(Row(0), Column(0), defaultBlank(), "abcdefgh");
+        (void)grid.rowCells(Row(0));
+        grid.scrollFullViewportUpOneDefaultBlank();
+        grid.writeASCIIRun(Row(3), Column(0), defaultBlank(), "ab");
+        CHECK(!grid.compactASCIIRow(Row(3)).has_value());
+        Cell next = defaultBlank();
+        next.codePoint = 0xE9;
+        grid.setCell(Row(3), Column(2), next);
+        CHECK_EQ(grid.rowContentWidth(Row(3)), 3);
+        CHECK_EQ(grid.cellAt(Row(3), Column(0))->codePoint, static_cast<std::uint32_t>('a'));
+        CHECK_EQ(grid.cellAt(Row(3), Column(1))->codePoint, static_cast<std::uint32_t>('b'));
+        CHECK(std::memcmp(grid.cellAt(Row(3), Column(2)), &next, sizeof(Cell)) == 0);
+        const Cell blank = defaultBlank();
+        for (int column = 3; column < 10; ++column)
+            CHECK(std::memcmp(grid.cellAt(Row(3), Column(column)), &blank, sizeof(Cell)) == 0);
+    }
+}
+
+TEST(shortRecycledASCIIRowsPreserveHiddenColumnsAcrossFixedGrow)
+{
+    for (const auto screen : { ScreenMode::Primary, ScreenMode::Alternate }) {
+        CellGrid actual;
+        CellGrid expected;
+        for (auto* grid : { &actual, &expected }) {
+            grid->init(4, 10);
+            grid->setAlternateActive(screen);
+            grid->writeASCIIRun(Row(0), Column(0), defaultBlank(), "abcdefghij");
+            grid->resize(4, 8, Modes::ReflowMode::Fixed);
+            grid->eraseRowRange(Row(0), Column(0), Column(7), defaultBlank());
+            grid->writeASCIIRun(Row(0), Column(0), defaultBlank(), "abc");
+            grid->scrollFullViewportUpOneDefaultBlank();
+        }
+        (void)expected.rowCells(Row(3));
+        actual.writeASCIIRun(Row(3), Column(1), defaultBlank(), "xy");
+        expected.writeASCIIRun(Row(3), Column(1), defaultBlank(), "xy");
+        CHECK(actual.compactASCIIRow(Row(3)).has_value());
+        actual.resize(4, 10, Modes::ReflowMode::Fixed);
+        expected.resize(4, 10, Modes::ReflowMode::Fixed);
+        CHECK(rowText(actual, 3) == ".xy.....ij");
+        CHECK(std::memcmp(actual.rowCells(Row(3)).data, expected.rowCells(Row(3)).data, 10 * sizeof(Cell)) == 0);
+        CHECK_EQ(actual.rowContentWidth(Row(3)), expected.rowContentWidth(Row(3)));
+    }
+}
+
+TEST(shortRecycledASCIIRowsPreserveBorrowedInputs)
+{
+    for (const auto screen : { ScreenMode::Primary, ScreenMode::Alternate }) {
+        CellGrid grid;
+        grid.init(4, 8);
+        grid.setAlternateActive(screen);
+        grid.writeASCIIRun(Row(0), Column(0), defaultBlank(), "abc");
+        const Cell* borrowedTemplate = grid.cellAt(Row(0), Column(1));
+        grid.scrollFullViewportUpOneDefaultBlank();
+        grid.writeASCIIRun(Row(3), Column(1), *borrowedTemplate, "xyz");
+        CHECK(!grid.compactASCIIRow(Row(3)).has_value());
+        CHECK(rowText(grid, 3) == ".xyz....");
+
+        CellGrid sourceGrid;
+        sourceGrid.init(4, 8);
+        sourceGrid.setAlternateActive(screen);
+        sourceGrid.writeASCIIRun(Row(0), Column(0), defaultBlank(), "abc");
+        Cell sourceCell = letter('T');
+        std::memcpy(sourceCell.combining.data(), "abcd", 4);
+        sourceGrid.setCell(Row(0), Column(1), sourceCell);
+        // Read the cell's object representation as bytes. The first complete
+        // cell store replaces the later input bytes before they are consumed.
+        const auto* bytes = reinterpret_cast<const char*>(sourceGrid.cellAt(Row(0), Column(1))->combining.data());
+        sourceGrid.scrollFullViewportUpOneDefaultBlank();
+        sourceGrid.writeASCIIRun(Row(3), Column(1), defaultBlank(), std::string_view(bytes, 3));
+        CHECK(!sourceGrid.compactASCIIRow(Row(3)).has_value());
+        CHECK(rowText(sourceGrid, 3) == ".a......");
+        CHECK_EQ(sourceGrid.rowContentWidth(Row(3)), 4);
+        const Cell blank = defaultBlank();
+        CHECK(std::memcmp(sourceGrid.cellAt(Row(3), Column(2)), &blank, sizeof(Cell)) == 0);
+        CHECK(std::memcmp(sourceGrid.cellAt(Row(3), Column(3)), &blank, sizeof(Cell)) == 0);
+    }
+}
+
 TEST(logicalCellReadsPreserveCompactRowsAndBorrowMaterializedCells)
 {
     const CellRead emptyRead;

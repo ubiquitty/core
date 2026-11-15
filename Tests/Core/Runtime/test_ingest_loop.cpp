@@ -108,6 +108,7 @@ struct ReadShape {
     int pauseEveryBytes = 0;
     int pauseReads = 0;
     ShortReadWaitStrategy shortReadWaitStrategy = ShortReadWaitStrategy::Accumulate;
+    ReadinessWaitStrategy readinessWaitStrategy = ReadinessWaitStrategy::ProbeBeforeWait;
 };
 
 // What the stream's program reads back: every reply the runtime writes.
@@ -184,6 +185,7 @@ public:
     [[nodiscard]] int lastError() const override { return 0; }
     [[nodiscard]] FileDescriptor& handle() override { return m_descriptor; }
     [[nodiscard]] ShortReadWaitStrategy shortReadWaitStrategy() const override { return m_shape.shortReadWaitStrategy; }
+    [[nodiscard]] ReadinessWaitStrategy readinessWaitStrategy() const override { return m_shape.readinessWaitStrategy; }
 
     // Duplicates share the file offset, so the loop's endpoint, the reader's
     // endpoint and the Stream all consume one sequence, as the PTY's do.
@@ -2391,15 +2393,18 @@ TEST(testASlabThatLandsKeepsTheAccumulateWait)
 // comparison alone cannot reject repeated waits on a fixed ring.
 TEST(testImmediateShortReadsDrainWithoutAccumulateWaits)
 {
-    for (const int quantum : { 4095, 512 }) {
-        const ShapedFloodOutcome outcome = runShapedFlood({ .quantumBytes = quantum,
-            .pauseEveryBytes = quantum,
-            .pauseReads = 1,
-            .shortReadWaitStrategy = Ubiquitty::PAL::ShortReadWaitStrategy::ReadImmediately });
-        CHECK_EQ(outcome.deliveredBytes, outcome.totalBytes);
-        CHECK_MSG(outcome.bursts >= 1, "the flood rode the pipeline behind a slow parser");
-        CHECK_EQ(outcome.accumulateWaits, 0u);
-        CHECK(outcome.didReachTail);
+    for (const auto waitStrategy : { Ubiquitty::PAL::ReadinessWaitStrategy::ProbeBeforeWait, Ubiquitty::PAL::ReadinessWaitStrategy::WaitFirst }) {
+        for (const int quantum : { 4095, 512 }) {
+            const ShapedFloodOutcome outcome = runShapedFlood({ .quantumBytes = quantum,
+                .pauseEveryBytes = quantum,
+                .pauseReads = 1,
+                .shortReadWaitStrategy = Ubiquitty::PAL::ShortReadWaitStrategy::ReadImmediately,
+                .readinessWaitStrategy = waitStrategy });
+            CHECK_EQ(outcome.deliveredBytes, outcome.totalBytes);
+            CHECK_MSG(outcome.bursts >= 1, "the flood rode the pipeline behind a slow parser");
+            CHECK_EQ(outcome.accumulateWaits, 0u);
+            CHECK(outcome.didReachTail);
+        }
     }
 }
 

@@ -898,13 +898,14 @@ private:
     /// Keep ordinary rows out of the compact writer's alias and pen checks.
     /// The writer still validates those inputs before changing representation.
     /// - Parameter slot: The active screen's valid physical row slot.
-    /// - Returns: Whether the row is compact or has a whole-width blank deferral.
+    /// - Returns: Whether the row is compact or has a blank deferral starting
+    ///   at its first column; the writer verifies any remaining visible cells.
     [[nodiscard]] bool isCompactASCIIWriteCandidate(int slot) const
     {
         assert(slot >= 0 && slot < m_rowCapacity);
         return m_rowState[m_activeIndex][slot].storage == RowStorage::DefaultASCII
             || (slot == m_deferredBlankSlot[m_activeIndex]
-                && m_deferredBlankStart[m_activeIndex] == 0 && m_deferredBlankCount[m_activeIndex] >= m_columns);
+                && m_deferredBlankStart[m_activeIndex] == 0);
     }
     /// Writes canonical-default bytes into an eligible compact row.
     ///

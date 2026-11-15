@@ -127,6 +127,7 @@ void scoreCase(const CorpusCase& corpusCase, CorpusTally& tally)
     Ubiquitty::Unicode::GraphemeState fullState {};
     Ubiquitty::Unicode::graphemeStateReset(&fullState, positions.front().codePoint);
     Ubiquitty::Unicode::GraphemeState hotState = fullState;
+    bool isFreshBase = true;
 
     for (std::size_t index = 1; index < positions.size(); ++index) {
         const std::uint32_t previous = positions[index - 1].codePoint;
@@ -134,6 +135,8 @@ void scoreCase(const CorpusCase& corpusCase, CorpusTally& tally)
         const bool shouldExtend = !positions[index].isBoundaryBefore;
         const bool doesFullExtend = Ubiquitty::Unicode::graphemeExtends(&fullState, previous, current);
         const bool doesHotExtend = Ubiquitty::Unicode::graphemeExtendsHot(&hotState, previous, current);
+        if (isFreshBase)
+            CHECK_EQ(Ubiquitty::Unicode::doesGraphemeExtendFromBase(previous, current), shouldExtend);
 
         if (doesFullExtend != shouldExtend || doesHotExtend != shouldExtend) {
             if (tally.mismatches < maxReportedMismatches) {
@@ -156,6 +159,7 @@ void scoreCase(const CorpusCase& corpusCase, CorpusTally& tally)
             Ubiquitty::Unicode::graphemeStateReset(&fullState, current);
         if (!doesHotExtend)
             Ubiquitty::Unicode::graphemeStateReset(&hotState, current);
+        isFreshBase = !doesFullExtend;
     }
 }
 

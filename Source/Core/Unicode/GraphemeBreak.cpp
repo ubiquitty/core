@@ -93,6 +93,7 @@ enum GraphemeBreakClass : std::uint8_t {
 // Keep the header's pinned copies in lockstep with this enum.
 static_assert(Ubiquitty::Unicode::graphemeClassExtend == ClassExtend);
 static_assert(Ubiquitty::Unicode::graphemeClassZWJ == ClassZWJ);
+static_assert(Ubiquitty::Unicode::graphemeClassSpacingMark == ClassSpacingMark);
 static_assert(Ubiquitty::Unicode::graphemeClassPrepend == ClassPrepend);
 
 struct ClassRange {
@@ -363,7 +364,7 @@ bool graphemeExtends(GraphemeState* st, std::uint32_t prev, std::uint32_t next)
 
     // GB9 — Extend / ZWJ never start a new cluster (combining marks,
     // VS-15/16, skin-tone modifiers, ZWJ).
-    if (nc == ClassExtend || nc == ClassZWJ) {
+    if (detail::isGraphemeExtendOrZWJ(nc)) {
         if (nc == ClassZWJ) {
             // GB11's Extend run precedes the ZWJ, so the arming must not
             // survive one after it: a diaeresis between the joiner and the next

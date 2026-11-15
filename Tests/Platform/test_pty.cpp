@@ -2795,7 +2795,12 @@ namespace {
 /// one entry per line, each line preceded by a newline.
 std::string childEnvironmentListing(PAL::PTYLaunchOptions options)
 {
+#if defined(__linux__)
+    // GNU env may quote terminal output. NUL-delimited output preserves values.
+    const std::vector<std::string> command { "/usr/bin/env", "-0" };
+#else
     const std::vector<std::string> command { "/usr/bin/env" };
+#endif
     options.argument0Style = PAL::Argument0Style::ProgramPath;
     auto stream = PAL::openPTY(command, options);
     CHECK(stream != nullptr);
@@ -2805,8 +2810,13 @@ std::string childEnvironmentListing(PAL::PTYLaunchOptions options)
     const int count = drainWithBudget(stream.get(), bytes.data(), static_cast<int>(bytes.size()), 2000, nullptr);
     std::string listing = "\n";
     for (int index = 0; index < count; ++index) {
-        if (bytes[static_cast<std::size_t>(index)] != '\r')
-            listing.push_back(bytes[static_cast<std::size_t>(index)]);
+        char byte = bytes[static_cast<std::size_t>(index)];
+#if defined(__linux__)
+        if (byte == '\0')
+            byte = '\n';
+#endif
+        if (byte != '\r')
+            listing.push_back(byte);
     }
     return listing;
 }

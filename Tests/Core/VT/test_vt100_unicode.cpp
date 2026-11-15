@@ -19,6 +19,7 @@
 #include "VT100Fixture.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <iterator>
 #include <memory>
@@ -1682,9 +1683,59 @@ TEST(combiningBatchBoundsStorageWithoutLeavingStrayCells)
     CHECK(terminal.screens.active->cursorX == 2);
 }
 
+TEST(clusterDecodeBatchesPreserveShortTailsAndLaterExtensions)
+{
+    std::string input;
+    for (int index = 0; index < 116; ++index)
+        input += "\xCC\x81";
+    input += "x👩🏽‍💻y";
+    // The long combining run crosses full decode batches before an ASCII
+    // boundary leaves a short tail. Each byte split also crosses UTF-8 leads
+    // and continuations without changing the bounded cluster contents.
+    const std::array<std::size_t, 11> chunkSizes { 1, 15, 16, 17, 31, 32, 33, 191, 192, 193, input.size() };
+    for (const std::size_t chunkSize : chunkSizes) {
+        Ubiquitty::Terminal terminal;
+        Ubiquitty::hardReset(terminal);
+        feed(terminal, "é");
+        for (std::size_t offset = 0; offset < input.size(); offset += chunkSize)
+            feed(terminal, std::string_view(input).substr(offset, chunkSize));
+        feed(terminal, "\xCC\x80");
+
+        std::uint32_t codePoints[16] {};
+        CHECK_EQ(Ubiquitty::cellClusterCodePoints(&terminal, cell(terminal, 0, 0), codePoints, 16), 16);
+        CHECK_EQ(codePoints[0], 0xE9u);
+        for (int index = 1; index < 16; ++index)
+            CHECK_EQ(codePoints[index], 0x301u);
+        CHECK_EQ(cell(terminal, 0, 1)->codePoint, static_cast<std::uint32_t>('x'));
+        const auto* emoji = cell(terminal, 0, 2);
+        CHECK(emoji->pen.attributes.contains(Ubiquitty::VT::Attribute::Wide));
+        CHECK(emoji->pen.attributes.contains(Ubiquitty::VT::Attribute::Emoji));
+        CHECK_EQ(Ubiquitty::cellClusterCodePoints(&terminal, emoji, codePoints, 16), 4);
+        const std::uint32_t expectedEmoji[] = { 0x1F469, 0x1F3FD, 0x200D, 0x1F4BB };
+        CHECK(std::equal(std::begin(expectedEmoji), std::end(expectedEmoji), codePoints));
+        CHECK(cell(terminal, 0, 3)->pen.attributes.contains(Ubiquitty::VT::Attribute::WideContinuation));
+        CHECK_EQ(Ubiquitty::cellClusterCodePoints(&terminal, cell(terminal, 0, 4), codePoints, 16), 2);
+        CHECK_EQ(codePoints[0], static_cast<std::uint32_t>('y'));
+        CHECK_EQ(codePoints[1], 0x300u);
+        CHECK_EQ(terminal.screens.active->cursorX, 5);
+        CHECK_EQ(terminal.screens.active->cursorY, 0);
+        CHECK(!terminal.screens.active->wrapPending);
+        TEST_ASSERT_DISPLAY_INVARIANTS(terminal.grid.get());
+    }
+}
+
 TEST(wideClusterSpansPreserveCellsAndCursorAcrossInputSplits)
 {
-    const std::string clusters = "漢，字。가각𠀀漢字́👨‍👩‍👧‍👦👍🏽🇯🇵❤️❤︎❤️︎😀︎😀️각👩‍💻漢字𠀀";
+    // ASCII gaps exercise short cluster decoding beside the dense stretches.
+    // Invalid leads and continuations must stay with the scalar decoder, even
+    // when the chunk boundary splits their maximal subpart.
+    const std::string clusters = "漢，字。가각𠀀漢字́👨‍👩‍👧‍👦👍🏽🇯🇵❤️❤︎❤️︎😀︎😀️각👩‍💻漢字𠀀"
+                                 " 👩🏽‍💻.😀́x❤️!"
+                                 "👩🏽‍💻\xE0\x80\xAF"
+                                 "👍🏽\xF4\x90\x80\x80"
+                                 "❤️\xED\xA0\x80"
+                                 "👩‍💻\xC3!"
+                                 "😀\u0903😀\u0600A❤️\u2028😀\u0301🇯🇵🇬🇧";
     const char* setups[] = {
         "\033[1;38;2;17;83;129m\033]8;;https://example.test\033\\",
         "\033[?69h\033[2;8s\033[1;2H",
