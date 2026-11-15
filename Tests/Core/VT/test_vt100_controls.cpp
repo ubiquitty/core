@@ -1413,6 +1413,44 @@ TEST(cancelCharacterAfterCCHFreeChunksMatchesBytewiseInput)
     }
 }
 
+TEST(cancelCharacterAfterLongTextChunksMatchesBytewiseInput)
+{
+    // A cancellation in the next chunk must see the same predecessor after
+    // long text, regardless of the boundary's position or the span's alignment.
+    for (std::size_t alignment = 0; alignment < 16; ++alignment) {
+        for (std::size_t suffixLength = 0; suffixLength < 32; ++suffixLength) {
+            for (const std::string_view boundary : { "", "\n", "\033[31m", "\033[31", "\033(B", "\n\033[32m" }) {
+                const std::string storage = std::string(alignment, '!') + std::string(48 + alignment, 'a')
+                    + std::string(boundary) + std::string(suffixLength, 'b');
+                const auto input = std::string_view(storage).substr(alignment);
+                Ubiquitty::Terminal divided;
+                Ubiquitty::Terminal bytewise;
+                for (auto* terminal : { &divided, &bytewise }) {
+                    Ubiquitty::hardReset(*terminal);
+                    Ubiquitty::resize(*terminal, 3, 12, Ubiquitty::Modes::ReflowMode::Fixed);
+                }
+                feed(divided, input);
+                for (const char& byte : input)
+                    feed(bytewise, { &byte, 1 });
+                for (auto* terminal : { &divided, &bytewise })
+                    feed(*terminal, "\033T");
+                CHECK_EQ(divided.screens.active->cursorX, bytewise.screens.active->cursorX);
+                CHECK_EQ(divided.screens.active->cursorY, bytewise.screens.active->cursorY);
+                CHECK_EQ(divided.screens.active->wrapPending, bytewise.screens.active->wrapPending);
+                CHECK_EQ(divided.scrollbackCount, bytewise.scrollbackCount);
+                for (int row = 0; row < 3; ++row) {
+                    for (int column = 0; column < 12; ++column) {
+                        const auto* actual = cell(divided, row, column);
+                        const auto* expected = cell(bytewise, row, column);
+                        CHECK_EQ(actual->codePoint, expected->codePoint);
+                        CHECK(std::memcmp(&actual->pen, &expected->pen, sizeof(expected->pen)) == 0);
+                    }
+                }
+            }
+        }
+    }
+}
+
 TEST(cancelCharacterAfterAnInterruptedSGRRetainsTheGraphic)
 {
     Ubiquitty::Terminal t;

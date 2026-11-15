@@ -5730,7 +5730,25 @@ static int graphicCancellationBoundary(std::span<const char> input)
     for (int index = length - 1; index >= 0; --index) {
         if (input[index] == '\n')
             return index;
-        if (input[index] != '\033' || index + 1 >= length || input[index + 1] != '[')
+        if (input[index] != '\033') {
+            // Long text runs have neither candidate. Reject whole words while
+            // retaining the bytewise order within any word that may hold one.
+            // The zero-byte tests only ask whether a candidate exists, so
+            // borrow propagation and native byte order cannot change the answer.
+            if (index >= 7 && (index & 7) == 7) {
+                constexpr std::uint64_t ones = 0x0101010101010101ULL;
+                constexpr std::uint64_t highBits = ones * 0x80u;
+                std::uint64_t word;
+                std::memcpy(&word, input.data() + index - 7, sizeof(word));
+                const std::uint64_t lineFeeds = word ^ (ones * '\n');
+                const std::uint64_t escapes = word ^ (ones * '\033');
+                if (!(((lineFeeds - ones) & ~lineFeeds & highBits)
+                        | ((escapes - ones) & ~escapes & highBits)))
+                    index -= 7;
+            }
+            continue;
+        }
+        if (index + 1 >= length || input[index + 1] != '[')
             continue;
         const int start = index + 2;
         const int final = start + countByteRun(input.data() + start, std::min(length - start, 64), 0x20, 0x3F);

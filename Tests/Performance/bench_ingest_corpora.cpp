@@ -115,6 +115,10 @@ std::vector<Corpus> buildCorpora(std::size_t targetBytes)
     corpora.push_back({ "ascii",
         repeatToBytes("the quick brown fox jumps over the lazy dog 0123456789\n", targetBytes) });
 
+    // Without an explicit line break, cancellation-boundary detection scans
+    // the whole chunk. Wrapping still exercises the ordinary grid and scroll.
+    corpora.push_back({ "ascii_unbroken", std::string(targetBytes, 'x') });
+
     // Two-byte UTF-8, width 1 — no wide handling, no pen change per cell.
     corpora.push_back({ "latin1_multibyte",
         repeatToBytes("àéîõü ñçøåæ þðßµ¿¡ "
