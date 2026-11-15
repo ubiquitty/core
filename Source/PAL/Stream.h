@@ -36,6 +36,14 @@ enum class ReadinessWaitStrategy : uint8_t {
     WaitFirst,
 };
 
+/// Whether a flood reader should let a short read's remainder accumulate.
+/// Fixed kernel rings need draining to admit more bytes; their short reads
+/// do not imply that a larger slab will become readable after a delay.
+enum class ShortReadWaitStrategy : std::uint8_t {
+    Accumulate,
+    ReadImmediately,
+};
+
 // read / write / writeAll return a non-negative byte count, or one of these
 // (negative) sentinels cast to int — the < 0 contract the Stream methods document.
 // lastError() carries the backend errno when the status is Fatal.
@@ -281,6 +289,9 @@ public:
 
     /// Returns how a flood reader should approach a temporary empty read.
     [[nodiscard]] virtual ReadinessWaitStrategy readinessWaitStrategy() const { return ReadinessWaitStrategy::ProbeBeforeWait; }
+
+    /// Returns whether short reads can benefit from a bounded accumulation wait.
+    [[nodiscard]] virtual ShortReadWaitStrategy shortReadWaitStrategy() const { return ShortReadWaitStrategy::Accumulate; }
 
 protected:
     PollableByteStream() = default;

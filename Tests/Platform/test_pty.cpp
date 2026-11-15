@@ -2276,7 +2276,17 @@ TEST(testDuplicateAsPollableStreamReadsTheSameMaster)
     CHECK(duplicate != nullptr);
     if (!duplicate)
         return;
+#if defined(__linux__)
+    constexpr auto expectedShortRead = PAL::ShortReadWaitStrategy::ReadImmediately;
+#else
+    constexpr auto expectedShortRead = PAL::ShortReadWaitStrategy::Accumulate;
+#endif
     CHECK(duplicate->readinessWaitStrategy() == PAL::ReadinessWaitStrategy::ProbeBeforeWait);
+    CHECK(duplicate->shortReadWaitStrategy() == expectedShortRead);
+    auto secondDuplicate = duplicate->duplicateAsPollableStream();
+    REQUIRE(secondDuplicate != nullptr);
+    CHECK(secondDuplicate->readinessWaitStrategy() == PAL::ReadinessWaitStrategy::ProbeBeforeWait);
+    CHECK(secondDuplicate->shortReadWaitStrategy() == expectedShortRead);
 
     // The duplicate shares the master's open file description, so bytes echoed
     // back arrive through it while the original stays open for teardown.
