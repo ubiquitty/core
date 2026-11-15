@@ -485,6 +485,7 @@ constexpr BoolKey boolKeys[] = {
 };
 
 constexpr DoubleKey doubleKeys[] = {
+    { "cursor", "outline_thickness", &Values::cursorOutlineThickness, useSchema, useSchema },
     { "font", "size", &Values::fontSize, anyDouble, maxAnyDouble },
     { "font", "proportional_size", &Values::proportionalFontSize, anyDouble, maxAnyDouble },
     { "font", "line_spacing", &Values::lineSpacingPoints, anyDouble, maxAnyDouble },

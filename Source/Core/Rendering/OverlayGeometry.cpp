@@ -399,7 +399,7 @@ bool buildCursorQuad(const CursorQuadParameters& p, OverlayQuad& out)
         if (!p.sliding)
             alpha *= p.blinkAlpha;
     } else if (shape == Ubiquitty::Cursor::Shape::Block) {
-        strokeWidth = fmaxf(1.0f, roundf(pixelsPerPoint));
+        strokeWidth = fmaxf(1.0f, roundf(p.outlineThicknessPoints * pixelsPerPoint));
     }
 
     float minX = xMin + p.origin.x, minY = yMin + p.origin.y;

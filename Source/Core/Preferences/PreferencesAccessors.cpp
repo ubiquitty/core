@@ -305,6 +305,7 @@ bool cursorBlink(const Values& c) { return c.cursorBlink.value_or(Defaults::curs
 int cursorLinger(const Values& c) { return c.cursorLinger.value_or(Defaults::cursorLinger); }
 int cursorBlinkRate(const Values& c) { return c.cursorBlinkRate.value_or(Defaults::cursorBlinkRate); }
 int cursorAlpha(const Values& c) { return c.cursorAlpha.value_or(Defaults::cursorAlpha); }
+double cursorOutlineThickness(const Values& c) { return Schema::clampToRange(c.cursorOutlineThickness.value_or(Defaults::cursorOutlineThickness), "cursor", "outline_thickness"); }
 int cursorMotionDuration(const Values& c) { return c.cursorMotionDuration.value_or(Defaults::cursorMotionDuration); }
 int maxFPS(const Values& c) { return c.maxFPS.value_or(Defaults::maxFPS); }
 bool cursorInvertText(const Values& c) { return c.cursorInvertText.value_or(Defaults::cursorInvertText); }

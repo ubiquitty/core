@@ -77,6 +77,8 @@ struct UBIQUITTY_ESCAPABLE CursorRenderState {
     int row = -1;
     int column = 0;
     float mixA = 0.0f; // cross-fade weight (cursor.a/255 * blinkAlpha)
+    /// The unfocused outline width, in logical points.
+    float outlineThicknessPoints = 1.0f;
     Vec4 rgb { 0.0f, 0.0f, 0.0f, 0.0f }; // cursor color, 0..1
     bool shouldInvertText = false;
     /// Whether the program named the color of the glyph under a focused block

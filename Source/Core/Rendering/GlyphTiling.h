@@ -164,6 +164,31 @@ struct BoxFamilyPixelOffset {
     return (slotWidth - inkWidth) / 2;
 }
 
+/// Moves fallback ink only when its baseline placement would clip the slot.
+/// Top-down coordinates let native backends share the same containment policy.
+[[nodiscard]] inline double fallbackInkTopInSlot(unsigned codePoint, double inkTop, double inkHeight, double slotHeight)
+{
+    if (tilesOnTextPen(codePoint) || !(inkHeight > 0) || !(slotHeight > 0))
+        return inkTop;
+    if (inkHeight > slotHeight)
+        return (slotHeight - inkHeight) / 2;
+    return std::clamp(inkTop, 0.0, slotHeight - inkHeight);
+}
+
+/// The raise for an adopted icon face, preserving its own relative placement.
+/// Icon faces use their ascent/descent midpoint as their design centre. Match
+/// that centre to the primary face without resizing or centring each glyph.
+/// Measurements are in the same device-pixel units; descents are positive.
+[[nodiscard]] inline double symbolFallbackBaselineRaise(double primaryAscent, double primaryDescent,
+    double symbolAscent, double symbolDescent)
+{
+    if (!std::isfinite(primaryAscent) || !std::isfinite(primaryDescent)
+        || !std::isfinite(symbolAscent) || !std::isfinite(symbolDescent)
+        || primaryAscent <= 0 || symbolAscent <= 0 || primaryDescent < 0 || symbolDescent < 0)
+        return 0;
+    return ((primaryAscent - primaryDescent) - (symbolAscent - symbolDescent)) / 2;
+}
+
 /// Which cell edges a tiling piece's stroke must reach.
 ///
 /// `isTilingPiece` is false for every code point that is not one of these.

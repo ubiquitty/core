@@ -118,6 +118,9 @@ public:
     /// - Returns: The column, clamped to the frame.
     [[nodiscard]] int columnAt(int row, double xInPixels) const;
 
+    /// The last rendered row layout; borrowed until the next frame is built.
+    [[nodiscard]] std::span<const LetterExtent> rowLetters(int row) const;
+
     /// Where a pixel is along a row of the last rendered frame, in cells:
     /// the column under it plus the fraction of its letter crossed, which is
     /// what ``Input::PointerFact::xInCells`` carries.
@@ -557,7 +560,7 @@ private:
     ///   - weight: The weight the rasterizer applies, where it applies one.
     /// - Returns: The slot's atlas rectangle, or an absent glyph when the sheet
     ///   is full for this frame.
-    AtlasGlyph faultCluster(Atlas& atlas, std::uint32_t key, std::span<const std::uint32_t> codePoints, FontFace face, std::uint32_t weight);
+    AtlasGlyph faultCluster(Atlas& atlas, std::uint32_t key, std::span<const std::uint32_t> codePoints, FontFace face, std::uint32_t weight, std::uint32_t variant = 0);
     /// Draws one glyph into a slot through the injected rasterizer.
     ///
     /// A rasterizer with a single weight may ignore the face; one with bold
@@ -569,7 +572,7 @@ private:
     ///   - slot: The slot index to fill.
     ///   - codePoint: The glyph to draw.
     ///   - face: The face to draw it at.
-    void rasterizeInto(Atlas& atlas, int slot, std::uint32_t codePoint, FontFace face);
+    void rasterizeInto(Atlas& atlas, int slot, std::uint32_t codePoint, FontFace face, double phaseInPixels = 0);
     /// Copies a coverage plane the builder rasterised into a mono slot.
     ///
     /// Backs ``GlyphBackend::stageMonoCoverage``, whose whole obligation is this
@@ -590,7 +593,7 @@ private:
     ///   - codePoints: The cluster's code points, base first.
     ///   - face: The face to draw it at.
     ///   - weight: The weight the rasterizer applies, where it applies one.
-    void rasterizeClusterInto(Atlas& atlas, int slot, std::span<const std::uint32_t> codePoints, FontFace face, std::uint32_t weight);
+    void rasterizeClusterInto(Atlas& atlas, int slot, std::span<const std::uint32_t> codePoints, FontFace face, std::uint32_t weight, std::uint32_t variant = 0);
     /// Returns one window of a sized glyph on `atlas`, faulting it on a miss.
     ///
     /// - Parameters:
@@ -909,7 +912,6 @@ private:
     std::vector<LetterExtent> m_letters;
     std::vector<std::uint8_t> m_letterRows;
     int m_letterColumns = 0;
-    [[nodiscard]] std::span<const LetterExtent> rowLetters(int row) const;
 } UBIQUITTY_UNSAFE_REFERENCE;
 
 } // namespace Ubiquitty::Rendering

@@ -108,6 +108,7 @@ Rendering::RenderConfiguration renderConfiguration(const Values& values)
     configuration.backgroundImageMode = backgroundImageMode(values);
 
     configuration.cursorAlpha = static_cast<double>(std::clamp(cursorAlpha(values), 0, 255)) / 255.0;
+    configuration.cursorOutlineThicknessPoints = cursorOutlineThickness(values);
     configuration.shouldCursorInvertText = cursorInvertText(values);
     configuration.shouldFadeBlink = blinkAnimation(values);
     configuration.isBellVisual = bellVisual(values);
@@ -190,6 +191,7 @@ KeyReach reachOf(Key key)
     case Key::TekBackgroundColor:
     case Key::SelectionStyle:
     case Key::RemoteNonOwnerPresentation:
+    case Key::CursorOutlineThickness:
     case Key::CursorAlpha:
     case Key::CursorInvertText:
     case Key::BellVisual:

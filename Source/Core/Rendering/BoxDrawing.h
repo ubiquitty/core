@@ -110,9 +110,9 @@ struct Glyph {
 // - OutlineWedge:    the thin chevron separators. Same corners as the solid
 //   triangle they thin — {ax,ay, bx,by, cx,cy}, b the apex — plus strokeHalf
 //   (p[6]); coverage is the band from the two apex edges INWARD by the full
-//   stroke. The edges pass through the cell corners and apex, so the quad's
-//   own clip finishes the stroke ends as points at the corners instead of
-//   chopping a centred stroke mid-width.
+//   stroke. p[7] is the endpoint inset in unit-Y, resolved by emitBoxFill from
+//   the device-space arm and stroke width. End planes perpendicular to each
+//   arm finish the whole stroke inside the cell, without a vertical cell clip.
 // - OutlineDiagonal: the thin corner wedges — one stroke along a→b
 //   ({ax,ay, bx,by}) banded INWARD toward the witness point (wx,wy)=p[4..5],
 //   which names the solid sibling's filled side; strokeHalf in p[6]. The line

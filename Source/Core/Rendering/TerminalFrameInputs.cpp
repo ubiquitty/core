@@ -1304,8 +1304,8 @@ bool TerminalFrameInputs::captureSource(const FrameSource& source, const Termina
         .cellHeight = m_metrics.cellHeight,
         .originX = m_inputs.originInPixels.x,
         .originY = m_inputs.originInPixels.y,
-        .viewportWidth = options.viewportSizeInPixels.width,
-        .viewportHeight = options.viewportSizeInPixels.height,
+        .viewportWidth = options.viewportSizeInPixels.width > 0 ? options.viewportSizeInPixels.width : source.columns * m_metrics.cellWidth,
+        .viewportHeight = options.viewportSizeInPixels.height > 0 ? options.viewportSizeInPixels.height : source.rows * m_metrics.cellHeight,
         .isAlternateActive = source.alternateActive,
         .hasStatusLineOnBottomRow = m_inputs.hasStatusLineOnBottomRow,
     };
@@ -1320,6 +1320,7 @@ bool TerminalFrameInputs::captureSource(const FrameSource& source, const Termina
         presentationCursor.shape = source.cursorShape;
         presentationCursor.focused = options.isFocused;
         presentationCursor.mixA = options.cursorMixAlpha;
+        presentationCursor.outlineThicknessPoints = options.cursorOutlineThicknessPoints;
         presentationCursor.shouldInvertText = options.shouldCursorInvertText;
         presentationCursor.isSliding = options.isCursorSliding;
         presentationCursor.columnFractional = options.cursorColumnFractional;

@@ -27,7 +27,7 @@ struct RangeMapPreference {
 
 /// The bundled face the geometric symbols fall back to.
 ///
-/// Monaspace Neon draws every one of them: the circles, squares, triangles and
+/// Monaspace Neon carries the circles, squares, triangles and
 /// half discs status lines and spinners print, which many primary faces lack
 /// in part. Without a range the gaps go to whatever system face the symbol
 /// stages reach, and a line that mixes a primary face's `●` with another
@@ -41,14 +41,17 @@ inline constexpr std::string_view bundledGeometricSymbolFamily = "Monaspace Neon
 /// these keeps drawing them; and each yields to emoji presentation. A family
 /// the platform does not carry, or a code point it lacks, falls through to the
 /// stages after the range maps as if no range had named it.
+/// Built-in symbols retain their nominal em: matching letter x-height scales
+/// their already aligned design centre away from the primary text baseline.
+/// An explicit range can still request optical size matching.
 inline constexpr std::array<RangeMapPreference, 3> defaultRangeMaps { {
     // ⏩..⏺: the media controls, the record dot among them.
-    { 0x23E9, 0x23FA, bundledGeometricSymbolFamily, FontMetrics::FallbackSizing::Inherit, true },
+    { 0x23E9, 0x23FA, bundledGeometricSymbolFamily, FontMetrics::FallbackSizing::Nominal, true },
     // Geometric Shapes: ■ □ ▪ ▶ ◆ ◇ ○ ◎ ● ◐ ◑ ◒ ◓ ◯ and the rest of the block.
-    { 0x25A0, 0x25FF, bundledGeometricSymbolFamily, FontMetrics::FallbackSizing::Inherit, true },
+    { 0x25A0, 0x25FF, bundledGeometricSymbolFamily, FontMetrics::FallbackSizing::Nominal, true },
     // The large squares, circles, diamonds and ellipses of Miscellaneous
     // Symbols and Arrows, ⬤ among them.
-    { 0x2B12, 0x2B2F, bundledGeometricSymbolFamily, FontMetrics::FallbackSizing::Inherit, true },
+    { 0x2B12, 0x2B2F, bundledGeometricSymbolFamily, FontMetrics::FallbackSizing::Nominal, true },
 } };
 
 struct LanguageFallbackPreference {

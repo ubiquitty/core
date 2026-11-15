@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <limits>
+#include <utility>
 
 using namespace Ubiquitty::Rendering;
 
@@ -55,6 +56,176 @@ TEST(equivalentConfigurationFactsShareAnIdentity)
     const auto second = configuration();
     CHECK(!first.sharingKey().empty());
     CHECK(first.sharingKey() == second.sharingKey());
+}
+
+TEST(nativeResourcesAndOrderedFallbackRulesContributeToBothKeys)
+{
+    const auto original = configuration();
+    auto changed = original;
+    changed.providerResourceFacts.faces.push_back({ "primary", "/font/face.ttf", 2, 1, 3, 4096, 10, 12 });
+    checkDistinct(original, changed);
+    CHECK(original.fontSharingKey() != changed.fontSharingKey());
+    auto replaced = changed;
+    ++replaced.providerResourceFacts.faces[0].inode;
+    checkDistinct(changed, replaced);
+    CHECK(changed.fontSharingKey() != replaced.fontSharingKey());
+    replaced = changed;
+    ++replaced.providerResourceFacts.catalogGeneration;
+    checkDistinct(changed, replaced);
+    replaced = changed;
+    auto& typography = replaced.providerResourceFacts.configuration;
+    typography.rangeMapCount = 1;
+    typography.rangeMaps[0].family.assign("Mapped Family");
+    typography.rangeMaps[0].firstCodePoint = 0x300;
+    typography.rangeMaps[0].lastCodePoint = 0x36f;
+    checkDistinct(changed, replaced);
+    CHECK(changed.fontSharingKey() != replaced.fontSharingKey());
+    changed = replaced;
+    typography.shouldMatchFallbackSize = false;
+    checkDistinct(changed, replaced);
+}
+
+TEST(fontIdentityIsIndependentOfDeviceAndSheetCapacityButNotRasterInputs)
+{
+    auto first = configuration();
+    auto second = first;
+    second.resourceDomain = 42;
+    second.slotCapacity *= 2;
+    second.geometry.columns *= 2;
+    CHECK(first.fontSharingKey() == second.fontSharingKey());
+    checkDistinct(first, second);
+    second = first;
+    ++second.providerResourceFacts.trackingInPixels;
+    CHECK(first.fontSharingKey() != second.fontSharingKey());
+    second = first;
+    second.providerResourceFacts.configuration.backgroundOpacity = 0.5;
+    second.providerResourceFacts.configuration.paddingRightPoints = 20;
+    CHECK(first.fontSharingKey() == second.fontSharingKey());
+    CHECK(first.sharingKey() == second.sharingKey());
+}
+
+TEST(replacingANativeFontAtTheSamePathCannotReuseItsPixels)
+{
+    auto original = configuration();
+    original.providerResourceFacts.faces.push_back({ "primary", "/fonts/Fixture.ttc", 2, 1, 100, 4096, 10, 20 });
+    for (auto member : { &FontResourceFact::faceIndex, &FontResourceFact::device, &FontResourceFact::inode,
+             &FontResourceFact::byteSize, &FontResourceFact::modifiedSeconds, &FontResourceFact::modifiedNanoseconds }) {
+        auto changed = original;
+        ++(changed.providerResourceFacts.faces[0].*member);
+        checkDistinct(original, changed);
+        CHECK(original.fontSharingKey() != changed.fontSharingKey());
+    }
+    for (auto member : { &FontResourceFact::role, &FontResourceFact::path }) {
+        auto changed = original;
+        (changed.providerResourceFacts.faces[0].*member) += "-other";
+        CHECK(original.fontSharingKey() != changed.fontSharingKey());
+    }
+}
+
+TEST(fontCatalogAndDeviceRasterChangesCannotReuseNativeFontResources)
+{
+    const auto original = configuration();
+    for (auto member : { &FontProviderResourceFacts::catalogIdentity, &FontProviderResourceFacts::catalogGeneration }) {
+        auto changed = original;
+        ++(changed.providerResourceFacts.*member);
+        checkDistinct(original, changed);
+        CHECK(original.fontSharingKey() != changed.fontSharingKey());
+    }
+    for (auto member : { &FontProviderResourceFacts::deviceScale, &FontProviderResourceFacts::lineSpacingInPixels,
+             &FontProviderResourceFacts::trackingInPixels, &FontProviderResourceFacts::bitmapScale }) {
+        auto changed = original;
+        ++(changed.providerResourceFacts.*member);
+        CHECK(original.fontSharingKey() != changed.fontSharingKey());
+    }
+    auto changed = original;
+    // A DPI change can alter raster pixels without changing the point size.
+    changed.providerResourceFacts.rasterPixelSize = 24;
+    CHECK(original.fontSharingKey() != changed.fontSharingKey());
+    changed = original;
+    changed.baselinePenInPixels += 1;
+    CHECK(original.fontSharingKey() == changed.fontSharingKey());
+    checkDistinct(original, changed);
+}
+
+TEST(orderedFallbackPlansAndTheirSizingPolicyPartitionNativeFonts)
+{
+    using Rule = FontProviderResourceFacts::FallbackRuleFact;
+    auto original = configuration();
+    const Rule first { 1, "ja", "CJK", 0x3000, 0x9fff, 1, false };
+    const Rule second { 2, "und", "Symbols", 0xe000, 0xf8ff, 2, true };
+    for (auto member : { &FontProviderResourceFacts::languageFallbacks, &FontProviderResourceFacts::rangeMaps }) {
+        original.providerResourceFacts.*member = { first, second };
+        auto reordered = original;
+        std::swap((reordered.providerResourceFacts.*member)[0], (reordered.providerResourceFacts.*member)[1]);
+        checkDistinct(original, reordered);
+        CHECK(original.fontSharingKey() != reordered.fontSharingKey());
+        for (auto field : { &Rule::script, &Rule::sizing }) {
+            auto changed = original;
+            ++((changed.providerResourceFacts.*member)[0].*field);
+            CHECK(original.fontSharingKey() != changed.fontSharingKey());
+        }
+        for (auto field : { &Rule::firstCodePoint, &Rule::lastCodePoint }) {
+            auto changed = original;
+            ++((changed.providerResourceFacts.*member)[0].*field);
+            CHECK(original.fontSharingKey() != changed.fontSharingKey());
+        }
+        for (auto field : { &Rule::language, &Rule::family }) {
+            auto changed = original;
+            ((changed.providerResourceFacts.*member)[0].*field) += "-other";
+            CHECK(original.fontSharingKey() != changed.fontSharingKey());
+        }
+        auto changed = original;
+        (changed.providerResourceFacts.*member)[0].shouldYieldToEmoji = true;
+        CHECK(original.fontSharingKey() != changed.fontSharingKey());
+        changed = original;
+        (changed.providerResourceFacts.*member).pop_back();
+        CHECK(original.fontSharingKey() != changed.fontSharingKey());
+    }
+    for (auto member : { &FontProviderResourceFacts::cjkFallbackFamily, &FontProviderResourceFacts::symbolFallbackFamily,
+             &FontProviderResourceFacts::emojiFallbackFamily }) {
+        auto changed = original;
+        changed.providerResourceFacts.*member = "Other Fallback";
+        CHECK(original.fontSharingKey() != changed.fontSharingKey());
+    }
+    auto changed = original;
+    changed.providerResourceFacts.shouldMatchFallbackSize = false;
+    CHECK(original.fontSharingKey() != changed.fontSharingKey());
+}
+
+TEST(openTypeAndFractionalTypographyChangesPartitionNativeFonts)
+{
+    const auto original = configuration();
+    for (auto member : { &RenderConfiguration::fontFeatures, &RenderConfiguration::fontVariations }) {
+        auto changed = original;
+        REQUIRE((changed.providerResourceFacts.configuration.*member).assign("wght=450,kern=0"));
+        CHECK(original.fontSharingKey() != changed.fontSharingKey());
+    }
+    for (auto member : { &RenderConfiguration::fontSizePoints, &RenderConfiguration::lineSpacingPoints,
+             &RenderConfiguration::characterSpacingPoints, &RenderConfiguration::baselineOffsetPoints }) {
+        auto changed = original;
+        changed.providerResourceFacts.configuration.*member = 0.25;
+        CHECK(original.fontSharingKey() != changed.fontSharingKey());
+    }
+}
+
+TEST(themeAndWindowPresentationDoNotInvalidateFontResources)
+{
+    const auto original = configuration();
+    auto changed = original;
+    auto& presentation = changed.providerResourceFacts.configuration;
+    presentation.backgroundOpacity = 0.5;
+    presentation.defaultBackgroundOpacity = 0.25;
+    presentation.paddingLeftPoints = 14;
+    presentation.paddingTopPoints = 12;
+    presentation.cursorAlpha = 0.75;
+    presentation.cursorOutlineThicknessPoints = 1.5;
+    presentation.shouldEnhanceTextContrast = true;
+    presentation.usesCustomTekColors = true;
+    presentation.tekBeamRGB = 0xff0000;
+    presentation.tekBackgroundRGB = 0x112233;
+    CHECK(original.providerResourceFacts.configuration.hasSameTypography(presentation));
+    CHECK(original.fontSharingKey() == changed.fontSharingKey());
+    CHECK(original.sharingKey() == changed.sharingKey());
 }
 
 TEST(everyConfigurationScalarContributesToIdentity)

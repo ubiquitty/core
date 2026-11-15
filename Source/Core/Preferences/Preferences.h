@@ -570,6 +570,7 @@ struct Values {
     std::optional<int> cursorLinger; // frames solid after typing, 40
     std::optional<int> cursorBlinkRate; // blink period in milliseconds, 1000 (one full cycle)
     std::optional<int> cursorAlpha; // 0..255, cursor color alpha
+    std::optional<double> cursorOutlineThickness; // points, unfocused cursor outline
     std::optional<bool> cursorInvertText; // block cursor: grayscale-invert the glyph under it
     std::optional<CursorMotionMode> cursorMotion; // default CursorMotionMode::Off (see ctor)
     std::optional<int> cursorMotionDuration; // ms to reach the target cell

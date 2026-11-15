@@ -10,6 +10,9 @@
 
 namespace Ubiquitty::Rendering {
 
+/// How long nearby cursor movement follows user input without a redraw hold.
+inline constexpr double cursorPresentationInputBypassSeconds = 0.1;
+
 /// Coalesces cursor redraw excursions without changing the terminal model.
 class CursorPresentation {
 public:

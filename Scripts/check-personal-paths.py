@@ -86,7 +86,7 @@ EXCLUDE = (r"(^|/)(Source/ThirdParty/|Tests/Core/fuzz-corpus/)"
 # that looked and found nothing.
 GENERIC_IDENTITIES = re.compile(
     r"^(root|admin|administrator|user|runner|build|builder|jenkins|ci|container"
-    r"|docker|vagrant|ubuntu|debian|vm|box|localhost|unknown-user"
+    r"|docker|vagrant|ubuntu|debian|omarchy|vm|box|localhost|unknown-user"
     r"|unknown-host)$",
     re.IGNORECASE)
 

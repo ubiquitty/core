@@ -254,7 +254,7 @@ struct SizedWindowCut {
 ///   - phase: The anchor's raster variant, whose phase bits give its subpixel pen.
 ///   - canvas: The slot canvas the window fills.
 /// - Returns: The master to draw, its size, and the texel the window is cut from.
-[[nodiscard]] inline SizedWindowCut planSizedWindow(SizedMaster master, SizedTile tile, std::uint32_t phase, SizedWindowCanvas canvas)
+[[nodiscard]] inline SizedWindowCut planSizedWindow(SizedMaster master, SizedTile tile, std::uint32_t phase, SizedWindowCanvas canvas, int phaseCount = subpixelPhaseCount)
 {
     SizedWindowCut cut;
     const RasterScale across = master.horizontalMagnification();
@@ -267,7 +267,7 @@ struct SizedWindowCut {
     const double bandStep = sizedBandHeightInPixels(canvas.referenceLineHeightInPixels, static_cast<float>(boxHeight));
     cut.boxLeft = across.value() * canvas.marginX;
     cut.boxTop = down.value() * canvas.marginY;
-    const double penFraction = static_cast<double>(variantPhase(phase)) / subpixelPhaseCount;
+    const double penFraction = static_cast<double>(variantPhase(phase)) / std::clamp(phaseCount, 1, subpixelPhaseCount);
     const double blockLeft = cut.boxLeft + sizedWindowLeftInPixels(tile.tile, static_cast<float>(step)) - canvas.marginX - penFraction;
     // A box taller than the line has its spare rows at the top when the glyph
     // stands on the box's bottom; the block's first band is the line, so it
@@ -333,9 +333,9 @@ inline void cutSizedWindow(SizedMasterBytes master, const SizedWindowCut& cut, S
 ///   - window: `canvas.width * canvas.height` bytes to fill.
 /// - Returns: False when nothing drew the glyph, with `window` untouched.
 inline bool rasteriseSizedWindow(GlyphRasterizer& rasterizer, std::uint32_t codePoint, FontFace face, std::uint32_t weight, SizedTile tile, std::uint32_t phase,
-    SizedWindowCanvas canvas, std::vector<std::uint8_t>& masterScratch, std::span<std::uint8_t> window)
+    SizedWindowCanvas canvas, std::vector<std::uint8_t>& masterScratch, std::span<std::uint8_t> window, int phaseCount = subpixelPhaseCount)
 {
-    const SizedWindowCut cut = planSizedWindow(selectSizedMaster(rasterizer, face, tile), tile, phase, canvas);
+    const SizedWindowCut cut = planSizedWindow(selectSizedMaster(rasterizer, face, tile), tile, phase, canvas, phaseCount);
     if (cut.masterWidth <= 0 || cut.masterHeight <= 0 || window.size() < static_cast<std::size_t>(canvas.width) * static_cast<std::size_t>(canvas.height))
         return false;
     masterScratch.assign(static_cast<std::size_t>(cut.masterWidth) * static_cast<std::size_t>(cut.masterHeight), 0);

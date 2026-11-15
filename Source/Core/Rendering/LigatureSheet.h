@@ -97,6 +97,8 @@ public:
     /// The shaped answers held across frames: what a run's cells draw by
     /// identity, keyed by the run's text and face, never by its paint.
     [[nodiscard]] const ShapedCellCache& answers() const { return m_answers; }
+    /// The same retained-reference lease policy used by every shared sheet.
+    [[nodiscard]] GlyphSlotCache& slotCache() { return m_cache; }
 
     /// Fills one row's runs, shaping and rasterising each on a cache miss.
     ///

@@ -46,7 +46,9 @@ public:
             session.publishCellPixelSize(pixels.cell.width, pixels.cell.height, pixels.textArea.width, pixels.textArea.height,
                 pixels.drawable.width, pixels.drawable.height);
         if (isGridChange) {
-            session.resize(grid.rows, grid.columns, Runtime::TerminalSession::ResizeGesture::Settled, Modes::AnchorMode::Top,
+            // A tiled height change retains the primary tail even while a launched
+            // desktop child owns the PTY. The alternate screen keeps its top row.
+            session.resize(grid.rows, grid.columns, Runtime::TerminalSession::ResizeGesture::Settled, Modes::AnchorMode::Bottom,
                 reportedPixels.width, reportedPixels.height);
             return ViewportPublication::Grid;
         }

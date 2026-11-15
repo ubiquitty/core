@@ -284,6 +284,8 @@ constexpr CatalogEntry actionCatalog[] = {
     { "increase_font_size", "Increase Font Size", ActionKind::IncreaseFontSize },
     { "decrease_font_size", "Decrease Font Size", ActionKind::DecreaseFontSize },
     { "reset_font_size", "Reset Font Size", ActionKind::ResetFontSize },
+    { "increase_line_spacing", "Increase Line Spacing", ActionKind::IncreaseLineSpacing },
+    { "decrease_line_spacing", "Decrease Line Spacing", ActionKind::DecreaseLineSpacing },
     { "toggle_fullscreen", "Toggle Fullscreen", ActionKind::ToggleFullscreen },
     { "clear_scrollback", "Clear Scrollback", ActionKind::ClearScrollback },
     { "clear_screen", "Clear Screen", ActionKind::ClearScreen },
@@ -296,6 +298,10 @@ constexpr CatalogEntry actionCatalog[] = {
 // own; a new default is an entry here and nothing else, because both macOS
 // shells read this table rather than each carrying the constant.
 constexpr DefaultBindingEntry defaultBindings[] = {
+    { { '=', bindModSuper | bindModShift }, "cmd+shift+=", ActionKind::IncreaseLineSpacing },
+    { { '-', bindModSuper | bindModShift }, "cmd+shift+-", ActionKind::DecreaseLineSpacing },
+    { { '=', bindModCtrl | bindModShift }, "ctrl+shift+=", ActionKind::IncreaseLineSpacing },
+    { { '-', bindModCtrl | bindModShift }, "ctrl+shift+-", ActionKind::DecreaseLineSpacing },
     { { 'p', bindModSuper | bindModShift }, "cmd+shift+p", ActionKind::ToggleBeam },
     // The bracket pair every browser and editor on this platform cycles
     // tabs with, so a reader arrives already knowing it. The direction
@@ -390,8 +396,17 @@ bool resolveDefaultBinding(const BindingTable& table, const KeyChord& chord, Bin
     // there is mid-capture rather than free.
     if (table.matchSingle(chord) >= 0 || table.anyStartsWith(chord))
         return false;
+    KeyChord canonical = chord;
+    if (canonical.modifiers & bindModShift) {
+        if (canonical.key == '+')
+            canonical.key = '=';
+        else if (canonical.key == '_')
+            canonical.key = '-';
+    }
+    if (table.matchSingle(canonical) >= 0 || table.anyStartsWith(canonical))
+        return false;
     for (const DefaultBindingEntry& entry : defaultBindings) {
-        if (!(entry.chord == chord))
+        if (!(entry.chord == canonical))
             continue;
         // A rebind replaces the default: the user who bound the action meant
         // that key and not this one, so the default's chord goes back to being
@@ -601,6 +616,9 @@ uint32_t resolveChordKey(uint32_t baseCharacter, uint32_t unshiftedLayoutCharact
     // binding names the key. The layout answers which key that is.
     if ((modifiers & bindModShift) != 0 && hasLayoutCharacter)
         key = unshiftedLayoutCharacter;
+    // GTK can provide only the shifted key value for this punctuation pair.
+    else if ((modifiers & bindModShift) != 0 && (key == '+' || key == '_'))
+        key = key == '+' ? '=' : '-';
     // A non-Latin layout (Russian, …) yields a non-ASCII letter for an ASCII
     // key position; fall back to the ASCII-capable layout's character so the
     // binding still matches (the menu bar does the same for ⌘ equivalents).

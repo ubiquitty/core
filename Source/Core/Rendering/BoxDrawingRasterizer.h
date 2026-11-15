@@ -24,6 +24,7 @@
 #include "Core/Rendering/BoxStrokeProfile.h"
 #include "Core/Rendering/CellMetrics.h"
 #include "Core/Rendering/GlyphRasterizer.h"
+#include "Core/Rendering/GlyphTiling.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -40,7 +41,12 @@ public:
 
     // Re-point at the current font rasterizer after a font swap / scale change;
     // the family centring shift is metrics-keyed below, so it self-invalidates.
-    void setInner(GlyphRasterizer& inner) { m_inner = &inner; }
+    void setInner(GlyphRasterizer& inner)
+    {
+        m_inner = &inner;
+        m_shiftValid = false;
+        m_isProfileMeasured = false;
+    }
 
     /// Sets how procedural shades are drawn.
     ///
@@ -319,6 +325,44 @@ public:
     /// - Returns: What the decorated rasterizer answers.
     [[nodiscard]] double cellAdvanceAtWidthAxis(FontFace face, double coordinate) override { return m_inner->cellAdvanceAtWidthAxis(face, coordinate); }
 
+    [[nodiscard]] int glyphPhaseCount() const override { return m_inner->glyphPhaseCount(); }
+    [[nodiscard]] int proportionalGlyphPhaseCount() const override { return m_inner->proportionalGlyphPhaseCount(); }
+
+    /// Preserves cell fitting for tiling symbols and forwards other native phases.
+    ///
+    /// - Parameters:
+    ///   - codePoint: The Unicode scalar to draw.
+    ///   - face: The font style to use.
+    ///   - weight: The weight override, or zero for the style's default.
+    ///   - phaseInPixels: The pen's fraction within one device pixel.
+    ///   - slotWidth: The destination width in pixels.
+    ///   - slotHeight: The destination height in pixels.
+    ///   - coverageOut: Caller-owned `slotWidth * slotHeight` coverage bytes.
+    /// - Returns: True when the wrapper or decorated provider supplies coverage.
+    bool rasterizeGlyphAtPhase(std::uint32_t codePoint, FontFace face, std::uint32_t weight, double phaseInPixels, int slotWidth, int slotHeight, std::uint8_t* coverageOut) override
+    {
+        if (Rendering::BoxDrawing::prefersProcedural(codePoint) || isBoxLine(codePoint) || Rendering::tilesOnTextPen(codePoint))
+            return rasterizeGlyph(codePoint, face, weight, slotWidth, slotHeight, coverageOut);
+        return m_inner->rasterizeGlyphAtPhase(codePoint, face, weight, phaseInPixels, slotWidth, slotHeight, coverageOut);
+    }
+
+    /// Forwards the whole cluster and its native raster phase to the decorated face.
+    ///
+    /// - Parameters:
+    ///   - codePoints: The cluster's Unicode scalars.
+    ///   - count: The number of scalars to read.
+    ///   - face: The font style to use.
+    ///   - weight: The weight override, or zero for the style's default.
+    ///   - phaseInPixels: The pen's fraction within one device pixel.
+    ///   - slotWidth: The destination width in pixels.
+    ///   - slotHeight: The destination height in pixels.
+    ///   - coverageOut: Caller-owned `slotWidth * slotHeight` coverage bytes.
+    /// - Returns: What the decorated rasterizer answers.
+    bool rasterizeClusterAtPhase(const std::uint32_t* codePoints, int count, FontFace face, std::uint32_t weight, double phaseInPixels, int slotWidth, int slotHeight, std::uint8_t* coverageOut) override
+    {
+        return m_inner->rasterizeClusterAtPhase(codePoints, count, face, weight, phaseInPixels, slotWidth, slotHeight, coverageOut);
+    }
+
     bool rasterizeGlyph(std::uint32_t codePoint, FontFace face, std::uint32_t weight, int slotWidth, int slotHeight, std::uint8_t* coverageOut) override
     {
         if (Rendering::BoxDrawing::prefersProcedural(codePoint)) {
@@ -424,7 +468,7 @@ private:
         // Single family-wide centring shift (measured once per metrics from a
         // reference ─) so every box glyph's stroke moves to the cell centre by the
         // same amount and stays on a shared row, so neighbours meet with no gap.
-        const int shift = familyCenterShift(face, weight, slot, gx0, gx1, gy0, gy1);
+        const int shift = familyCenterShift(slot, gx0, gx1, gy0, gy1);
         translateScratchVertical(outputBuffer, slot.width, slot.height, shift);
         // A dash takes the shift and not the stretch. Its decomposition reaches
         // the cell edges like any line's, so the stretch pulls its ink out to
@@ -444,15 +488,13 @@ private:
     /// every glyph in the family to move by the same amount.
     ///
     /// - Parameters:
-    ///   - face: The bold/italic pair.
-    ///   - weight: Variable-font weight.
     ///   - slot: The atlas slot, in pixels.
     ///   - gx0: Cell box left edge inside the slot.
     ///   - gx1: Cell box right edge.
     ///   - gy0: Cell box top edge.
     ///   - gy1: Cell box bottom edge.
     /// - Returns: The shift in whole pixels.
-    int familyCenterShift(FontFace face, std::uint32_t weight, IntSize slot, int gx0, int gx1, int gy0, int gy1)
+    int familyCenterShift(IntSize slot, int gx0, int gx1, int gy0, int gy1)
     {
         const int cellWidth = gx1 - gx0;
         const int cellHeight = gy1 - gy0;
@@ -464,8 +506,9 @@ private:
         m_shift = 0;
         m_scratch.assign(static_cast<std::size_t>(slot.width) * slot.height, 0);
         // Reference ─ (U+2500): its horizontal ink band's row extent is the shared
-        // connection row for the whole box family.
-        if (!m_inner->rasterizeGlyph(0x2500, face, weight, slot.width, slot.height, m_scratch.data()))
+        // connection row for the whole box family. Always use the upright
+        // reference, so the first requested style or weight cannot move it.
+        if (!m_inner->rasterizeGlyph(0x2500, FontFace::Regular, 0u, slot.width, slot.height, m_scratch.data()))
             return 0;
         constexpr std::uint8_t ink = 128;
         int minY = gy1;

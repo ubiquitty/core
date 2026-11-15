@@ -22,6 +22,7 @@
 #include "Core/Unicode/Encodings.h"
 #include "PAL/BellMode.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -56,6 +57,22 @@ inline const Schema::NumericRange& fontZoomRange()
 // configured size, so a whole-unit step over a fractional base keeps the
 // fraction — 12.5 zooms to 13.5, never to 13.
 inline constexpr double fontZoomStep = 1.0;
+
+/// Moves applied line spacing by one backing pixel, preserving fractional points.
+///
+/// - Parameters:
+///   - appliedPixels: The rounded spacing the current face actually uses.
+///   - pixelsPerPoint: Backing pixels per configured point, including font DPI.
+///   - direction: Positive grows the spacing; negative shrinks it.
+/// - Returns: The new point value within the line-spacing schema range.
+inline double lineSpacingAfterPixelStep(double appliedPixels, double pixelsPerPoint, int direction)
+{
+    if (!std::isfinite(appliedPixels) || !std::isfinite(pixelsPerPoint) || pixelsPerPoint <= 0)
+        return Schema::clampToRange(0.0, "font", "line_spacing");
+    const double next = std::round(appliedPixels) + (direction > 0 ? 1.0 : direction < 0 ? -1.0
+                                                                                         : 0.0);
+    return Schema::clampToRange(next / pixelsPerPoint, "font", "line_spacing");
+}
 
 // Clamp a font-zoom request to [minimum, maximum] from the shared range.
 inline double clampFontZoom(double size)
@@ -470,6 +487,8 @@ bool cursorBlink(const Values& c);
 int cursorLinger(const Values& c);
 int cursorBlinkRate(const Values& c);
 int cursorAlpha(const Values& c);
+/// The unfocused cursor outline width, in points, bounded to 0.5 through 8.
+[[nodiscard]] double cursorOutlineThickness(const Values& c);
 /// How long the cursor takes to reach its target cell, in milliseconds.
 ///
 /// Paired with ``cursorMotion``: a caller that reads one without the other has

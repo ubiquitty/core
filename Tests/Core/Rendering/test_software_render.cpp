@@ -2107,6 +2107,40 @@ TEST(testDoubledRowCellsPaintTheirWholeSpan)
     CHECK(past.red == 0x10 && past.green == 0x10 && past.blue == 0x14);
 }
 
+TEST(powerlineChevronEndCapsDoNotLeaveAVerticalCutAtTheCellEdge)
+{
+    constexpr int cellWidth = 64;
+    constexpr int cellHeight = 96;
+    std::vector<Ubiquitty::Cell> grid(2, Ubiquitty::defaultBlankCell);
+    setCell(grid, 2, 0, 0, 0xE0B1, 0, 7, 0);
+    setCell(grid, 2, 0, 1, 0xE0B3, 0, 7, 0);
+    Ubiquitty::TermPalette palette;
+    palette.seedDefaults();
+    BuildInputs input;
+    input.cells = grid.data();
+    input.rows = 1;
+    input.columns = 2;
+    input.palette = &palette;
+    input.metrics.cellWidth = cellWidth;
+    input.metrics.cellHeight = cellHeight;
+    input.glyphReferenceLineHeightInPixels = cellHeight;
+    input.viewportSizeInPixels = { 2 * cellWidth, cellHeight };
+    SoftwareRenderer renderer(cellWidth, cellHeight);
+    std::vector<std::uint8_t> rgba;
+    int width = 0, height = 0;
+    REQUIRE(renderer.render(input, rgba, width, height));
+    REQUIRE(width == 2 * cellWidth && height == cellHeight);
+    const Pixel background = at(rgba, width, cellWidth / 2, 4);
+    for (int edge : { 0, 2 * cellWidth - 1 }) {
+        const Pixel beforeStrokeEnd = at(rgba, width, edge, 4);
+        CHECK_MSG(beforeStrokeEnd.red == background.red && beforeStrokeEnd.green == background.green && beforeStrokeEnd.blue == background.blue,
+            "the corner is outside the perpendicular cap instead of carrying a vertical slice of ink");
+        const int inside = edge == 0 ? 3 : edge - 3;
+        CHECK_MSG(at(rgba, width, inside, 7).red > background.red + 50,
+            "the full-width diagonal remains immediately beyond the perpendicular cap");
+    }
+}
+
 UBIQUITTY_TEST_MAIN()
 
 /// A renderer that has already drawn a frame draws the next one as a fresh one does.

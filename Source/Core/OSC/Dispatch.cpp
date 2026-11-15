@@ -1301,8 +1301,9 @@ void dispatchFixedPalette(Ubiquitty::Terminal& t, std::string_view payload)
         }
     }
     parameters[length++] = '#';
-    for (const char digit : payload.substr(2))
-        parameters[length++] = digit;
+    constexpr std::size_t colorDigitCount = 6;
+    payload.substr(2, colorDigitCount).copy(parameters.data() + length, colorDigitCount);
+    length += colorDigitCount;
     if (oscAllowed(t, code))
         oscLookup(code)->fn(t, std::string_view(parameters.data(), length));
 }

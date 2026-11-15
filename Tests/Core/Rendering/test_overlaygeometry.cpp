@@ -315,6 +315,20 @@ TEST(overlaygeometryCases)
         CHECK(q.cornerRadius == 0.0f);
     }
 
+    // The configured logical outline width scales with the frame, while
+    // leaving the default keeps the existing one-point outline.
+    {
+        CursorQuadParameters p = baseCursor();
+        p.outlineThicknessPoints = 1.5f;
+        p.cellHeightPoints = 8.0;
+        OverlayQuad q;
+        CHECK(buildCursorQuad(p, q));
+        CHECK(approx(q.strokeWidth, 3.0f)); // 1.5 logical points at 2x.
+        p.outlineThicknessPoints = 1.0f;
+        CHECK(buildCursorQuad(p, q));
+        CHECK(approx(q.strokeWidth, 2.0f)); // The existing default remains 1pt.
+    }
+
     // ---- cursor: focused block is the builder's tier → no quad here ----
     {
         CursorQuadParameters p = baseCursor();

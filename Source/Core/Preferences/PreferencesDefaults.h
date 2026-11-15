@@ -180,6 +180,7 @@ inline constexpr bool cursorBlink = true;
 inline constexpr int cursorLinger = 40; // frames solid after typing
 inline constexpr int cursorBlinkRate = 1000; // blink period in ms (one full cycle)
 inline constexpr int cursorAlpha = 255; // 0..255
+inline constexpr double cursorOutlineThickness = 1.0; // points
 inline constexpr bool cursorInvertText = true;
 // Cursor glide toward its new cell. Off by default (opt-in). DISTANCE-based:
 // Short glides small moves / snaps long jumps, Long is the inverse, Always glides

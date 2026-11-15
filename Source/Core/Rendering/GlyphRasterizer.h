@@ -193,6 +193,32 @@ struct GlyphRasterizer {
     // every pixel it leaves visible (clear-then-draw).
     virtual bool rasterizeGlyph(std::uint32_t codePoint, FontFace face, std::uint32_t weight, int slotWidth, int slotHeight, std::uint8_t* coverageOut) = 0;
 
+    /// Reports the distinct device-pixel phases this rasterizer draws.
+    ///
+    /// Bitmap and procedural providers use one; native providers advertise their raster grid.
+    ///
+    /// - Returns: The positive number of phases within one device pixel.
+    [[nodiscard]] virtual int glyphPhaseCount() const { return 1; }
+
+    /// Draws at a fractional device-pixel pen, before coverage is rasterized.
+    ///
+    /// The default retains the phase-zero contract of existing bitmap providers.
+    ///
+    /// - Parameters:
+    ///   - codePoint: The Unicode scalar to draw.
+    ///   - face: The font style to use.
+    ///   - weight: The weight override, or zero for the style's default.
+    ///   - phaseInPixels: The pen's fraction within one device pixel.
+    ///   - slotWidth: The destination width in pixels.
+    ///   - slotHeight: The destination height in pixels.
+    ///   - coverageOut: Caller-owned `slotWidth * slotHeight` coverage bytes.
+    /// - Returns: True when the rasterizer supplies the glyph's coverage.
+    virtual bool rasterizeGlyphAtPhase(std::uint32_t codePoint, FontFace face, std::uint32_t weight, double phaseInPixels, int slotWidth, int slotHeight, std::uint8_t* coverageOut)
+    {
+        (void)phaseInPixels;
+        return rasterizeGlyph(codePoint, face, weight, slotWidth, slotHeight, coverageOut);
+    }
+
     // Draws a grapheme cluster into one coverage slot. A shaping rasterizer
     // overrides this and positions the marks; the portable fallback has no
     // shaper, so it draws each code point over the last and keeps the darker
@@ -215,6 +241,24 @@ struct GlyphRasterizer {
             drewSomething = true;
         }
         return drewSomething;
+    }
+
+    /// Draws a whole cluster at the same fractional pen as its keyed atlas slot.
+    ///
+    /// - Parameters:
+    ///   - codePoints: The cluster's Unicode scalars.
+    ///   - count: The number of scalars to read.
+    ///   - face: The font style to use.
+    ///   - weight: The weight override, or zero for the style's default.
+    ///   - phaseInPixels: The pen's fraction within one device pixel.
+    ///   - slotWidth: The destination width in pixels.
+    ///   - slotHeight: The destination height in pixels.
+    ///   - coverageOut: Caller-owned `slotWidth * slotHeight` coverage bytes.
+    /// - Returns: True when the rasterizer supplies the cluster's coverage.
+    virtual bool rasterizeClusterAtPhase(const std::uint32_t* codePoints, int count, FontFace face, std::uint32_t weight, double phaseInPixels, int slotWidth, int slotHeight, std::uint8_t* coverageOut)
+    {
+        (void)phaseInPixels;
+        return rasterizeCluster(codePoints, count, face, weight, slotWidth, slotHeight, coverageOut);
     }
 
     /// Whether ``rasterizeSizedMaster`` draws at the master's size rather than
@@ -611,6 +655,13 @@ struct GlyphRasterizer {
         (void)inkOut;
         return false;
     }
+
+    /// Number of device-pixel phases the proportional face draws.
+    ///
+    /// A separate face can use another raster grid: an embedded mono bitmap
+    /// has one phase while its proportional strike retains fractional pens.
+    /// - Returns: The proportional raster grid, defaulting to the grid face's.
+    [[nodiscard]] virtual int proportionalGlyphPhaseCount() const { return glyphPhaseCount(); }
 
 protected:
     ~GlyphRasterizer() = default;

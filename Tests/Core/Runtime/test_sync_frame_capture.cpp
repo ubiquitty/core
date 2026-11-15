@@ -143,9 +143,9 @@ struct SessionFixture {
     // so opening the window moves the rule's pacing on with it.
     static std::uint64_t readCoherenceClock(void*) { return 1'000'000 + Ubiquitty::PAL::s_testMicroseconds; }
 
-    SessionFixture(int rows, int columns)
+    SessionFixture(int rows, int columns, const Ubiquitty::Preferences::Values& configuration = {})
     {
-        session = TerminalSession::make();
+        session = TerminalSession::make(configuration);
         if (!session)
             return;
         session->setCoherenceClock(&SessionFixture::readCoherenceClock, this);
@@ -323,6 +323,63 @@ TEST(aCaptureKeepsTheViewsSubpixelGlyphPreference)
         const InstanceCounts counts = frame->build(UbiquittyTest::glyphBackendFor(atlas), buffers);
         CHECK_MSG((counts.glyphs > 0) == shouldUseSubpixelGlyphs, "the capture changed the view's subpixel glyph choice");
     }
+}
+
+TEST(aBoundaryCaptureKeepsTheToolkitCaretGeometry)
+{
+    SessionFixture fixture(4, 20);
+    REQUIRE(fixture.isReady);
+    auto geometry = testGeometry();
+    geometry.toolkitCaret = { .aspectRatio = 0.0, .logicalScale = 2 };
+    fixture.session->setSyncFrameCaptureGeometry(geometry);
+    fixture.drainSyncFrame("\033[6 qcaret");
+    const TakenFrame frame { fixture.session->takeSyncFrame() };
+    REQUIRE(frame);
+    FakeAtlas atlas;
+    std::array<OverlayInstance, 80> overlays;
+    InstanceBuffers buffers;
+    buffers.overlays = overlays.data();
+    buffers.overlayCapacity = overlays.size();
+    const auto counts = frame->build(UbiquittyTest::glyphBackendFor(atlas), buffers, BuildScope::Whole);
+    REQUIRE(counts.overlays <= overlays.size());
+    bool didDrawToolkitCaret = false;
+    for (const auto& overlay : std::span(overlays).first(counts.overlays)) {
+        if (overlay.shapeKind != toolkitCaretShapeKind)
+            continue;
+        didDrawToolkitCaret = true;
+        CHECK(overlay.bottomRightInPixels.x - overlay.topLeftInPixels.x == 2.0f);
+    }
+    CHECK(didDrawToolkitCaret);
+}
+
+TEST(aBoundaryCaptureKeepsTheConfiguredCursorOutline)
+{
+    Ubiquitty::Preferences::Values configuration;
+    configuration.cursorOutlineThickness = 1.5;
+    SessionFixture fixture(4, 20, configuration);
+    REQUIRE(fixture.isReady);
+    auto geometry = testGeometry();
+    geometry.cellHeightPoints = 8.0;
+    geometry.isFocused = false;
+    fixture.session->setSyncFrameCaptureGeometry(geometry);
+    fixture.drainSyncFrame("\033[2 qcursor");
+    const TakenFrame frame { fixture.session->takeSyncFrame() };
+    REQUIRE(frame);
+    FakeAtlas atlas;
+    std::array<OverlayInstance, 80> overlays;
+    InstanceBuffers buffers;
+    buffers.overlays = overlays.data();
+    buffers.overlayCapacity = overlays.size();
+    const auto counts = frame->build(UbiquittyTest::glyphBackendFor(atlas), buffers, BuildScope::Whole);
+    REQUIRE(counts.overlays <= overlays.size());
+    bool didDrawOutline = false;
+    for (const auto& overlay : std::span(overlays).first(counts.overlays)) {
+        if (overlay.strokeWidth <= 0.0f)
+            continue;
+        didDrawOutline = true;
+        CHECK(overlay.strokeWidth == 3.0f);
+    }
+    CHECK(didDrawOutline);
 }
 
 // A view registers its geometry, a presentation edge and the hovered run while

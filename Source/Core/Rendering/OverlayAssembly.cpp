@@ -523,6 +523,7 @@ int assembleOverlays(const OverlayAssemblyInputs& in, OverlayStream out)
         cursorParameters.columns = in.grid.columns;
         cursorParameters.shape = in.cursor.shape;
         cursorParameters.blinkAlpha = in.cursor.mixA;
+        cursorParameters.outlineThicknessPoints = in.cursor.outlineThicknessPoints;
         cursorParameters.focused = in.cursor.focused;
         cursorParameters.cellWidthInPixels = in.cellSizeInPixels.width;
         cursorParameters.cellHeightInPixels = in.cellSizeInPixels.height;

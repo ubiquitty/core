@@ -125,6 +125,7 @@ inline void applyCursorSettings(Rendering::TerminalSnapshotOptions& options, con
 {
     options.shouldCursorInvertText = configuration.shouldCursorInvertText;
     options.cursorAlpha = static_cast<float>(configuration.cursorAlpha);
+    options.cursorOutlineThicknessPoints = static_cast<float>(configuration.cursorOutlineThicknessPoints);
 }
 
 /// The bell flash's strength at a tick, under a configuration.

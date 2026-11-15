@@ -135,6 +135,7 @@ const Row rows[] = {
     ROW(cursorLinger, cursorLinger),
     ROW(cursorBlinkRate, cursorBlinkRate),
     ROW(cursorAlpha, cursorAlpha),
+    ROW(cursorOutlineThickness, cursorOutlineThickness),
     ROW(cursorInvertText, cursorInvertText),
     ROW(bellAudible, bellAudible),
     ROW(bellVisual, bellVisual),
@@ -279,6 +280,14 @@ TEST(anEncodingNameResolvesOnceOrFallsBackToUTF8)
 
 TEST(testAValueOutsideItsRangeIsBroughtBackInside)
 {
+    Values outline;
+    outline.cursorOutlineThickness = -10.0;
+    CHECK_EQ(Effective::cursorOutlineThickness(outline), 0.5);
+    outline.cursorOutlineThickness = 100.0;
+    CHECK_EQ(Effective::cursorOutlineThickness(outline), 8.0);
+    outline.cursorOutlineThickness = 1.5;
+    CHECK_EQ(Effective::cursorOutlineThickness(outline), 1.5);
+
     // The runtime zoom clamps against the one font.size range, so the two
     // frontends cannot drift into different limits. Both overloads, because the
     // pixel path is a separate function and a bound is exactly what gets

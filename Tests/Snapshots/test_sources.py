@@ -141,7 +141,7 @@ class SplitCatalogTests(unittest.TestCase):
 
     def test_products_are_found_under_the_consumers_build_root(self):
         build = self.base / "app-build"
-        binary = build / "linux/ubiquitty-linux"
+        binary = build / "linux/ubiquitty"
         binary.parent.mkdir(parents=True)
         binary.write_text("fixture")
         binary.chmod(0o700)

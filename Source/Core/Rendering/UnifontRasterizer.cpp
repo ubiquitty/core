@@ -13,6 +13,7 @@
 
 #include "Core/Rendering/ProportionalOutline.h"
 #include "Core/Rendering/ProportionalStrike.h"
+#include "Core/Rendering/SubpixelPhase.h"
 #include "Core/Rendering/Unifont.h"
 
 #include <cmath>
@@ -146,6 +147,13 @@ int UnifontRasterizer::proportionalStripOverhangInPixels() const
 {
     const StrikeChoice choice = strikeChoiceForScale(m_scale);
     return ProportionalStrike::overhangInPixels(choice.strikeScale) * choice.factor;
+}
+
+int UnifontRasterizer::proportionalGlyphPhaseCount() const
+{
+    if (m_scale > 2)
+        return subpixelPhaseCount;
+    return std::max(1, ProportionalStrike::phaseCount(m_scale));
 }
 
 int UnifontRasterizer::shapeProportionalRun(std::span<const std::uint32_t> codePoints, FontFace face, std::span<Ubiquitty::ProportionalShapedGlyph> glyphsOut)

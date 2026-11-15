@@ -59,6 +59,8 @@ enum class ActionKind {
     IncreaseFontSize,
     DecreaseFontSize,
     ResetFontSize,
+    IncreaseLineSpacing,
+    DecreaseLineSpacing,
     ToggleFullscreen,
     ClearScrollback,
     ClearScreen, // scroll the current prompt to the top; nothing is destroyed
@@ -181,7 +183,8 @@ std::string formatKeySpec(const std::vector<KeyChord>& sequence);
 //                     scroll_page_up/down, scroll_to_top/bottom, new_tab,
 //                     new_window, close_tab, next_tab, prev_tab,
 //                     increase_font_size, decrease_font_size,
-//                     reset_font_size, toggle_fullscreen, clear_scrollback,
+//                     reset_font_size, increase_line_spacing, decrease_line_spacing,
+//                     toggle_fullscreen, clear_scrollback,
 //                     toggle_beam.
 //   "command:<id>"  — a named frontend command carried in BindingAction.name.
 //   "macro:<name>"  — invoke a [macros] entry; the name rides in

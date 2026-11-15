@@ -24,8 +24,13 @@
 
 #include "Harness.h"
 
+#include "Core/Rendering/BoxDrawingRasterizer.h"
 #include "Core/Rendering/CellInstanceBuilder.h"
+#include "Core/Rendering/ProportionalGlyphSheet.h"
+#include "Core/Rendering/SizedMaster.h"
 #include "Core/Rendering/SoftwareRenderer.h"
+#include "Core/Rendering/UnifontRasterizer.h"
+#include "Core/TermPalette.h"
 #include "StrictAtlas.h"
 
 #include <cstdint>
@@ -35,6 +40,211 @@ namespace {
 
 using namespace Ubiquitty;
 using namespace Ubiquitty::Rendering;
+
+struct NativePhaseRasterizer : GlyphRasterizer {
+    std::vector<double> scalarPhases;
+    std::vector<double> clusterPhases;
+    CellMetrics cellMetrics() const override { return { .cellWidth = 8, .cellHeight = 16 }; }
+    int glyphPhaseCount() const override { return 4; }
+    bool rasterizeGlyph(std::uint32_t, FontFace, std::uint32_t, int width, int height, std::uint8_t* out) override
+    {
+        std::fill_n(out, width * height, std::uint8_t { 10 });
+        return true;
+    }
+    bool rasterizeGlyphAtPhase(std::uint32_t, FontFace, std::uint32_t, double phase, int width, int height, std::uint8_t* out) override
+    {
+        scalarPhases.push_back(phase);
+        std::fill_n(out, width * height, static_cast<std::uint8_t>(10 + phase * 100));
+        return true;
+    }
+    bool rasterizeClusterAtPhase(const std::uint32_t*, int, FontFace, std::uint32_t, double phase, int width, int height, std::uint8_t* out) override
+    {
+        clusterPhases.push_back(phase);
+        std::fill_n(out, width * height, static_cast<std::uint8_t>(20 + phase * 100));
+        return true;
+    }
+};
+
+TEST(softwareAtlasMasksUseTheirNativePhaseAndCacheEachRasterOnce)
+{
+    NativePhaseRasterizer rasterizer;
+    SoftwareRenderer renderer(rasterizer);
+    const std::array<std::uint32_t, 2> cluster { 'a', 0x301 };
+    for (int repetition = 0; repetition < 2; ++repetition) {
+        for (std::uint32_t phase = 0; phase < 4; ++phase) {
+            const AtlasGlyph scalar = renderer.monoGlyph('I', FontFace::Regular, 0, phase);
+            const AtlasGlyph marks = renderer.clusterGlyph(cluster.data(), 2, FontFace::Regular, 0, phase);
+            const auto atlas = renderer.monoAtlas();
+            const auto pixel = [&](const AtlasGlyph& glyph) {
+                return atlas.pixels[static_cast<int>(glyph.minUV.y) * atlas.width + static_cast<int>(glyph.minUV.x)];
+            };
+            CHECK(scalar.present && marks.present);
+            CHECK_EQ(pixel(scalar), static_cast<std::uint8_t>(10 + phase * 25));
+            CHECK_EQ(pixel(marks), static_cast<std::uint8_t>(20 + phase * 25));
+        }
+    }
+    CHECK(rasterizer.scalarPhases == std::vector<double>({ 0, 0.25, 0.5, 0.75 }));
+    CHECK(rasterizer.clusterPhases == std::vector<double>({ 0, 0.25, 0.5, 0.75 }));
+}
+
+TEST(builderUsesTheProvidersRasterGridInsteadOfStaleCapturedPhaseMetadata)
+{
+    NativePhaseRasterizer rasterizer;
+    SoftwareRenderer renderer(rasterizer);
+    const GlyphBackend backend = renderer.glyphBackend();
+    const MonoAtlasBinding binding = backend.bindMonoAtlas(backend.context);
+    CHECK_EQ(binding.phaseCount, 4);
+    Cell cell {};
+    cell.codePoint = 'I';
+    TermPalette palette {};
+    BuildInputs inputs;
+    inputs.cells = &cell;
+    inputs.palette = &palette;
+    inputs.columns = inputs.rows = 1;
+    inputs.metrics = rasterizer.cellMetrics();
+    inputs.originInPixels.x = 0.375f;
+    inputs.subpixelGlyphs = true;
+    inputs.subpixelPhaseCount = 8;
+    inputs.glyphSlotWidthInPixels = binding.geometry.slotWidthInPixels;
+    inputs.glyphSlotHeightInPixels = binding.geometry.slotHeightInPixels;
+    inputs.glyphReferenceAdvanceInPixels = 8;
+    inputs.glyphReferenceLineHeightInPixels = 16;
+    std::array<CellInstance, 1> cells;
+    std::array<GlyphInstance, 1> glyphs;
+    InstanceBuffers out;
+    out.cells = cells.data();
+    out.cellCapacity = cells.size();
+    out.glyphs = glyphs.data();
+    out.glyphCapacity = glyphs.size();
+    const auto counts = buildCellInstances(inputs, backend, out);
+    CHECK_EQ(counts.glyphs, 1u);
+    CHECK(rasterizer.scalarPhases == std::vector<double>({ 0.5 }));
+}
+
+TEST(softwareBuilderFaultPassesTheRasterVariantIntoTheNativeMask)
+{
+    NativePhaseRasterizer rasterizer;
+    SoftwareRenderer renderer(rasterizer);
+    const GlyphBackend backend = renderer.glyphBackend();
+    const MonoAtlasBinding binding = backend.bindMonoAtlas(backend.context);
+    bool isFresh = false;
+    const int slot = binding.cache->slotForKey(0x1234u, &isFresh);
+    CHECK(slot >= 0 && isFresh);
+    CHECK(backend.rasteriseMonoGlyph(backend.context, 'W', FontFace::Regular, 3, slot));
+    CHECK(rasterizer.scalarPhases == std::vector<double>({ 0.75 }));
+    const GlyphUV uv = binding.geometry.atlasRectForSlot(slot, binding.slotCapacity);
+    const auto atlas = renderer.monoAtlas();
+    CHECK_EQ(atlas.pixels[static_cast<int>(uv.minV) * atlas.width + static_cast<int>(uv.minU)], std::uint8_t { 85 });
+}
+
+TEST(sizedWindowPensUseTheSameNativePhaseGridAsOrdinaryGlyphs)
+{
+    SizedTile tile { 2, 0, 0 };
+    const SizedMaster master = selectSizedMaster(tile, {}, 0, 0);
+    const SizedWindowCanvas canvas { 12, 20, 2, 2, 8, 16 };
+    for (std::uint32_t phase = 0; phase < 4; ++phase) {
+        const auto quarter = planSizedWindow(master, tile, phase, canvas, 4);
+        const auto eighth = planSizedWindow(master, tile, phase * 2, canvas);
+        CHECK_EQ(quarter.sourceX, eighth.sourceX);
+        CHECK_NEAR(quarter.master.shiftX, eighth.master.shiftX, 1e-9);
+        CHECK_NEAR(quarter.blockShiftX, eighth.blockShiftX, 1e-9);
+    }
+}
+
+struct PhaseProportionalRasterizer final : NativePhaseRasterizer {
+    std::vector<float> offsets;
+    int monoPhases = 4;
+    int proportionalPhases = 4;
+    int glyphPhaseCount() const override { return monoPhases; }
+    int proportionalGlyphPhaseCount() const override { return proportionalPhases; }
+    bool hasProportionalFace() const override { return true; }
+    bool rasteriseProportionalRun(std::span<const Ubiquitty::ProportionalShapedGlyph> glyphs, FontFace, int, int, std::span<std::uint8_t> coverage) override
+    {
+        offsets.push_back(glyphs.front().offsetXInPixels);
+        std::ranges::fill(coverage, std::uint8_t { 255 });
+        return true;
+    }
+    bool rasteriseSizedProportionalRun(std::span<const Ubiquitty::ProportionalShapedGlyph> glyphs, FontFace face, const SizedMaster&, int width, int height, std::span<std::uint8_t> coverage) override
+    {
+        return rasteriseProportionalRun(glyphs, face, width, height, coverage);
+    }
+};
+
+TEST(proportionalMasksAndSizedMasksDecodeThePublishedNativePhaseGrid)
+{
+    PhaseProportionalRasterizer rasterizer;
+    ProportionalGlyphSheet sheet(8, 16, 1, 1, &rasterizer, 256);
+    CHECK(sheet.isUsable());
+    CHECK_EQ(sheet.binding().phaseCount, 4);
+    std::array<std::uint8_t, 12 * 20> coverage {};
+    CHECK(ProportionalGlyphSheet::rasteriseGlyphIntoSlot(rasterizer, 12, FontFace::Regular, 3, 2, 12, 20, coverage));
+    std::vector<std::uint8_t> master;
+    SizedTile tile { 2, 0, 0 };
+    CHECK(ProportionalGlyphSheet::rasteriseSizedGlyphIntoSlot(rasterizer, 12, FontFace::Regular, 3, tile, 2, 12, 20, master, coverage));
+    CHECK_EQ(rasterizer.offsets.size(), 2u);
+    CHECK_NEAR(rasterizer.offsets[0], 2.75f, 1e-6);
+    CHECK_NEAR(rasterizer.offsets[1], 4.75f, 1e-6);
+}
+
+TEST(aSeparateProportionalFaceDoesNotInheritTheGridFacesPhaseCount)
+{
+    PhaseProportionalRasterizer rasterizer;
+    rasterizer.monoPhases = 1;
+    rasterizer.proportionalPhases = 8;
+    BoxDrawingRasterizer wrapped(rasterizer);
+    CHECK_EQ(wrapped.glyphPhaseCount(), 1);
+    CHECK_EQ(wrapped.proportionalGlyphPhaseCount(), 8);
+    ProportionalGlyphSheet sheet(8, 16, 1, 1, &wrapped, 256);
+    CHECK_EQ(sheet.binding().phaseCount, 8);
+    std::array<std::uint8_t, 12 * 20> coverage {};
+    CHECK(ProportionalGlyphSheet::rasteriseGlyphIntoSlot(wrapped, 12, FontFace::Regular, 7, 2, 12, 20, coverage));
+    std::vector<std::uint8_t> master;
+    CHECK(ProportionalGlyphSheet::rasteriseSizedGlyphIntoSlot(wrapped, 12, FontFace::Regular, 7,
+        SizedTile { 2, 0, 0 }, 2, 12, 20, master, coverage));
+    CHECK_EQ(rasterizer.offsets.size(), 2u);
+    CHECK_NEAR(rasterizer.offsets[0], 2.875f, 1e-6);
+    CHECK_NEAR(rasterizer.offsets[1], 4.875f, 1e-6);
+}
+
+TEST(theBitmapTiersProportionalStrikeRetainsItsFractionalMasks)
+{
+    for (int scale : { 1, 2, 3 }) {
+        UnifontRasterizer bitmap(scale);
+        BoxDrawingRasterizer wrapped(bitmap);
+        CHECK_EQ(wrapped.glyphPhaseCount(), 1);
+        CHECK_EQ(wrapped.proportionalGlyphPhaseCount(), 8);
+        const auto metrics = bitmap.cellMetrics();
+        ProportionalGlyphSheet sheet(static_cast<int>(metrics.cellWidth), static_cast<int>(metrics.cellHeight), 2, 0, &wrapped, 256);
+        CHECK_EQ(sheet.binding().phaseCount, 8);
+        const int width = sheet.slotWidthInPixels();
+        const int height = sheet.slotHeightInPixels();
+        std::vector<std::uint8_t> actual(static_cast<std::size_t>(width) * height);
+        std::vector<std::uint8_t> reference(actual.size());
+        std::vector<std::uint8_t> wholePixel(actual.size());
+        CHECK(ProportionalGlyphSheet::rasteriseGlyphIntoSlot(wrapped, 'W', FontFace::Regular, 7, 2, width, height, actual));
+        ProportionalShapedGlyph glyph {};
+        glyph.glyph = 'W';
+        glyph.offsetXInPixels = 2.875f;
+        CHECK(bitmap.rasteriseProportionalRun(std::span(&glyph, 1), FontFace::Regular, width, height, reference));
+        CHECK(actual == reference);
+        glyph.offsetXInPixels = 2;
+        CHECK(bitmap.rasteriseProportionalRun(std::span(&glyph, 1), FontFace::Regular, width, height, wholePixel));
+        CHECK(actual != wholePixel);
+    }
+}
+
+TEST(boxWrapperForwardsTextPhasesAndKeepsProceduralPiecesOnTheCell)
+{
+    NativePhaseRasterizer native;
+    BoxDrawingRasterizer wrapped(native);
+    std::array<std::uint8_t, 8 * 16> coverage {};
+    CHECK_EQ(wrapped.glyphPhaseCount(), 4);
+    CHECK(wrapped.rasterizeGlyphAtPhase('I', FontFace::Regular, 0, 0.5, 8, 16, coverage.data()));
+    const auto calls = native.scalarPhases.size();
+    CHECK(wrapped.rasterizeGlyphAtPhase(0x2588, FontFace::Regular, 0, 0.5, 8, 16, coverage.data()));
+    CHECK_EQ(native.scalarPhases.size(), calls);
+    CHECK(native.scalarPhases == std::vector<double>({ 0.5 }));
+}
 
 // The seven entries every fixture owes, so each arm below differs only in the
 // two optional ones.

@@ -478,7 +478,7 @@ bool SoftwareRenderer::rasteriseProportionalGlyph(std::uint32_t glyphID,
 // Weight is a different question and stays pinned at zero: this rasterizer
 // applies no variable axis, and the bindings report zero so key and raster
 // agree about that too.
-void SoftwareRenderer::rasterizeInto(Atlas& atlas, int slot, std::uint32_t codePoint, FontFace face)
+void SoftwareRenderer::rasterizeInto(Atlas& atlas, int slot, std::uint32_t codePoint, FontFace face, double phaseInPixels)
 {
     // Whichever sheet this call was handed. The reference is the only thing
     // that says which, so the count is taken from it rather than from the
@@ -490,8 +490,8 @@ void SoftwareRenderer::rasterizeInto(Atlas& atlas, int slot, std::uint32_t codeP
     const int x0 = (slot % columns) * slotWidthInPixels;
     const int y0 = (slot / columns) * slotHeightInPixels;
 
-    const bool present = m_rasterizer.rasterizeGlyph(codePoint, face,
-        /*weight=*/0, slotWidthInPixels, slotHeightInPixels, m_slotScratch.data());
+    const bool present = m_rasterizer.rasterizeGlyphAtPhase(codePoint, face,
+        /*weight=*/0, phaseInPixels, slotWidthInPixels, slotHeightInPixels, m_slotScratch.data());
     writeAtlasCoverage(atlas.pixels, atlas.atlasWidth, { x0, y0, slotWidthInPixels, slotHeightInPixels },
         present ? std::span<const std::uint8_t>(m_slotScratch).first(static_cast<std::size_t>(slotWidthInPixels) * slotHeightInPixels) : std::span<const std::uint8_t> {});
 }
@@ -515,7 +515,7 @@ bool SoftwareRenderer::stageMonoCoverage(int slot, std::span<const std::uint8_t>
     return true;
 }
 
-void SoftwareRenderer::rasterizeClusterInto(Atlas& atlas, int slot, std::span<const std::uint32_t> codePoints, FontFace face, std::uint32_t weight)
+void SoftwareRenderer::rasterizeClusterInto(Atlas& atlas, int slot, std::span<const std::uint32_t> codePoints, FontFace face, std::uint32_t weight, std::uint32_t variant)
 {
     // Whichever sheet this call was handed. The reference is the only thing
     // that says which, so the count is taken from it rather than from the
@@ -527,7 +527,7 @@ void SoftwareRenderer::rasterizeClusterInto(Atlas& atlas, int slot, std::span<co
     const AtlasSlotRegion region { (slot % geometry.columns) * width, (slot / geometry.columns) * height, width, height };
     // A cluster the rasterizer declines still lands as a blank: the slot is
     // this key's now, not the previous tenant's ink.
-    const bool inked = m_rasterizer.rasterizeCluster(codePoints.data(), static_cast<int>(codePoints.size()), face, weight, width, height, m_slotScratch.data());
+    const bool inked = m_rasterizer.rasterizeClusterAtPhase(codePoints.data(), static_cast<int>(codePoints.size()), face, weight, static_cast<double>(variantPhase(variant)) / std::max(1, m_rasterizer.glyphPhaseCount()), width, height, m_slotScratch.data());
     const std::span<const std::uint8_t> plane = inked ? std::span<const std::uint8_t>(m_slotScratch).first(static_cast<std::size_t>(width) * static_cast<std::size_t>(height)) : std::span<const std::uint8_t> {};
     writeAtlasCoverage(atlas.pixels, atlas.atlasWidth, region, plane);
 }
@@ -547,7 +547,7 @@ AtlasGlyph SoftwareRenderer::faultGlyph(Atlas& atlas, std::uint32_t key, std::ui
     if (slot < 0)
         return {}; // atlas full this frame -> draw background only
     if (fresh)
-        rasterizeInto(atlas, slot, codePoint, face);
+        rasterizeInto(atlas, slot, codePoint, face, &atlas == &m_mono ? static_cast<double>(variantPhase(key)) / std::max(1, m_rasterizer.glyphPhaseCount()) : 0);
     const GlyphUV uv = atlas.geometry.atlasRectForSlot(slot, atlas.capacity);
     AtlasGlyph out;
     out.minUV = { uv.minU, uv.minV };
@@ -556,13 +556,13 @@ AtlasGlyph SoftwareRenderer::faultGlyph(Atlas& atlas, std::uint32_t key, std::ui
     return out;
 }
 
-AtlasGlyph SoftwareRenderer::faultCluster(Atlas& atlas, std::uint32_t key, std::span<const std::uint32_t> codePoints, FontFace face, std::uint32_t weight)
+AtlasGlyph SoftwareRenderer::faultCluster(Atlas& atlas, std::uint32_t key, std::span<const std::uint32_t> codePoints, FontFace face, std::uint32_t weight, std::uint32_t variant)
 {
     const ClusterSlot found = faultClusterSlot(atlas.cache, key, codePoints.data(), static_cast<int>(codePoints.size()));
     if (found.slot < 0)
         return {}; // the sheet is full this frame: background only
     if (found.isFresh)
-        rasterizeClusterInto(atlas, found.slot, codePoints, face, weight);
+        rasterizeClusterInto(atlas, found.slot, codePoints, face, weight, variant);
     const GlyphUV uv = atlas.geometry.atlasRectForSlot(found.slot, atlas.capacity);
     return { .minUV = { uv.minU, uv.minV }, .maxUV = { uv.maxU, uv.maxV }, .present = true };
 }
@@ -580,7 +580,7 @@ void SoftwareRenderer::rasteriseSizedWindowInto(Atlas& atlas, int slot, std::uin
     if (m_slotScratch.size() < windowBytes)
         m_slotScratch.resize(windowBytes);
     const std::span<std::uint8_t> window = std::span(m_slotScratch).first(windowBytes);
-    if (!rasteriseSizedWindow(m_rasterizer, codePoint, face, weight, tile, phase, canvas, m_sizedScratch, window))
+    if (!rasteriseSizedWindow(m_rasterizer, codePoint, face, weight, tile, phase, canvas, m_sizedScratch, window, m_rasterizer.glyphPhaseCount()))
         std::ranges::fill(window, std::uint8_t { 0 });
 
     const int x0 = (slot % geometry.columns) * canvas.width;
@@ -641,6 +641,7 @@ AtlasGlyph SoftwareRenderer::monoGlyph(std::uint32_t codePoint, FontFace face, s
 MonoAtlasBinding SoftwareRenderer::bindMonoAtlas()
 {
     MonoAtlasBinding binding;
+    binding.phaseCount = m_rasterizer.glyphPhaseCount();
     binding.cache = &m_mono.cache;
     binding.geometry = m_mono.geometry;
     binding.slotCapacity = m_mono.capacity;
@@ -648,16 +649,16 @@ MonoAtlasBinding SoftwareRenderer::bindMonoAtlas()
     return binding;
 }
 
-bool SoftwareRenderer::rasteriseMonoGlyph(std::uint32_t codePoint, FontFace face, std::uint32_t, int slot)
+bool SoftwareRenderer::rasteriseMonoGlyph(std::uint32_t codePoint, FontFace face, std::uint32_t variant, int slot)
 {
-    rasterizeInto(m_mono, slot, codePoint, face);
+    rasterizeInto(m_mono, slot, codePoint, face, static_cast<double>(variantPhase(variant)) / std::max(1, m_rasterizer.glyphPhaseCount()));
     return true;
 }
 
 AtlasGlyph SoftwareRenderer::clusterGlyph(const std::uint32_t* codePoints, int count, FontFace face, std::uint32_t weight, std::uint32_t phase)
 {
     const std::span<const std::uint32_t> cluster = count > 0 ? std::span(codePoints, static_cast<std::size_t>(count)) : std::span<const std::uint32_t> {};
-    return faultCluster(m_mono, coverageClusterKey(codePoints, count, phase, face), cluster, face, weight);
+    return faultCluster(m_mono, coverageClusterKey(codePoints, count, phase, face), cluster, face, weight, phase);
 }
 
 // Weight 0: this CPU rasterizer applies no variable weight, so keying a single
@@ -2048,6 +2049,13 @@ void SoftwareRenderer::compositeBoxFill(const OverlayInstance& o, std::vector<st
                     if (kind < 5.5f)
                         outer = std::max(outer, plLineDistInwardSW(localX, localY, bx, by, cx, cy, winding));
                     dist = std::abs(outer + strokeHalf) - strokeHalf;
+                    if (kind < 5.5f) {
+                        const float capInset = o.plB.w * sizeY;
+                        const float firstLength = std::max(std::hypot(bx - ax, by - ay), 1e-6f);
+                        const float lastLength = std::max(std::hypot(bx - cx, by - cy), 1e-6f);
+                        dist = std::max(dist, capInset - ((localX - ax) * (bx - ax) + (localY - ay) * (by - ay)) / firstLength);
+                        dist = std::max(dist, capInset - ((localX - cx) * (bx - cx) + (localY - cy) * (by - cy)) / lastLength);
+                    }
                 }
                 coverage = 0.5f - dist;
                 coverage = coverage < 0.0f ? 0.0f : (coverage > 1.0f ? 1.0f : coverage);
@@ -2435,6 +2443,7 @@ bool SoftwareRenderer::render(const BuildInputs& in, std::vector<std::uint8_t>& 
     reserveSheetsForScreen(in.rows * in.columns);
 
     BuildInputs local = in;
+    local.subpixelPhaseCount = std::clamp(m_rasterizer.glyphPhaseCount(), 1, subpixelPhaseCount);
     // A zero cell means the caller has no metrics of its own — the Unifont
     // rasterizer returns the fixed 8x16 cell, a FreeType one returns the
     // font-derived box. A caller that did supply metrics keeps them.

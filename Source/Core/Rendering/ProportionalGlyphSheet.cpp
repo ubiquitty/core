@@ -97,7 +97,7 @@ ProportionalAtlasBinding ProportionalGlyphSheet::binding()
         m_slotHeightInPixels,
         m_capacity,
         m_marginInPixels,
-        subpixelPhaseCount,
+        std::clamp(m_rasterizer->proportionalGlyphPhaseCount(), 1, subpixelPhaseCount),
     };
 }
 
@@ -124,7 +124,7 @@ bool ProportionalGlyphSheet::rasteriseGlyphIntoSlot(GlyphRasterizer& rasterizer,
     glyph.glyph = glyphID;
     glyph.offsetXInPixels = static_cast<float>(marginXInPixels)
         + static_cast<float>(variantPhase(variant))
-            / static_cast<float>(subpixelPhaseCount);
+            / static_cast<float>(std::clamp(rasterizer.proportionalGlyphPhaseCount(), 1, subpixelPhaseCount));
     const std::array<ProportionalShapedGlyph, 1> placed = { glyph };
     return rasterizer.rasteriseProportionalRun(placed, face,
         slotWidthInPixels, slotHeightInPixels, coverageOut);
@@ -149,7 +149,7 @@ bool ProportionalGlyphSheet::rasteriseSizedGlyphIntoSlot(GlyphRasterizer& raster
     ProportionalShapedGlyph glyph {};
     glyph.glyph = glyphID;
     glyph.offsetXInPixels = static_cast<float>(tile.scale * master.widthScale * marginXInPixels - tile.tile * slotWidthInPixels)
-        + static_cast<float>(variantPhase(variant)) / static_cast<float>(subpixelPhaseCount);
+        + static_cast<float>(variantPhase(variant)) / static_cast<float>(std::clamp(rasterizer.proportionalGlyphPhaseCount(), 1, subpixelPhaseCount));
     const std::array<ProportionalShapedGlyph, 1> placed = { glyph };
     if (!rasterizer.rasteriseSizedProportionalRun(placed, face, master, slotWidthInPixels, canvasHeight, masterScratch)) {
         return false;

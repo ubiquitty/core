@@ -343,6 +343,7 @@ template<> struct Schema<Values> {
         MEMBER(Values, cursorLinger),
         MEMBER(Values, cursorBlinkRate),
         MEMBER(Values, cursorAlpha),
+        MEMBER(Values, cursorOutlineThickness),
         MEMBER(Values, cursorInvertText),
         MEMBER(Values, cursorMotion),
         MEMBER(Values, cursorMotionDuration),

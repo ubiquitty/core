@@ -216,6 +216,8 @@ struct UBIQUITTY_NONESCAPABLE TerminalSnapshotOptions {
     // colour and has to arrive beside it. A frontend that never sets this
     // draws a solid cursor, which is what an unconfigured terminal shows.
     float cursorAlpha = 1.0f;
+    /// The unfocused cursor outline width, in points.
+    float cursorOutlineThicknessPoints = 1.0f;
 
     // Selected row spans, in VISIBLE rows, as the frontend's selection model
     // resolved them. Carried here so the CPU composite and the instance path

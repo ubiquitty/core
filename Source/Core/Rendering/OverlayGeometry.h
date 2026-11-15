@@ -503,6 +503,8 @@ struct CursorQuadParameters {
     int widthCells = 1;
     Ubiquitty::Cursor::Shape shape = Ubiquitty::Cursor::Shape::Block;
     float blinkAlpha = 1.0f;
+    /// The unfocused cursor outline width, in logical points.
+    float outlineThicknessPoints = 1.0f;
     bool focused = true;
     // Motion smoothing: when sliding, the quad is positioned at the FRACTIONAL
     // (columnFractional, vrowFractional) cell, and a focused block is drawn as a

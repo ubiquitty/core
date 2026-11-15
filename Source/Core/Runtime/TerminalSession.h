@@ -222,12 +222,16 @@ struct SyncFrameCaptureGeometry {
     bool shouldCursorInvertText = true;
     /// Whether glyphs use the separate subpixel instance stream.
     bool shouldUseSubpixelGlyphs = true;
+    /// Native raster phases per device pixel, kept with immutable frame geometry.
+    int subpixelPhaseCount = Rendering::subpixelPhaseCount;
     /// Where the grid's top-left sits within the drawable, in device pixels.
     FloatPoint originInPixels {};
     /// The rasterizer's metrics, so decorations draw at the glyphs' geometry.
     Rendering::CellMetrics metrics {};
     /// The atlas slot layout.
     Rendering::GlyphSlotGeometry glyphSlot {};
+    /// Native caret geometry, shared by live and boundary-frame consumers.
+    Rendering::ToolkitCaret toolkitCaret {};
     /// The whole surface, in device pixels; zero reads as exactly the grid.
     FloatSize viewportSizeInPixels {};
     /// The cell height in points, the cursor bar's own domain; zero keeps
@@ -534,7 +538,8 @@ public:
         if (press.virtualKey == Keys::VirtualKey::None && press.unshiftedCodePoint == 0
             && press.shiftedCodePoint == 0 && press.baseLayoutCodePoint == 0 && press.textLength <= 0)
             return encoding;
-        noteUserActivity();
+        if (keyPressCountsAsUserActivity(press))
+            noteUserActivity();
         encoding.wasAccepted = paneLink().send(Session::PaneInput { .intent = Session::PaneInput::Key { press },
             .localEncoding = output.first(static_cast<std::size_t>(encoding.length)) });
         return encoding;
@@ -6711,6 +6716,14 @@ public:
         return static_cast<float>(Preferences::Effective::cursorAlpha(m_configuration)) / 255.0f;
     }
 
+    /// The inactive cursor's outline width, shared by live and boundary frames.
+    ///
+    /// - Returns: The configured thickness in logical points.
+    [[nodiscard]] float cursorOutlineThicknessPoints() const
+    {
+        return static_cast<float>(Preferences::Effective::cursorOutlineThickness(m_configuration));
+    }
+
     /// Everything the most recent bell asked for.
     ///
     /// Read when ``EventKind::Bell`` drains. The four travel together because
@@ -10200,10 +10213,12 @@ private:
         options.cursorMixAlpha = m_syncCaptureGeometry.cursorMixAlpha;
         options.shouldCursorInvertText = m_syncCaptureGeometry.shouldCursorInvertText;
         options.shouldUseSubpixelGlyphs = m_syncCaptureGeometry.shouldUseSubpixelGlyphs;
+        options.subpixelPhaseCount = m_syncCaptureGeometry.subpixelPhaseCount;
         options.originInPixels = m_syncCaptureGeometry.originInPixels;
         options.viewportSizeInPixels = m_syncCaptureGeometry.viewportSizeInPixels;
         options.cellHeightPoints = m_syncCaptureGeometry.cellHeightPoints;
         options.lineSpacingPoints = m_syncCaptureGeometry.lineSpacingPoints;
+        options.toolkitCaret = m_syncCaptureGeometry.toolkitCaret;
         options.promptMarkFontSize = m_syncCaptureGeometry.promptMarkFontSize;
         options.promptMarkFontAscent = m_syncCaptureGeometry.promptMarkFontAscent;
         options.promptMarkFontDescent = m_syncCaptureGeometry.promptMarkFontDescent;
@@ -10227,6 +10242,7 @@ private:
         options.shouldResolveBlink = true;
         options.cursorMixAlpha = Ubiquitty::Cursor::resolveAppearance(term, options.blinkTicks).blinkAlpha;
         options.cursorAlpha = cursorAlphaUnit();
+        options.cursorOutlineThicknessPoints = cursorOutlineThicknessPoints();
         // The envelope measured at this capture's own tick, beside the blink
         // phase and for the same reason: a registered alpha would hold the
         // step whatever frame last moved the placement was drawn at, and the

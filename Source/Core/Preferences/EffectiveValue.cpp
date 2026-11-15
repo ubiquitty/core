@@ -348,6 +348,8 @@ std::optional<Value> effectiveValue(Key key, const Values& values)
         return Value::ofInteger(SerializeKind::Int, static_cast<long long>(Effective::cursorLinger(values)));
     case Key::CursorBlinkRate:
         return Value::ofInteger(SerializeKind::Int, static_cast<long long>(Effective::cursorBlinkRate(values)));
+    case Key::CursorOutlineThickness:
+        return Value::ofNumber(SerializeKind::Double, Effective::cursorOutlineThickness(values));
     case Key::CursorAlpha:
         return Value::ofInteger(SerializeKind::Int, static_cast<long long>(Effective::cursorAlpha(values)));
     case Key::CursorInvertText:

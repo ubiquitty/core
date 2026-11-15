@@ -251,4 +251,82 @@ TEST(aHealedPieceMeetsTheFontPieceExactlyAtTheSeam)
     CHECK_MSG(row(healedCross, slotHeight - 1) == row(fontStem, 0), "and at its bottom seam");
 }
 
+namespace {
+
+struct DistinctRuleFace final : GlyphRasterizer {
+    int top = 3;
+    int thickness = 1;
+    int left = 2;
+
+    [[nodiscard]] CellMetrics cellMetrics() const override { return BearingFace {}.cellMetrics(); }
+    [[nodiscard]] FaceMetrics faceMetrics() const override { return BearingFace {}.faceMetrics(); }
+
+    bool rasterizeGlyph(std::uint32_t codePoint, FontFace face, std::uint32_t weight, int width, int height, std::uint8_t* out) override
+    {
+        std::fill_n(out, width * height, 0);
+        if (codePoint == 0x2500) {
+            const int ruleTop = top + (face == FontFace::Bold ? 2 : 0) + (weight ? 1 : 0);
+            for (int y = ruleTop; y < std::min(height, ruleTop + thickness); ++y)
+                for (int x = bearing; x < width - bearing; ++x)
+                    out[y * width + x] = 255;
+            return true;
+        }
+        if (codePoint == 0x2502) {
+            for (int y = 0; y < height; ++y)
+                for (int x = left; x < std::min(width, left + thickness); ++x)
+                    out[y * width + x] = 255;
+            return true;
+        }
+        return false;
+    }
+};
+
+std::vector<std::uint8_t> styledRaster(GlyphRasterizer& rasterizer, FontFace face, std::uint32_t weight)
+{
+    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(slotWidth) * slotHeight);
+    CHECK(rasterizer.rasterizeGlyph(0x2500, face, weight, slotWidth, slotHeight, pixels.data()));
+    return pixels;
+}
+
+} // namespace
+
+TEST(boxFamilyOriginDoesNotDependOnTheFirstRequestedStyleOrWeight)
+{
+    DistinctRuleFace face;
+    for (FontFace style : { FontFace::Regular, FontFace::Bold }) {
+        for (std::uint32_t weight : { 0U, 700U }) {
+            BoxDrawingRasterizer requestedFirst(face);
+            BoxDrawingRasterizer regularFirst(face);
+            const auto firstRequested = styledRaster(requestedFirst, style, weight);
+            const auto firstRegular = raster(regularFirst, 0x2500);
+            CHECK_MSG(raster(requestedFirst, 0x2500) == firstRegular, "the upright reference has the same origin after bold or weighted text");
+            CHECK_MSG(styledRaster(regularFirst, style, weight) == firstRequested, "a style's placement is independent of the cache warm-up order");
+        }
+    }
+}
+
+TEST(replacingABoxFontInvalidatesItsOriginAndHealedStrokeProfileAtTheSameCellSize)
+{
+    DistinctRuleFace first;
+    DistinctRuleFace second;
+    second.top = 10;
+    second.thickness = 3;
+    second.left = 6;
+    CHECK(first.cellMetrics().cellWidth == second.cellMetrics().cellWidth);
+    CHECK(first.cellMetrics().cellHeight == second.cellMetrics().cellHeight);
+    BoxDrawingRasterizer reused(first);
+    const auto oldRule = raster(reused, 0x2500);
+    const auto oldCross = raster(reused, 0x253C);
+    reused.setInner(second);
+    BoxDrawingRasterizer fresh(second);
+    const auto newRule = raster(reused, 0x2500);
+    const auto newCross = raster(reused, 0x253C);
+    CHECK_MSG(newRule == raster(fresh, 0x2500), "same-size replacement measures its own family origin");
+    CHECK_MSG(newCross == raster(fresh, 0x253C), "same-size replacement measures its own healed-stroke profile");
+    CHECK_MSG(newRule != oldRule && newCross != oldCross, "the two faces have different stroke geometry, so stale caches cannot pass");
+    CHECK(column(newCross, 0) == column(newRule, slotWidth - 1));
+    const auto newStem = raster(reused, 0x2502);
+    CHECK(row(newCross, 0) == row(newStem, slotHeight - 1));
+}
+
 UBIQUITTY_TEST_MAIN()

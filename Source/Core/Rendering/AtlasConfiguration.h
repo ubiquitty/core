@@ -5,11 +5,55 @@
 
 #include "Base/SwiftInterop.h"
 #include "Core/Rendering/GlyphSlotCache.h"
+#include "Core/Rendering/RenderConfiguration.h"
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace Ubiquitty::Rendering {
+
+/// The provider's resolved native font resources, before GPU storage exists.
+struct FontResourceFact {
+    std::string role;
+    std::string path;
+    std::uint64_t faceIndex = 0;
+    std::uint64_t device = 0;
+    std::uint64_t inode = 0;
+    std::uint64_t byteSize = 0;
+    std::uint64_t modifiedSeconds = 0;
+    std::uint64_t modifiedNanoseconds = 0;
+};
+
+/// Describes the resolved font catalog and routing facts that determine glyph sharing.
+struct FontProviderResourceFacts {
+    /// Describes one ordered language or code-point fallback rule.
+    struct FallbackRuleFact {
+        int script = 0;
+        std::string language;
+        std::string family;
+        std::uint32_t firstCodePoint = 0;
+        std::uint32_t lastCodePoint = 0;
+        int sizing = 0;
+        bool shouldYieldToEmoji = false;
+    };
+    std::uint64_t catalogIdentity = 0;
+    std::uint64_t catalogGeneration = 0;
+    double rasterPixelSize = 0;
+    int deviceScale = 0;
+    int lineSpacingInPixels = 0;
+    int trackingInPixels = 0;
+    int bitmapScale = 0;
+    std::vector<FontResourceFact> faces;
+    std::string cjkFallbackFamily;
+    std::string symbolFallbackFamily;
+    std::string emojiFallbackFamily;
+    bool shouldMatchFallbackSize = true;
+    std::vector<FallbackRuleFact> languageFallbacks;
+    std::vector<FallbackRuleFact> rangeMaps;
+    /// Only typography participates: colors, padding and other view state do not.
+    RenderConfiguration configuration;
+};
 
 /// Names the immutable facts that determine one set of shared glyph sheets.
 ///
@@ -46,6 +90,11 @@ struct UBIQUITTY_NONCOPYABLE AtlasConfiguration {
     std::string userVariationSpecification;
     bool doesFontLigate = false;
     bool wantsLigatures = false;
+    FontProviderResourceFacts providerResourceFacts;
+
+    /// Native font identity using the same exact encoder as the GPU sheet key.
+    /// Does not depend on a device, sheet capacity or slot layout.
+    [[nodiscard]] std::string fontSharingKey() const;
 
     /// Encodes every fact without delimiter, rounding, or hash collisions.
     ///

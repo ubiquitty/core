@@ -26,6 +26,7 @@
 #include "Core/Rendering/BoxStrokeProfile.h"
 
 #include <cmath>
+#include <utility>
 #include <vector>
 
 using Ubiquitty::Rendering::BoxFillStats;
@@ -354,6 +355,37 @@ TEST(powerlineOutlineStrokeFollowsTheReferenceHeightNotTheCell)
         "the Powerline quad still spans the full spaced cell");
 }
 
+TEST(powerlineChevronEndsFitInsideTheCellPerpendicularToTheDeviceArm)
+{
+    using namespace Ubiquitty::Rendering::BoxDrawing;
+    for (const std::uint32_t codePoint : { 0xE0B1u, 0xE0B3u }) {
+        PowerlineShape shape {};
+        REQUIRE(powerlineShape(codePoint, &shape));
+        for (const auto& size : { std::pair { 16.0f, 24.0f }, std::pair { 16.0f, 48.0f }, std::pair { 32.0f, 48.0f } }) {
+            OverlayInstance quad {};
+            REQUIRE(emitBoxFill(codePoint, 0, 0, size.first, size.second, white, &quad, 1, &shape) == 1);
+            const float deltaX = (quad.plA.z - quad.plA.x) * size.first;
+            const float deltaY = (quad.plA.w - quad.plA.y) * size.second;
+            const float length = std::hypot(deltaX, deltaY);
+            const float ux = deltaX / length, uy = deltaY / length;
+            const float cap = quad.plB.w * size.second;
+            const float stroke = 2 * quad.plB.z * size.second;
+            const float normalX = -std::copysign(std::abs(uy), ux);
+            const float normalY = std::abs(ux);
+            const float outerX = quad.plA.x * size.first + ux * cap;
+            const float outerY = quad.plA.y * size.second + uy * cap;
+            const float innerX = outerX + normalX * stroke;
+            const float innerY = outerY + normalY * stroke;
+            CHECK_MSG(approx((innerX - outerX) * ux + (innerY - outerY) * uy, 0),
+                "the cap crosses the actual diagonal at ninety degrees");
+            CHECK_MSG(approx(innerX, quad.plA.x * size.first),
+                "the inner cap corner just reaches the cell edge instead of being clipped vertically");
+            CHECK_MSG(outerX >= 0 && outerX <= size.first && outerY >= 0 && innerY <= size.second,
+                "both ends of the full-width cap fit inside the device cell");
+        }
+    }
+}
+
 /// A fill's partial coverage takes the text composite's curve; its solid
 /// coverage does not move.
 ///
@@ -390,6 +422,8 @@ TEST(clippedAnalyticBoxesKeepTheirOriginalShapeCoordinates)
             CHECK(approx(8 + whole.plA.z * 16, 12 + cut.plA.z * 8));
             CHECK(approx(8 + whole.plA.w * 32, 16 + cut.plA.w * 8));
             CHECK(approx(whole.plB.z * 32, cut.plB.z * 8));
+            if (shape.kind == PowerlineShapeKind::OutlineWedge)
+                CHECK(approx(whole.plB.w * 32, cut.plB.w * 8));
         }
         CHECK(emitBoxFill(codePoint, 8, 8, 24, 40, white, nullptr, 0, &shape, nullptr, 0, nullptr, clip) == 1);
     }

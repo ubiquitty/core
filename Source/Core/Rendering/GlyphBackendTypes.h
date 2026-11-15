@@ -508,6 +508,8 @@ struct UBIQUITTY_ESCAPABLE GlyphInkBox {
 /// The frame-lifetime rule the tag would have carried belongs to the pointers
 /// below and is stated on them.
 struct UBIQUITTY_ESCAPABLE MonoAtlasBinding {
+    /// Actual raster phases per pixel; zero inherits the frame for legacy providers.
+    int phaseCount = 0;
     GlyphSlotCache* cache = nullptr;
     GlyphSlotGeometry geometry;
 

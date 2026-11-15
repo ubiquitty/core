@@ -12,6 +12,7 @@
 // and this rule, so neither spells the chord or the yield itself.
 
 #include "Core/Input/Keybindings.h"
+#include "Core/Preferences/PreferencesAccessors.h"
 
 #include <vector>
 
@@ -134,3 +135,47 @@ TEST(testAShiftedChordNamesTheKeyRatherThanWhatShiftMadeOfIt)
 }
 
 UBIQUITTY_TEST_MAIN()
+
+TEST(lineSpacingDefaultsAcceptShiftedPunctuationAndYieldToUserBindings)
+{
+    for (const auto modifier : { bindModSuper, bindModCtrl }) {
+        BindingTable table;
+        for (const auto key : { static_cast<std::uint32_t>('='), static_cast<std::uint32_t>('+') }) {
+            BindingAction action;
+            CHECK(resolveDefaultBinding(table, { key, modifier | bindModShift }, action));
+            CHECK(action.kind == ActionKind::IncreaseLineSpacing);
+        }
+        for (const auto key : { static_cast<std::uint32_t>('-'), static_cast<std::uint32_t>('_') }) {
+            BindingAction action;
+            CHECK(resolveDefaultBinding(table, { key, modifier | bindModShift }, action));
+            CHECK(action.kind == ActionKind::DecreaseLineSpacing);
+        }
+        BindingAction ordinary;
+        CHECK(!resolveDefaultBinding(table, { '=', modifier }, ordinary));
+        CHECK(!resolveDefaultBinding(table, { '-', modifier }, ordinary));
+    }
+    BindingTable remapped;
+    CHECK(remapped.add("ctrl+alt+l", "increase_line_spacing"));
+    BindingAction action;
+    CHECK(!resolveDefaultBinding(remapped, { '+', bindModCtrl | bindModShift }, action));
+    BindingTable owned;
+    CHECK(owned.add("ctrl+shift+=", "copy"));
+    CHECK(!resolveDefaultBinding(owned, { '+', bindModCtrl | bindModShift }, action));
+    CHECK(resolveChordKey('+', 0, bindModCtrl | bindModShift) == '=');
+    CHECK(resolveChordKey('_', 0, bindModCtrl | bindModShift) == '-');
+    ChordResolver resolver(owned);
+    CHECK(resolver.feed({ resolveChordKey('+', 0, bindModCtrl | bindModShift), bindModCtrl | bindModShift }, action) == ResolveResult::Matched);
+    CHECK(action.kind == ActionKind::Copy);
+}
+
+TEST(lineSpacingStepsPersistOneDevicePixelAsFractionalPoints)
+{
+    using Ubiquitty::Preferences::Zoom::lineSpacingAfterPixelStep;
+    CHECK(std::abs(lineSpacingAfterPixelStep(2, 2, 1) - 1.5) < 1e-12);
+    CHECK(std::abs(lineSpacingAfterPixelStep(3, 2, -1) - 1.0) < 1e-12);
+    CHECK(std::abs(lineSpacingAfterPixelStep(3, 96.0 / 72.0 * 2, 1) - 1.5) < 1e-12);
+    CHECK(lineSpacingAfterPixelStep(0, 2, -1) == 0);
+    CHECK(lineSpacingAfterPixelStep(32, 2, 1) == 16);
+    CHECK(std::abs(lineSpacingAfterPixelStep(2.49, 2, 1) - 1.5) < 1e-12);
+    CHECK(lineSpacingAfterPixelStep(2, 0, 1) == 0);
+}

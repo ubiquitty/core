@@ -907,11 +907,13 @@ TEST(testNewAppearanceAndCursorFields)
                            "system_dark_theme = \"Ayu Mirage\"\n"
                            "system_light_theme = \"Ayu Light\"\n"
                            "[cursor]\n"
-                           "alpha = 200\n");
+                           "alpha = 200\n"
+                           "outline_thickness = 1.5\n");
     CHECK(c.followSystemAppearance == true);
     CHECK(c.systemDarkThemeName == "Ayu Mirage");
     CHECK(c.systemLightThemeName == "Ayu Light");
     CHECK(c.cursorAlpha == 200);
+    CHECK(c.cursorOutlineThickness == 1.5);
 
     // Keyed by NAME only — a non-string system_*_theme value is not honored.
     Values ints = parseString("[appearance]\n"

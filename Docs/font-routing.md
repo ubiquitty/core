@@ -124,11 +124,17 @@ The route policy applies this exact order:
 2. Apply an explicit `font.range_map` override when one matches the codepoint or
    cluster lead, then the built-in ranges (`Font::defaultRangeMaps`): the media
    controls U+23E9–23FA, Geometric Shapes U+25A0–25FF and the large shapes
-   U+2B12–2B2F route to the bundled Monaspace Neon, which draws all of them, so
+   U+2B12–2B2F route to the bundled Monaspace Neon, so
    a primary face's gaps among `● ○ ◯ ⏺ ⬤ ◐` come from one face instead of
    whichever system face the later stages reach. A built-in range yields to
    emoji presentation, and a code point its family lacks goes on to the next
-   stage.
+   stage. These built-in ranges use the font's nominal em, preserving the
+   geometric glyphs' baseline-relative design centre. Letter x-height matching
+   can enlarge a symbol around its baseline and move that centre away from
+   neighbouring primary glyphs. An explicit user range still takes precedence
+   and can request `match_size = true`. The bundled Noto Sans text face lacks
+   `◐` (U+25D0), so substituting that family would not provide a deterministic
+   replacement for these symbols.
 3. For Unified Han, use the Han path only:
    1. exact `font.language_fallbacks` script/language preference,
    2. script-default Han preference,

@@ -1264,8 +1264,9 @@ void markRowInkCrossingsOver(float gridTop, float cellHeight, int rows, const Mo
 
 } // namespace
 
-InstanceCounts buildCellInstances(const BuildInputs& in, const GlyphBackend& atlas, const InstanceBuffers& out)
+InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBackend& atlas, const InstanceBuffers& out)
 {
+    BuildInputs in = requested;
     InstanceCounts counts;
     if (in.isScreenBlanked) {
         counts.overlays = 1;
@@ -1286,6 +1287,9 @@ InstanceCounts buildCellInstances(const BuildInputs& in, const GlyphBackend& atl
     if (!isDrawable(atlas))
         return counts;
     atlas.beginFrame(atlas.context);
+    const MonoAtlasBinding mono = atlas.bindMonoAtlas(atlas.context);
+    if (mono.phaseCount > 0)
+        in.subpixelPhaseCount = std::clamp(mono.phaseCount, 1, subpixelPhaseCount);
     if (!in.cells || !in.palette || in.rows <= 0 || in.columns <= 0)
         return counts;
     // Per build, as the slots its windows name are touched per frame.
@@ -1398,7 +1402,6 @@ InstanceCounts buildCellInstances(const BuildInputs& in, const GlyphBackend& atl
     // the code-point range, so a session that never did — nearly all of them —
     // reaches the range test only through a branch that always falls the same way.
     const bool hasSoftFont = in.softFont != nullptr && in.softFont->valid;
-    const MonoAtlasBinding mono = atlas.bindMonoAtlas(atlas.context);
     // Release a superseded soft font's slots before anything competes for them.
     // Bounded by `drcsMaxCells` and reached only on the frame a download lands,
     // and a key that was never resident costs one hash probe.

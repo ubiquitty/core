@@ -6,6 +6,7 @@
 #include "Platform/StreamDouble.h"
 #include "ScreenPlaneFixture.h"
 #include "SoleModelThread.h"
+#include "TerminalFixture.h"
 #include "WorkspaceStructureFixture.h"
 
 // test_attach_over_carrier.cpp — the attach door an embedder supplies the carrier through.
@@ -970,6 +971,54 @@ TEST(aLinuxViewportStagesPixelsBeforeItsSingleLocalResize)
     session->unlockForRead();
     CHECK(publisher.publish(*session, { 40, 12 }, pixels) == Linux::ViewportPublication::Pixels);
     CHECK(publisher.publish(*session, { 40, 12 }, pixels) == Linux::ViewportPublication::Unchanged);
+}
+
+TEST(aLinuxHeightResizeKeepsThePrimaryTailWhileANonShellChildRuns)
+{
+    using namespace Ubiquitty;
+    const auto release = [](TerminalSession* value) { releaseTerminalSession(value); };
+    std::unique_ptr<TerminalSession, decltype(release)> session(makeStartedSession(), release);
+    REQUIRE(session);
+    auto stream = std::make_unique<TestDoubles::StreamDouble>();
+    stream->facts.isShell = false;
+    stream->facts.group = 123;
+    stream->facts.name = "sleep";
+    stream->pushInbound("\033[?7723l");
+    REQUIRE(session->adoptStream(std::move(stream)).has_value());
+    session->drain();
+    Linux::PaneViewportPublisher publisher;
+    const auto publish = [&](int rows) {
+        return publisher.publish(*session, { 20, rows }, { { 9, 18 }, { 180, rows * 18 }, { 180, rows * 18 } });
+    };
+    REQUIRE(publish(6) == Linux::ViewportPublication::Grid);
+    session->lockForRead();
+    auto* const terminal = session->paneView().terminal;
+    processBytes(terminal, "history\r\nfirst\r\nsecond\r\nthird\r\nfourth\r\nfifth\r\nZ");
+    const int historyBefore = terminal->scrollbackCount;
+    session->unlockForRead();
+    REQUIRE(publish(3) == Linux::ViewportPublication::Grid);
+    session->lockForRead();
+    CHECK_EQ(UbiquittyTest::cell(*terminal, 2, 0)->codePoint, 'Z');
+    CHECK_EQ(terminal->screens.primary.cursorY, 2);
+    CHECK_EQ(terminal->scrollbackCount, historyBefore + 3);
+    session->unlockForRead();
+    REQUIRE(publish(6) == Linux::ViewportPublication::Grid);
+    session->lockForRead();
+    CHECK_EQ(UbiquittyTest::cell(*terminal, 5, 0)->codePoint, 'Z');
+    CHECK_EQ(terminal->screens.primary.cursorY, 5);
+    CHECK_EQ(terminal->scrollbackCount, historyBefore);
+    processBytes(terminal, "\033[?1049h\033[HTOP\033[6;1HBOTTOM");
+    session->unlockForRead();
+    REQUIRE(publish(3) == Linux::ViewportPublication::Grid);
+    session->lockForRead();
+    CHECK_EQ(UbiquittyTest::cell(*terminal, 0, 0)->codePoint, 'T');
+    CHECK_EQ(terminal->scrollbackCount, historyBefore);
+    session->unlockForRead();
+    REQUIRE(publish(6) == Linux::ViewportPublication::Grid);
+    session->lockForRead();
+    CHECK_EQ(UbiquittyTest::cell(*terminal, 0, 0)->codePoint, 'T');
+    CHECK_EQ(terminal->scrollbackCount, historyBefore);
+    session->unlockForRead();
 }
 
 TEST(aLinuxRemoteViewportKeepsTheHostPictureAndSendsOneCompleteAsk)

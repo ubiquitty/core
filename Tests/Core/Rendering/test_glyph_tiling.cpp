@@ -372,3 +372,28 @@ TEST(onlyTheBoxDrawingBlockRastersUnhinted)
 } // namespace
 
 UBIQUITTY_TEST_MAIN()
+
+TEST(symbolFallbackBaselinesMatchFaceDesignCentres)
+{
+    using Ubiquitty::Rendering::symbolFallbackBaselineRaise;
+    // Bundled JetBrains Mono and Symbols Nerd Font Mono, in native em units.
+    for (double size : { 11.0, 12.0, 15.0, 22.0, 24.0, 30.0 }) {
+        const double raise = symbolFallbackBaselineRaise(1.020 * size, 0.300 * size,
+            1638.0 / 2048 * size, 410.0 / 2048 * size);
+        CHECK(std::abs(raise - (0.36 - 614.0 / 2048) * size) < 0.000001);
+        CHECK(symbolFallbackBaselineRaise(size, size / 4, size, size / 4) == 0);
+    }
+    CHECK(symbolFallbackBaselineRaise(0, 0, 1, 0) == 0);
+    CHECK(symbolFallbackBaselineRaise(1, -1, 1, 0) == 0);
+}
+
+TEST(fallbackInkKeepsItsBaselineUntilItWouldClip)
+{
+    using Ubiquitty::Rendering::fallbackInkTopInSlot;
+    CHECK(fallbackInkTopInSlot(0xF07B, 3, 12, 20) == 3);
+    CHECK(fallbackInkTopInSlot(0xF07B, -2, 12, 20) == 0);
+    CHECK(fallbackInkTopInSlot(0xF07B, 12, 12, 20) == 8);
+    CHECK(fallbackInkTopInSlot(0xF07B, 12, 24, 20) == -2);
+    CHECK(fallbackInkTopInSlot(0x23D0, -2, 12, 20) == -2);
+    CHECK(fallbackInkTopInSlot(0x239B, 12, 24, 20) == 12);
+}

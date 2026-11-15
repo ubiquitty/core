@@ -172,6 +172,8 @@ struct OverlayBoxDrawSink final : BoxDrawSink {
                 point(2);
                 point(4);
                 adjusted.p[6] *= scaleY;
+                if (shape.kind == Kind::OutlineWedge)
+                    adjusted.p[7] *= scaleY;
             }
         }
         if (needed < maxOut) {
@@ -370,6 +372,16 @@ int emitBoxFill(std::uint32_t codePoint, float left, float top, float right, flo
             adjusted.p[strokeSlot] = profile->lightVertical.thicknessInCell * cellWidth * 0.5f / cellHeight;
         } else if (isOutlineStroke && cellHeight > 0.0f && strokeBasis != cellHeight) {
             adjusted.p[strokeSlot] *= strokeBasis / cellHeight;
+        }
+        if (adjusted.kind == Rendering::BoxDrawing::PowerlineShapeKind::OutlineWedge
+            && cellWidth > 0.0f && cellHeight > 0.0f) {
+            // The inward band reaches outside the cell at each corner. Move
+            // its perpendicular end plane along the actual device-space arm
+            // until the whole cap fits inside, rather than letting the cell's
+            // vertical edge slice the stroke. Both chevron arms are symmetric.
+            const float armX = std::abs(adjusted.p[2] - adjusted.p[0]) * cellWidth;
+            const float armY = std::abs(adjusted.p[3] - adjusted.p[1]) * cellHeight;
+            adjusted.p[7] = armX > 0.0f ? 2.0f * adjusted.p[6] * armY / armX : 0.0f;
         }
         sink.shapeQuad(left, top, right, bottom, adjusted);
         if (stats && sink.needed > 0)

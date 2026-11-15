@@ -851,7 +851,7 @@ def find_binary(argument, backend):
         macos = (BUILD_ROOT / "macos" / "Source" / "Platform" /
                  "macOS" / "Ubiquitty.app" / "Contents" / "MacOS" /
                  "Ubiquitty")
-        linux = BUILD_ROOT / "linux" / "ubiquitty-linux"
+        linux = BUILD_ROOT / "linux" / "ubiquitty"
         # The web frontend is a wasm module rather than a program, so its arm is
         # the script that loads one. It ships in the tree instead of a build
         # directory, and answers --print-render-binary with the module the
@@ -2290,7 +2290,7 @@ def _main(argv=None):
     parser.add_argument("--web-binary",
                         help="the web arm's launcher (default Scripts/web-snapshot-shim.mjs)")
     parser.add_argument("--linux-binary",
-                        help="the Linux frontend, ubiquitty-linux, as Scripts/build-linux-gtk.sh builds it")
+                        help="the Linux frontend, ubiquitty, as Scripts/build-linux-gtk.sh builds it")
     parser.add_argument("--backend", choices=("all", "portable", "macos", "ios", "linux", "web", "swift"),
                         default="all" if sys.platform == "darwin" else "portable",
                         help="renderer catalog to run")

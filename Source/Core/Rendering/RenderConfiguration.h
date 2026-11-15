@@ -214,6 +214,7 @@ struct RenderConfiguration {
 
     /// The cursor colour's alpha, 0-1.
     double cursorAlpha = 1;
+    double cursorOutlineThicknessPoints = 1;
     /// Whether the glyph under a block cursor inverts.
     bool shouldCursorInvertText = false;
     /// Whether cursor and SGR blink fade rather than switch.

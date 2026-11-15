@@ -107,6 +107,9 @@ public:
     ///
     /// - Returns: True.
     [[nodiscard]] bool hasProportionalFace() const override { return true; }
+    /// The proportional strike's phases, independent of the one-phase grid bitmap.
+    /// - Returns: The strike's raster grid, or Core's grid for its outline tier.
+    [[nodiscard]] int proportionalGlyphPhaseCount() const override;
     /// The rows the strike's ink reaches past the cell, above or below,
     /// times the upscale: a strip's slot grows by it on both sides so a
     /// descender at the cell's edge is drawn rather than cut.

@@ -195,6 +195,7 @@ enum class Key {
     CursorLinger,
     CursorBlinkRate,
     CursorAlpha,
+    CursorOutlineThickness,
     CursorInvertText,
     CursorMotion,
 
@@ -443,6 +444,7 @@ inline constexpr WriteDescriptor writeDescriptors[] = {
     { Key::CursorLinger, "cursor", "linger", SerializeKind::Int },
     { Key::CursorBlinkRate, "cursor", "blink_rate", SerializeKind::Int },
     { Key::CursorAlpha, "cursor", "alpha", SerializeKind::Int },
+    { Key::CursorOutlineThickness, "cursor", "outline_thickness", SerializeKind::Double },
     { Key::CursorInvertText, "cursor", "invert_text", SerializeKind::Bool },
     { Key::CursorMotion, "cursor", "motion", SerializeKind::EnumToken },
 

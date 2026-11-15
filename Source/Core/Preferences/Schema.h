@@ -67,6 +67,7 @@ inline constexpr RangeEntry ranges[] = {
     // [cursor]
     { "cursor", "linger", { 0.0, 240.0, 5.0, "fr" } }, // Cursor Linger stepper
     { "cursor", "blink_rate", { 200.0, 2000.0, 50.0, "ms" } }, // Cursor Blink Rate stepper (period, one full cycle)
+    { "cursor", "outline_thickness", { 0.5, 8.0, 0.5, "pt" } }, // Unfocused cursor outline
     { "cursor", "alpha", { 0.0, 255.0, 1.0, "" } }, // Cursor Alpha slider (0..1 of 255)
     // [paste]
     { "paste", "confirm_multiline_threshold", { 1.0, 1000.0, 1.0, "ln" } }, // Multi-line paste threshold stepper

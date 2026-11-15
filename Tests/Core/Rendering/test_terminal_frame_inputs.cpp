@@ -1041,6 +1041,29 @@ TEST(testRepeatedFrameCapturePresentationReturnsToItsOriginalTarget)
     releaseFrameCapture(capture);
 }
 
+TEST(testDefaultViewportPreservesCursorPresentationAcrossExplicitGridCapture)
+{
+    auto terminal = makeTerminal();
+    const auto metrics = unifontMetrics();
+    TerminalFrameInputs frame;
+    CursorPresentation presentation;
+    TerminalSnapshotOptions options;
+    feed(*terminal, "\033[2;3H");
+    REQUIRE(frame.capture(*terminal, options, metrics, GlyphSlotGeometry {}));
+    frame.applyCursorPresentation(presentation, 0, 0.016, false);
+
+    // Zero viewport means the exact grid. Switching to its explicit equivalent
+    // must preserve the pending cursor hold, rather than reset its geometry.
+    options.viewportSizeInPixels = { terminal->columns * metrics.cellWidth, terminal->rows * metrics.cellHeight };
+    feed(*terminal, "\033[2;4H");
+    REQUIRE(frame.capture(*terminal, options, metrics, GlyphSlotGeometry {}));
+    frame.applyCursorPresentation(presentation, 1, 0.016, false);
+    CHECK(presentation.isHolding());
+    CHECK_EQ(frame.inputs().cursor.column, 2);
+    frame.applyCursorPresentation(presentation, 1.017, 0.016, false);
+    CHECK_EQ(frame.inputs().cursor.column, 3);
+}
+
 TEST(testCaptureHardSuppressionCancelsCursorPresentation)
 {
     enum class Suppression {

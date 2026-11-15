@@ -42,6 +42,7 @@ bool same(std::string_view left, const char* right) { return left == right; }
 class PolicyFakeInventory final : public FontInventory {
 public:
     FontFamilyRequest lastFamilyRequest;
+    double geometricScale = 0;
     [[nodiscard]] std::uint32_t catalogGeneration() const override { return 1; }
     void bumpCatalogGeneration() override { }
 
@@ -64,8 +65,11 @@ public:
             return technicalFont;
         if (same(request.family, "Symbols Nerd Font Mono"))
             return bundledSymbolFont;
-        if (same(request.family, "Monaspace Neon"))
+        if (same(request.family, "Monaspace Neon")) {
+            geometricScale = request.sizing == Ubiquitty::Rendering::FontMetrics::FallbackSizing::Nominal ? 1.0
+                                                                                                          : Ubiquitty::Rendering::FontMetrics::fallbackScale({ 0.550, 0.730, 1.320 }, { 0.5135, 0.730, 1.145 });
             return bundledGeometricFont;
+        }
         if (same(request.family, "Emoji Font"))
             return emojiFont;
         if (same(request.family, "Arabic Font"))
@@ -77,7 +81,7 @@ public:
     {
         if (font == primaryFontHandle && (codePoint == 'A' || codePoint == '1' || codePoint == 0x2764 || codePoint == 0x25CF))
             return { font, { 65 }, true, false };
-        if (font == bundledGeometricFont && (codePoint == 0x23FA || codePoint == 0x25B6 || codePoint == 0x25CF || codePoint == 0x25EF))
+        if (font == bundledGeometricFont && (codePoint == 0x23FA || codePoint == 0x25B6 || codePoint == 0x25CF || codePoint == 0x25D0 || codePoint == 0x25D1 || codePoint == 0x25D2 || codePoint == 0x25EF || codePoint == 0x2B24))
             return { font, { 900 }, true, false };
         if (font == rangeFont && (codePoint == 0x4E01 || codePoint == 0x4E02 || codePoint == 0x2764 || codePoint == 0x25EF))
             return { font, { 200 }, true, false };
@@ -648,6 +652,32 @@ TEST(privateUseIconsKeepCellSizingUnlessARangeOverridesIt)
     preferences.rangeMaps = std::span(&range, 1);
     CHECK(harness.policy.route(requestFor(0xE0B0), preferences).source == FontSource::RangeMap);
     CHECK(harness.inventory.lastFamilyRequest.sizing == FallbackSizing::MatchPrimary);
+}
+
+TEST(builtInGeometricSymbolsKeepTheirEmDespiteDifferentLetterXHeights)
+{
+    using Ubiquitty::Rendering::FontMetrics::FallbackSizing;
+    Harness harness;
+    auto preferences = emptyPreferences();
+    preferences.rangeMaps = defaultRangeMaps;
+    for (std::uint32_t codePoint : { 0x23FAU, 0x25D0U, 0x25D1U, 0x25D2U, 0x25EFU, 0x2B24U }) {
+        const auto route = harness.policy.route(requestFor(codePoint), preferences);
+        CHECK(route.font == bundledGeometricFont);
+        CHECK(route.source == FontSource::RangeMap);
+        CHECK(harness.inventory.lastFamilyRequest.sizing == FallbackSizing::Nominal);
+        CHECK_NEAR(harness.inventory.geometricScale, 1.0, 0.000001);
+    }
+    const auto primary = harness.policy.route(requestFor(0x25CF), preferences);
+    CHECK(primary.source == FontSource::Primary);
+    CHECK(primary.font == primaryFontHandle);
+    // Same physical family, different sizing policy: a warm built-in range
+    // must not mask the user's explicit optical matching preference.
+    const std::array<RangeMapPreference, 2> override { { { 0x25A0, 0x25FF, bundledGeometricSymbolFamily, FallbackSizing::MatchPrimary }, defaultRangeMaps[1] } };
+    preferences.rangeMaps = override;
+    const auto matched = harness.policy.route(requestFor(0x25D0), preferences);
+    CHECK(matched.font == bundledGeometricFont);
+    CHECK(harness.inventory.lastFamilyRequest.sizing == FallbackSizing::MatchPrimary);
+    CHECK_MSG(harness.inventory.geometricScale > 1.07, "the fake faces have different x-heights, so explicit matching is observably different");
 }
 
 UBIQUITTY_TEST_MAIN()

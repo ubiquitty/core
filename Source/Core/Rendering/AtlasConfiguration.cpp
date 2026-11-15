@@ -3,6 +3,7 @@
 
 #include "Core/Rendering/AtlasConfiguration.h"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <string_view>
@@ -105,6 +106,113 @@ bool isValidGeometry(const GlyphSlotGeometry& geometry)
         && isValidBand(profile.doubleHorizontal) && isValidBand(profile.doubleVertical);
 }
 
+void appendTypography(ConfigurationEncoder& encoder, const RenderConfiguration& value)
+{
+    for (const auto* text : { &value.fontFamily, &value.proportionalFontFamily, &value.symbolFallbackFamily, &value.cjkFallbackFamily, &value.emojiFallbackFamily })
+        encoder.append(text->string());
+    encoder.append(value.fontSizePoints);
+    encoder.append(value.proportionalFontSizePoints);
+    encoder.append(value.fontFeatures.string());
+    encoder.append(value.fontVariations.string());
+    encoder.append(static_cast<int>(value.hasLigatures));
+    encoder.append(value.fontWeight);
+    encoder.append(value.boldFontWeight);
+    encoder.append(value.fontWidthPercent);
+    encoder.append(value.lineSpacingPoints);
+    encoder.append(value.characterSpacingPoints);
+    encoder.append(value.baselineOffsetPoints);
+    encoder.append(static_cast<int>(value.shouldMatchFallbackSize));
+    encoder.append(static_cast<int>(value.shouldBoostWideGlyphs));
+    encoder.append(value.wideGlyphScale);
+    encoder.append(static_cast<int>(value.shouldDrawBrailleGrid));
+    encoder.append(static_cast<int>(value.brailleStyle));
+    encoder.append(static_cast<int>(value.shadeStyle));
+    const auto appendRule = [&](const FallbackRule& rule) {
+        encoder.append(rule.script.string());
+        encoder.append(rule.language.string());
+        encoder.append(rule.mode.string());
+        encoder.append(rule.family.string());
+        encoder.append(static_cast<std::uint64_t>(rule.firstCodePoint));
+        encoder.append(static_cast<std::uint64_t>(rule.lastCodePoint));
+        encoder.append(static_cast<int>(rule.sizing));
+    };
+    encoder.append(static_cast<int>(value.languageFallbackCount));
+    for (std::size_t index = 0; index < std::min<std::size_t>(value.languageFallbackCount, value.languageFallbacks.size()); ++index)
+        appendRule(value.languageFallbacks[index]);
+    encoder.append(static_cast<int>(value.rangeMapCount));
+    for (std::size_t index = 0; index < std::min<std::size_t>(value.rangeMapCount, value.rangeMaps.size()); ++index)
+        appendRule(value.rangeMaps[index]);
+}
+
+void appendFontFacts(ConfigurationEncoder& encoder, const AtlasConfiguration& value)
+{
+    encoder.append(value.familyName);
+    encoder.append(value.pointSize);
+    encoder.append(value.pixelsPerPoint);
+    encoder.append(value.unifontScale);
+    encoder.append(value.fontWeight);
+    encoder.append(value.boldFontWeight);
+    encoder.append(value.fontWidthPercent);
+    encoder.append(value.proportionalFamilyName);
+    encoder.append(value.proportionalPointSize);
+    encoder.append(value.cjkFallbackFamily);
+    encoder.append(value.cjkFallbackLanguage);
+    encoder.append(value.symbolFamilyName);
+    encoder.append(value.symbolFontPath);
+    encoder.append(value.ligatureFeatureSpecification);
+    encoder.append(value.userFeatureSpecification);
+    encoder.append(value.userVariationSpecification);
+    encoder.append(static_cast<int>(value.doesFontLigate));
+    encoder.append(static_cast<int>(value.wantsLigatures));
+    const auto& facts = value.providerResourceFacts;
+    encoder.append(facts.catalogIdentity);
+    encoder.append(facts.catalogGeneration);
+    encoder.append(facts.rasterPixelSize);
+    encoder.append(facts.deviceScale);
+    encoder.append(facts.lineSpacingInPixels);
+    encoder.append(facts.trackingInPixels);
+    encoder.append(facts.bitmapScale);
+    encoder.append(static_cast<std::uint64_t>(facts.faces.size()));
+    for (const auto& face : facts.faces) {
+        encoder.append(face.role);
+        encoder.append(face.path);
+        encoder.append(face.faceIndex);
+        encoder.append(face.device);
+        encoder.append(face.inode);
+        encoder.append(face.byteSize);
+        encoder.append(face.modifiedSeconds);
+        encoder.append(face.modifiedNanoseconds);
+    }
+    encoder.append(facts.cjkFallbackFamily);
+    encoder.append(facts.symbolFallbackFamily);
+    encoder.append(facts.emojiFallbackFamily);
+    encoder.append(static_cast<int>(facts.shouldMatchFallbackSize));
+    for (const auto* rules : { &facts.languageFallbacks, &facts.rangeMaps }) {
+        encoder.append(static_cast<std::uint64_t>(rules->size()));
+        for (const auto& rule : *rules) {
+            encoder.append(rule.script);
+            encoder.append(rule.language);
+            encoder.append(rule.family);
+            encoder.append(static_cast<std::uint64_t>(rule.firstCodePoint));
+            encoder.append(static_cast<std::uint64_t>(rule.lastCodePoint));
+            encoder.append(rule.sizing);
+            encoder.append(static_cast<int>(rule.shouldYieldToEmoji));
+        }
+    }
+    appendTypography(encoder, facts.configuration);
+}
+
+}
+
+std::string AtlasConfiguration::fontSharingKey() const
+{
+    if (familyName.empty() || !std::isfinite(pointSize) || pointSize <= 0 || !std::isfinite(pixelsPerPoint) || pixelsPerPoint <= 0
+        || !std::isfinite(fontWidthPercent) || !std::isfinite(proportionalPointSize)
+        || !std::isfinite(providerResourceFacts.rasterPixelSize))
+        return {};
+    ConfigurationEncoder encoder;
+    appendFontFacts(encoder, *this);
+    return encoder.takeKey();
 }
 
 std::string AtlasConfiguration::sharingKey() const
@@ -118,6 +226,7 @@ std::string AtlasConfiguration::sharingKey() const
     }
 
     ConfigurationEncoder encoder;
+    appendFontFacts(encoder, *this);
     encoder.append(resourceDomain);
     encoder.append(familyName);
     encoder.append(pointSize);

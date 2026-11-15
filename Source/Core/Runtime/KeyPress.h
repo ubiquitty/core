@@ -3,6 +3,7 @@
 
 #pragma once
 #include "Core/Keys/KeyEvent.h"
+#include "Core/Keys/KeyTranslation.h"
 #include <cstdint>
 
 namespace Ubiquitty::Runtime {
@@ -83,6 +84,15 @@ struct KeyPress {
     /// agreeing; they do today and are still different questions.
     bool wasModified = false;
 };
+
+/// Identifies key presses that count as user activity.
+///
+/// - Parameter press: The semantic key event before protocol encoding.
+/// - Returns: False for releases and standalone modifier reports.
+inline bool keyPressCountsAsUserActivity(const KeyPress& press)
+{
+    return press.eventType != Keys::KeyEventType::Release && Keys::modifierKittyCodePoint(press.virtualKey) == 0;
+}
 
 /// What the terminal wants done with a key press.
 struct KeyEncoding {

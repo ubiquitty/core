@@ -1317,9 +1317,8 @@ void plTri(PowerlineShape* s, float ax, float ay, float bx, float by, float cx, 
 constexpr float plStrokeHalfY = 1.0f / 24.0f; // ≈ half of light (cellHeight/12)
 
 // Fill an OutlineWedge (thin chevron): the solid triangle's corners with b the
-// apex. The band runs from the two apex edges inward, so the corners and apex
-// stay on the stroke's outer boundary and the cell clip finishes the ends as
-// points — the bundled face's own construction.
+// apex. The band runs from the two apex edges inward. emitBoxFill resolves the
+// perpendicular endpoint-cap inset once the actual device cell is known.
 void plChevron(PowerlineShape* s, float ax, float ay, float bx, float by, float cx, float cy)
 {
     s->kind = PowerlineShapeKind::OutlineWedge;

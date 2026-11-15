@@ -173,6 +173,7 @@ const std::vector<Field>& fields()
         UBIQUITTY_FIELD(backgroundImageOpacity),
         UBIQUITTY_FIELD(backgroundImageMode),
         UBIQUITTY_FIELD(cursorAlpha),
+        UBIQUITTY_FIELD(cursorOutlineThicknessPoints),
         UBIQUITTY_FIELD(shouldCursorInvertText),
         UBIQUITTY_FIELD(shouldFadeBlink),
         UBIQUITTY_FIELD(isBellVisual),
@@ -193,7 +194,7 @@ const std::vector<Field>& fields()
 // A field added to the struct moves its size; this fails to compile until the
 // list above names it and the size here is updated with it. Every member is a
 // fixed-width type, so the layout is the same on every target.
-static_assert(sizeof(RenderConfiguration) == 10688, "a RenderConfiguration field is missing from the list above");
+static_assert(sizeof(RenderConfiguration) == 10696, "a RenderConfiguration field is missing from the list above");
 
 // Keys with no `Key` handle that still reach the renderer, at a non-default
 // value each. The write table covers what a settings surface edits; these are
@@ -346,10 +347,11 @@ TEST(testTitlelessPaddingTopIsIndependentOfTitledPadding)
 TEST(testTheFrameAppliersCarryTheCursorAndTheBell)
 {
     const RenderConfiguration configured = Effective::renderConfiguration(
-        parseDocument("[cursor]\nalpha = 128\ninvert_text = false\n[bell]\nvisual = true\nvisual_intensity = 0.6\n"));
+        parseDocument("[cursor]\nalpha = 128\noutline_thickness = 1.5\ninvert_text = false\n[bell]\nvisual = true\nvisual_intensity = 0.6\n"));
     Ubiquitty::Rendering::TerminalSnapshotOptions options;
     Effective::applyCursorSettings(options, configured);
     CHECK(std::abs(options.cursorAlpha - 128.0f / 255.0f) < 0.001f);
+    CHECK(options.cursorOutlineThicknessPoints == 1.5f);
     CHECK(!options.shouldCursorInvertText);
     CHECK_MSG(std::abs(Effective::bellFlashAlpha(configured, 1, 1) - 0.6f) < 0.001f, "a still frame as the bell rings draws the peak");
     CHECK_MSG(Effective::bellFlashAlpha(configured, 0, 1) == 0.0f, "no flash started is no flash");
