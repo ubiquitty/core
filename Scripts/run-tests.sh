@@ -1063,6 +1063,7 @@ CORE_SRCS=(
     "$ROOT/Source/Core/Screen/Cursor.cpp"
     "$ROOT/Source/Core/Screen/Erase.cpp"
     "$ROOT/Source/Core/Screen/SizedBlock.cpp"
+    "$ROOT/Source/Core/Rendering/PaddingGeometry.cpp"
     "$ROOT/Source/Core/Rendering/ProportionalRun.cpp"
     "$ROOT/Source/Core/Screen/Edit.cpp"
     "$ROOT/Source/Core/Screen/Rect.cpp"
