@@ -19,12 +19,14 @@ started still fails it.
 """
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -74,6 +76,22 @@ class BoundedFailureReporting(unittest.TestCase):
             text=True, capture_output=True, timeout=15)
         self.assertEqual(checked.returncode, 7, checked.stdout + checked.stderr)
         self.assertIn("sh exited with status 7", checked.stdout + checked.stderr)
+
+
+@unittest.skipUnless(sys.platform == "darwin", "The launchd environment applies to macOS")
+class InteractiveTestIsolation(unittest.TestCase):
+    def test_the_private_state_and_cleanup_mark_survive_the_launcher(self):
+        with tempfile.TemporaryDirectory(prefix="ubq-interactive-home-") as directory:
+            keys = ["UBIQUITTY_HOME", "UBQ_TEST_RUN", "UBQ_PRIVATE_CREDENTIAL_FIXTURE"]
+            environment = dict(os.environ, UBIQUITTY_HOME=directory,
+                               UBQ_TEST_RUN="interactive-isolation-fixture",
+                               UBQ_PRIVATE_CREDENTIAL_FIXTURE="must-not-forward")
+            probe = "import json, os; print(json.dumps([os.environ.get(key) for key in " + repr(keys) + "]))"
+            checked = subprocess.run(
+                [sys.executable, str(ROOT / "Scripts/run-presentation-test.py"), sys.executable, "-c", probe],
+                env=environment, text=True, capture_output=True, timeout=45)
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+            self.assertEqual(json.loads(checked.stdout), [directory, "interactive-isolation-fixture", None])
 
 
 class RunHygiene(unittest.TestCase):

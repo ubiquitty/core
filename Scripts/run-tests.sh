@@ -5603,7 +5603,8 @@ if wanted input_settled_echo && command -v cmake >/dev/null 2>&1; then
                 -std=c++23 -DUBIQUITTY_QUIC=1 -I"$QUIC_PREFIX/include" -I"$ROOT/Tests" -I"$ROOT/Source" -- \
                 "$ROOT/Tests/Host/input_settled_echo.cpp" \
                 -- "@$OUT/input-settled-echo-objs.txt" "${HOST_LINK_ARCHIVES[@]}"; then
-            "$OUT/input_settled_echo" || exit 1
+            # The echo's timed wake must not inherit a service's timer clamp.
+            python3 "$CORE_ROOT/Scripts/run-presentation-test.py" "$OUT/input_settled_echo" || exit 1
         else
             build_broken "input_settled_echo link failed (see $OUT/input-settled-echo-build.log)"
         fi

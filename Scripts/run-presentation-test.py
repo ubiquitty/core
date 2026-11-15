@@ -59,7 +59,8 @@ def run_interactive(command):
     # runner's credentials. Its working directory and exit status stay CTest's.
     names = {"HOME", "PATH", "TMPDIR", "DEVELOPER_DIR", "LLVM_PROFILE_FILE",
              "ASAN_OPTIONS", "UBSAN_OPTIONS", "TSAN_OPTIONS", "LSAN_OPTIONS",
-             "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH", "LANG", "LC_ALL"}
+             "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH", "LANG", "LC_ALL",
+             "UBIQUITTY_HOME", "UBQ_TEST_RUN"}
     environment = {key: value for key, value in os.environ.items() if key in names}
     handlers = {}
 
