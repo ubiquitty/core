@@ -16,6 +16,7 @@
 #endif
 
 #include "Platform/Host/Daemon.h"
+#include "Platform/Host/DaemonSignals.h"
 #include "Platform/Host/HostInstances.h"
 
 #include "Core/Crypto/SHA256.h"
@@ -336,34 +337,27 @@ std::uint64_t createDaemonInstanceID()
     return identity;
 }
 
-// SIGHUP requests a credential reload. The handler only sets this flag; the
-// run loop re-reads the consent list and re-verifies token clients at a safe
-// point. The handler installs without SA_RESTART so a
-// SIGHUP-interrupted poll() returns EINTR and the loop re-checks the flag
-// promptly.
-volatile sig_atomic_t gTokenStoreChanged = 0;
-void onTokenStoreSignal(int) { gTokenStoreChanged = 1; }
+// Control handlers post flags and a latched wake. The loop consumes the work
+// at a safe point even when the signal arrived just before it entered poll.
+// SIGHUP re-reads the consent list and re-verifies token clients there.
+void onTokenStoreSignal(int signal) { DaemonSignals::singleton().post(signal); }
 
-// SIGUSR1 asks the run loop to log why each client's input is or is not being
-// read, at the same safe point and by the same flag-and-EINTR route.
-volatile sig_atomic_t isHoldStateRequested = 0;
-void onHoldStateSignal(int) { isHoldStateRequested = 1; }
+// SIGUSR1 asks the run loop to log why each client's input is or is not read.
+void onHoldStateSignal(int signal) { DaemonSignals::singleton().post(signal); }
 
-// SIGTERM and SIGINT ask the daemon to stop, by the same flag-and-EINTR route.
+// SIGTERM and SIGINT ask the daemon to stop through the same latched wake.
 // The run loop stops at a point where no pane is held for a handover and
 // leaves by the tail a daemon whose last session ended takes: the workspace
 // records are written for the next host to take in, and the socket and PID
 // files are removed, so no client keeps dialling a socket nothing listens on.
-volatile sig_atomic_t isStopRequested = 0;
-void onStopSignal(int) { isStopRequested = 1; }
+void onStopSignal(int signal) { DaemonSignals::singleton().post(signal); }
 
 // SIGUSR2 asks a daemon that holds nothing to stop as SIGTERM stops it, so a
 // start of the same build asks the older hosts beside it again
 // (`Session::upgradeLocalHost`). One that holds a session, a workspace, an
 // adoption or a handover keeps serving; the request is answered once no
 // client is still greeting.
-volatile sig_atomic_t isIdleStopRequested = 0;
-void onIdleStopSignal(int) { isIdleStopRequested = 1; }
+void onIdleStopSignal(int signal) { DaemonSignals::singleton().post(signal); }
 
 // Read chunk off a PTY per poll wake.
 constexpr int ptyReadChunk = 65536;
@@ -1028,6 +1022,9 @@ bool Daemon::start(const char* socketPath, const char* processIDFilePath, const 
     // SIGPIPE on a dead client write must not kill the daemon; we detect dead
     // fds via the write return.
     ::signal(SIGPIPE, SIG_IGN);
+
+    if (!DaemonSignals::singleton().isReady())
+        return false;
 
     // SIGHUP → re-read the consent list and re-verify token clients.
     // No SA_RESTART so the run loop's poll()
@@ -12150,6 +12147,10 @@ bool Daemon::hasOutlivedItsLastSession() const
 
 int Daemon::run()
 {
+    auto& signals = DaemonSignals::singleton();
+    if (!signals.isReady())
+        return 1;
+    bool isIdleStopRequested = false;
     std::vector<struct pollfd> pfds;
     std::vector<uint32_t> sessionSlotIDs; // pfds[sessionBase+k] -> session id
     for (;;) {
@@ -12173,15 +12174,18 @@ int Daemon::run()
                 (void)::poll(nullptr, 0, 1);
             continue;
         }
-        if (isStopRequested)
+        const unsigned pendingSignals = signals.takePending();
+        if (DaemonSignals::hasEvent(pendingSignals, DaemonSignalEvent::Stop))
             break;
+        if (DaemonSignals::hasEvent(pendingSignals, DaemonSignalEvent::StopIfIdle))
+            isIdleStopRequested = true;
         // A client still greeting may be about to ask for a session, so the
         // request waits for every connection to greet or be dropped for not
         // greeting in time. A successor's handover connection is the pending
         // handover's.
         const auto isGreeting = [](const Client& client) { return !client.helloSeen && !client.didOverflow && !client.localHandoffCorrelation; };
         if (isIdleStopRequested && std::ranges::none_of(m_clients, isGreeting)) {
-            isIdleStopRequested = 0;
+            isIdleStopRequested = false;
             const bool isHoldingNothing = m_sessions.empty() && m_workspaces.empty() && !m_pendingLocalAdopt && !m_pendingHandover
                 && !(m_localAdoptTransactions && m_localAdoptTransactions->outcomeCount());
             if (isHoldingNothing) {
@@ -12194,16 +12198,14 @@ int Daemon::run()
         // truth again (a grant issued or withdrawn from outside), and any
         // live client whose token no longer validates is dropped, before the
         // usual reap pass reaps them.
-        if (gTokenStoreChanged) {
-            gTokenStoreChanged = 0;
+        if (DaemonSignals::hasEvent(pendingSignals, DaemonSignalEvent::ReloadCredentials)) {
             reloadCredentialStores();
         }
         // An edit no one announced is found here too, before this pass serves
         // anything that store-bound authority admits.
         if (holdsStoreBoundAuthority())
             refreshCredentialStoresIfChanged();
-        if (isHoldStateRequested) {
-            isHoldStateRequested = 0;
+        if (DaemonSignals::hasEvent(pendingSignals, DaemonSignalEvent::LogHoldState)) {
             logHoldState();
         }
 
@@ -12267,6 +12269,9 @@ int Daemon::run()
             processTreeWakeSlot = pfds.size();
             pfds.push_back({ m_processTreeWake->pipe.read.get(), POLLIN, 0 });
         }
+
+        const std::size_t signalWakeSlot = pfds.size();
+        pfds.push_back({ signals.fileDescriptor(), POLLIN, 0 });
 
         std::size_t sessionBase = pfds.size();
         for (auto& sp : m_sessions) {
@@ -12517,6 +12522,8 @@ int Daemon::run()
                 continue;
             break;
         }
+        if (pfds[signalWakeSlot].revents & POLLIN)
+            signals.drain();
 
         // Expiry also precedes readable-client dispatch: a client's signal
         // may bypass a backed-up PTY even without a POLLOUT event this pass.
