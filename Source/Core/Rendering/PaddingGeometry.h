@@ -219,6 +219,29 @@ struct UBIQUITTY_ESCAPABLE GridBox {
     int height = 0;
 };
 
+/// Resolves the four non-overlapping rectangles outside an image's grid.
+///
+/// Renderers fill these regions on a fresh frame or preserve them before a
+/// retained scroll moves grid rows. A newly exposed row still owns the full
+/// border, beyond the smaller glyph-overhang restoration strips.
+/// - Parameters:
+///   - image: The image extent, in whole device pixels.
+///   - grid: The grid box, clamped to the image.
+/// - Returns: Top, bottom, left and right border rectangles; empty ones are zero-sized.
+[[nodiscard]] inline std::array<IntRect, 4> imageBorderRects(IntSize image, GridBox grid)
+{
+    if (image.width <= 0 || image.height <= 0)
+        return {};
+    const int left = std::clamp(grid.left, 0, image.width);
+    const int top = std::clamp(grid.top, 0, image.height);
+    const int right = std::clamp(grid.left + grid.width, left, image.width);
+    const int bottom = std::clamp(grid.top + grid.height, top, image.height);
+    return { IntRect { { 0, 0 }, { image.width, top } },
+        IntRect { { 0, bottom }, { image.width, image.height - bottom } },
+        IntRect { { 0, top }, { left, bottom - top } },
+        IntRect { { right, top }, { image.width - right, bottom - top } } };
+}
+
 /// Paints the region of an image outside its grid box with one color.
 ///
 /// The complement of a composite that drew into the grid box: what a renderer
@@ -236,24 +259,14 @@ inline void fillImageBorder(std::vector<std::uint8_t>& rgba, int width, int heig
 {
     if (width <= 0 || height <= 0 || rgba.size() < static_cast<std::size_t>(width) * height * 4)
         return;
-    const int gridLeft = std::clamp(grid.left, 0, width);
-    const int gridTop = std::clamp(grid.top, 0, height);
-    const int gridRight = std::clamp(grid.left + grid.width, gridLeft, width);
-    const int gridBottom = std::clamp(grid.top + grid.height, gridTop, height);
-
     const auto paintSpan = [&](int y, int firstColumn, int lastColumn) {
         std::uint8_t* out = rgba.data() + (static_cast<std::size_t>(y) * width + firstColumn) * 4;
         for (int x = firstColumn; x < lastColumn; ++x, out += 4)
             std::copy_n(background.data(), background.size(), out);
     };
-    for (int y = 0; y < gridTop; ++y)
-        paintSpan(y, 0, width);
-    for (int y = gridBottom; y < height; ++y)
-        paintSpan(y, 0, width);
-    for (int y = gridTop; y < gridBottom; ++y) {
-        paintSpan(y, 0, gridLeft);
-        paintSpan(y, gridRight, width);
-    }
+    for (const IntRect& border : imageBorderRects({ width, height }, grid))
+        for (int y = border.origin.y; y < border.origin.y + border.size.height; ++y)
+            paintSpan(y, border.origin.x, border.origin.x + border.size.width);
 }
 
 /// A frame's grid box and the cell that fills it.

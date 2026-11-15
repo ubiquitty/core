@@ -2458,6 +2458,9 @@ bool SoftwareRenderer::render(const BuildInputs& in, std::vector<std::uint8_t>& 
     reserveSheetsForScreen(in.rows * in.columns);
 
     BuildInputs local = in;
+    // The strip backend and the row prescan must classify the same face. A
+    // caller's capture may predate construction of this renderer's sheet.
+    local.ligatureParticipation = m_ligature.participation();
     // A zero cell means the caller has no metrics of its own — the Unifont
     // rasterizer returns the fixed 8x16 cell, a FreeType one returns the
     // font-derived box. A caller that did supply metrics keeps them.

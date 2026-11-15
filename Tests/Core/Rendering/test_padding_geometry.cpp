@@ -939,4 +939,28 @@ TEST(strictCellRightBoundaryKeepsTheNativeDoubleRounding)
     CHECK(hit->row == 0 && hit->column == 6);
 }
 
+TEST(imageBordersPreserveEveryPaddingPixelDuringRetainedScroll)
+{
+    using namespace Ubiquitty;
+    using namespace Ubiquitty::Rendering;
+    const IntSize image { 336, 145 };
+    const GridBox grid { 28, 7, 280, 132 };
+    const auto borders = imageBorderRects(image, grid);
+    CHECK(borders[2].origin.x == 0 && borders[2].size.width == 28);
+    CHECK(borders[3].origin.x == 308 && borders[3].size.width == 28);
+    for (int y = 0; y < image.height; ++y) {
+        for (int x = 0; x < image.width; ++x) {
+            int coverage = 0;
+            for (const auto& border : borders)
+                coverage += x >= border.origin.x && x < border.origin.x + border.size.width
+                    && y >= border.origin.y && y < border.origin.y + border.size.height;
+            const bool isGrid = x >= 28 && x < 308 && y >= 7 && y < 139;
+            CHECK(coverage == (isGrid ? 0 : 1));
+        }
+    }
+    const auto empty = imageBorderRects({}, grid);
+    for (const auto& border : empty)
+        CHECK(border.size.width == 0 && border.size.height == 0);
+}
+
 UBIQUITTY_TEST_MAIN()
