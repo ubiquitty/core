@@ -6,7 +6,6 @@
 
 #include "simdutf.h"
 
-#include <bit>
 #include <cstdint>
 #include <cstring>
 
@@ -40,7 +39,10 @@ static inline int nonASCIISpanEnd(std::span<const char> bytes, int capacity)
         const std::uint64_t asciiHighBits = ~word & highBits;
         if (asciiHighBits)
             break;
-        const int wordLeadingBytes = std::popcount(word & (word << 1) & highBits);
+        const std::uint64_t leadingByteBits = (word & (word << 1) & highBits) >> 7;
+        // Each byte is zero or one, so the high product byte sums all eight
+        // without a carry. A generic-target popcount may require a library call.
+        const int wordLeadingBytes = static_cast<int>((leadingByteBits * 0x0101010101010101ull) >> 56);
         if (wordLeadingBytes >= capacity - leadingBytes)
             break; // locate the output boundary within this word
         leadingBytes += wordLeadingBytes;
