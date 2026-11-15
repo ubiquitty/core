@@ -151,6 +151,10 @@ struct UBIQUITTY_ESCAPABLE CellPosition {
 using FloatSize = Size<float>;
 /// Pixel geometry, continuous — a laid-out box or position.
 using FloatPoint = Point<float>;
+/// Native view geometry whose boundary tests retain double precision.
+using DoubleSize = Size<double>;
+/// Native view geometry whose boundary tests retain double precision.
+using DoublePoint = Point<double>;
 /// Pixel geometry, whole — a surface or texture the driver allocates.
 using IntSize = Size<int>;
 /// Pixel geometry, whole — a surface or texture the driver allocates.

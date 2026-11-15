@@ -84,11 +84,11 @@ public:
     ///   - rgbaOut: The destination pixels, with row stride `4 * widthOut`.
     ///   - widthOut: The rendered viewport width.
     ///   - heightOut: The rendered viewport height.
-    ///   - paddingColor: The margin color. It is painted after the grid, image
-    ///     and cursor layers, which clips them to the grid box, and before the
-    ///     overlays, which alone may reach into the margin.
+    ///   - paddingColor: The straight-alpha margin color, painted before ink.
+    ///     Glyphs and overlays may overhang their cells into that margin;
+    ///     inline images retain the grid clip of their resolved placements.
     ///   - blocks: The frame's rich text blocks, drawn after the grid and its
-    ///     images and before the cursor tier, the margin and the overlays.
+    ///     images and before the cursor tier and the overlays.
     /// - Returns: Whether the frame dimensions are valid and rendering succeeds.
     bool render(const BuildInputs& in, std::vector<std::uint8_t>& rgbaOut, int& widthOut, int& heightOut,
         std::array<std::uint8_t, 4> paddingColor = {}, BlockLayer blocks = {});

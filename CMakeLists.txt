@@ -155,6 +155,7 @@ if(UBIQUITTY_FRONTEND STREQUAL "Host")
         Source/Core/Rendering/LigatureSheet.cpp
         Source/Core/Rendering/OverlayGeometry.cpp
         Source/Core/Rendering/PNGEncoder.cpp
+        Source/Core/Rendering/PaddingGeometry.cpp
         Source/Core/Rendering/ProportionalGlyphSheet.cpp
         Source/Core/Rendering/SoftwareRenderer.cpp
         Source/Core/Rendering/BackgroundImage.cpp

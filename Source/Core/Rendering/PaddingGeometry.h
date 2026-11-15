@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 // Source/Core/Rendering/PaddingGeometry.h — portable window-padding geometry.
@@ -132,6 +133,25 @@ enum class RowClamp : std::uint8_t {
         { viewport.width - insets.left - insets.right,
             viewport.height - insets.top - insets.bottom - extraTop }
     };
+}
+
+/// Resolves whole-pixel content edges inside a device-pixel viewport.
+///
+/// Insets are clamped by the shared content policy before the resulting edges
+/// are rounded. A collapsed axis stays empty, including when opposing insets
+/// consume a viewport with an odd number of pixels.
+/// - Parameters:
+///   - viewport: The whole drawable extent, in device pixels.
+///   - insets: Requested device-pixel padding on each edge.
+/// - Returns: The rounded content origin and nonnegative device-pixel extent.
+[[nodiscard]] inline FloatRect pixelAlignedGridContentRect(FloatSize viewport, EdgeInsets insets)
+{
+    const FloatRect content = resolveGridContentRect(viewport, insets, 0);
+    const float left = std::round(content.origin.x);
+    const float top = std::round(content.origin.y);
+    const float right = std::round(content.origin.x + content.size.width);
+    const float bottom = std::round(content.origin.y + content.size.height);
+    return { { left, top }, { std::max(0.0f, right - left), std::max(0.0f, bottom - top) } };
 }
 
 // Padding-geometry companions.
@@ -650,6 +670,19 @@ inline CellPosition pointToCell(FloatPoint point, FloatPoint gridOrigin, FloatSi
     }
     return coord;
 }
+
+/// Maps a native view point to a cell only when that point is over the grid.
+///
+/// Horizontal bounds are tested in the view's double precision before the
+/// shared float cell mapping. Its unclamped row preserves the same rounding
+/// as report hit testing while rejecting points above or below the grid.
+/// - Parameters:
+///   - point: The view point, in a top-left coordinate system.
+///   - gridOrigin: The grid's top-left in the same space.
+///   - cell: One drawn cell's extent, in that same unit.
+///   - grid: The model owner's column and row counts.
+/// - Returns: The cell accepted by the native bounds, otherwise no value.
+[[nodiscard]] std::optional<CellPosition> pointToCellIfInside(DoublePoint point, DoublePoint gridOrigin, DoubleSize cell, GridSize grid);
 
 /// A text caret: a row of the grid, and a cell BOUNDARY on it.
 struct CaretPosition {

@@ -9781,10 +9781,9 @@ BuildInputs measuredRuleInputs(std::span<const Cell> cells, const TermPalette& p
 }
 } // namespace
 
-// Measured ink extends one pixel beyond an eight-pixel cell. Underlining a
-// link run must extend only its outer ends, just like an SGR-underlined run;
-// interior boundaries already meet and must not overlap their neighbours.
-TEST(linkUnderlinesFollowInkOnlyAtTheirRunEnds)
+// Each link cell follows its own measured overhang. A neighbouring link
+// affordance does not make the two cells part of an SGR underline run.
+TEST(linkUnderlinesKeepTheirNativePerCellOverhang)
 {
     constexpr int columns = 3;
     TermPalette palette;
@@ -9812,10 +9811,10 @@ TEST(linkUnderlinesFollowInkOnlyAtTheirRunEnds)
         const auto counts = buildCellInstances(in, UbiquittyTest::glyphBackendFor(atlas), buffers);
         REQUIRE(counts.decorations == 3);
         CHECK(approx(decorations[0].topLeftInPixels.x, -1));
-        CHECK(approx(decorations[0].bottomRightInPixels.x, 8));
-        CHECK(approx(decorations[1].topLeftInPixels.x, 8));
-        CHECK(approx(decorations[1].bottomRightInPixels.x, 16));
-        CHECK(approx(decorations[2].topLeftInPixels.x, 16));
+        CHECK(approx(decorations[0].bottomRightInPixels.x, 9));
+        CHECK(approx(decorations[1].topLeftInPixels.x, 7));
+        CHECK(approx(decorations[1].bottomRightInPixels.x, 17));
+        CHECK(approx(decorations[2].topLeftInPixels.x, 15));
         CHECK(approx(decorations[2].bottomRightInPixels.x, 25));
     }
     links = { static_cast<std::uint8_t>(LinkState::Resting), static_cast<std::uint8_t>(LinkState::RestingAction), static_cast<std::uint8_t>(LinkState::Resting) };
@@ -9826,10 +9825,9 @@ TEST(linkUnderlinesFollowInkOnlyAtTheirRunEnds)
     CHECK(approx(decorations[1].topLeftInPixels.x, 15));
 }
 
-// An italic's outer rule expands by a pixel each side. Reading that expanded
-// rule at any screen pixel must still sample the glyph directly above it,
-// including the two neighbouring glyphs whose halos can reach the same pixel.
-TEST(expandedUnderlineWindowsPreserveTheirScreenCoordinates)
+// A solid rule follows an italic's outer ink while its coverage taps retain
+// the native cell windows. Expanding the rule does not rescale those windows.
+TEST(expandedUnderlineKeepsItsNativeTapWindows)
 {
     constexpr int columns = 3;
     TermPalette palette;
@@ -9853,18 +9851,18 @@ TEST(expandedUnderlineWindowsPreserveTheirScreenCoordinates)
     const auto& rule = decorations[0];
     REQUIRE(approx(rule.topLeftInPixels.x, 7) && approx(rule.bottomRightInPixels.x, 17));
     REQUIRE(rule.skipInk > 0.5f);
-    for (const float screenX : { 7.5f, 8.5f, 12.5f, 15.5f, 16.5f }) {
-        const float fraction = (screenX - rule.topLeftInPixels.x) / (rule.bottomRightInPixels.x - rule.topLeftInPixels.x);
-        const float self = rule.inkTopLeft.x + fraction * (rule.inkBottomRight.x - rule.inkTopLeft.x) - rule.glyphSlotTopLeftUV.x;
-        const float left = rule.leftInk.x + (fraction + 1) * (rule.leftInk.y - rule.leftInk.x) - rule.leftBox.x;
-        const float right = rule.rightInk.x + (fraction - 1) * (rule.rightInk.y - rule.rightInk.x) - rule.rightBox.x;
-        CHECK(approx(self, screenX - 6));
-        CHECK(approx(left, screenX + 2));
-        CHECK(approx(right, screenX - 14));
-    }
+    CHECK(approx(rule.inkTopLeft.x - rule.glyphSlotTopLeftUV.x, 2));
+    CHECK(approx(rule.inkBottomRight.x - rule.glyphSlotTopLeftUV.x, 10));
+    CHECK(approx(rule.leftInk.x - rule.leftBox.x, 2));
+    CHECK(approx(rule.leftInk.y - rule.leftBox.x, 10));
+    CHECK(approx(rule.rightInk.x - rule.rightBox.x, 2));
+    CHECK(approx(rule.rightInk.y - rule.rightBox.x, 10));
 }
 
-TEST(aClusterCacheHitKeepsItsMeasuredInkBounds)
+// A combining cluster keeps the full native slot and cell-bounded rule even
+// when its backend publishes measured ink. Cold and cached frames use the
+// same geometry; measuring coverage alone does not opt into tighter quads.
+TEST(aClusterKeepsItsNativeSlotAndRuleGeometry)
 {
     struct ClusterBoundsAtlas : MeasuredRuleAtlas {
         int clusterWrites = 0;
@@ -9880,7 +9878,7 @@ TEST(aClusterCacheHitKeepsItsMeasuredInkBounds)
         bool rasteriseClusterGlyph(ClusterSpan, FontFace, std::uint32_t, int slot)
         {
             ++clusterWrites;
-            inkBoxes[static_cast<std::size_t>(slot)] = { { 3, 4 }, { 9, 16 } };
+            inkBoxes[static_cast<std::size_t>(slot)] = { { 0, 4 }, { 12, 16 } };
             return true;
         }
     };
@@ -9888,7 +9886,7 @@ TEST(aClusterCacheHitKeepsItsMeasuredInkBounds)
     TermPalette palette;
     palette.seedDefaults();
     std::vector<Cell> grid(columns, defaultBlankCell);
-    setCell(grid, columns, 0, 1, 'e', {}, colorDefault, colorDefault);
+    setCell(grid, columns, 0, 1, 'e', { VT::Attribute::Underline }, colorDefault, colorDefault);
     grid[1].combining[0] = 0x301u;
     grid[1].setCombiningLength(1);
     BuildInputs in = measuredRuleInputs(grid, palette);
@@ -9902,10 +9900,13 @@ TEST(aClusterCacheHitKeepsItsMeasuredInkBounds)
     for (int frame = 0; frame < 2; ++frame) {
         const auto counts = buildCellInstances(in, UbiquittyTest::glyphBackendFor(atlas), buffers);
         REQUIRE(counts.glyphs == 1);
-        CHECK(approx(glyphs[0].originInPixels.x, 9));
-        CHECK(approx(glyphs[0].originInPixels.y, 2));
-        CHECK(approx(glyphs[0].sizeInPixels.x, 6));
-        CHECK(approx(glyphs[0].sizeInPixels.y, 12));
+        CHECK(approx(glyphs[0].originInPixels.x, 6));
+        CHECK(approx(glyphs[0].originInPixels.y, -2));
+        CHECK(approx(glyphs[0].sizeInPixels.x, 12));
+        CHECK(approx(glyphs[0].sizeInPixels.y, 20));
+        REQUIRE(counts.decorations == 1);
+        CHECK(approx(decorations[0].topLeftInPixels.x, 8));
+        CHECK(approx(decorations[0].bottomRightInPixels.x, 16));
     }
     CHECK(atlas.clusterWrites == 1);
 }

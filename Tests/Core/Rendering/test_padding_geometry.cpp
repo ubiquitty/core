@@ -9,7 +9,7 @@
 // inverse maps between window pixels and cell coordinates. Pins the geometry
 // the macOS Metal renderer hand-rolls across six call sites so the Linux
 // Vulkan frontend computes clicks, SGR-1016 pixel reports, IME anchors, and
-// snapshot sizes identically. Header-only, links standalone.
+// snapshot sizes identically. Links the shared strict hit-testing implementation.
 
 #include "Core/Rendering/CellMetrics.h"
 #include "Core/Rendering/PaddingGeometry.h"
@@ -832,6 +832,111 @@ TEST(aPictureOwnerAndProgramViewportKeepTheirOwnGeometry)
     CHECK_EQ(invalid.scale, 1);
     CHECK_EQ(invalid.origin.x, 0);
     CHECK_EQ(invalid.origin.y, 0);
+}
+
+// The clip decision is shared with the native adapters. Ownership and a
+// program-controlled viewport override the selected remote policy; Fit/Pan
+// alone clip an immutable host picture to the same padded content bounds.
+TEST(remoteContentClippingUsesOwnershipAndProgramPolicy)
+{
+    using namespace Ubiquitty::Rendering;
+    enum class GeometryAuthority : std::uint8_t {
+        Local,
+        Remote
+    };
+    enum class ViewportKind : std::uint8_t {
+        Grid,
+        Program
+    };
+    const FloatRect content { { 11, 17 }, { 123, 79 } };
+    for (const auto policy : { RemoteViewportPolicy::Letterbox, RemoteViewportPolicy::Fit, RemoteViewportPolicy::Pan }) {
+        for (const auto authority : { GeometryAuthority::Local, GeometryAuthority::Remote }) {
+            for (const auto viewport : { ViewportKind::Grid, ViewportKind::Program }) {
+                RemoteViewportRequest request;
+                request.policy = policy;
+                request.isGeometryOwnedElsewhere = authority == GeometryAuthority::Remote;
+                request.isProgramViewport = viewport == ViewportKind::Program;
+                const auto clip = remoteViewportContentClip(request, content);
+                const bool shouldClip = authority == GeometryAuthority::Remote && viewport == ViewportKind::Grid
+                    && policy != RemoteViewportPolicy::Letterbox;
+                CHECK(shouldClipRemoteViewport(request) == shouldClip);
+                CHECK(clip.has_value() == shouldClip);
+                if (clip) {
+                    CHECK_EQ(clip->origin.x, 11);
+                    CHECK_EQ(clip->origin.y, 17);
+                    CHECK_EQ(clip->size.width, 123);
+                    CHECK_EQ(clip->size.height, 79);
+                }
+            }
+        }
+    }
+}
+
+TEST(pixelAlignedContentRoundsResolvedDeviceEdges)
+{
+    using namespace Ubiquitty::Rendering;
+    const EdgeInsets insets { 3.25f, 5.75f, 6.75f, 11.25f };
+    const auto fractional = resolveGridContentRect({ 120, 100 }, insets, 0);
+    CHECK(fractional.origin.x == 3.25f && fractional.origin.y == 6.75f);
+    const auto aligned = pixelAlignedGridContentRect({ 120, 100 }, insets);
+    CHECK(aligned.origin.x == 3 && aligned.origin.y == 7);
+    CHECK(aligned.size.width == 111 && aligned.size.height == 82);
+    const auto collapsed = pixelAlignedGridContentRect({ 5, 5 }, { 3, 3, 3, 3 });
+    CHECK(collapsed.origin.x == 3 && collapsed.origin.y == 3);
+    CHECK(collapsed.size.width == 0 && collapsed.size.height == 0);
+}
+
+TEST(strictCellHitsRejectPaddingWithoutChangingReportClamps)
+{
+    using namespace Ubiquitty;
+    using namespace Ubiquitty::Rendering;
+    const DoublePoint origin { 10.25, 20.5 };
+    const DoubleSize cell { 7.75, 12.5 };
+    const GridSize grid { 3, 2 };
+    const auto first = pointToCellIfInside(origin, origin, cell, grid);
+    REQUIRE(first.has_value());
+    CHECK(first->row == 0 && first->column == 0);
+    const auto last = pointToCellIfInside({ 33.375, 45.375 }, origin, cell, grid);
+    REQUIRE(last.has_value());
+    CHECK(last->row == 1 && last->column == 2);
+    for (const auto point : { DoublePoint { 9.25, 21 }, { 33.5, 21 }, { 34.5, 21 }, { 11, 19.5 }, { 11, 45.5 }, { -1, -1 } })
+        CHECK(!pointToCellIfInside(point, origin, cell, grid));
+    // The adjacent double rounds to the same float as the left boundary.
+    // Testing after a float conversion would admit a point in the padding.
+    CHECK(!pointToCellIfInside({ std::nextafter(origin.x, -std::numeric_limits<double>::infinity()), origin.y }, origin, cell, grid));
+    CHECK(!pointToCellIfInside({ 11, 21 }, origin, { 0, 12.5 }, grid));
+    CHECK(!pointToCellIfInside({ 11, 21 }, origin, cell, { 0, 2 }));
+    CHECK(!pointToCellIfInside({ std::numeric_limits<double>::quiet_NaN(), 21 }, origin, cell, grid));
+    CHECK(!pointToCellIfInside({ 11, 21 }, origin, { std::numeric_limits<double>::quiet_NaN(), 12.5 }, grid));
+    CHECK(!pointToCellIfInside({ 11, 21 }, origin, { 7.75, std::numeric_limits<double>::quiet_NaN() }, grid));
+    // Native positivity guards admit infinite extents. Finite input then maps
+    // to zero on that axis, as the existing float report mapping specifies.
+    const auto infiniteWidth = pointToCellIfInside({ 11, 21 }, origin, { std::numeric_limits<double>::infinity(), 12.5 }, grid);
+    REQUIRE(infiniteWidth.has_value());
+    CHECK(infiniteWidth->row == 0 && infiniteWidth->column == 0);
+    const auto infiniteHeight = pointToCellIfInside({ 11, 21 }, origin, { 7.75, std::numeric_limits<double>::infinity() }, grid);
+    REQUIRE(infiniteHeight.has_value());
+    CHECK(infiniteHeight->row == 0 && infiniteHeight->column == 0);
+    const auto negativeOrigin = pointToCellIfInside({ -9, -19 }, { -10, -20 }, cell, grid);
+    REQUIRE(negativeOrigin.has_value());
+    CHECK(negativeOrigin->row == 0 && negativeOrigin->column == 0);
+    const auto report = pointToCell({ -1, 100 }, { 10.25f, 20.5f }, { 7.75f, 12.5f }, grid, RowClamp::Clamped);
+    CHECK(report.row == 1 && report.column == 0);
+}
+
+TEST(strictCellRightBoundaryKeepsTheNativeDoubleRounding)
+{
+    using namespace Ubiquitty;
+    using namespace Ubiquitty::Rendering;
+    // Runtime loads keep constant folding from hiding contraction. Separate
+    // multiplication and addition put the right boundary one double above
+    // this point; a fused multiply-add places it exactly on the boundary.
+    const volatile double cellWidth = 0x1.aaaaaaaaaaaabp+3;
+    const volatile double originX = 0x1.c333333333333p+4;
+    const auto hit = pointToCellIfInside({ 0x1.e622222222222p+6, 1 },
+        { originX, 0 }, { cellWidth, 16 }, { 7, 1 });
+    REQUIRE(hit.has_value());
+    CHECK(hit->row == 0 && hit->column == 6);
 }
 
 UBIQUITTY_TEST_MAIN()

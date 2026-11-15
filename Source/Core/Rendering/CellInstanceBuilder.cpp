@@ -3306,7 +3306,6 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                                             } else {
                                                 const GlyphUV uv = monoSlotUV(slot, isSubpixelGlyph);
                                                 glyph = { { uv.minU, uv.minV }, { uv.maxU, uv.maxV }, true };
-                                                attachMeasuredInk(glyph, mono, slot);
                                             }
                                         }
                                     } else if (atlas.clusterGlyph) {
@@ -5808,10 +5807,8 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         if (neighbourColumn < 0 || neighbourColumn >= in.columns)
                             return false;
                         const Pen& neighbourPen = in.cells[static_cast<std::size_t>(row * in.columns + neighbourColumn)].pen;
-                        const LinkState neighbourLink = linkRow ? static_cast<LinkState>(linkRow[neighbourColumn]) : LinkState::None;
                         return neighbourPen.attributes.contains(Ubiquitty::VT::Attribute::Underline)
-                            || penUnderlineShape(&neighbourPen) != Ubiquitty::VT::underlineNone
-                            || (neighbourLink != LinkState::None && neighbourLink != LinkState::RestingAction && neighbourLink != LinkState::HoveredAction);
+                            || penUnderlineShape(&neighbourPen) != Ubiquitty::VT::underlineNone;
                     };
                     const float leftOverhang = cellLeft - inkScreenLeft;
                     const float rightOverhang = inkScreenRight - cellRight;
@@ -5838,12 +5835,12 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                 }
                 // The shader maps a rule's width onto its tap's box, and a point a
                 // fraction across it onto the neighbours' boxes a whole box to
-                // either side. A shortened or expanded rule remaps all three
-                // windows, so each pixel still samples the ink above it. The
-                // neighbour offsets retain the shader's +1/-1 cell convention.
+                // either side. A rule covering only part of its box, as a run's
+                // text beside its alignment slack does, narrows all three to that
+                // part, so each point still samples the ink above it.
                 auto remapTapsTo = [&](float left, float right, float boxLeft, float boxRight) {
                     const float boxWidth = boxRight - boxLeft;
-                    if (boxWidth <= 0.0f || (left == boxLeft && right == boxRight))
+                    if (boxWidth <= 0.0f || (left <= boxLeft && right >= boxRight))
                         return;
                     const float offset = (left - boxLeft) / boxWidth;
                     const float share = (right - left) / boxWidth;
@@ -5908,7 +5905,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                 };
                 auto emitMaskedRule = [&] [[gnu::always_inline]] (DecorationSite site, float left, float right, float top, float bottom, Vec4 color, DecorationKind kind, float thickness) {
                     if (!isPerGlyphClaim) [[likely]] {
-                        if (left != cellLeft || right != cellRight) [[unlikely]] {
+                        if (hasProportionalTextExtent) [[unlikely]] {
                             const SkipInkTap savedSelf = selfTap, savedLeft = leftTap, savedRight = rightTap;
                             remapTapsTo(left, right, cellLeft, cellRight);
                             emitCellRule(site, left, right, cellTop, metrics.cellHeight, top, bottom, color, kind, thickness, haveInkMask ? InkMask::Present : InkMask::Absent);

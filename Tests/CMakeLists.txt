@@ -52,6 +52,9 @@ set(test_accessibility_palette_EXTRA_DEFINES UBIQUITTY_ENABLE_TEST_HOOKS=1)
 # The seam lives in the implementation, so the define has to reach it: the
 # archive's copy is compiled without hooks and carries no ForTest symbols.
 set(test_accessibility_palette_EXTRA_SOURCES Source/Core/Accessibility/Palette.cpp)
+# Compile the production geometry seam into the case so coverage names its
+# strict boundary guard as well as the header's inline layout functions.
+set(test_padding_geometry_EXTRA_SOURCES Source/Core/Rendering/PaddingGeometry.cpp)
 
 # Exceptions. A test lands here only when it exercises a TU that
 # Scripts/portable-core-sources.txt excludes — a platform backend or an optional

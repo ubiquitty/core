@@ -2638,12 +2638,13 @@ bool SoftwareRenderer::render(const BuildInputs& in, std::vector<std::uint8_t>& 
 
     // Every non-continuation cell paints its full background, so the cell pass
     // covers the grid box exactly and clearing it first writes the frame twice.
-    // The gutter a viewport larger than the grid opens is painted once, after
-    // the grid, image and cursor layers and before the overlays: that one fill
-    // both clears the gutter and clips every grid-owned layer to the grid box,
-    // so glyph, decoration and image ink never reach the padding while a
-    // search pill or a caret overlay still may.
+    // Paint the gutter before ink, as the drawable clear does on the native
+    // renderer. A glyph may overhang its first or last cell into that padding;
+    // the surface, rather than the cell grid, clips its ink. Image placements
+    // retain their own grid clip in resolveImagePlacements.
     rgbaOut.resize(static_cast<std::size_t>(width) * height * 4);
+    fillImageBorder(rgbaOut, width, height,
+        { gridOriginX, gridOriginY, in.columns * m_cellWidth, in.rows * m_cellHeight }, paddingColor);
     const std::size_t ligatureGlyphs = counts.ligatureGlyphs < m_ligatureGlyphs.size() ? counts.ligatureGlyphs : m_ligatureGlyphs.size();
     const std::size_t colorGlyphs = counts.colorGlyphs < m_colorGlyphs.size() ? counts.colorGlyphs : m_colorGlyphs.size();
     // The grid streams are drawn twice over: the heads, which are the grid,
@@ -2729,8 +2730,6 @@ bool SoftwareRenderer::render(const BuildInputs& in, std::vector<std::uint8_t>& 
     if (blocks.function)
         blocks.function(blocks.context, rgbaOut, { width, height });
     compositeStreams(StreamLayer::CursorTier);
-    fillImageBorder(rgbaOut, width, height,
-        { gridOriginX, gridOriginY, in.columns * m_cellWidth, in.rows * m_cellHeight }, paddingColor);
     // The window's background image, beneath everything the grid and the
     // margin drew and under the overlays, over the whole frame.
     compositeBackgroundImage(in.backgroundImage, rgbaOut, { width, height });

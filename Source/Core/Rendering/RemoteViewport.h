@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 namespace Ubiquitty::Rendering {
@@ -148,6 +149,32 @@ struct RemoteViewportRequest {
     bool isProgramViewport = false;
     bool shouldFollowCursor = true;
 };
+
+/// Whether a non-owner picture clips to the padded content rectangle.
+///
+/// Program-controlled viewports and Letterbox retain their native clip.
+/// - Parameter request: The authenticated ownership and presentation policy.
+/// - Returns: Whether the content rectangle supplies an additional clip.
+[[nodiscard]] constexpr bool shouldClipRemoteViewport(const RemoteViewportRequest& request)
+{
+    return request.isGeometryOwnedElsewhere && !request.isProgramViewport && request.policy != RemoteViewportPolicy::Letterbox;
+}
+
+/// Resolves whether a remote picture is clipped to the padded content box.
+///
+/// Fit and Pan present another owner's immutable grid inside the local content
+/// area. Local grids, letterboxes and program viewports retain their full
+/// drawable clip, so native text may overhang cells into window padding.
+/// - Parameters:
+///   - request: The authenticated ownership and presentation policy facts.
+///   - content: The resolved content rectangle inside the local drawable.
+/// - Returns: The content clip for non-owner Fit/Pan, otherwise no extra clip.
+[[nodiscard]] inline std::optional<FloatRect> remoteViewportContentClip(const RemoteViewportRequest& request, FloatRect content)
+{
+    if (shouldClipRemoteViewport(request))
+        return content;
+    return std::nullopt;
+}
 
 /// Places an immutable picture using the same policy on every frontend.
 ///
