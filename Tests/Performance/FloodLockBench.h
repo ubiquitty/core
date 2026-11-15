@@ -9,6 +9,7 @@
 #include "Core/Screen/Addressing.h"
 #include "Core/Terminal.h"
 #include "Core/TerminalOperations.h"
+#include "PAL/PAL.h"
 
 #include <algorithm>
 #include <atomic>
@@ -54,6 +55,8 @@ void measureFloodLockWait(std::vector<Result>& out, std::span<const char> flood,
     std::atomic<bool> stop { false };
 
     std::thread producer([&] {
+        // Match ingest's scheduling band regardless of the launching thread.
+        PAL::raiseCurrentThreadToInteractivePriority();
         std::size_t off = 0;
         while (!stop.load(std::memory_order_relaxed)) {
             const std::size_t n = std::min(chunkBytes, flood.size() - off);
