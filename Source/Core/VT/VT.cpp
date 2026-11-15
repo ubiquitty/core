@@ -5616,7 +5616,7 @@ static inline bool isPlainWideGraphic(uint32_t codePoint, Unicode::Width::Ambigu
 // grapheme tables stay authoritative — a debug assert pins this range to them.
 [[gnu::always_inline]] static inline bool isNarrowGraphicFast(uint32_t codePoint) { return codePoint >= 0x2500 && codePoint <= 0x259F; }
 
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || defined(_M_X64)
 static inline bool isPlainNarrowGraphic(uint32_t codePoint, Unicode::Width::AmbiguousWidth ambiguousWidth)
 {
     if (codePoint >= 0x20 && codePoint < 0x7F)
@@ -6265,7 +6265,7 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
 
     int narrowCodePointCount = 0;
     int verifiedNarrowPrefixCount = 0;
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || defined(_M_X64)
     if (wideCodePointCount == 0 && nDec >= 2) {
         while (narrowCodePointCount < nDec && isPlainNarrowGraphic(codePoints[narrowCodePointCount], t.ambiguousWidth)) {
             assert(Unicode::Width::forCodePoint(codePoints[narrowCodePointCount], t.ambiguousWidth) == 1
