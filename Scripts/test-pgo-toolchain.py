@@ -80,6 +80,66 @@ Path(args[args.index("-o") + 1]).touch()
                 self.assertEqual(drivers[0], drivers[1])
 
 
+class BaselineWorktreeTests(unittest.TestCase):
+    def test_cleanup_preserves_an_unavailable_siblings_index_and_branch(self):
+        script = Path(__file__).with_name("check-pgo-applies.py")
+        spec = importlib.util.spec_from_file_location("check_pgo_applies", script)
+        check = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(check)
+        self.addCleanup(check.ROOTED.cleanup)
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        for should_raise in (False, True):
+            with self.subTest(probe_fails=should_raise), tempfile.TemporaryDirectory() as directory, \
+                    patch.dict(os.environ, environment, clear=True):
+                root = Path(directory) / "repo"
+                root.mkdir()
+
+                def git(tree, *arguments):
+                    return subprocess.run(["git", "-C", str(tree), *arguments],
+                                          check=True, capture_output=True, text=True).stdout.strip()
+
+                git(root, "init", "--quiet")
+                self.assertEqual(Path(git(root, "rev-parse", "--absolute-git-dir")), root / ".git")
+                git(root, "config", "core.hooksPath", os.devnull)
+                git(root, "config", "user.name", "Test")
+                git(root, "config", "user.email", "test@example.com")
+                (root / "tracked").write_text("committed\n")
+                git(root, "add", "tracked")
+                git(root, "commit", "--quiet", "-m", "fixture")
+                sibling = Path(directory) / "sibling"
+                git(root, "worktree", "add", "-b", "sibling", str(sibling))
+                (sibling / "tracked").write_text("staged\n")
+                git(sibling, "add", "tracked")
+                (sibling / "tracked").write_text("unstaged\n")
+                (sibling / "untracked").write_text("untracked\n")
+                before_status = git(sibling, "status", "--porcelain=v1")
+                index = Path(git(sibling, "rev-parse", "--git-path", "index"))
+                before_index = index.read_bytes()
+                before_branch = git(sibling, "symbolic-ref", "HEAD")
+                before_head = git(sibling, "rev-parse", "HEAD")
+                unavailable = Path(directory) / "unmounted-sibling"
+                sibling.rename(unavailable)
+                try:
+                    expectation = self.assertRaisesRegex(RuntimeError, "probe failed") if should_raise else contextlib.nullcontext()
+                    with expectation:
+                        with check.BaselineWorktree(str(root), "HEAD") as baseline:
+                            baseline_admin = Path(git(baseline, "rev-parse", "--absolute-git-dir"))
+                            (Path(baseline) / "probe-output").write_text("temporary\n")
+                            if should_raise:
+                                raise RuntimeError("probe failed")
+                finally:
+                    unavailable.rename(sibling)
+                self.assertFalse(Path(baseline).exists())
+                self.assertFalse(baseline_admin.exists())
+                self.assertTrue(index.exists(), "baseline cleanup pruned the unavailable sibling")
+                self.assertEqual(index.read_bytes(), before_index)
+                self.assertEqual(git(sibling, "status", "--porcelain=v1"), before_status)
+                self.assertEqual(git(sibling, "symbolic-ref", "HEAD"), before_branch)
+                self.assertEqual(git(sibling, "rev-parse", "HEAD"), before_head)
+                self.assertEqual((sibling / "tracked").read_text(), "unstaged\n")
+                self.assertEqual((sibling / "untracked").read_text(), "untracked\n")
+
+
 class ToolchainTests(unittest.TestCase):
     def test_release_check_refuses_a_missing_recorded_budget(self):
         script = Path(__file__).with_name("check-pgo-applies.py")
