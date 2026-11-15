@@ -487,13 +487,43 @@ void CellGrid::materializeCompactRows(int screen)
         materializeCompactRow(screen, slot);
 }
 
+/// Prepares a recycled cell row for compact representation when eligible.
+///
+/// Promotion checks and hidden-column cleanup are needed only when a recycled
+/// cell row changes representation; keep them off the already-compact writer.
+/// - Parameters:
+///   - backing: The borrowed full-cell storage for the row.
+///   - columns: The visible column count.
+///   - staleCount: The end of the deferred blank prefix.
+///   - lastColumn: The inclusive end of the incoming ASCII write.
+///   - blank: The canonical default blank.
+/// - Returns: Whether the visible suffix permits promotion and the hidden
+///   blank obligation is complete.
+[[gnu::noinline]] static bool didPrepareCompactRecycledCells(std::span<Cell> backing, int columns, int staleCount, int lastColumn, const Cell& blank)
+{
+    assert(columns >= 0 && static_cast<std::size_t>(columns) <= backing.size());
+    assert(staleCount >= 0 && static_cast<std::size_t>(staleCount) <= backing.size());
+    // Short rows defer only their old content. A shorter ASCII prefix may be
+    // followed by non-ASCII text, so keep it in cells. Fixed resize can retain
+    // nonblank cells beyond the old content width; those also prevent promotion.
+    if (staleCount < columns && (lastColumn + 1 < staleCount || firstDifferingCell(backing.data(), staleCount, columns - 1, blank) != columns))
+        return false;
+    // Hidden columns remain full Cells. Finish the old blank obligation
+    // beyond the visible row before replacing its representation.
+    if (staleCount > columns)
+        fillBlank(backing.data() + columns, blank, staleCount - columns);
+    return true;
+}
+
 bool CellGrid::writeCompactASCIIRun(int slot, int row, int firstColumn, int lastColumn, const Cell& cellTemplate, const char* source, CompactWriteComparison comparison)
 {
     auto& state = m_rowState[m_activeIndex][slot];
-    const bool isRecycled = slot == m_deferredBlankSlot[m_activeIndex]
-        && m_deferredBlankStart[m_activeIndex] == 0 && m_deferredBlankCount[m_activeIndex] >= m_columns;
-    if (state.storage != RowStorage::DefaultASCII && !isRecycled)
+    const bool isRecycled = state.storage != RowStorage::DefaultASCII;
+    if (isRecycled && (slot != m_deferredBlankSlot[m_activeIndex] || m_deferredBlankStart[m_activeIndex] != 0))
         return false;
+    // Every deferral is installed on Cells, and promotion clears it only
+    // after discharging its hidden-column obligation.
+    assert(isRecycled || slot != m_deferredBlankSlot[m_activeIndex]);
     Cell* backing = m_rowPtrs[m_activeIndex][slot];
     const std::less<const void*> precedes;
     const auto overlapsBacking = [&](const void* first, const void* end) {
@@ -510,10 +540,8 @@ bool CellGrid::writeCompactASCIIRun(int slot, int row, int firstColumn, int last
         return false;
     if (isRecycled) {
         const int count = std::min(m_deferredBlankCount[m_activeIndex], m_columnCapacity);
-        // Hidden columns remain full Cells. Finish the old blank obligation
-        // beyond the visible row before replacing its representation.
-        if (count > m_columns)
-            fillBlank(backing + m_columns, m_defaultBlank, count - m_columns);
+        if (!didPrepareCompactRecycledCells({ backing, static_cast<std::size_t>(m_columnCapacity) }, m_columns, count, lastColumn, m_defaultBlank))
+            return false;
         m_deferredBlankSlot[m_activeIndex] = -1;
         m_deferredBlankStart[m_activeIndex] = 0;
         m_deferredBlankCount[m_activeIndex] = 0;
