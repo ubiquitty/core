@@ -301,6 +301,8 @@ bool plantStaleSocket(const std::string& path)
 
 int main(int argc, char** argv)
 {
+    // A bridge can close while its client writes; report EPIPE like the host.
+    ::signal(SIGPIPE, SIG_IGN);
     if (argc < 2) {
         std::fprintf(stderr, "usage: %s <ubiquitty-host>\n", argv[0]);
         return 2;

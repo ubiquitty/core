@@ -502,6 +502,8 @@ bool watchReplacementDaemon()
 
 int main(int argc, char** argv)
 {
+    // A bridge can close while its client writes; report EPIPE like the host.
+    ::signal(SIGPIPE, SIG_IGN);
     // The client creates only PAL-owned carrier children: no PTY, process
     // tracker, or independent waiter can reap those identities. The server's
     // separate process reaps only the PTY children it creates itself.

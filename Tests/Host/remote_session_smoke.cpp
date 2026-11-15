@@ -336,6 +336,8 @@ static int runSSHBootstrap(const std::string& prefix, const std::string& hostBin
 
 int main(int argc, char** argv)
 {
+    // A bridge can close while its client writes; report EPIPE like the host.
+    ::signal(SIGPIPE, SIG_IGN);
     if (argc == 4 && std::string_view(argv[1]) == "--ssh") {
         return runSSHBootstrap(argv[2], argv[3]);
     }
