@@ -1411,9 +1411,11 @@ void CellGrid::writeNarrowCodePointRun(Row rowValue, Column firstColumnValue, co
         const int column = firstColumn + static_cast<int>(index);
         assert(column >= 0 && column < m_columns);
         assert(codePoints[index] && !Unicode::mayNeedShaping(codePoints[index]));
-        Cell outputCell = cell;
-        outputCell.codePoint = codePoints[index];
-        destination[column] = outputCell;
+        const uint32_t codePoint = codePoints[index];
+        // Copy the invariant template before patching the destination, without
+        // reloading a whole temporary cell after a partial code-point store.
+        destination[column] = cell;
+        destination[column].codePoint = codePoint;
     }
     m_anyMutationsSinceLastPaint = true;
     bumpRow(row);
