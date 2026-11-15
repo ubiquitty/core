@@ -138,6 +138,36 @@ TEST(wideCodePointRunsMatchSpansAndPreserveIdempotence)
     }
 }
 
+TEST(wideCodePointRunTemplateCanAliasItsDestination)
+{
+    const std::array<uint32_t, 4> codePoints { 0x4E00, 0x754C, 0xAC00, 0x20000 };
+    for (const int templateColumn : { 0, 1, 6, 7 }) {
+        CellGrid grid;
+        grid.init(2, 8);
+        Cell cellTemplate = letter('T');
+        cellTemplate.pen.foregroundIndex = 3;
+        cellTemplate.pen.backgroundIndex = 4;
+        cellTemplate.pen.attributes.add({ VT::Attribute::Blink, VT::Attribute::Emoji });
+        cellTemplate.setLinkID(17);
+        grid.setCell(Row(1), Column(templateColumn), cellTemplate);
+        const Cell* borrowedTemplate = grid.logicalCellAt(Row(1), Column(templateColumn));
+        CHECK(borrowedTemplate != nullptr);
+        grid.writeWideCodePointRun(Row(1), Column(0), *borrowedTemplate, codePoints);
+        for (int column = 0; column < 8; ++column) {
+            Cell expected = cellTemplate;
+            expected.pen.attributes.remove(VT::Attribute::Emoji);
+            expected.pen.attributes.add(column % 2 ? VT::Attribute::WideContinuation : VT::Attribute::Wide);
+            expected.codePoint = column % 2 ? wideContinuationSentinelCodePoint : codePoints[column / 2];
+            CHECK(std::memcmp(grid.logicalCellAt(Row(1), Column(column)), &expected, sizeof(Cell)) == 0);
+        }
+        CHECK(grid.hasBlinkHint());
+        CHECK_EQ(grid.rowContentWidth(Row(1)), 8);
+        const auto generation = grid.contentGeneration();
+        grid.writeWideCodePointRun(Row(1), Column(0), cellTemplate, codePoints);
+        CHECK_EQ(grid.contentGeneration(), generation);
+    }
+}
+
 TEST(compactASCIIRowsMatchMaterializedWritesAndExpandWithoutLosingBytes)
 {
     for (const auto screen : { ScreenMode::Primary, ScreenMode::Alternate }) {

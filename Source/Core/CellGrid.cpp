@@ -1348,8 +1348,11 @@ void CellGrid::writeWideCodePointRun(Row rowValue, Column firstColumnValue, cons
         const int column = firstColumn + static_cast<int>(index) * 2;
         assert(column >= 0 && column + 1 < m_columns);
         assert(codePoints[index] && !Unicode::mayNeedShaping(codePoints[index]));
-        lead.codePoint = codePoints[index];
+        const uint32_t codePoint = codePoints[index];
+        // Keep the template invariant: patching its code point before the
+        // whole-cell copy makes a wide load depend on a partial stack store.
         destination[column] = lead;
+        destination[column].codePoint = codePoint;
         destination[column + 1] = continuation;
     }
     m_anyMutationsSinceLastPaint = true;
