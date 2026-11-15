@@ -887,13 +887,16 @@ struct WelcomedSession {
     std::uint64_t daemonInstance = 17;
 
     /// - Parameter carrier: The carrier the factory builds.
-    explicit WelcomedSession(TransportMode carrier, std::string socket = "fixture.sock", std::uint64_t instance = 17)
+    explicit WelcomedSession(TransportMode carrier, std::string socket = "fixture.sock", std::uint64_t instance = 17,
+        Protocol::Sync::SyncClientCore::Clock clock = {})
         : socketName(std::move(socket))
         , daemonInstance(instance)
     {
         factory.setOfferQUIC(carrier == TransportMode::QUIC);
         REQUIRE(factory.pinDaemonSocket(socketName));
         core.emplace(term.get(), &dispatcher, &factory, &observer);
+        if (clock)
+            core->setClock(std::move(clock));
         core->start(0, 80, 24);
         attach();
     }
@@ -4949,7 +4952,9 @@ TEST(aSurfacesFocusIsItsPanesFocusAtTheHost)
         }
         return events;
     };
-    WelcomedSession session(TransportMode::TCP);
+    // Keep timed acknowledgements out of the write count while testing focus
+    // deduplication, even if the test thread is descheduled between calls.
+    WelcomedSession session(TransportMode::TCP, "fixture.sock", 17, [] { return std::uint64_t { 1'000'000 }; });
     session.answer();
     CHECK_MSG(focusEvents(*session.host).empty(), "a pane whose frontend said nothing was told it is focused");
 
