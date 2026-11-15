@@ -558,9 +558,9 @@ class BaselineWorktree:
         return self.path
 
     def __exit__(self, *_exception) -> None:
+        # Removing this worktree also removes its registration. Global pruning
+        # could erase a sibling whose checkout is not mounted in this container.
         subprocess.run(["git", "-C", self.root, "worktree", "remove", "--force", self.path],
-                       capture_output=True, env=self.environment())
-        subprocess.run(["git", "-C", self.root, "worktree", "prune"],
                        capture_output=True, env=self.environment())
 
 
@@ -1068,6 +1068,12 @@ def self_test(root: str) -> int:
     if parsed != [(symbol, 30099366)] or unparsed != 1:
         failures.append(f"the diagnostic parser read {parsed} with {unparsed} unparsed")
 
+    worktree_test = subprocess.run(
+        [sys.executable, os.path.join(root, "Scripts", "test-pgo-toolchain.py"), "BaselineWorktreeTests"],
+        capture_output=True, text=True)
+    if worktree_test.returncode != 0:
+        failures.append(worktree_test.stderr.strip())
+
     for failure in failures:
         print(f"{GATE} --self-test: {failure}", file=sys.stderr)
     if failures:
@@ -1077,7 +1083,7 @@ def self_test(root: str) -> int:
           f"a malformed sidecar are told apart; the verdicts turn at {DRIFT_WARNING_PERCENT}% "
           "of the allowance and at the budget, above a zero and a nonzero baseline; GCC and a "
           "clang older than the profile are told from one that reads it; a moved "
-          "diagnostic format counts as unparsed)")
+          "diagnostic format counts as unparsed; baseline cleanup preserves an unavailable sibling)")
     return 0
 
 
