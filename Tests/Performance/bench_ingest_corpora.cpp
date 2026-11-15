@@ -49,6 +49,8 @@ std::string repeatToBytes(const std::string& unit, std::size_t targetBytes)
 struct Corpus {
     const char* name;
     std::string bytes;
+    int rows = benchRows;
+    int columns = benchColumns;
 };
 
 // Fixed seeds, so every run and both arms of an A/B parse the same bytes.
@@ -119,6 +121,13 @@ std::vector<Corpus> buildCorpora(std::size_t targetBytes)
     // the whole chunk. Wrapping still exercises the ordinary grid and scroll.
     corpora.push_back({ "ascii_unbroken", std::string(targetBytes, 'x') });
 
+    // CRLF matches the bytes delivered by a PTY with ONLCR. Both rows stop
+    // one column short of wrapping. The default 24x80 grid stays compact;
+    // resizing to 49x202 first materializes it, so recycled rows must regain
+    // compact storage before the scrollback lane can append their bytes.
+    corpora.push_back({ "scroll201_crlf", repeatToBytes(std::string(201, 'x') + "\r\n", targetBytes), 49, 202 });
+    corpora.push_back({ "scroll79_crlf", repeatToBytes(std::string(79, 'x') + "\r\n", targetBytes), 24, 80 });
+
     // Two-byte UTF-8, width 1 — no wide handling, no pen change per cell.
     corpora.push_back({ "latin1_multibyte",
         repeatToBytes("àéîõü ñçøåæ þðßµ¿¡ "
@@ -139,6 +148,17 @@ std::vector<Corpus> buildCorpora(std::size_t targetBytes)
     corpora.push_back({ "emoji_wide",
         repeatToBytes("\xF0\x9F\x98\x80\xF0\x9F\x9A\x80\xF0\x9F\x94\xA5\xF0\x9F\x8E\xAF\xF0\x9F\x98\x80\xF0\x9F\x9A\x80\xF0\x9F\x94\xA5\xF0\x9F\x8E\xAF"
                       "\xF0\x9F\x98\x80\xF0\x9F\x9A\x80\xF0\x9F\x94\xA5\xF0\x9F\x8E\xAF\xF0\x9F\x98\x80\xF0\x9F\x9A\x80\xF0\x9F\x94\xA5\xF0\x9F\x8E\xAF\n",
+            targetBytes) });
+
+    // Prose and status lines alternate ASCII words with short emoji clusters.
+    // The family keeps a longer ZWJ sequence among the short modifiers,
+    // selectors, flags and decomposed accents, rather than pricing one shape.
+    corpora.push_back({ "clustered_prose",
+        repeatToBytes("build passed ✅ 42 targets; deploying to staging 🚀\r\n"
+                      "review 👩🏽‍💻 café notes: fix naïve UTF-8 input 🛠️\r\n"
+                      "你好 team 👋🏽, status from 東京: ready 🇯🇵\r\n"
+                      "chat 👨‍👩‍👧‍👦: thanks ❤️, see you tomorrow!\r\n"
+                      "done 👍🏽 archive 📦; next check Ελληνικά and кириллица\r\n",
             targetBytes) });
 
     // Base + combining mark per cell: exercises the Cell's inline combining slot.
@@ -209,11 +229,12 @@ std::vector<Corpus> buildCorpora(std::size_t targetBytes)
 // Best-of-N, because the floor is the only figure attributable to the parser on
 // a machine with other tenants: a slow pass measures the scheduler, never a
 // faster parser.
-double bestMegabytesPerSecond(const std::string& bytes, int repetitions)
+double bestMegabytesPerSecond(const Corpus& corpus, int repetitions)
 {
+    const auto& bytes = corpus.bytes;
     Ubiquitty::Terminal term;
     Ubiquitty::hardReset(term);
-    Ubiquitty::resize(term, benchRows, benchColumns);
+    Ubiquitty::resize(term, corpus.rows, corpus.columns);
     // One untimed pass so first-touch faults and table init stay out of the sample.
     Ubiquitty::processBytes(&term, bytes);
 
@@ -292,7 +313,7 @@ int main(int argc, char** argv)
                 continue;
             Ubiquitty::Terminal term;
             Ubiquitty::hardReset(term);
-            Ubiquitty::resize(term, benchRows, benchColumns);
+            Ubiquitty::resize(term, corpus.rows, corpus.columns);
             for (;;)
                 Ubiquitty::processBytes(&term, corpus.bytes);
         }
@@ -304,14 +325,14 @@ int main(int argc, char** argv)
     // reads, so this bench can sit as either arm of a control-normalised A/B;
     // the human table rides stderr, where a pipe cannot swallow it into a
     // parser and a redirect cannot turn the result channel into prose.
-    std::fprintf(stderr, "cell=%zuB repetitions=%d grid=%dx%d\n", sizeof(Ubiquitty::Cell), repetitions, benchColumns, benchRows);
-    std::fprintf(stderr, "%-18s %12s\n", "corpus", "MB/s");
+    std::fprintf(stderr, "cell=%zuB repetitions=%d\n", sizeof(Ubiquitty::Cell), repetitions);
+    std::fprintf(stderr, "%-18s %9s %12s\n", "corpus", "grid", "MB/s");
     std::printf(R"({"benchmarks":[)");
     bool first = true;
     for (const Corpus& corpus : corpora) {
-        const double megabytesPerSecond = bestMegabytesPerSecond(corpus.bytes, repetitions);
-        std::fprintf(stderr, "%-18s %12.1f\n", corpus.name, megabytesPerSecond);
-        std::printf(R"(%s{"name":"%s","value":%.3f,"unit":"MB/s"})", first ? "" : ",", corpus.name, megabytesPerSecond);
+        const double megabytesPerSecond = bestMegabytesPerSecond(corpus, repetitions);
+        std::fprintf(stderr, "%-18s %4dx%-4d %12.1f\n", corpus.name, corpus.columns, corpus.rows, megabytesPerSecond);
+        std::printf(R"(%s{"name":"%s","value":%.3f,"unit":"MB/s","rows":%d,"columns":%d})", first ? "" : ",", corpus.name, megabytesPerSecond, corpus.rows, corpus.columns);
         first = false;
     }
     std::printf("]}\n");
