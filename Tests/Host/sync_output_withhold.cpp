@@ -57,7 +57,6 @@
 #include <csignal>
 #include <cstddef>
 #include <cstdio>
-#include <ctime>
 #include <memory>
 #include <optional>
 #include <span>
@@ -68,10 +67,13 @@ namespace Ubiquitty {
 namespace Host {
 
 struct SyncOutputWithholdAccess {
+    static constexpr std::uint64_t start = 1'000'000'000;
+
     // A connection is attached to the pane: only an attached pane's frames are
     // paced by the coherence rule under test, since nobody draws the others.
     static Daemon::Session& makeSession(Daemon& d, int rows, int columns)
     {
+        d.m_monotonicMicroseconds = [] { return start; };
         auto& session = ScreenPlaneAccess::makeSession(d, rows, columns);
         Daemon::Client reader;
         reader.clientID = d.m_nextClientID++;
@@ -80,7 +82,15 @@ struct SyncOutputWithholdAccess {
         d.m_clients.push_back(std::move(reader));
         return session;
     }
-    static std::optional<Runtime::FrameClass> mayPublish(Daemon& d, Daemon::Session& s, std::uint64_t now) { return d.mayPublishFrame(s, now); }
+    // Parsing, publishing and admission share one scripted monotonic clock.
+    // Client setup must not spend the redraw deadline being asserted.
+    template<std::uint64_t now>
+    static std::optional<Runtime::FrameClass> mayPublish(Daemon& d, Daemon::Session& s)
+    {
+        CHECK(now >= d.m_monotonicMicroseconds());
+        d.m_monotonicMicroseconds = [] { return now; };
+        return d.mayPublishFrame(s, now);
+    }
     static void publish(Daemon& d, Daemon::Session& s) { d.publishFrame(s, Runtime::FrameClass::Settled); }
     static void service(Daemon& d, Daemon::Session& s) { d.servicePTY(s); }
 };
@@ -93,14 +103,6 @@ using Ubiquitty::Host::SyncOutputWithholdAccess;
 using Ubiquitty::Runtime::FrameClass;
 
 namespace {
-
-// The daemon's own clock, which a drain pass stamps.
-std::uint64_t monotonicMicroseconds()
-{
-    struct timespec ts;
-    ::clock_gettime(CLOCK_MONOTONIC, &ts);
-    return static_cast<std::uint64_t>(ts.tv_sec) * 1'000'000ull + static_cast<std::uint64_t>(ts.tv_nsec) / 1000ull;
-}
 
 // Past read quiescence and the pacing after the last frame, short of the
 // deadline: every refusal from here on is the condition under test, not a read
@@ -117,14 +119,14 @@ int main()
     // that must return EPIPE, not kill this process.
     ::signal(SIGPIPE, SIG_IGN);
     using A = SyncOutputWithholdAccess;
-    constexpr std::uint64_t start = 1'000'000'000;
+    constexpr std::uint64_t start = A::start;
 
     // ---- 1. No block: a due frame publishes.
     {
         Daemon d;
         auto& s = A::makeSession(d, 24, 80);
         s.isFrameDue = true;
-        CHECK(A::mayPublish(d, s, start) == FrameClass::Structural);
+        CHECK(A::mayPublish<start>(d, s) == FrameClass::Structural);
     }
 
     // ---- 2 + 3. Composing withholds; the frame is deferred, not dropped.
@@ -135,7 +137,7 @@ int main()
 
         // Before the block, to prove the assertions below are about the block
         // and not about a session that could never publish.
-        CHECK(A::mayPublish(d, s, start).has_value());
+        CHECK(A::mayPublish<start>(d, s).has_value());
 
         UbiquittyTest::feed(*s.term.get(), "\x1b[?2026h");
         CHECK(Ubiquitty::Modes::SyncOutput::isActive(s.term.get()));
@@ -144,7 +146,7 @@ int main()
         // application composes are exactly what must not reach a client.
         for (int i = 0; i < 32; ++i) {
             UbiquittyTest::feed(*s.term.get(), "line of a frame being composed\r\n");
-            CHECK(!A::mayPublish(d, s, start).has_value());
+            CHECK(!A::mayPublish<start>(d, s).has_value());
             // Withholding defers. A refusal that cleared this would drop the
             // composed frame outright rather than delay it.
             CHECK(s.isFrameDue);
@@ -152,7 +154,7 @@ int main()
 
         UbiquittyTest::feed(*s.term.get(), "\x1b[?2026l");
         CHECK(!Ubiquitty::Modes::SyncOutput::isActive(s.term.get()));
-        CHECK(A::mayPublish(d, s, start).has_value());
+        CHECK(A::mayPublish<start>(d, s).has_value());
     }
 
     // ---- 4. Watchdog: a block whose application went quiet expires by itself.
@@ -162,7 +164,7 @@ int main()
         s.isFrameDue = true;
 
         UbiquittyTest::feed(*s.term.get(), "\x1b[?2026h");
-        CHECK(!A::mayPublish(d, s, start).has_value()); // also stamps the block
+        CHECK(!A::mayPublish<start>(d, s).has_value()); // also stamps the block
         CHECK(s.term->modes.syncOutputTouchTicks != 0);
 
         // Backdate past the budget rather than sleeping through it: the stamp is
@@ -170,7 +172,7 @@ int main()
         // silence would produce, without a second of test.
         s.term->modes.syncOutputTouchTicks -= Ubiquitty::Modes::SyncOutput::maxHoldTicks + 1;
 
-        CHECK(A::mayPublish(d, s, start).has_value());
+        CHECK(A::mayPublish<start>(d, s).has_value());
         // Expiry, not a one-off answer: the mode is cleared, so the next frame
         // does not have to re-derive that this application stopped being trusted.
         CHECK(!Ubiquitty::Modes::SyncOutput::isActive(s.term.get()));
@@ -187,8 +189,8 @@ int main()
 
         pty.pushInbound("$ ");
         A::service(d, s);
-        const std::uint64_t firstPass = monotonicMicroseconds();
-        CHECK(A::mayPublish(d, s, firstPass + quietButInsideTheDeadline) == FrameClass::Structural);
+        constexpr std::uint64_t firstFrame = start + quietButInsideTheDeadline;
+        CHECK(A::mayPublish<firstFrame>(d, s) == FrameClass::Structural);
         A::publish(d, s);
         CHECK(!s.isFrameDue);
 
@@ -196,30 +198,31 @@ int main()
         // changes, and the program has not shown it again.
         pty.pushInbound("\x1b[?25l\x1b[H\x1b[2Ktop half of the repaint");
         A::service(d, s);
-        const std::uint64_t opened = monotonicMicroseconds();
-        CHECK(!A::mayPublish(d, s, opened + quietButInsideTheDeadline).has_value());
+        constexpr std::uint64_t opened = firstFrame;
+        CHECK(!A::mayPublish<opened + quietButInsideTheDeadline>(d, s).has_value());
         CHECK(s.isFrameDue);
 
         // The program went quiet inside it: the deadline takes the frame anyway.
-        CHECK(A::mayPublish(d, s, opened + Ubiquitty::Runtime::coherenceDeadlineMicroseconds + 1000) == FrameClass::Forced);
+        constexpr std::uint64_t expired = opened + Ubiquitty::Runtime::coherenceDeadlineMicroseconds + 1000;
+        CHECK(A::mayPublish<expired>(d, s) == FrameClass::Forced);
         A::publish(d, s);
 
         // Shown again: the next repaint is held until its own show, which
         // releases it as an ordinary settled frame.
         pty.pushInbound("\x1b[?25h");
         A::service(d, s);
-        CHECK(A::mayPublish(d, s, monotonicMicroseconds() + quietButInsideTheDeadline) == FrameClass::Settled);
+        CHECK(A::mayPublish<expired + quietButInsideTheDeadline>(d, s) == FrameClass::Settled);
         A::publish(d, s);
         pty.pushInbound("\x1b[?25l\x1b[2;1Hsecond repaint, first half");
         A::service(d, s);
-        CHECK(!A::mayPublish(d, s, monotonicMicroseconds() + quietButInsideTheDeadline).has_value());
+        CHECK(!A::mayPublish<expired + 2 * quietButInsideTheDeadline>(d, s).has_value());
         pty.pushInbound("\x1b[3;1Hsecond half\x1b[?25h");
         A::service(d, s);
-        CHECK(A::mayPublish(d, s, monotonicMicroseconds() + quietButInsideTheDeadline) == FrameClass::Settled);
+        CHECK(A::mayPublish<expired + 3 * quietButInsideTheDeadline>(d, s) == FrameClass::Settled);
 
         // A session with nothing to send publishes nothing.
         A::publish(d, s);
-        CHECK(!A::mayPublish(d, s, monotonicMicroseconds() + quietButInsideTheDeadline).has_value());
+        CHECK(!A::mayPublish<expired + 4 * quietButInsideTheDeadline>(d, s).has_value());
     }
 
     // ---- 5b. A client attaching inside a cursor-hidden redraw is not handed
@@ -234,7 +237,7 @@ int main()
         s.stream = std::move(stream);
         pty.pushInbound("$ ");
         A::service(d, s);
-        CHECK(A::mayPublish(d, s, monotonicMicroseconds() + quietButInsideTheDeadline).has_value());
+        CHECK(A::mayPublish<start + quietButInsideTheDeadline>(d, s).has_value());
         A::publish(d, s);
 
         pty.pushInbound("\x1b[?25l\x1b[H\x1b[2Ktop half of the repaint");
@@ -245,11 +248,11 @@ int main()
         Screen::greet(d, client, screen);
         CHECK_MSG(screen.count(Ubiquitty::Protocol::Sync::FrameKind::CheckpointHead) == 0, "a client attaching inside a redraw was sent the half-drawn screen");
         CHECK(s.isFrameDue);
-        CHECK(!A::mayPublish(d, s, monotonicMicroseconds() + quietButInsideTheDeadline).has_value());
+        CHECK(!A::mayPublish<start + 2 * quietButInsideTheDeadline>(d, s).has_value());
 
         pty.pushInbound("\x1b[2;1Hbottom half\x1b[?25h");
         A::service(d, s);
-        CHECK(A::mayPublish(d, s, monotonicMicroseconds() + quietButInsideTheDeadline).has_value());
+        CHECK(A::mayPublish<start + 3 * quietButInsideTheDeadline>(d, s).has_value());
         A::publish(d, s);
         Screen::deliver(d, client, screen);
         CHECK_MSG(screen.count(Ubiquitty::Protocol::Sync::FrameKind::CheckpointHead) == 1, "the client was never sent the finished frame as its checkpoint");
@@ -278,7 +281,7 @@ int main()
         UbiquittyTest::feed(*s.term.get(), burst);
 
         CHECK(!Ubiquitty::Modes::SyncOutput::isActive(s.term.get()));
-        CHECK(A::mayPublish(d, s, start).has_value());
+        CHECK(A::mayPublish<start>(d, s).has_value());
     }
 
     // ---- 7. A drain pass reads on past a short read, to a would-block.
@@ -308,7 +311,7 @@ int main()
         A::service(d, s);
         CHECK(pty.bytesRemaining() == 0);
         CHECK(s.isFrameDue);
-        CHECK(A::mayPublish(d, s, monotonicMicroseconds() + quietButInsideTheDeadline) == FrameClass::Structural);
+        CHECK(A::mayPublish<start + quietButInsideTheDeadline>(d, s) == FrameClass::Structural);
         A::publish(d, s);
 
         // A writer still ahead at the budget ends the pass at its capacity,
@@ -317,7 +320,7 @@ int main()
         pty.pushInbound(lines(capacity + quantum));
         A::service(d, s);
         CHECK(pty.bytesRemaining() == quantum);
-        CHECK(A::mayPublish(d, s, monotonicMicroseconds() + Ubiquitty::Runtime::refreshIntervalMicroseconds) == FrameClass::Flood);
+        CHECK(A::mayPublish<start + quietButInsideTheDeadline + Ubiquitty::Runtime::refreshIntervalMicroseconds>(d, s) == FrameClass::Flood);
     }
 
     if (failures == 0)
