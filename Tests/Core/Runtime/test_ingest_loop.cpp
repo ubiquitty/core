@@ -59,6 +59,17 @@
 
 using namespace Ubiquitty::Runtime;
 
+namespace Ubiquitty::Runtime {
+
+struct IngestLoopTestAccess {
+    static std::uint32_t activityTick(TerminalSession& session)
+    {
+        return session.framePresentationState().cursor.lastActivityTick;
+    }
+};
+
+} // namespace Ubiquitty::Runtime
+
 namespace Ubiquitty::PAL {
 
 // A pollable endpoint over one owned regular-file descriptor. A regular file
@@ -1613,25 +1624,62 @@ TEST(testAKeyTypedIntoAFloodIsAppliedBeforeTheFloodEnds)
     session.start(24, 80);
     const std::string flood = floodStream();
     REQUIRE(adoptPrefilledStream(session, flood));
+    // Park at the first raw-byte tap so the key is queued into a running
+    // flood before scheduling can let most of it pass. Observe at each parse
+    // bite: frontend deliveries coalesce several passes on a fast machine.
+    struct ActivityWatch {
+        TerminalSession& session;
+        std::binary_semaphore firstBite { 0 };
+        std::binary_semaphore resumeBite { 0 };
+        std::atomic<bool> didPark { false };
+        std::atomic<bool> didResume { false };
+        std::atomic<std::uint64_t> processedBytes { 0 };
+        std::atomic<std::uint64_t> appliedAfter { UINT64_MAX };
+
+        explicit ActivityWatch(TerminalSession& held)
+            : session(held)
+        {
+        }
+
+        void resume()
+        {
+            if (!didResume.exchange(true))
+                resumeBite.release();
+        }
+
+        ~ActivityWatch()
+        {
+            resume();
+            session.stopIngest();
+            session.setRawByteTap(nullptr, nullptr);
+        }
+    } watch(session);
+    session.setRawByteTap([](void* context, std::string_view bytes) {
+        auto& observation = *static_cast<ActivityWatch*>(context);
+        const auto total = observation.processedBytes.fetch_add(bytes.size());
+        if (IngestLoopTestAccess::activityTick(observation.session) == 4321) {
+            std::uint64_t unset = UINT64_MAX;
+            observation.appliedAfter.compare_exchange_strong(unset, total);
+        }
+        if (!observation.didPark.exchange(true)) {
+            observation.firstBite.release();
+            observation.resumeBite.acquire();
+        }
+    },
+        &watch);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     REQUIRE(session.startIngest());
+    REQUIRE(watch.firstBite.try_acquire_until(deadline));
     setenv("UBIQUITTY_FAKE_TICKS", "4321", 1);
     std::array<char, 64> encoded {};
     static_cast<void>(session.sendKey(characterPress('x'), encoded));
     unsetenv("UBIQUITTY_FAKE_TICKS");
-    std::uint64_t drained = 0;
-    bool isApplied = false;
-    for (int waited = 0; waited < 30000 && !isApplied; ++waited) {
-        drained += session.takeDrainedBytes();
-        session.lockForRead();
-        if (const Ubiquitty::Terminal* terminal = session.terminal())
-            isApplied = terminal->lastActivityTick == 4321;
-        session.unlockForRead();
-        if (!isApplied)
-            ::usleep(1000);
-    }
-    CHECK(isApplied);
+    watch.resume();
+    while (std::chrono::steady_clock::now() < deadline && watch.appliedAfter.load() == UINT64_MAX)
+        ::usleep(1000);
+    const auto drained = watch.appliedAfter.load();
+    CHECK(drained != UINT64_MAX);
     CHECK_MSG(drained < flood.size() / 2, std::format("the key was applied after {} of {} bytes", drained, flood.size()).c_str());
-    session.stopIngest();
 }
 
 // An update left open over a flood holds the frame from the mark the loop

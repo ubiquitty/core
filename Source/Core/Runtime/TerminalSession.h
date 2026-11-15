@@ -305,6 +305,8 @@ struct SyncFrameCaptureGeometry {
 /// the split that keeps syscalls and locking where they already are.
 class TerminalSession : public Ubiquitty::CanMakeWeakPtr {
     friend struct HostDeployTestAccess;
+    // The ingest fixture observes the writer's cursor publication per parse bite.
+    friend struct IngestLoopTestAccess;
     // The pane-link conformance suite holds the in-process link itself.
     friend struct PaneLinkTestAccess;
 #if UBIQUITTY_ENABLE_TEST_HOOKS
