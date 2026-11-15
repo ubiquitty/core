@@ -89,6 +89,16 @@ except subprocess.TimeoutExpired:
     print("run-tests.sh: FAILED — 1 stanza binary (%s) still ran after %d s; its process group was killed" % (name, seconds), flush=True)
     leave(124)
 end_group()
+name = os.path.basename(sys.argv[2])
+if status < 0:
+    number = -status
+    try:
+        signal_name = signal.Signals(number).name
+    except ValueError:
+        signal_name = "signal"
+    print("run-tests.sh: FAILED — %s ended by %s (%d)" % (name, signal_name, number), flush=True)
+elif status:
+    print("run-tests.sh: FAILED — %s exited with status %d" % (name, status), flush=True)
 leave(status if status >= 0 else 128 - status)
 ' "$@"
 }

@@ -58,6 +58,24 @@ def wait_gone(pid, seconds):
     return not is_alive(pid)
 
 
+class BoundedFailureReporting(unittest.TestCase):
+    def test_a_signal_names_the_binary_and_signal(self):
+        checked = subprocess.run(
+            ["/bin/bash", "-c", 'source "$1"; ubq_run_bounded 5 /bin/sh -c "kill -PIPE \\$\\$"',
+             "bounded-signal", str(ROOT / "Scripts/run-bounded.sh")],
+            text=True, capture_output=True, timeout=15)
+        self.assertEqual(checked.returncode, 128 + signal.SIGPIPE, checked.stdout + checked.stderr)
+        self.assertIn("sh ended by SIGPIPE (13)", checked.stdout + checked.stderr)
+
+    def test_an_exit_names_the_binary_and_status(self):
+        checked = subprocess.run(
+            ["/bin/bash", "-c", 'source "$1"; ubq_run_bounded 5 /bin/sh -c "exit 7"',
+             "bounded-exit", str(ROOT / "Scripts/run-bounded.sh")],
+            text=True, capture_output=True, timeout=15)
+        self.assertEqual(checked.returncode, 7, checked.stdout + checked.stderr)
+        self.assertIn("sh exited with status 7", checked.stdout + checked.stderr)
+
+
 class RunHygiene(unittest.TestCase):
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory(dir="/tmp", prefix="ubq-hygiene-")
