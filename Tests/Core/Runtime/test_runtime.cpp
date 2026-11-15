@@ -4248,7 +4248,10 @@ TEST(aMovingForegroundThatNamesNothingKeepsThePublishedNameAndTakesTheHolderRead
     (void)runtime.sampleProcessStateOffDrain(host);
     CHECK_STR_EQ(runtime.foregroundProcessName(), "bash");
     CHECK_MSG(!runtime.isSampledForegroundShell(), "the job holds the terminal whatever its name reads");
-    CHECK_MSG(pipe->reassertCount == 1, "the takeover is re-sent its size with the sample that saw it");
+    CHECK(pipe->reassertCount == 0);
+    Ubiquitty::PAL::s_fakeMicroseconds += 250'000;
+    runtime.reassertWindowSizeIfDue(Ubiquitty::PAL::monotonicMicros());
+    CHECK_MSG(pipe->reassertCount == 1, "the recent resize is retried for the sampled job even without its name");
     const ForegroundProgram held = runtime.foregroundProgram(0);
     CHECK_STR_EQ(held.name, "bash");
 
@@ -4289,7 +4292,10 @@ TEST(aGroupReadAsTheShellsThenAsAJobIsATakeover)
     pipe->foregroundShell = false;
     pipe->scriptedForegroundName = "vim";
     (void)runtime.sampleProcessStateOffDrain(host);
-    CHECK_MSG(pipe->reassertCount == 1, "the job it became is re-sent its size");
+    CHECK(pipe->reassertCount == 0);
+    Ubiquitty::PAL::s_fakeMicroseconds += 250'000;
+    runtime.reassertWindowSizeIfDue(Ubiquitty::PAL::monotonicMicros());
+    CHECK_MSG(pipe->reassertCount == 1, "the recent resize is retried for the job it became");
 }
 
 // A reported host names where the shell that sent it is, and outranks the walk
@@ -4973,95 +4979,92 @@ TEST(aGridChangeReachesTheStreamAtOnceAndPixelsCoalesce)
     rt.close();
 }
 
-// A program that takes the terminal from the shell hears its size again: once
-// with the sample that saw it take over, then each quarter second through its
-// first second, so a size change that landed before its SIGWINCH handler stood
-// still reaches it. The shell is never re-sent its size, and the same program
-// sampled again opens nothing.
-TEST(aTakeoverHearsTheWindowSizeAgainThroughItsFirstSecond)
+TEST(anUnchangedStartupSendsNoResizeSignals)
 {
-    TerminalRuntime runtime;
-    runtime.init(parameters80x24());
-    Ubiquitty::PAL::StreamTestPipe* pipe = attachPipe(runtime);
-    REQUIRE(pipe != nullptr);
-    CountingDrainHost host;
-    runtime.setWindowSize(100, 30, 800, 600);
-
-    pipe->foregroundGroup = 100;
-    pipe->foregroundShell = true;
-    pipe->toRead = "$ ";
-    (void)runtime.drainAvailable(host);
-    CHECK_MSG(pipe->reassertCount == 0, "the shell at its prompt is not re-sent its size");
-
-    pipe->foregroundGroup = 200;
-    pipe->foregroundShell = false;
-    pipe->toRead += "vim";
-    (void)runtime.drainAvailable(host);
-    CHECK_MSG(pipe->reassertCount == 1, "the drain whose sample saw the takeover re-sends at once");
-    CHECK_MSG(pipe->windowColumns == 100 && pipe->windowRows == 30 && pipe->windowXpixel == 800 && pipe->windowYpixel == 600,
-        "the size re-sent is the one the frontend published");
-
-    runtime.reassertWindowSizeIfDue(Ubiquitty::PAL::monotonicMicros());
-    CHECK_MSG(pipe->reassertCount == 1, "not again before the spacing");
-    const std::optional<std::uint32_t> wait = runtime.windowSizeReassertDueInMillis(Ubiquitty::PAL::monotonicMicros());
-    CHECK_MSG(wait.has_value() && *wait > 0 && *wait <= 250, "the ingest loop is told when to wake for the next one");
-
-    for (int expected = 2; expected <= 4; ++expected) {
-        Ubiquitty::PAL::s_fakeMicroseconds += 250'000;
-        runtime.reassertWindowSizeIfDue(Ubiquitty::PAL::monotonicMicros());
-        CHECK_MSG(pipe->reassertCount == expected, "a re-send each quarter second inside the window");
+    for (int isSizePublished = 0; isSizePublished < 2; ++isSizePublished) {
+        TerminalRuntime runtime;
+        runtime.init(parameters80x24());
+        if (isSizePublished)
+            runtime.setWindowSize(202, 47, 1818, 893);
+        auto* pipe = attachPipe(runtime);
+        REQUIRE(pipe != nullptr);
+        CountingDrainHost host;
+        pipe->foregroundGroup = 200;
+        pipe->foregroundShell = false;
+        pipe->toRead = "vim";
+        (void)runtime.drainAvailable(host);
+        // A frontend repeating the launch dimensions is not a resize.
+        runtime.setWindowSize(pipe->windowColumns, pipe->windowRows, pipe->windowXpixel, pipe->windowYpixel);
+        for (int tick = 0; tick < 6; ++tick) {
+            runtime.reassertWindowSizeIfDue(Ubiquitty::PAL::monotonicMicros());
+            Ubiquitty::PAL::s_fakeMicroseconds += 250'000;
+        }
+        CHECK(pipe->reassertSignalCount == 0);
+        CHECK(!runtime.windowSizeReassertDueInMillis(Ubiquitty::PAL::monotonicMicros()).has_value());
+        runtime.close();
     }
-    Ubiquitty::PAL::s_fakeMicroseconds += 250'000;
-    runtime.reassertWindowSizeIfDue(Ubiquitty::PAL::monotonicMicros());
-    CHECK_MSG(pipe->reassertCount == 4, "none once the second is over");
-    CHECK_MSG(!runtime.windowSizeReassertDueInMillis(Ubiquitty::PAL::monotonicMicros()).has_value(), "and nothing left to wake for");
-
-    pipe->toRead += "~";
-    (void)runtime.drainAvailable(host);
-    CHECK_MSG(pipe->reassertCount == 4, "the same program sampled again opens nothing");
-
-    pipe->foregroundGroup = 300;
-    pipe->toRead += "htop";
-    (void)runtime.drainAvailable(host);
-    CHECK_MSG(pipe->reassertCount == 5, "the next program opens a window of its own");
-    runtime.close();
 }
 
-// A re-send names the group its window was opened for, and the transport
-// signals only while that group still holds the terminal. A shell taking the
-// terminal back inside the window is not woken in the takeover's place: the
-// rule that allows the signal at all read the takeover's facts, and a bash
-// prompt reprints its upper lines on every SIGWINCH it is sent. The size goes
-// out either way.
-TEST(aReassertNamesTheGroupItsWindowWasOpenedFor)
+// Both orderings of the resize and foreground sample occur at startup.
+TEST(aRealStartupResizeRetriesTheNewestSizeInEitherOrder)
+{
+    for (int doesResizeComeFirst = 0; doesResizeComeFirst < 2; ++doesResizeComeFirst) {
+        TerminalRuntime runtime;
+        runtime.init(parameters80x24());
+        runtime.setWindowSize(202, 47, 1818, 893);
+        auto* pipe = attachPipe(runtime);
+        REQUIRE(pipe != nullptr);
+        CountingDrainHost host;
+        pipe->foregroundGroup = 100;
+        pipe->foregroundShell = true;
+        pipe->toRead = "$ ";
+        (void)runtime.drainAvailable(host);
+        if (doesResizeComeFirst)
+            runtime.setWindowSize(202, 46, 1818, 874);
+        pipe->foregroundGroup = 200;
+        pipe->foregroundShell = false;
+        pipe->toRead += "vim";
+        (void)runtime.drainAvailable(host);
+        if (!doesResizeComeFirst)
+            runtime.setWindowSize(202, 46, 1818, 874);
+        CHECK(pipe->windowRows == 46);
+        CHECK(pipe->reassertCount == 0);
+        CHECK(runtime.windowSizeReassertDueInMillis(Ubiquitty::PAL::monotonicMicros()).has_value());
+        for (int expected = 1; expected <= 3; ++expected) {
+            Ubiquitty::PAL::s_fakeMicroseconds += 250'000;
+            runtime.reassertWindowSizeIfDue(Ubiquitty::PAL::monotonicMicros());
+            CHECK(pipe->reassertSignalCount == expected);
+            CHECK(pipe->reassertExpectedGroup == 200);
+            CHECK(pipe->windowColumns == 202 && pipe->windowRows == 46);
+            CHECK(pipe->windowXpixel == 1818 && pipe->windowYpixel == 874);
+        }
+        Ubiquitty::PAL::s_fakeMicroseconds += 250'000;
+        runtime.reassertWindowSizeIfDue(Ubiquitty::PAL::monotonicMicros());
+        CHECK(pipe->reassertCount == 3);
+        CHECK(!runtime.windowSizeReassertDueInMillis(Ubiquitty::PAL::monotonicMicros()).has_value());
+        runtime.close();
+    }
+}
+
+TEST(aStartupResizeRetryDoesNotSignalTheReturningShell)
 {
     TerminalRuntime runtime;
     runtime.init(parameters80x24());
-    Ubiquitty::PAL::StreamTestPipe* pipe = attachPipe(runtime);
+    auto* pipe = attachPipe(runtime);
     REQUIRE(pipe != nullptr);
     CountingDrainHost host;
-    runtime.setWindowSize(100, 30, 800, 600);
-
-    pipe->foregroundGroup = 100;
-    pipe->foregroundShell = true;
-    pipe->toRead = "$ ";
-    (void)runtime.drainAvailable(host);
-
     pipe->foregroundGroup = 200;
     pipe->foregroundShell = false;
-    pipe->toRead += "vim";
+    pipe->toRead = "vim";
     (void)runtime.drainAvailable(host);
-    CHECK_MSG(pipe->reassertExpectedGroup == 200, "the re-send names the group whose takeover opened the window");
-    CHECK_MSG(pipe->reassertCount == 1 && pipe->reassertSignalCount == 1, "and it reaches that group");
-
-    // The shell has the terminal back, and no sample has said so yet: the
-    // window is still open for the program that took it.
+    runtime.setWindowSize(202, 46, 1818, 874);
+    // The shell returned before the next process sample.
     pipe->foregroundGroup = 100;
     Ubiquitty::PAL::s_fakeMicroseconds += 250'000;
     runtime.reassertWindowSizeIfDue(Ubiquitty::PAL::monotonicMicros());
-    CHECK_MSG(pipe->reassertCount == 2, "the size is re-sent on the schedule");
-    CHECK_MSG(pipe->reassertExpectedGroup == 200, "still for the group the takeover named");
-    CHECK_MSG(pipe->reassertSignalCount == 1, "and the group now holding the terminal is not signalled");
+    CHECK(pipe->reassertCount == 1);
+    CHECK(pipe->reassertExpectedGroup == 200);
+    CHECK(pipe->reassertSignalCount == 0);
     runtime.close();
 }
 

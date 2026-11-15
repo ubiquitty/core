@@ -184,6 +184,11 @@ void TerminalRuntime::handStreamItsWindowSize()
     }
     const auto grid = dimensions();
     if (grid.rows > 0 && grid.columns > 0) {
+        m_hasWindowSize = true;
+        m_windowColumns = grid.columns;
+        m_windowRows = grid.rows;
+        m_windowXPixels = 0;
+        m_windowYPixels = 0;
         m_stream->setWindowSize(grid.columns, grid.rows, 0, 0);
         m_windowSizeDeliveryCount.fetch_add(1, std::memory_order_relaxed);
     }
@@ -1597,6 +1602,7 @@ void TerminalRuntime::setWindowSize(int columns, int rows, int xpixel, int ypixe
     // change goes out at once; a change of pixels alone — a window step that
     // moves no cell boundary, a backing-scale change — cannot change the
     // program's picture, so those coalesce to one per interval.
+    const bool hasPreviousWindowSize = m_hasWindowSize;
     const bool isPending = m_isWindowSizePending.load(std::memory_order_acquire);
     const bool isGridChange = !m_hasWindowSize || columns != m_windowColumns || rows != m_windowRows;
     const bool isPixelChange = !m_hasWindowSize || xpixel != m_windowXPixels || ypixel != m_windowYPixels;
@@ -1608,17 +1614,18 @@ void TerminalRuntime::setWindowSize(int columns, int rows, int xpixel, int ypixe
     if (!m_stream || (!isGridChange && !isPixelChange && !isPending))
         return;
     const std::uint32_t now = PAL::monotonicMicros() | 1u;
+    if (hasPreviousWindowSize && (isGridChange || isPixelChange))
+        m_windowSizeChangedMicros.store(now, std::memory_order_release);
     const std::uint32_t applied = m_windowSizeAppliedMicros.load(std::memory_order_relaxed);
     if (isGridChange || applied == 0 || now - applied >= windowSizeCoalesceMicros) {
         m_stream->setWindowSize(columns, rows, xpixel, ypixel);
         m_windowSizeDeliveryCount.fetch_add(1, std::memory_order_relaxed);
         m_windowSizeAppliedMicros.store(now, std::memory_order_relaxed);
         m_isWindowSizePending.store(false, std::memory_order_release);
-        return;
-    }
-    m_isWindowSizePending.store(true, std::memory_order_release);
-    // The loop parks with no timeout while nothing is due; woken, it reads
-    // the due time and waits exactly that long.
+    } else
+        m_isWindowSizePending.store(true, std::memory_order_release);
+    // A real startup change can arm a retry even when applied immediately.
+    // Wake the loop so it observes either that deadline or the coalesced size.
     if (PAL::Waker* waker = m_processTree->waker.load(std::memory_order_acquire))
         waker->wake();
 }
@@ -1656,6 +1663,11 @@ void TerminalRuntime::reassertWindowSizeIfDue(std::uint32_t nowMicros)
 {
     if (!isLocalStreamEnabled())
         return;
+    if (m_windowSizeChangedMicros.load(std::memory_order_acquire)) {
+        const std::uint32_t changed = m_windowSizeChangedMicros.exchange(0, std::memory_order_acq_rel);
+        m_windowSizeReassert.noteSizeChange(changed);
+        nowMicros = PAL::monotonicMicros() | 1u;
+    }
     if (!m_windowSizeReassert.shouldSendNow(nowMicros))
         return;
     const std::scoped_lock hold(m_windowSizeMutex);
@@ -1675,6 +1687,8 @@ void TerminalRuntime::reassertWindowSizeIfDue(std::uint32_t nowMicros)
 
 std::optional<std::uint32_t> TerminalRuntime::windowSizeReassertDueInMillis(std::uint32_t nowMicros)
 {
+    if (m_windowSizeChangedMicros.load(std::memory_order_acquire))
+        return 0;
     const std::optional<std::uint32_t> wait = m_windowSizeReassert.microsUntilDue(nowMicros);
     if (!wait)
         return std::nullopt;
@@ -2348,9 +2362,7 @@ void TerminalRuntime::sampleProcessState(std::string probedName)
         }
         Session::applyProcessEvent(m_processState, event);
     }
-    // A takeover's first re-send goes out with the sample that saw it; the
-    // ingest loop's tick sends the rest.
-    const std::uint32_t nowMicros = PAL::monotonicMicros();
+    const std::uint32_t nowMicros = PAL::monotonicMicros() | 1u;
     m_windowSizeReassert.noteSample({ .processGroup = event.foregroundProcessGroup, .isShell = isForegroundShell }, nowMicros);
     reassertWindowSizeIfDue(nowMicros);
 }

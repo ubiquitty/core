@@ -8,7 +8,7 @@
 
 namespace Ubiquitty::Runtime {
 
-/// How long the PTY size is re-sent after a program takes the terminal.
+/// The startup interval, and the retry window after a size change in it.
 ///
 /// An application reads TIOCGWINSZ once as it starts and installs its SIGWINCH
 /// handler some time later. A size change landing in between — a tab bar
@@ -18,7 +18,7 @@ namespace Ubiquitty::Runtime {
 /// while the size sent was still the old one.
 inline constexpr std::uint32_t windowSizeReassertWindowMicros = 1'000'000;
 
-/// The least time between two re-sends inside the window: four in a second.
+/// The least time between the size change and its retries.
 ///
 /// Spaced rather than sent on every sample, because a re-send makes a
 /// full-screen program redraw, the redraw is output, and a rule that answered
@@ -33,7 +33,7 @@ struct ForegroundSample {
     bool isShell = false;
 };
 
-/// Decides when the PTY size is re-sent with a SIGWINCH after a takeover.
+/// Retries real startup size changes that may precede the SIGWINCH handler.
 ///
 /// Stated once here and run by the session's runtime, so every frontend
 /// re-sends on the same schedule rather than each window controller keeping
@@ -42,15 +42,14 @@ struct ForegroundSample {
 /// A takeover is a sampled group that is neither zero nor the group already
 /// recorded, or the recorded group read again as a job after it read as the
 /// shell's: a fork that has not exec'd runs the shell's code, and the job it
-/// becomes in the same group is the takeover. A takeover by the shell opens no
-/// window: a shell reads the size
-/// itself as it draws its prompt, and bash redraws a multi-line prompt on every
-/// SIGWINCH, printing its upper lines again. Times are the runtime's 32-bit
-/// monotonic microseconds, compared by unsigned difference so a wrap inside the
-/// window still closes it.
+/// becomes in the same group is the takeover. A shell's takeover arms no
+/// retries: it reads the size itself as it draws its prompt, and bash redraws
+/// a multi-line prompt on every SIGWINCH, printing its upper lines again.
+/// Times are 32-bit monotonic microseconds, compared by unsigned difference
+/// so a wrap inside the window still closes it.
 class WindowSizeReassert {
 public:
-    /// Records one process sample, opening the window on a takeover.
+    /// Records a takeover; only a recent size change arms retries.
     ///
     /// - Parameters:
     ///   - sample: What the sample read about the foreground.
@@ -64,9 +63,28 @@ public:
             return;
         m_foregroundProcessGroup = sample.processGroup;
         m_isRecordedShell = sample.isShell;
-        m_isReasserting = !sample.isShell;
+        m_isReasserting = !sample.isShell && m_hasSizeChange
+            && nowMicros - m_resizeMicros < windowSizeReassertWindowMicros;
         m_takeoverMicros = nowMicros;
-        m_hasSent = false;
+        m_sentMicros = m_resizeMicros;
+    }
+
+    /// Records a changed size delivered or queued for the stream.
+    ///
+    /// The first size is the launch geometry, not a change. A change before
+    /// the first job sample is retained for that sample; a change late in the
+    /// startup interval gets its own bounded retry window. Steady-state
+    /// resizing needs only its ordinary size delivery.
+    ///
+    /// - Parameter nowMicros: When the size changed.
+    void noteSizeChange(std::uint32_t nowMicros)
+    {
+        m_hasSizeChange = true;
+        m_resizeMicros = nowMicros;
+        m_sentMicros = nowMicros;
+        m_isReasserting = m_foregroundProcessGroup != 0 && !m_isRecordedShell
+            && (nowMicros - m_takeoverMicros < windowSizeReassertWindowMicros
+                || m_takeoverMicros - nowMicros < windowSizeReassertWindowMicros);
     }
 
     /// Consumes the re-send due now, if one is.
@@ -79,7 +97,6 @@ public:
         if (!wait || *wait > 0)
             return false;
         m_sentMicros = nowMicros;
-        m_hasSent = true;
         return true;
     }
 
@@ -93,12 +110,10 @@ public:
     {
         if (!m_isReasserting)
             return std::nullopt;
-        if (nowMicros - m_takeoverMicros >= windowSizeReassertWindowMicros) {
+        if (nowMicros - m_resizeMicros >= windowSizeReassertWindowMicros) {
             m_isReasserting = false;
             return std::nullopt;
         }
-        if (!m_hasSent)
-            return 0;
         const std::uint32_t sinceSent = nowMicros - m_sentMicros;
         return sinceSent >= windowSizeReassertSpacingMicros ? 0 : windowSizeReassertSpacingMicros - sinceSent;
     }
@@ -113,9 +128,10 @@ private:
     std::uint32_t m_foregroundProcessGroup = 0;
     std::uint32_t m_takeoverMicros = 0;
     std::uint32_t m_sentMicros = 0;
+    std::uint32_t m_resizeMicros = 0;
     bool m_isRecordedShell = false;
     bool m_isReasserting = false;
-    bool m_hasSent = false;
+    bool m_hasSizeChange = false;
 };
 
 } // namespace Ubiquitty::Runtime

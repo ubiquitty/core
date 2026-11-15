@@ -1261,10 +1261,9 @@ public:
     /// Re-sends the window size with a SIGWINCH when one is due after a
     /// takeover. Ingest thread.
     ///
-    /// The schedule is ``WindowSizeReassert``'s: a program that took the
-    /// terminal from the shell hears its size again four times in its first
-    /// second, so a size change that landed before its handler stood still
-    /// reaches it. The size is the one the frontend last published.
+    /// Only a real size change near takeover arms ``WindowSizeReassert``'s
+    /// bounded retries, so a change before the handler stood still reaches it.
+    /// An unchanged launch sends nothing. The latest published size is used.
     ///
     /// - Parameter nowMicros: The monotonic time, in microseconds.
     void reassertWindowSizeIfDue(std::uint32_t nowMicros);
@@ -2262,9 +2261,10 @@ private:
     std::mutex m_windowSizeMutex;
     std::atomic<bool> m_isWindowSizePending { false };
     std::atomic<std::uint32_t> m_windowSizeAppliedMicros { 0 };
-    // When the size is re-sent after a takeover. Read and written on the
-    // ingest thread alone: the process sample opens it and the loop's tick
-    // consumes it.
+    // The frontend stamps real changes; the ingest thread consumes the newest
+    // stamp, samples takeovers and owns the retry schedule. Zero means no new
+    // change; real stamps set their low bit as m_windowSizeAppliedMicros does.
+    std::atomic<std::uint32_t> m_windowSizeChangedMicros { 0 };
     WindowSizeReassert m_windowSizeReassert;
     // The erase hold: the ingest thread arms it after its pass, a capture under
     // the model lock arms an erase the pass has not reached yet

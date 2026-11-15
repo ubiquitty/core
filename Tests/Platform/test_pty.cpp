@@ -36,6 +36,7 @@
 //   - a program this process forked delivers fork/exec/exit edges to a notifier
 
 #include "Core/Input/ShellEscape.h"
+#include "Core/Runtime/WindowSizeReassert.h"
 #include "Core/Screen/Addressing.h"
 #include "Core/Session/SessionPolicy.h"
 #include "Core/Terminal.h"
@@ -326,6 +327,36 @@ TEST(testFalsePromotesToClosed)
     int finalStatus = 0;
     drainWithBudget(s.get(), buffer, sizeof(buffer), 500, &finalStatus);
     CHECK(finalStatus == status(PAL::StreamStatus::EndOfFile) || finalStatus == status(PAL::StreamStatus::Closed));
+}
+
+// The child's size read precedes its signal handler. A resize in between is
+// ignored while SIGWINCH is disabled; the retry updates its saved size.
+TEST(aStartupResizeBeforeTheHandlerIsRetriedOnTheRealPTY)
+{
+    auto stream = openArguments({ "/bin/sh", "-c",
+        "stty -echo; trap '' WINCH; printf 'setup-ready\n'; "
+        "read step; printf 'initial-size:'; stty size; read step; "
+        "trap 'printf repaired-size:; stty size' WINCH; printf 'handler-ready\n'; "
+        "while :; do read step || continue; [ \"$step\" = quit ] && break; done" });
+    REQUIRE(stream);
+    stream->setWindowSize(80, 24, 0, 0);
+    REQUIRE(drainUntilContains(stream.get(), "setup-ready"));
+    REQUIRE(stream->write({ "read-size\n", 10 }) == 10);
+    REQUIRE(drainUntilContains(stream.get(), "initial-size:24 80"));
+    const auto group = stream->process().foregroundProcessGroup();
+    REQUIRE(group.has_value() && *group > 1);
+    Runtime::WindowSizeReassert reassert;
+    reassert.noteSample({ .processGroup = static_cast<std::uint32_t>(*group), .isShell = false }, 0);
+    CHECK(!reassert.shouldSendNow(250'000));
+    stream->setWindowSize(202, 47, 1818, 893);
+    reassert.noteSizeChange(250'000);
+    REQUIRE(stream->write({ "install-handler\n", 16 }) == 16);
+    REQUIRE(drainUntilContains(stream.get(), "handler-ready"));
+    REQUIRE(reassert.shouldSendNow(500'000));
+    stream->reassertWindowSize(202, 47, 1818, 893, *group);
+    REQUIRE(stream->write({ "observe\n", 8 }) == 8);
+    CHECK(drainUntilContains(stream.get(), "repaired-size:47 202"));
+    CHECK(stream->write({ "quit\n", 5 }) == 5);
 }
 
 TEST(testWindowSizePropagatesToSlave)

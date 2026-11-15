@@ -34,86 +34,108 @@ int sendsBetween(WindowSizeReassert& reassert, std::uint32_t start, std::uint32_
 
 } // namespace
 
-// A program taking the terminal is re-sent its size at once, then every
-// quarter second, and four times in all across its first second however often
-// the caller asks.
-TEST(testATakeoverReSendsFourTimesInItsFirstSecond)
-{
-    WindowSizeReassert reassert;
-    reassert.noteSample(program(200), 10'000);
-    CHECK_MSG(reassert.shouldSendNow(10'000), "the sample that sees the takeover re-sends at once");
-    CHECK_MSG(!reassert.shouldSendNow(10'001), "and not again before the spacing");
-    CHECK_MSG(reassert.microsUntilDue(10'001) == windowSizeReassertSpacingMicros - 1, "the caller's wait lands on the next re-send");
-    const int later = sendsBetween(reassert, 10'002, 10'000 + windowSizeReassertWindowMicros + 500'000, 1'000);
-    CHECK_MSG(later == 3, "three more re-sends, a quarter second apart, before the window closes");
-    CHECK_MSG(!reassert.microsUntilDue(10'000 + windowSizeReassertWindowMicros).has_value(), "a closed window asks the caller to wake for nothing");
-}
-
-// The same program sampled again is not a takeover: re-opening the window on
-// every sample would keep a program that is already running redrawing forever.
-TEST(testTheSameGroupSampledAgainOpensNothing)
-{
-    WindowSizeReassert reassert;
-    reassert.noteSample(program(200), 0);
-    (void)sendsBetween(reassert, 0, windowSizeReassertWindowMicros + 1, 1'000);
-    reassert.noteSample(program(200), windowSizeReassertWindowMicros + 10);
-    CHECK(!reassert.shouldSendNow(windowSizeReassertWindowMicros + 10));
-}
-
-// A shell reads the size itself as it draws its prompt, and bash redraws a
-// multi-line prompt on every SIGWINCH, so the shell taking the terminal back
-// opens no window; the next program still does.
-TEST(testTheShellTakingTheTerminalBackOpensNothing)
+// A foreground launch with stable geometry leaves Vim's intro untouched.
+TEST(testATakeoverWithoutASizeChangeSendsNothing)
 {
     WindowSizeReassert reassert;
     reassert.noteSample(shell(100), 0);
-    CHECK_MSG(!reassert.shouldSendNow(0), "the shell at launch is not re-sent its size");
-    reassert.noteSample(program(200), 10);
-    CHECK(reassert.shouldSendNow(10));
-    reassert.noteSample(shell(100), 20);
-    CHECK_MSG(!reassert.shouldSendNow(20 + windowSizeReassertSpacingMicros), "the shell getting the terminal back closes the program's window");
-    CHECK(!reassert.microsUntilDue(20 + windowSizeReassertSpacingMicros).has_value());
-    reassert.noteSample(program(300), 30);
-    CHECK_MSG(reassert.shouldSendNow(30), "the next program opens a window of its own");
+    reassert.noteSample(program(200), 10'000);
+    CHECK(sendsBetween(reassert, 10'000, 1'500'000, 1'000) == 0);
+    CHECK(!reassert.microsUntilDue(10'001).has_value());
 }
 
-// A fork that has not exec'd runs the shell's code and reads as the shell's;
-// the job it becomes keeps the group, and is the takeover. A job read again
-// opens nothing more.
+TEST(testAStartupSizeChangeRetriesAfterItsOrdinaryDelivery)
+{
+    WindowSizeReassert reassert;
+    reassert.noteSample(program(200), 10'000);
+    reassert.noteSizeChange(20'000);
+    CHECK(!reassert.shouldSendNow(20'000));
+    CHECK(reassert.microsUntilDue(20'000) == windowSizeReassertSpacingMicros);
+    CHECK(sendsBetween(reassert, 20'001, 1'500'000, 1'000) == 3);
+    CHECK(!reassert.microsUntilDue(1'500'000).has_value());
+}
+
+// Sampling the takeover can follow the tab bar's resize. The missed-handler
+// race still needs a retry even though the process sample came second.
+TEST(testASizeChangeBeforeTheTakeoverSampleStillRetries)
+{
+    WindowSizeReassert reassert;
+    reassert.noteSample(shell(100), 0);
+    reassert.noteSizeChange(10'000);
+    CHECK(!reassert.microsUntilDue(20'000).has_value());
+    reassert.noteSample(program(200), 20'000);
+    CHECK(reassert.shouldSendNow(260'000));
+    CHECK(reassert.foregroundProcessGroup() == 200);
+}
+
+TEST(testAnOldSizeChangeDoesNotArmTheNextLaunch)
+{
+    WindowSizeReassert reassert;
+    reassert.noteSizeChange(1);
+    reassert.noteSample(program(200), 1 + windowSizeReassertWindowMicros);
+    CHECK(!reassert.microsUntilDue(1 + windowSizeReassertWindowMicros).has_value());
+}
+
+TEST(testALateStartupSizeChangeGetsItsRetryWindow)
+{
+    WindowSizeReassert reassert;
+    reassert.noteSample(program(200), 1);
+    reassert.noteSizeChange(990'000);
+    CHECK(reassert.shouldSendNow(1'240'000));
+    reassert.noteSample(program(200), 1'250'000);
+    CHECK(sendsBetween(reassert, 1'240'001, 2'500'000, 1'000) == 2);
+    CHECK(!reassert.microsUntilDue(2'500'000).has_value());
+}
+
+TEST(testSteadyStateResizingDoesNotArmRetries)
+{
+    WindowSizeReassert reassert;
+    reassert.noteSample(program(200), 1);
+    reassert.noteSizeChange(2'000'000);
+    CHECK(sendsBetween(reassert, 2'000'000, 3'500'000, 1'000) == 0);
+}
+
+TEST(testTheShellTakingTheTerminalBackStopsRetries)
+{
+    WindowSizeReassert reassert;
+    reassert.noteSample(program(200), 10);
+    reassert.noteSizeChange(20);
+    CHECK(reassert.shouldSendNow(20 + windowSizeReassertSpacingMicros));
+    reassert.noteSample(shell(100), 30 + windowSizeReassertSpacingMicros);
+    CHECK(!reassert.microsUntilDue(20 + 2 * windowSizeReassertSpacingMicros).has_value());
+}
+
 TEST(testAGroupReadAsTheShellsThenAsAJobIsATakeover)
 {
     WindowSizeReassert reassert;
     reassert.noteSample(shell(100), 0);
     reassert.noteSample(shell(200), 10);
-    CHECK_MSG(!reassert.shouldSendNow(10), "the fork before its exec opens nothing");
-    reassert.noteSample(program(200), 20);
-    CHECK_MSG(reassert.shouldSendNow(20), "the job it became opens a window");
-    CHECK(!reassert.shouldSendNow(21));
-    reassert.noteSample(program(200), 22);
-    CHECK_MSG(!reassert.microsUntilDue(20 + windowSizeReassertWindowMicros).has_value(), "and the same job read again does not extend its window");
+    reassert.noteSizeChange(20);
+    CHECK(!reassert.shouldSendNow(20));
+    reassert.noteSample(program(200), 30);
+    CHECK(reassert.shouldSendNow(20 + windowSizeReassertSpacingMicros));
+    reassert.noteSample(program(200), 40 + windowSizeReassertSpacingMicros);
+    CHECK(!reassert.microsUntilDue(20 + windowSizeReassertWindowMicros).has_value());
 }
 
-// No resolved group is no takeover: a sample that could not read the
-// foreground says nothing about who holds the terminal.
 TEST(testAnUnresolvedGroupOpensNothing)
 {
     WindowSizeReassert reassert;
+    reassert.noteSizeChange(0);
     reassert.noteSample(program(0), 0);
-    CHECK(!reassert.shouldSendNow(0));
+    CHECK(!reassert.shouldSendNow(windowSizeReassertSpacingMicros));
     CHECK(reassert.foregroundProcessGroup() == 0);
 }
 
-// The runtime's clock is 32-bit microseconds and wraps every seventy minutes;
-// a window opened just before the wrap still closes a second later.
 TEST(testAWindowOpenedAcrossTheClockWrapStillCloses)
 {
     WindowSizeReassert reassert;
     const std::uint32_t beforeWrap = 0xFFFFFFFFu - 100'000;
     reassert.noteSample(program(200), beforeWrap);
-    CHECK(reassert.shouldSendNow(beforeWrap));
+    reassert.noteSizeChange(beforeWrap);
     const std::uint32_t afterWrap = beforeWrap + windowSizeReassertSpacingMicros;
-    CHECK_MSG(reassert.shouldSendNow(afterWrap), "the spacing is measured across the wrap");
-    CHECK_MSG(!reassert.microsUntilDue(beforeWrap + windowSizeReassertWindowMicros).has_value(), "and so is the window");
+    CHECK(reassert.shouldSendNow(afterWrap));
+    CHECK(!reassert.microsUntilDue(beforeWrap + windowSizeReassertWindowMicros).has_value());
 }
 
 UBIQUITTY_TEST_MAIN()
