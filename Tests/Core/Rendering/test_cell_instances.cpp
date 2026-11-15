@@ -400,6 +400,60 @@ TEST(testDirtyRowsSkipCleanRows)
 }
 } // namespace
 
+TEST(testCursorGlyphCropKeepsTheRasterMappingAtAllFourEdges)
+{
+    TermPalette palette;
+    palette.seedDefaults();
+    std::vector<Cell> grid(12, defaultBlankCell);
+    grid[5].codePoint = 'A';
+    BuildInputs in;
+    in.cells = grid.data();
+    in.rows = 3;
+    in.columns = 4;
+    in.palette = &palette;
+    in.metrics.cellWidth = 8;
+    in.metrics.cellHeight = 16;
+    in.metrics.baselineFromTop = 13;
+    in.originInPixels = { 5, 7 };
+    in.subpixelGlyphs = true;
+    in.glyphSlotWidthInPixels = 12;
+    in.glyphSlotHeightInPixels = 22;
+    in.glyphMarginInPixels = { 2, 3 };
+    in.cursor.row = 1;
+    in.cursor.column = 1;
+    in.cursor.focused = true;
+    in.cursor.shape = Cursor::Shape::Block;
+    in.cursor.mixA = 1;
+    in.cursor.shouldInvertText = true;
+    in.cursor.rgb = { 1, 1, 1, 1 };
+    std::vector<CellInstance> cells(16);
+    std::vector<GlyphInstance> glyphs(16);
+    InstanceBuffers out;
+    out.cells = cells.data();
+    out.cellCapacity = cells.size();
+    out.glyphs = glyphs.data();
+    out.glyphCapacity = glyphs.size();
+    FakeAtlas atlas;
+    const auto counts = buildCellInstances(in, UbiquittyTest::glyphBackendFor(atlas), out);
+    REQUIRE(counts.cursorTier.glyphs == 1);
+    REQUIRE(counts.glyphs >= 2 && counts.glyphs <= glyphs.size());
+    const GlyphInstance& gridGlyph = glyphs[0];
+    const GlyphInstance& cursorGlyph = glyphs[counts.glyphs - 1];
+    CHECK(gridGlyph.originInPixels.x < 13 && gridGlyph.originInPixels.y < 23);
+    CHECK(gridGlyph.originInPixels.x + gridGlyph.sizeInPixels.x > 21);
+    CHECK(gridGlyph.originInPixels.y + gridGlyph.sizeInPixels.y > 39);
+    CHECK(approx(cursorGlyph.originInPixels.x, 13));
+    CHECK(approx(cursorGlyph.originInPixels.y, 23));
+    CHECK(approx(cursorGlyph.sizeInPixels.x, 8));
+    CHECK(approx(cursorGlyph.sizeInPixels.y, 16));
+    const float unitX = (gridGlyph.atlasBottomRight.x - gridGlyph.atlasTopLeft.x) / gridGlyph.sizeInPixels.x;
+    const float unitY = (gridGlyph.atlasBottomRight.y - gridGlyph.atlasTopLeft.y) / gridGlyph.sizeInPixels.y;
+    CHECK(approx(cursorGlyph.atlasTopLeft.x, gridGlyph.atlasTopLeft.x + (13 - gridGlyph.originInPixels.x) * unitX));
+    CHECK(approx(cursorGlyph.atlasTopLeft.y, gridGlyph.atlasTopLeft.y + (23 - gridGlyph.originInPixels.y) * unitY));
+    CHECK(approx(cursorGlyph.atlasBottomRight.x, gridGlyph.atlasBottomRight.x - (gridGlyph.originInPixels.x + gridGlyph.sizeInPixels.x - 21) * unitX));
+    CHECK(approx(cursorGlyph.atlasBottomRight.y, gridGlyph.atlasBottomRight.y - (gridGlyph.originInPixels.y + gridGlyph.sizeInPixels.y - 39) * unitY));
+}
+
 // A focused block cursor is the cursor tier: the cell it stands on, re-emitted
 // with the cursor's colours as the tail of each stream, built after the last
 // row so every backend draws it after the grid, the images and the overlays.

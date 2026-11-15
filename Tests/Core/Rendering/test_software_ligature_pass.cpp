@@ -305,7 +305,7 @@ enum class Measurement {
 
 // "->" under two foregrounds: the '-' cell pure red, the '>' cell pure green,
 // so a probed pixel names the quad that painted it by colour alone.
-std::vector<std::uint8_t> renderOwnershipSurface(Measurement measurement)
+std::vector<std::uint8_t> renderOwnershipSurface(Measurement measurement, int cursorColumn = -1)
 {
     constexpr int columns = 8;
     OverhangRasterizer rasterizer;
@@ -329,6 +329,13 @@ std::vector<std::uint8_t> renderOwnershipSurface(Measurement measurement)
     in.metrics.cellHeight = static_cast<float>(cellHeight);
     in.metrics.baselineFromTop = 13.0f;
     in.metrics.underlineThickness = 1.0f;
+    in.cursor.row = cursorColumn >= 0 ? 0 : -1;
+    in.cursor.column = cursorColumn;
+    in.cursor.focused = true;
+    in.cursor.shape = Cursor::Shape::Block;
+    in.cursor.mixA = 1.0f;
+    in.cursor.rgb = { 1, 1, 1, 1 };
+    in.cursor.shouldInvertText = true;
 
     std::vector<std::uint8_t> rgba;
     int width = 0;
@@ -422,6 +429,35 @@ TEST(anUnmeasuredStripHandsOverhangToTheColumnItLandsOn)
 
     const ProbedChannels overhang = probeOwnership(surface, cellWidth + 1, y);
     CHECK_MSG(overhang.green >= 200 && overhang.red <= 60, "the geometric cut hands the overhang to the '>' column");
+}
+
+// The first glyph reaches into the second column. In either column the
+// cursor must recolour that column's pixels, irrespective of ink ownership.
+TEST(aBlockCursorClipsLigatureInversionToItsOwnCell)
+{
+    const auto bare = renderOwnershipSurface(Measurement::Available);
+    REQUIRE(!bare.empty());
+    for (int column = 0; column < 2; ++column) {
+        const auto withCursor = renderOwnershipSurface(Measurement::Available, column);
+        REQUIRE(withCursor.size() == bare.size());
+        int changedInside = 0;
+        for (int y = 0; y < cellHeight; ++y) {
+            for (int x = 0; x < 8 * cellWidth; ++x) {
+                const std::size_t offset = static_cast<std::size_t>(y * 8 * cellWidth + x) * 4;
+                const bool isInside = x >= column * cellWidth && x < (column + 1) * cellWidth;
+                bool doesPixelDiffer = false;
+                for (int channel = 0; channel < 4; ++channel)
+                    doesPixelDiffer |= withCursor[offset + channel] != bare[offset + channel];
+                if (isInside)
+                    changedInside += doesPixelDiffer ? 1 : 0;
+                else
+                    CHECK_MSG(!doesPixelDiffer, "the cursor leaves every pixel outside its cell unchanged");
+            }
+        }
+        CHECK(changedInside > 0);
+        const ProbedChannels ink = probeOwnership(withCursor, column * cellWidth + 1 + (column == 0 ? 3 : 0), cellHeight / 2);
+        CHECK_MSG(ink.red <= 10 && ink.green <= 10, "ink inside the white cursor is black even when a neighbouring cell owns it");
+    }
 }
 
 UBIQUITTY_TEST_MAIN()

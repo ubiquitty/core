@@ -66,6 +66,37 @@ enum class WalkClass : std::uint8_t {
 template<WalkClass value>
 using WalkClassConstant = std::integral_constant<WalkClass, value>;
 
+// Cursor ink is a crop of the original raster. Keep its affine UV mapping
+// while cutting both axes, so coverage outside the block keeps its grid ink
+// and transparent texels cannot repaint a rectangle around the block.
+void clipCursorGlyphs(GlyphInstance* glyphs, std::size_t begin, std::size_t end, Vec4 bounds)
+{
+    for (std::size_t index = begin; glyphs && index < end; ++index) {
+        GlyphInstance& glyph = glyphs[index];
+        const float left = glyph.originInPixels.x;
+        const float top = glyph.originInPixels.y;
+        const float right = left + glyph.sizeInPixels.x;
+        const float bottom = top + glyph.sizeInPixels.y;
+        const float keptLeft = std::max(left, bounds.x);
+        const float keptTop = std::max(top, bounds.y);
+        const float keptRight = std::min(right, bounds.z);
+        const float keptBottom = std::min(bottom, bounds.w);
+        if (keptLeft >= keptRight || keptTop >= keptBottom) {
+            glyph.sizeInPixels = { 0, 0 };
+            glyph.atlasBottomRight = glyph.atlasTopLeft;
+            continue;
+        }
+        const float unitX = (glyph.atlasBottomRight.x - glyph.atlasTopLeft.x) / glyph.sizeInPixels.x;
+        const float unitY = (glyph.atlasBottomRight.y - glyph.atlasTopLeft.y) / glyph.sizeInPixels.y;
+        glyph.atlasTopLeft.x += (keptLeft - left) * unitX;
+        glyph.atlasTopLeft.y += (keptTop - top) * unitY;
+        glyph.atlasBottomRight.x -= (right - keptRight) * unitX;
+        glyph.atlasBottomRight.y -= (bottom - keptBottom) * unitY;
+        glyph.originInPixels = { keptLeft, keptTop };
+        glyph.sizeInPixels = { keptRight - keptLeft, keptBottom - keptTop };
+    }
+}
+
 float atlasToDeviceScale(const CellMetrics& metrics)
 {
     return metrics.atlasToDevicePixels > 0.0f ? metrics.atlasToDevicePixels : 1.0f;
@@ -5264,7 +5295,12 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                             const float fullOriginX = penX - in.glyphMarginInPixels.width * scaleX;
                             const float segmentLeft = in.originInPixels.x + column * metrics.cellWidth;
                             const float segmentRight = in.originInPixels.x + (column + 1) * metrics.cellWidth;
-                            const LigatureStripSlice slice = run.hasOwnedInk
+                            // Cursor colour follows the block's pixels, including ink
+                            // owned by another column of the same shaped cluster.
+                            const LigatureStripSlice slice = isTierPass
+                                ? ligatureOwnedInkSlice((segmentLeft - fullOriginX) / scaleX,
+                                      (segmentRight - fullOriginX) / scaleX, run.slotWidthInAtlasPixels)
+                                : run.hasOwnedInk
                                 ? ligatureOwnedInkSlice(run.ownInkLeftInAtlasPixels,
                                       run.ownInkRightInAtlasPixels, run.slotWidthInAtlasPixels)
                                 : ligatureStripCellSlice(column, run.startColumn,
@@ -6210,6 +6246,26 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
     // The tier's tails, per stream, for the backends that draw the heads into
     // a retained grid and the tails after it. Zero when no tier was walked.
     if (didWalkTier) {
+        if (out.cells && countsBeforeTier.cells < std::min(counts.cells, out.cellCapacity)) {
+            Vec4 bounds { std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
+                -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity() };
+            for (std::size_t index = countsBeforeTier.cells; index < std::min(counts.cells, out.cellCapacity); ++index) {
+                const CellInstance& cell = out.cells[index];
+                const float left = in.originInPixels.x + cell.gridPosition.x * metrics.cellWidth;
+                const float top = in.originInPixels.y + cell.gridPosition.y * metrics.cellHeight;
+                bounds.x = std::min(bounds.x, left);
+                bounds.y = std::min(bounds.y, top);
+                bounds.z = std::max(bounds.z, left + cell.widthCells * metrics.cellWidth);
+                bounds.w = std::max(bounds.w, top + metrics.cellHeight);
+            }
+            clipCursorGlyphs(out.glyphs, countsBeforeTier.glyphs, std::min(counts.glyphs, out.glyphCapacity), bounds);
+            clipCursorGlyphs(out.wideGlyphs, countsBeforeTier.wideGlyphs, std::min(counts.wideGlyphs, out.wideGlyphCapacity), bounds);
+            clipCursorGlyphs(out.proportionalGlyphs, countsBeforeTier.proportionalGlyphs, std::min(counts.proportionalGlyphs, out.proportionalGlyphCapacity), bounds);
+            clipCursorGlyphs(out.proportionalStrips, countsBeforeTier.proportionalStrips, std::min(counts.proportionalStrips, out.proportionalStripCapacity), bounds);
+            clipCursorGlyphs(out.colorGlyphs, countsBeforeTier.colorGlyphs, std::min(counts.colorGlyphs, out.colorGlyphCapacity), bounds);
+            clipCursorGlyphs(out.ligatureGlyphs, countsBeforeTier.ligatureGlyphs, std::min(counts.ligatureGlyphs, out.ligatureGlyphCapacity), bounds);
+            clipCursorGlyphs(out.doubleGlyphs, countsBeforeTier.doubleGlyphs, std::min(counts.doubleGlyphs, out.doubleGlyphCapacity), bounds);
+        }
         counts.cursorTier.cells = counts.cells - countsBeforeTier.cells;
         counts.cursorTier.glyphs = counts.glyphs - countsBeforeTier.glyphs;
         counts.cursorTier.wideGlyphs = counts.wideGlyphs - countsBeforeTier.wideGlyphs;
