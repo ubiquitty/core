@@ -32,6 +32,7 @@
 
 #include <array>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -144,6 +145,9 @@ std::optional<Sync::PaneFacts> lastFactsOf(const std::string& script)
 
 int main()
 {
+    // The client can acknowledge the last frame after the daemon has closed
+    // its socket. Treat that write as EPIPE, as the app and daemon do.
+    ::signal(SIGPIPE, SIG_IGN);
     const std::optional<Sync::PaneFacts> exited = lastFactsOf("read line; exit 3");
     CHECK_MSG(exited.has_value(), "a reader of a pane whose program exited was sent no facts");
     if (exited)

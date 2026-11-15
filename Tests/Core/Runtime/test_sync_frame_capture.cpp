@@ -135,6 +135,8 @@ void openPublishWindow() { Ubiquitty::PAL::s_testMicroseconds += 5'000; }
 // A session over a scripted stream, plus the borrow the cases feed bytes
 // through. The session owns the stream; the borrow is valid until close().
 struct SessionFixture {
+    // TerminalSession borrows its preferences, including default values.
+    Ubiquitty::Preferences::Values configurationValues;
     TerminalSession* session = nullptr;
     Ubiquitty::PAL::ScriptedStream* stream = nullptr;
     bool isReady = false;
@@ -144,8 +146,9 @@ struct SessionFixture {
     static std::uint64_t readCoherenceClock(void*) { return 1'000'000 + Ubiquitty::PAL::s_testMicroseconds; }
 
     SessionFixture(int rows, int columns, const Ubiquitty::Preferences::Values& configuration = {})
+        : configurationValues(configuration)
     {
-        session = TerminalSession::make(configuration);
+        session = TerminalSession::make(configurationValues);
         if (!session)
             return;
         session->setCoherenceClock(&SessionFixture::readCoherenceClock, this);
