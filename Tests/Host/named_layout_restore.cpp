@@ -406,6 +406,9 @@ struct ExpectedPane {
 
 int main(int argc, char** argv)
 {
+    // Crashing a daemon can close its bridge while SubprocessChannel writes.
+    // Report that disconnection as EPIPE instead of terminating the fixture.
+    ::signal(SIGPIPE, SIG_IGN);
     if (argc < 2) {
         std::fprintf(stderr, "usage: %s <ubiquitty-host>\n", argv[0]);
         return 2;
