@@ -143,6 +143,31 @@ DaemonReach reachDaemon(const char* sockPath)
 
 // --daemon
 
+/// A host receives terminals only through authenticated adoption or handover.
+/// An older launcher can leave its own PTYs and sockets open across exec;
+/// the readiness pipe is the only nonstandard descriptor the host inherits.
+void closeInheritedDescriptors(int readyFileDescriptor)
+{
+    if (DIR* directory = ::opendir("/dev/fd")) {
+        const int directoryDescriptor = ::dirfd(directory);
+        while (const dirent* entry = ::readdir(directory)) {
+            const std::string_view name(entry->d_name);
+            int descriptor = -1;
+            const auto parsed = std::from_chars(name.data(), name.data() + name.size(), descriptor);
+            if (parsed.ec == std::errc() && parsed.ptr == name.data() + name.size() && descriptor > STDERR_FILENO
+                && descriptor != readyFileDescriptor && descriptor != directoryDescriptor)
+                ::close(descriptor);
+        }
+        ::closedir(directory);
+        return;
+    }
+    const int limit = ::getdtablesize();
+    for (int descriptor = STDERR_FILENO + 1; descriptor < limit; ++descriptor) {
+        if (descriptor != readyFileDescriptor)
+            ::close(descriptor);
+    }
+}
+
 /// Tells the launcher waiting on a readiness pipe that the socket accepts,
 /// then lets the pipe go. A daemon that never reaches this closes the pipe by
 /// exiting, which the launcher reads as an end without a ready byte.
@@ -160,6 +185,7 @@ void reportListening(int readyFileDescriptor)
 
 int runDaemon(const char* selfPath, int columns, int rows, int quicPort, const char* socketName, int readyFileDescriptor = -1, std::optional<std::uint32_t> sessionFileCreationMask = std::nullopt)
 {
+    closeInheritedDescriptors(readyFileDescriptor);
     // An idle stop asked before the daemon handles one is ignored rather
     // than ending it, until Daemon::start installs the handler.
     ::signal(SIGUSR2, SIG_IGN);

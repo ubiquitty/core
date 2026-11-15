@@ -65,6 +65,7 @@
 #include "Core/Session/HostInstall.h"
 #include "Core/Session/SessionShare.h"
 #include "Core/Transport/SSHHost.h"
+#include "PAL/UnixFileDescriptor.h"
 #include "Platform/Host/SignaturePolicy.h"
 #include "Platform/Host/TrustedLocalBinaries.h"
 #include "Platform/POSIX/LocalHostInstall.h"
@@ -1101,6 +1102,49 @@ void enablesControlSignalsInheritedFromItsLauncher(const std::string& built)
     machine.finish();
 }
 
+/// A raw older launcher leaves a pipe open across exec. With no intended
+/// writer left, EOF proves the ready daemon did not retain its copy.
+void closesDescriptorsInheritedFromItsLauncher(const std::string& built, const char* mode)
+{
+    Machine machine;
+    if (!machine.create("lhs-descriptors")) {
+        CHECK_MSG(false, "a private machine");
+        return;
+    }
+    machine.adopt();
+    CHECK_MSG(Install::copy(built, machine.bundledHost), "the bundled host is available");
+    int descriptors[2] { -1, -1 };
+    if (::pipe(descriptors) != 0) {
+        CHECK_MSG(false, "an inherited descriptor probe");
+        machine.finish();
+        return;
+    }
+    Ubiquitty::PAL::UnixFileDescriptor reader(descriptors[0]);
+    Ubiquitty::PAL::UnixFileDescriptor writer(descriptors[1]);
+    CHECK_MSG(::fcntl(reader.get(), F_SETFL, O_NONBLOCK) == 0, "the probe cannot block on a leaked writer");
+    const pid_t launcher = ::fork();
+    if (launcher == 0) {
+        ::execl(machine.bundledHost.c_str(), machine.bundledHost.c_str(), mode, "--quic-port", "-1", nullptr);
+        ::_exit(127);
+    }
+    writer.reset();
+    const std::string leaf = Ubiquitty::Host::socketLeafForBinary(machine.bundledHost.c_str());
+    const bool ready = launcher > 0 && Ubiquitty::HostTest::waitForDaemonReady(machine.home + "/" + leaf);
+    CHECK_MSG(ready, "the daemon starts while preserving its readiness protocol");
+    const bool isDetached = std::string_view(mode) == "--ensure-daemon";
+    if (isDetached && launcher > 0)
+        CHECK_MSG(waitForExit(launcher, 5000) == std::optional { 0 }, "the detached launcher reports readiness");
+    if (ready) {
+        char byte = 0;
+        CHECK_MSG(::read(reader.get(), &byte, 1) == 0, "a ready daemon retains no inherited session descriptor");
+    }
+    if (!isDetached && launcher > 0) {
+        ::kill(launcher, SIGTERM);
+        CHECK_MSG(waitForExit(launcher, 5000) == std::optional { 0 }, "the directly launched fixture exits normally");
+    }
+    machine.finish();
+}
+
 /// 7: an idle stop asked of a host from the moment its socket answers, and
 /// while a client is still greeting.
 void answersAnIdleStopOnlyWhenItCan(const std::string& built)
@@ -1297,6 +1341,11 @@ int main(int argc, char** argv)
         endChildren();
         return failures == 0 ? 0 : 1;
     }
+    if (argc == 3 && std::string_view(argv[1]) == "--check-inherited-descriptors") {
+        closesDescriptorsInheritedFromItsLauncher(argv[2], "--daemon");
+        closesDescriptorsInheritedFromItsLauncher(argv[2], "--ensure-daemon");
+        return failures == 0 ? 0 : 1;
+    }
     if (argc != 2 && argc != 4) {
         std::fprintf(stderr, "usage: %s <ubiquitty-host> [<older ubiquitty-host> <older ubq>]\n", argv[0]);
         return 2;
@@ -1307,6 +1356,8 @@ int main(int argc, char** argv)
     const std::string self = std::filesystem::canonical(argv[0], selfError).string();
     upgradesAHostInstalledInTheControlDirectory(built, argc == 4 ? argv[2] : "", argc == 4 ? argv[3] : "");
     if (argc == 2) {
+        closesDescriptorsInheritedFromItsLauncher(built, "--daemon");
+        closesDescriptorsInheritedFromItsLauncher(built, "--ensure-daemon");
         enablesControlSignalsInheritedFromItsLauncher(built);
         remoteUpdateKeepsLiveSessions(built, RemoteHolderPlacement::Installed);
         remoteUpdateKeepsLiveSessions(built, RemoteHolderPlacement::Elsewhere);
