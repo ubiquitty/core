@@ -7133,7 +7133,7 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                         // Batch the CSI body: parameter runs in one scan, plus the final
                         // byte (0x40..0x7E) and private prefix (0x3C..0x3F) inline.
                         // Intermediates, embedded C0, and DEL keep the per-byte driver.
-                        if (c >= 0x30 && c <= 0x7E) {
+                        if (t.parser.utf8.need == 0 && c >= 0x30 && c <= 0x7E) {
                             if (c <= 0x3B) {
                                 int consumed = VT::scanCSIParameters(t, buffer, i, length);
                                 // The byte after a parameter run is the final byte for
