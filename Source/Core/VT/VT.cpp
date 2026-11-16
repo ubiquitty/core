@@ -2176,7 +2176,10 @@ static void tmuxDeliver(void* ctx, uint8_t byte)
         if (t->integration.paneRouter.lookup) {
             Ubiquitty::Terminal* target = tmuxDeliveryTarget(*t);
             if (target && target != t) {
+                const bool wasUTF8 = target->parser.parserInputIsUTF8;
+                target->parser.parserInputIsUTF8 = t->parser.parserInputIsUTF8;
                 processByteInner(*target, byte);
+                target->parser.parserInputIsUTF8 = wasUTF8;
             }
             // target == NULL or self-loop → drop.
             return;
@@ -2193,13 +2196,19 @@ static void tmuxDeliverSpan(void* ctx, std::string_view bytes)
         return;
     Ubiquitty::Terminal* t = static_cast<Ubiquitty::Terminal*>(ctx);
     Ubiquitty::Terminal* target = tmuxDeliveryTarget(*t);
+    const auto deliver = [&] {
+        const bool wasUTF8 = target->parser.parserInputIsUTF8;
+        target->parser.parserInputIsUTF8 = t->parser.parserInputIsUTF8;
+        Ubiquitty::processBytesImpl<false>(*target, bytes, nullptr);
+        target->parser.parserInputIsUTF8 = wasUTF8;
+    };
     if (Ubiquitty::Protocol::Tmux::isActive(&t->integration.tmux) && t->integration.paneRouter.lookup) {
         if (target && target != t)
-            Ubiquitty::processBytesImpl<false>(*target, bytes, nullptr);
+            deliver();
         return;
     }
     if (target && target != t) {
-        Ubiquitty::processBytesImpl<false>(*target, bytes, nullptr);
+        deliver();
         return;
     }
     if (target == t && !Ubiquitty::Protocol::Tmux::isActive(&t->integration.tmux)) {
