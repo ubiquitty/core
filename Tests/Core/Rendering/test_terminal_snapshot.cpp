@@ -22,6 +22,7 @@
 #include "Core/TerminalOperations.h"
 #include "TerminalFixture.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -268,11 +269,10 @@ TEST(testSnapshotOtherMatchPillReachesIntoPadding)
     CHECK(!differsAt(7, 24));
 }
 
-// The grid's layers end at the grid box: a curly underline on the last row
-// whose wave dips below the cell, and the block cursor beside it, leave the
-// padding exactly the frame's ground. Only the overlays reach into it, which
-// testSnapshotOtherMatchPillReachesIntoPadding holds.
-TEST(testSnapshotGridInkStaysInsideTheGridBox)
+// The last row's underline keeps its complete wave in padding. A blank extra
+// row makes the same stroke fit inside a tight drawable, giving a pixel oracle
+// independent of the padded composition. The block cursor still owns its cell.
+TEST(testSnapshotKeepsCompleteRuleInkInsideTheDrawable)
 {
     Ubiquitty::Terminal terminal;
     Ubiquitty::hardReset(terminal);
@@ -287,17 +287,38 @@ TEST(testSnapshotGridInkStaysInsideTheGridBox)
     int height = 0;
     const std::vector<std::uint8_t> rgba = renderTerminalSnapshotRGBA(terminal, options, width, height);
     REQUIRE(!rgba.empty());
+    options.drawCursor = false;
+    int cursorlessWidth = 0, cursorlessHeight = 0;
+    const auto cursorless = renderTerminalSnapshotRGBA(terminal, options, cursorlessWidth, cursorlessHeight);
+    REQUIRE(cursorless.size() == rgba.size() && cursorlessWidth == width && cursorlessHeight == height);
+    options.drawCursor = true;
+    options.style.paddingInPixels = {};
+    Ubiquitty::resize(terminal, 4, 12);
+    int expandedWidth = 0, expandedHeight = 0;
+    const auto expanded = renderTerminalSnapshotRGBA(terminal, options, expandedWidth, expandedHeight);
+    REQUIRE(!expanded.empty() && expandedWidth == width - padding * 2 && expandedHeight > height - padding * 2);
     const Ubiquitty::Rendering::RGB8 ground = Ubiquitty::Rendering::resolvePaletteColor(terminal.palette, Ubiquitty::colorDefault, false);
+    int wrongPixels = 0;
     int inkedPaddingPixels = 0;
+    int cursorPaddingPixels = 0;
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
-            if (x >= padding && x < width - padding && y >= padding && y < height - padding)
-                continue;
             const std::size_t offset = (static_cast<std::size_t>(y) * width + x) * 4;
-            inkedPaddingPixels += rgba[offset] != ground.red || rgba[offset + 1] != ground.green || rgba[offset + 2] != ground.blue;
+            std::array<std::uint8_t, 4> expected { ground.red, ground.green, ground.blue, 255 };
+            if (x >= padding && x < padding + expandedWidth && y >= padding && y < padding + expandedHeight) {
+                const auto source = (static_cast<std::size_t>(y - padding) * expandedWidth + x - padding) * 4;
+                std::copy_n(expanded.data() + source, 4, expected.data());
+            }
+            wrongPixels += !std::equal(expected.begin(), expected.end(), rgba.data() + offset);
+            if (x < padding || x >= width - padding || y < padding || y >= height - padding) {
+                inkedPaddingPixels += rgba[offset] != ground.red || rgba[offset + 1] != ground.green || rgba[offset + 2] != ground.blue;
+                cursorPaddingPixels += !std::equal(rgba.data() + offset, rgba.data() + offset + 4, cursorless.data() + offset);
+            }
         }
     }
-    CHECK_EQ(inkedPaddingPixels, 0);
+    CHECK_EQ(wrongPixels, 0);
+    CHECK(inkedPaddingPixels > 0);
+    CHECK_EQ(cursorPaddingPixels, 0);
 }
 
 // DECSCNM swaps the frame's default ground, and the padding is part of the
