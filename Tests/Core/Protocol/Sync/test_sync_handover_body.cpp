@@ -932,6 +932,82 @@ TEST(parserHandoverKeepsAnOpenGraphemeAndTheCheckpointREPRecord)
     }
 }
 
+TEST(parserHandoverKeepsAnUnplacedFormatPrependAndItsNextBase)
+{
+    for (const auto prefix : { "\u0600", "\u0600\u0601" }) {
+        Ubiquitty::Terminal source;
+        Ubiquitty::resize(source, 4, 20);
+        UbiquittyTest::feed(source, "ab");
+        UbiquittyTest::feed(source, prefix);
+        UbiquittyTest::feed(source, "\033[1m");
+        REQUIRE(!source.parser.clusterActive);
+        REQUIRE(source.parser.clusterCodepointLength > 0);
+        CHECK_EQ(source.screens.active->cursorX, 2);
+        CHECK_EQ(UbiquittyTest::cell(source, 0, 2)->codePoint, 0u);
+        const int prefixLength = source.parser.clusterCodepointLength;
+        const auto parser = encodeHandoverParser(source, 4096);
+        const auto text = encodeHandoverTextStores(source, textLimits);
+        REQUIRE(parser && text);
+        Ubiquitty::Terminal successor;
+        ScreenReplica replica;
+        REQUIRE(applyCheckpoint(successor, screenCheckpoint(source), replica) == ApplyOutcome::Applied);
+        REQUIRE(restoreHandoverTextStores(text->view(), successor, textLimits));
+        REQUIRE(restoreHandoverParser(parser->view(), successor, 4096));
+        const auto roundTrip = encodeHandoverParser(successor, 4096);
+        REQUIRE(roundTrip);
+        CHECK(std::ranges::equal(roundTrip->view(), parser->view()));
+        for (auto* terminal : { &source, &successor }) {
+            UbiquittyTest::feed(*terminal, "❤️X");
+            const auto* lead = UbiquittyTest::cell(*terminal, 0, 2);
+            std::uint32_t points[8] {};
+            CHECK_EQ(Ubiquitty::cellClusterCodePoints(terminal, lead, points, 8), prefixLength + 2);
+            CHECK_EQ(points[0], 0x0600u);
+            if (prefixLength == 2)
+                CHECK_EQ(points[1], 0x0601u);
+            CHECK_EQ(points[prefixLength], 0x2764u);
+            CHECK_EQ(points[prefixLength + 1], 0xFE0Fu);
+            CHECK(lead->pen.attributes.contains(Ubiquitty::VT::Attribute::Wide));
+            CHECK(lead->pen.attributes.contains(Ubiquitty::VT::Attribute::Emoji));
+            CHECK(lead->pen.attributes.contains(Ubiquitty::VT::Attribute::Bold));
+            CHECK_EQ(UbiquittyTest::cell(*terminal, 0, 4)->codePoint, static_cast<std::uint32_t>('X'));
+            CHECK_EQ(terminal->screens.active->cursorX, 5);
+        }
+        CHECK(screenCheckpoint(source) == screenCheckpoint(successor));
+    }
+}
+
+TEST(parserHandoverKeepsInactiveOrdinaryBuildersInert)
+{
+    Ubiquitty::Terminal source;
+    UbiquittyTest::feed(source, "\u0600");
+    REQUIRE(!source.parser.clusterActive);
+    REQUIRE(source.parser.clusterCodepointLength == 1);
+    const auto parser = encodeHandoverParser(source, 4096);
+    REQUIRE(parser);
+    for (const std::uint32_t codePoint : { 0x0041u, 0x0301u, 0x200Bu, 0x0D4Eu }) {
+        auto changed = std::vector<std::uint8_t>(parser->view().begin(), parser->view().end());
+        Ubiquitty::Unicode::GraphemeState state {};
+        Ubiquitty::Unicode::graphemeStateReset(&state, codePoint);
+        writeLittle(changed, 26, codePoint, 4); // Running last scalar.
+        writeLittle(changed, 30, state.riCount, 1);
+        writeLittle(changed, 31, state.pictExtend, 1);
+        writeLittle(changed, 32, state.zwjAfterPict, 1);
+        writeLittle(changed, 33, state.prevRaw, 1);
+        writeLittle(changed, 34, state.incbChain, 1);
+        writeLittle(changed, 48, codePoint, 4); // First builder scalar.
+        refreshImageDigest(changed);
+        Ubiquitty::Terminal successor;
+        ScreenReplica replica;
+        REQUIRE(applyCheckpoint(successor, screenCheckpoint(source), replica) == ApplyOutcome::Applied);
+        REQUIRE(restoreHandoverParser(changed, successor, 4096));
+        UbiquittyTest::feed(successor, "B");
+        std::uint32_t points[4] {};
+        CHECK_EQ(Ubiquitty::cellClusterCodePoints(&successor, UbiquittyTest::cell(successor, 0, 0), points, 4), 1);
+        CHECK_EQ(points[0], static_cast<std::uint32_t>('B'));
+        CHECK_EQ(successor.screens.active->cursorX, 1);
+    }
+}
+
 TEST(parserHandoverPreservesVT52AndLegacyInputPolicy)
 {
     Ubiquitty::Terminal source;

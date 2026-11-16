@@ -665,6 +665,7 @@ void setProportionalRunInGridFace(Ubiquitty::Terminal& t, std::span<const std::u
     // Nothing printed later joins a cluster this claim does not hold.
     VT::discardGraphicCancellation(t);
     t.parser.clusterActive = false;
+    t.parser.clusterCodepointLength = 0;
     t.parser.precedingItem.setGraphic(codePoints[0], codePoints[0], 0);
     standAfterClaim(t, placement.row, placement.column, claim);
 }
@@ -726,6 +727,7 @@ bool placeProportionalRun(Ubiquitty::Terminal& t, std::span<const std::uint32_t>
     // A mark printed after the run joins no cluster from before it.
     VT::discardGraphicCancellation(t);
     t.parser.clusterActive = false;
+    t.parser.clusterCodepointLength = 0;
     t.parser.precedingItem.setGraphic(codePoints[0], codePoints[0], 0);
     return true;
 }

@@ -15,6 +15,7 @@
 
 #include "Core/Rendering/StatusRow.h"
 #include "Core/Screen/Addressing.h"
+#include "Core/Unicode/UTF8Encoder.h"
 #include "Harness.h"
 #include "VT100Fixture.h"
 
@@ -222,27 +223,24 @@ TEST(testDefaultIgnorableCodepointsAreDropped)
 
 TEST(testDroppedZeroWidthCodePointEndsTheOpenCluster)
 {
-    // A zero-width code point the rules put a boundary before takes no cell and
-    // ends the open cluster, so what follows it never joins an earlier cell. A
-    // Prepend is the case that tests it: GB9b joins the code point after it, and
-    // that code point must start a cell of its own rather than land in the
-    // cluster before the Prepend. A zero-width code point the rules never weigh
-    // leaves the cluster open. Each case holds at every chunking.
+    // A zero-width Prepend ends the earlier cluster and belongs to the next
+    // base. An ignored code point the rules never weigh leaves the cluster open.
     struct Case {
         const char* name;
         std::string_view bytes;
         int clusterLength; // code points the first cell keeps
         int clusterColumns; // columns the first cell spans
         uint32_t next; // the code point that must start the next cell, or 0
+        uint32_t nextPrefix;
         int cursor;
     };
     const Case cases[] = {
-        { "flag, Prepend U+0605, ideograph", "\xF0\x9F\x87\xAF\xF0\x9F\x87\xB5\xD8\x85\xE8\xBF\xB2", 2, 2, 0x8FF2, 4 },
-        { "letter, Prepend U+0605, Greek letter", "a\xD8\x85\xCE\xB1", 1, 1, 0x03B1, 2 },
-        { "ideograph, Prepend U+070F, Greek letter", "\xE4\xBD\xA0\xDC\x8F\xCE\xB1", 1, 2, 0x03B1, 3 },
+        { "flag, Prepend U+0605, ideograph", "\xF0\x9F\x87\xAF\xF0\x9F\x87\xB5\xD8\x85\xE8\xBF\xB2", 2, 2, 0x8FF2, 0x0605, 4 },
+        { "letter, Prepend U+0605, Greek letter", "a\xD8\x85\xCE\xB1", 1, 1, 0x03B1, 0x0605, 2 },
+        { "ideograph, Prepend U+070F, Greek letter", "\xE4\xBD\xA0\xDC\x8F\xCE\xB1", 1, 2, 0x03B1, 0x070F, 3 },
         // Both the letter and SOFT HYPHEN sit below every rule's range, so the
         // soft hyphen is dropped unweighed and the acute still joins the letter.
-        { "letter, SOFT HYPHEN, combining acute", "a\xC2\xAD\xCC\x81", 2, 1, 0, 1 },
+        { "letter, SOFT HYPHEN, combining acute", "a\xC2\xAD\xCC\x81", 2, 1, 0, 0, 1 },
     };
     for (const Case& test : cases) {
         for (const std::size_t chunk : { test.bytes.size(), std::size_t { 1 } }) {
@@ -252,8 +250,12 @@ TEST(testDroppedZeroWidthCodePointEndsTheOpenCluster)
                 Ubiquitty::processBytes(&t, test.bytes.substr(offset, chunk));
             uint32_t codePoints[16];
             CHECK_MSG(Ubiquitty::cellClusterCodePoints(&t, cell(t, 0, 0), codePoints, 16) == test.clusterLength, test.name);
-            if (test.next != 0)
-                CHECK_MSG(cell(t, 0, test.clusterColumns)->codePoint == test.next, test.name);
+            if (test.next != 0) {
+                std::uint32_t nextPoints[4] {};
+                CHECK_MSG(Ubiquitty::cellClusterCodePoints(&t, cell(t, 0, test.clusterColumns), nextPoints, 4) == 2, test.name);
+                CHECK_MSG(nextPoints[0] == test.nextPrefix, test.name);
+                CHECK_MSG(nextPoints[1] == test.next, test.name);
+            }
             CHECK_MSG(t.screens.active->cursorX == test.cursor, test.name);
         }
     }
@@ -1971,6 +1973,276 @@ TEST(reprintingAWideBaseDropsItsPreviousCluster)
     feed(terminal, "\r\033[76:1m😀︎\r😀️");
     CHECK(cell(terminal, 0, 0)->combiningLength() == 1);
     CHECK(cell(terminal, 0, 0)->combining[0] == 0xFE0F);
+}
+
+TEST(formatPrependsRetainTheirBaseAcrossEveryInputSplit)
+{
+    struct Case {
+        std::string_view bytes;
+        std::array<std::uint32_t, 5> points;
+        int length;
+        int columns;
+        bool isEmoji;
+        bool isBold;
+    };
+    const Case cases[] = {
+        { "\u0600A", { 0x0600, 'A' }, 2, 1, false, false },
+        { "\u0600é", { 0x0600, 0x00E9 }, 2, 1, false, false },
+        { "\u0600漢", { 0x0600, 0x6F22 }, 2, 2, false, false },
+        { "\u0600\033[1mA", { 0x0600, 'A' }, 2, 1, false, true },
+        { "\u0600\u0601A", { 0x0600, 0x0601, 'A' }, 3, 1, false, false },
+        { "\u0600\u0D4EA", { 0x0600, 0x0D4E, 'A' }, 3, 1, false, false },
+        { "\u0D4E\u0600A", { 0x0D4E, 0x0600, 'A' }, 3, 1, false, false },
+        { "\u0600❤️", { 0x0600, 0x2764, 0xFE0F }, 3, 2, true, false },
+        { "\u0600😀︎", { 0x0600, 0x1F600, 0xFE0E }, 3, 2, false, false },
+        { "\u0600"
+          "1️⃣",
+            { 0x0600, '1', 0xFE0F, 0x20E3 }, 4, 2, true, false },
+    };
+    for (const Case& test : cases) {
+        const std::string input = std::string(test.bytes) + "XYZ";
+        const auto check = [&](Ubiquitty::Terminal& terminal) {
+            const auto* lead = cell(terminal, 0, 0);
+            std::array<std::uint32_t, 8> actual {};
+            CHECK_EQ(Ubiquitty::cellClusterCodePoints(&terminal, lead, actual.data(), static_cast<int>(actual.size())), test.length);
+            CHECK(std::equal(test.points.begin(), test.points.begin() + test.length, actual.begin()));
+            CHECK_EQ(lead->pen.attributes.contains(Ubiquitty::VT::Attribute::Wide), test.columns == 2);
+            CHECK_EQ(lead->pen.attributes.contains(Ubiquitty::VT::Attribute::Emoji), test.isEmoji);
+            CHECK_EQ(lead->pen.attributes.contains(Ubiquitty::VT::Attribute::Bold), test.isBold);
+            for (int index = 0; index < 3; ++index) {
+                CHECK_EQ(cell(terminal, 0, test.columns + index)->codePoint, static_cast<std::uint32_t>('X' + index));
+                CHECK_EQ(cell(terminal, 0, test.columns + index)->pen.attributes.contains(Ubiquitty::VT::Attribute::Bold), test.isBold);
+            }
+            CHECK_EQ(terminal.screens.active->cursorX, test.columns + 3);
+            CHECK_EQ(terminal.screens.active->cursorY, 0);
+            CHECK(!terminal.screens.active->wrapPending);
+            CHECK(UbiquittyTest::firstOrphanedWideHalf(terminal).empty());
+        };
+        for (std::size_t split = 0; split <= input.size(); ++split) {
+            Ubiquitty::Terminal terminal;
+            Ubiquitty::hardReset(terminal);
+            feed(terminal, std::string_view(input).substr(0, split));
+            feed(terminal, std::string_view(input).substr(split));
+            check(terminal);
+        }
+        for (const std::size_t chunk : { 1u, 2u, 3u, 5u, 7u }) {
+            Ubiquitty::Terminal terminal;
+            Ubiquitty::hardReset(terminal);
+            for (std::size_t offset = 0; offset < input.size(); offset += chunk)
+                feed(terminal, std::string_view(input).substr(offset, chunk));
+            check(terminal);
+        }
+    }
+}
+
+TEST(everyZeroWidthPrependWaitsForItsBaseWithoutClaimingACell)
+{
+    const std::uint32_t prefixes[] = { 0x0600, 0x0601, 0x0602, 0x0603, 0x0604, 0x0605, 0x06DD, 0x070F, 0x0890, 0x0891, 0x08E2, 0x110BD, 0x110CD };
+    for (const auto prefix : prefixes) {
+        Ubiquitty::Terminal terminal;
+        Ubiquitty::hardReset(terminal);
+        feed(terminal, "ab");
+        std::string encoded;
+        Ubiquitty::Unicode::appendUTF8(encoded, prefix);
+        for (const char byte : encoded)
+            feed(terminal, std::string_view(&byte, 1));
+        CHECK_EQ(terminal.screens.active->cursorX, 2);
+        CHECK_EQ(cell(terminal, 0, 1)->codePoint, static_cast<std::uint32_t>('b'));
+        CHECK_EQ(cell(terminal, 0, 1)->combiningLength(), 0);
+        CHECK_EQ(cell(terminal, 0, 2)->codePoint, 0u);
+        CHECK(!terminal.screens.active->wrapPending);
+        feed(terminal, "A");
+        std::uint32_t points[4] {};
+        CHECK_EQ(Ubiquitty::cellClusterCodePoints(&terminal, cell(terminal, 0, 2), points, 4), 2);
+        CHECK_EQ(points[0], prefix);
+        CHECK_EQ(points[1], static_cast<std::uint32_t>('A'));
+        CHECK_EQ(terminal.screens.active->cursorX, 3);
+    }
+    Ubiquitty::Terminal terminal;
+    Ubiquitty::hardReset(terminal);
+    for (int index = 0; index < Ubiquitty::clusterPoolMaximumCodePoints * 4; ++index)
+        feed(terminal, "\u0600");
+    CHECK_EQ(terminal.screens.active->cursorX, 0);
+    CHECK_EQ(cell(terminal, 0, 0)->codePoint, 0u);
+    feed(terminal, "A");
+    std::array<std::uint32_t, Ubiquitty::clusterPoolMaximumCodePoints> points {};
+    CHECK_EQ(Ubiquitty::cellClusterCodePoints(&terminal, cell(terminal, 0, 0), points.data(), static_cast<int>(points.size())), Ubiquitty::clusterPoolMaximumCodePoints);
+    CHECK(std::all_of(points.begin(), points.end() - 1, [](auto point) { return point == 0x0600; }));
+    CHECK_EQ(points.back(), static_cast<std::uint32_t>('A'));
+    CHECK_EQ(terminal.screens.active->cursorX, 1);
+}
+
+TEST(formatPrependCancellationAndIgnoredFormatsKeepTheirOwnContracts)
+{
+    for (const auto control : { "\r\n", "\033[2;1H", "\033[2J", "\033c" }) {
+        Ubiquitty::Terminal terminal;
+        Ubiquitty::hardReset(terminal);
+        feed(terminal, "\u0600");
+        feed(terminal, control);
+        feed(terminal, "A");
+        const int row = terminal.screens.active->cursorY;
+        std::uint32_t points[4] {};
+        CHECK_EQ(Ubiquitty::cellClusterCodePoints(&terminal, cell(terminal, row, 0), points, 4), 1);
+        CHECK_EQ(points[0], static_cast<std::uint32_t>('A'));
+        CHECK_EQ(terminal.screens.active->cursorX, 1);
+    }
+    for (const auto format : { "\u00AD", "\u061C", "\u200B", "\uFEFF" }) {
+        Ubiquitty::Terminal terminal;
+        Ubiquitty::hardReset(terminal);
+        feed(terminal, "A");
+        feed(terminal, format);
+        feed(terminal, "B");
+        CHECK_EQ(cell(terminal, 0, 0)->codePoint, static_cast<std::uint32_t>('A'));
+        CHECK_EQ(cell(terminal, 0, 0)->combiningLength(), 0);
+        CHECK_EQ(cell(terminal, 0, 1)->codePoint, static_cast<std::uint32_t>('B'));
+        CHECK_EQ(cell(terminal, 0, 1)->combiningLength(), 0);
+        CHECK_EQ(terminal.screens.active->cursorX, 2);
+    }
+    Ubiquitty::Terminal terminal;
+    Ubiquitty::hardReset(terminal);
+    feed(terminal, "\u0600");
+    feed(terminal, "\xFF"
+                   "A");
+    std::uint32_t points[4] {};
+    CHECK_EQ(Ubiquitty::cellClusterCodePoints(&terminal, cell(terminal, 0, 0), points, 4), 2);
+    CHECK_EQ(points[0], 0x0600u);
+    CHECK_EQ(points[1], 0xFFFDu);
+    CHECK_EQ(cell(terminal, 0, 1)->codePoint, static_cast<std::uint32_t>('A'));
+}
+
+TEST(formatPrependsPreservePendingWrapAndSelectorPromotion)
+{
+    const std::string input = "\u0600❤️X";
+    for (std::size_t split = 0; split <= input.size(); ++split) {
+        Ubiquitty::Terminal terminal;
+        Ubiquitty::hardReset(terminal);
+        Ubiquitty::resize(terminal, 3, 4, Ubiquitty::Modes::ReflowMode::Fixed);
+        feed(terminal, "ab");
+        feed(terminal, std::string_view(input).substr(0, split));
+        feed(terminal, std::string_view(input).substr(split));
+        std::uint32_t points[4] {};
+        CHECK_EQ(Ubiquitty::cellClusterCodePoints(&terminal, cell(terminal, 0, 2), points, 4), 3);
+        CHECK_EQ(points[0], 0x0600u);
+        CHECK_EQ(points[1], 0x2764u);
+        CHECK_EQ(points[2], 0xFE0Fu);
+        CHECK(cell(terminal, 0, 2)->pen.attributes.contains(Ubiquitty::VT::Attribute::Wide));
+        CHECK(cell(terminal, 0, 2)->pen.attributes.contains(Ubiquitty::VT::Attribute::Emoji));
+        CHECK(cell(terminal, 0, 3)->pen.attributes.contains(Ubiquitty::VT::Attribute::WideContinuation));
+        CHECK_EQ(cell(terminal, 1, 0)->codePoint, static_cast<std::uint32_t>('X'));
+        CHECK_EQ(terminal.screens.active->cursorX, 1);
+        CHECK_EQ(terminal.screens.active->cursorY, 1);
+        CHECK(UbiquittyTest::firstOrphanedWideHalf(terminal).empty());
+    }
+    for (const auto initial : { "abc", "abcd" }) {
+        Ubiquitty::Terminal terminal;
+        Ubiquitty::hardReset(terminal);
+        Ubiquitty::resize(terminal, 3, 4, Ubiquitty::Modes::ReflowMode::Fixed);
+        feed(terminal, initial);
+        const bool wasWrapPending = terminal.screens.active->wrapPending;
+        feed(terminal, "\u0600");
+        CHECK_EQ(terminal.screens.active->cursorX, 3);
+        CHECK_EQ(terminal.screens.active->cursorY, 0);
+        CHECK_EQ(terminal.screens.active->wrapPending, wasWrapPending);
+        feed(terminal, "漢X");
+        std::uint32_t points[4] {};
+        CHECK_EQ(Ubiquitty::cellClusterCodePoints(&terminal, cell(terminal, 1, 0), points, 4), 2);
+        CHECK_EQ(points[0], 0x0600u);
+        CHECK_EQ(points[1], 0x6F22u);
+        CHECK_EQ(cell(terminal, 1, 2)->codePoint, static_cast<std::uint32_t>('X'));
+        CHECK_EQ(terminal.screens.active->cursorX, 3);
+        CHECK_EQ(terminal.screens.active->cursorY, 1);
+        CHECK(UbiquittyTest::firstOrphanedWideHalf(terminal).empty());
+    }
+}
+
+TEST(cancellingAFormatPrependedBaseRestoresTheUnplacedPrefix)
+{
+    Ubiquitty::Terminal terminal;
+    Ubiquitty::hardReset(terminal);
+    feed(terminal, "\u0600\033[1mA\033T");
+    CHECK_EQ(cell(terminal, 0, 0)->codePoint, 0u);
+    CHECK_EQ(terminal.screens.active->cursorX, 0);
+    feed(terminal, "B");
+    std::uint32_t points[4] {};
+    CHECK_EQ(Ubiquitty::cellClusterCodePoints(&terminal, cell(terminal, 0, 0), points, 4), 2);
+    CHECK_EQ(points[0], 0x0600u);
+    CHECK_EQ(points[1], static_cast<std::uint32_t>('B'));
+    CHECK(cell(terminal, 0, 0)->pen.attributes.contains(Ubiquitty::VT::Attribute::Bold));
+    CHECK_EQ(terminal.screens.active->cursorX, 1);
+}
+
+TEST(formatPrependPlacementMatchesItsBaseInBothDirectionsAndInsertMode)
+{
+    const std::string prefix = "\u0600";
+    for (const std::string_view base : { "❤️X", "😀X" }) {
+        const std::string input = prefix + std::string(base);
+        for (const bool shouldWriteRightToLeft : { false, true }) {
+            for (const bool isInsertMode : { false, true }) {
+                for (const int column : { 0, 1, 6, 7 }) {
+                    for (std::size_t split = 0; split <= input.size(); ++split) {
+                        Ubiquitty::Terminal ordinary, prepended;
+                        for (auto* terminal : { &ordinary, &prepended }) {
+                            Ubiquitty::hardReset(*terminal);
+                            Ubiquitty::resize(*terminal, 3, 8, Ubiquitty::Modes::ReflowMode::Fixed);
+                            feed(*terminal, "abcdefgh");
+                            terminal->shouldWriteRightToLeft = shouldWriteRightToLeft;
+                            feed(*terminal, "\033[1;" + std::to_string(column + 1) + 'H');
+                            if (isInsertMode)
+                                feed(*terminal, "\033[4h");
+                        }
+                        feed(prepended, std::string_view(input).substr(0, split));
+                        feed(prepended, std::string_view(input).substr(split));
+                        const std::size_t baseSplit = split > prefix.size() ? split - prefix.size() : 0;
+                        feed(ordinary, base.substr(0, baseSplit));
+                        feed(ordinary, base.substr(baseSplit));
+                        int retainedPrefixes = 0;
+                        for (int row = 0; row < 3; ++row) {
+                            for (int cellColumn = 0; cellColumn < 8; ++cellColumn) {
+                                const auto* plainCell = cell(ordinary, row, cellColumn);
+                                const auto* prefixedCell = cell(prepended, row, cellColumn);
+                                std::uint32_t plainPoints[8] {}, prefixedPoints[8] {};
+                                const int plainLength = Ubiquitty::cellClusterCodePoints(&ordinary, plainCell, plainPoints, 8);
+                                const int prefixedLength = Ubiquitty::cellClusterCodePoints(&prepended, prefixedCell, prefixedPoints, 8);
+                                const bool hasPrefix = prefixedPoints[0] == 0x0600;
+                                retainedPrefixes += hasPrefix ? 1 : 0;
+                                CHECK_EQ(prefixedLength, plainLength + (hasPrefix ? 1 : 0));
+                                CHECK(std::equal(plainPoints, plainPoints + plainLength, prefixedPoints + (hasPrefix ? 1 : 0)));
+                                CHECK(plainCell->pen.attributes == prefixedCell->pen.attributes);
+                            }
+                        }
+                        CHECK_EQ(retainedPrefixes, 1);
+                        CHECK_EQ(prepended.screens.active->cursorX, ordinary.screens.active->cursorX);
+                        CHECK_EQ(prepended.screens.active->cursorY, ordinary.screens.active->cursorY);
+                        CHECK_EQ(prepended.screens.active->wrapPending, ordinary.screens.active->wrapPending);
+                        CHECK(UbiquittyTest::firstOrphanedWideHalf(prepended).empty());
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST(formatPrependRetainsTheTranslatedGlyphAndRawREPPredecessor)
+{
+    const std::string_view input = "\033(0\u0600q";
+    for (std::size_t split = 0; split <= input.size(); ++split) {
+        Ubiquitty::Terminal terminal;
+        Ubiquitty::hardReset(terminal);
+        feed(terminal, input.substr(0, split));
+        feed(terminal, input.substr(split));
+        std::uint32_t points[4] {};
+        CHECK_EQ(Ubiquitty::cellClusterCodePoints(&terminal, cell(terminal, 0, 0), points, 4), 2);
+        CHECK_EQ(points[0], 0x0600u);
+        CHECK_EQ(points[1], 0x2500u);
+        CHECK_EQ(terminal.screens.active->cursorX, 1);
+        CHECK(terminal.parser.precedingItem.kind == Ubiquitty::PrecedingItem::Kind::Graphic);
+        CHECK_EQ(terminal.parser.precedingItem.codePoint, static_cast<std::uint32_t>('q'));
+        CHECK_EQ(terminal.parser.precedingItem.resolvedCodePoint, 0x2500u);
+        feed(terminal, "\033[2b");
+        CHECK_EQ(cell(terminal, 0, 1)->codePoint, 0x2500u);
+        CHECK_EQ(cell(terminal, 0, 2)->codePoint, 0x2500u);
+        CHECK_EQ(terminal.screens.active->cursorX, 3);
+    }
 }
 
 TEST(visiblePrependsKeepTheirBaseAcrossInputBoundaries)

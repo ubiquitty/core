@@ -176,6 +176,7 @@ void justifyActiveField(Ubiquitty::Terminal& t)
     screen.cursorX = field->followingStop;
     screen.wrapPending = false;
     t.parser.clusterActive = false;
+    t.parser.clusterCodepointLength = 0;
 }
 
 // DECIC / DECDC (VT420) — insert/delete N blank columns at the cursor, shifting
