@@ -64,12 +64,10 @@ WORK="$PREFIX/src"
 # Which Apple platform the archives are for. Empty (the default) is the host mac,
 # which is what every caller before the iOS arm wanted.
 #
-# The prefix is the caller's to choose and it must differ per platform: the
-# idempotency check below, and ubiquitty_ensure_quic_deps() in
-# Scripts/cmake/UbiquittyToolchain.cmake, both ask only whether the four .a
-# files EXIST. Neither can tell a macOS slice from an iOS one, so a shared
-# prefix would hand an iOS link a macOS archive and the first error that names
-# the mismatch would be from ld.
+# The prefix is the caller's to choose and it must differ per platform. The
+# direct builder's fast path tests archive presence; ensure-quic-deps.sh checks
+# their platform and SDK before calling it. Distinct prefixes keep rebuilding
+# one platform from replacing another platform's archives.
 # The cmake to build the dependencies WITH.
 #
 # Not a bare `cmake`, because the caller that matters most cannot find one: an Xcode
@@ -94,10 +92,9 @@ UBQ_QUIC_SDK="${2:-}"
 # does not exist.
 UBQ_QUIC_DEPLOYMENT_TARGET="${3:-$UBQ_MACOS_MIN}"
 
-# The cross flags both dependencies take. Empty for the host build, so the
-# command lines below are byte-identical to what they were — expanded through the
-# `+alternate` form because macOS ships bash 3.2, where an empty array's `[@]`
-# counts as unbound under `set -u` and aborts the host build that passes no SDK.
+# The SDK flags both dependencies take. Empty on Linux, and expanded through
+# the `+alternate` form because macOS ships bash 3.2, where an empty array's
+# `[@]` counts as unbound under `set -u`.
 CROSS_FLAGS=()
 # Apple's ranlib warns "has no symbols" for every object a library compiled to
 # nothing on this platform — AWS-LC carries a dozen (the Windows, threadless
@@ -123,23 +120,6 @@ fi
 # Scripts/ensure-quic-deps.sh refuses an archive set that still holds the path.
 PATH_MAP_FLAGS="-ffile-prefix-map=$PREFIX=quic-deps"
 
-if [ -n "$UBQ_QUIC_SDK" ]; then
-    sdk_path="$(xcrun --sdk "$UBQ_QUIC_SDK" --show-sdk-path 2>/dev/null)" || {
-        echo "quic-deps: no SDK named $UBQ_QUIC_SDK" >&2; exit 2; }
-    # arm64 alone, for the reason the iOS build gives: the simulator runs arm64 on
-    # every Mac this tree builds on, and x86_64 would be a slice nobody can run.
-    #
-    # CMAKE_SYSTEM_NAME is what makes this a cross build rather than a mac build
-    # with an odd sysroot. Without it CMake compiles for the host and the archive
-    # answers a question about macOS while being named for iOS — the same trap
-    # the iOS build documents for the main build.
-    CROSS_FLAGS=(
-        -DCMAKE_SYSTEM_NAME=iOS
-        -DCMAKE_OSX_SYSROOT="$sdk_path"
-        -DCMAKE_OSX_ARCHITECTURES=arm64
-    )
-fi
-
 # The tag names the release; the commit is what is actually required. Resolved
 # with `git ls-remote <url> 'refs/tags/<tag>*'` and cross-checked
 # against the already-built clones under build/quic-deps/src. ngtcp2's tag is
@@ -164,6 +144,29 @@ fi
 if { [ ! -f "$PREFIX/lib/libssl.a" ] || [ ! -f "$PREFIX/lib/libcrypto.a" ]; } && ! command -v go >/dev/null 2>&1; then
     echo "quic-deps: Go is required to build AWS-LC; install Go (macOS: brew install go) and put go on PATH" >&2
     exit 127
+fi
+
+if [ "$(uname -s)" = "Darwin" ] || [ -n "$UBQ_QUIC_SDK" ]; then
+    requested_sdk="${UBQ_QUIC_SDK:-macosx}"
+    sdk_path="$(xcrun --sdk "$requested_sdk" --show-sdk-path 2>/dev/null)" || {
+        echo "quic-deps: no SDK named $requested_sdk" >&2; exit 2; }
+    # Host builds must use the selected Xcode SDK too: CMake's default sysroot
+    # need not be the SDK ensure-quic-deps.sh verifies, particularly with an
+    # explicit DEVELOPER_DIR on a hosted runner.
+    CROSS_FLAGS=(-DCMAKE_OSX_SYSROOT="$sdk_path")
+    if [ "$requested_sdk" != macosx ]; then
+        # arm64 alone, for the reason the iOS build gives: the simulator runs arm64 on
+        # every Mac this tree builds on, and x86_64 would be a slice nobody can run.
+        #
+        # CMAKE_SYSTEM_NAME is what makes this a cross build rather than a mac build
+        # with an odd sysroot. Without it CMake compiles for the host and the archive
+        # answers a question about macOS while being named for iOS — the same trap
+        # the iOS build documents for the main build.
+        CROSS_FLAGS+=(
+            -DCMAKE_SYSTEM_NAME=iOS
+            -DCMAKE_OSX_ARCHITECTURES=arm64
+        )
+    fi
 fi
 
 mkdir -p "$WORK"

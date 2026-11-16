@@ -488,6 +488,72 @@ class FreshCheckoutQUICTests(unittest.TestCase):
     wrote one copy into the tree.
     """
 
+    def dependencyConfigureArguments(self, sdk):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools = root / "tools"
+            tools.mkdir()
+            prefix = root / "quic"
+            for name in ("aws-lc", "ngtcp2"):
+                (prefix / "src" / name / ".git").mkdir(parents=True)
+            text = (ROOT / "Scripts/fetch-quic-deps.sh").read_text()
+            commits = {name: re.search(rf'^{constant}_COMMIT="([0-9a-f]+)"$', text, re.M).group(1)
+                       for name, constant in (("aws-lc", "AWSLC"), ("ngtcp2", "NGTCP2"))}
+            programs = {
+                "uname": "print('Darwin' if sys.argv[1] == '-s' else 'arm64')\n",
+                "go": "sys.exit(0)\n",
+                "xcrun": "assert sys.argv[1] == '--sdk' and sys.argv[3] == '--show-sdk-path'\n"
+                         "print(os.environ['SDK_FIXTURE_ROOT'] + '/' + sys.argv[2])\n",
+                "git": "args = sys.argv[3:]\n"
+                       "if 'switch' in args or '--verify' in args: sys.exit(0)\n"
+                       "assert args == ['rev-parse', 'HEAD'], args\n"
+                       f"print({commits!r}[pathlib.Path(sys.argv[2]).name])\n",
+                "cmake": "args = sys.argv[1:]\n"
+                         "with open(os.environ['CMAKE_FIXTURE_CALLS'], 'a') as log: log.write(json.dumps(args) + '\\n')\n"
+                         "if args[0] == '--install':\n"
+                         "    prefix = pathlib.Path(args[args.index('--prefix') + 1]) / 'lib'\n"
+                         "    prefix.mkdir(parents=True, exist_ok=True)\n"
+                         "    names = ('libssl.a', 'libcrypto.a') if pathlib.Path(args[1]).parent.name == 'aws-lc' else ('libngtcp2.a', 'libngtcp2_crypto_boringssl.a')\n"
+                         "    for name in names: (prefix / name).touch()\n",
+            }
+            for name, body in programs.items():
+                tool = tools / name
+                tool.write_text(f"#!{sys.executable}\nimport json, os, pathlib, sys\n" + body)
+                tool.chmod(0o755)
+            calls = root / "cmake.jsonl"
+            sdks = root / "selected Xcode SDKs"
+            environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"],
+                               UBQ_BUILD_ROOT=str(root / "build"), UBQ_BUILD_JOBS="1",
+                               UBQ_CMAKE=str(tools / "cmake"), SDK_FIXTURE_ROOT=str(sdks),
+                               CMAKE_FIXTURE_CALLS=str(calls))
+            command = ["/bin/bash", str(ROOT / "Scripts/fetch-quic-deps.sh"), str(prefix), sdk]
+            if sdk in ("iphoneos", "iphonesimulator"):
+                command.append("18.0")
+            checked = subprocess.run(command, env=environment, text=True, capture_output=True, timeout=20)
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+            configurations = [args for line in calls.read_text().splitlines()
+                              if "-S" in (args := json.loads(line))]
+            self.assertEqual(len(configurations), 2)
+            return configurations, sdks / (sdk or "macosx")
+
+    def testHostDependenciesSelectTheRequestedXcodeSDK(self):
+        for sdk in ("", "macosx"):
+            with self.subTest(sdk=sdk):
+                configurations, sysroot = self.dependencyConfigureArguments(sdk)
+                for arguments in configurations:
+                    self.assertIn("-DCMAKE_OSX_SYSROOT=" + str(sysroot), arguments)
+                    self.assertNotIn("-DCMAKE_SYSTEM_NAME=iOS", arguments)
+
+    def testIOSDependenciesKeepTheirSDKPlatformAndDeploymentTarget(self):
+        for sdk in ("iphoneos", "iphonesimulator"):
+            with self.subTest(sdk=sdk):
+                configurations, sysroot = self.dependencyConfigureArguments(sdk)
+                for arguments in configurations:
+                    self.assertIn("-DCMAKE_OSX_SYSROOT=" + str(sysroot), arguments)
+                    self.assertIn("-DCMAKE_SYSTEM_NAME=iOS", arguments)
+                    self.assertIn("-DCMAKE_OSX_ARCHITECTURES=arm64", arguments)
+                    self.assertIn("-DCMAKE_OSX_DEPLOYMENT_TARGET=18.0", arguments)
+
     def fetchPinned(self, failures, wrongCommit=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
