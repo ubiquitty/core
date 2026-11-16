@@ -7,8 +7,9 @@
 A failed or cancelled battery did not execute all of its stages. It cannot
 become the diff baseline for a later push. An absent baseline or API failure
 runs the full batteries; the immediate parent is not a safe substitute.
-Documentation-only pushes run preflight without platform batteries, using the
-whole push range independently of checkpoint history. They do not establish a
+Documentation-only pushes, including proven documentation-only dependency
+ranges, run preflight without platform batteries, using the whole push range
+independently of checkpoint history. They do not establish a
 platform-coverage checkpoint or stop a later scheduled sweep.
 Scheduled sweeps stand down for a completed verdict on this exact tip,
 including a known failure, without calling that failure complete coverage.
@@ -174,24 +175,57 @@ def git_output(*arguments, cwd=None, environment=None):
                                    text=True, stderr=subprocess.DEVNULL)
 
 
-def documentation_push(environment, git):
-    """Returns only proven documentation paths across the whole push.
+def documentation_paths(git, before, after="HEAD", checkout="", depth=0):
+    """Proves documentation-only changes through the app/Kit/Core pin chain.
 
-    This range classifies documentation, never code coverage. Disabling rename
-    detection keeps a source file renamed to Markdown from hiding its deletion.
+    Every dependency must be initialized at the exact new commit, with both
+    trees available. Unknown mounts, added/removed dependencies and deeper
+    graphs remain code changes. Rename detection stays off at every level so
+    a source renamed to Markdown cannot hide its deletion.
     """
+    def invoke(*arguments):
+        return git("-C", checkout, *arguments) if checkout else git(*arguments)
+
+    if checkout and (invoke("rev-parse", "--show-prefix").strip()
+                     or invoke("rev-parse", "HEAD").strip() != after):
+        return None
+    invoke("cat-file", "-e", before + "^{commit}")
+    invoke("cat-file", "-e", after + "^{commit}")
+    paths = [path for path in invoke("diff", "--no-renames", "--name-only", "-z", before, after).split("\0") if path]
+    if not paths:
+        return None
+    proven = []
+    for path in paths:
+        if DOCUMENTATION.search(path):
+            proven.append(path)
+            continue
+        if path not in ("Libraries/ubiquitty-core", "Libraries/ubiquitty-kit") or depth >= 2:
+            return None
+        commits = []
+        for tree in (before, after):
+            record = invoke("ls-tree", "-z", tree, "--", path).removesuffix("\0")
+            header, separator, name = record.partition("\t")
+            fields = header.split()
+            if not separator or name != path or len(fields) != 3 or fields[:2] != ["160000", "commit"]:
+                return None
+            commits.append(fields[2])
+        child = documentation_paths(git, *commits,
+                                    checkout=checkout + "/" + path if checkout else path, depth=depth + 1)
+        if not child:
+            return None
+        proven.extend(path + "/" + name for name in child)
+    return proven
+
+
+def documentation_push(environment, git):
+    """Returns only proven documentation paths across the whole push."""
     before = environment.get("BEFORE_SHA", "")
     if environment.get("GITHUB_EVENT_NAME") != "push" or not before or not before.strip("0"):
         return None
     try:
-        git("cat-file", "-e", before + "^{commit}")
-        paths = git("diff", "--no-renames", "--name-only", "-z", before, "HEAD").split("\0")
-    except subprocess.CalledProcessError:
+        return documentation_paths(git, before)
+    except (subprocess.CalledProcessError, OSError, UnicodeError):
         return None
-    paths = [path for path in paths if path]
-    if paths and all(DOCUMENTATION.search(path) for path in paths):
-        return paths
-    return None
 
 
 def decide(environment, github_factory=GitHub, git=git_output):

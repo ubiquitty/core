@@ -2875,6 +2875,56 @@ class PythonProseTests(unittest.TestCase):
         self.assertEqual(len(gate.slop.prose("Scripts/fixture.py", source)), len(source))
 
 
+class DocumentationChain:
+    def __init__(self, root):
+        self.app = root / "app"
+        self.kit = self.app / "Libraries/ubiquitty-kit"
+        self.core = self.kit / "Libraries/ubiquitty-core"
+        for repository in (self.core, self.kit, self.app):
+            repository.mkdir(parents=True, exist_ok=True)
+            self.git(repository, "init", "-q")
+            self.git(repository, "config", "user.name", "Fixture")
+            self.git(repository, "config", "user.email", "fixture@example.invalid")
+            self.git(repository, "config", "core.hooksPath", "/dev/null")
+            (repository / "README.md").write_text("guide\n")
+            self.git(repository, "add", "README.md")
+        (self.core / "source.cpp").write_text("int value = 1;\n")
+        self.git(self.core, "add", "source.cpp")
+        self.commit(self.core)
+        self.core_before = self.head(self.core)
+        self.pin(self.kit, "Libraries/ubiquitty-core", self.core_before)
+        self.pin(self.app, "Libraries/ubiquitty-kit", self.head(self.kit))
+        self.before = self.head(self.app)
+
+    @staticmethod
+    def git(repository, *arguments):
+        return reach.git_output(*arguments, cwd=repository)
+
+    def head(self, repository):
+        return self.git(repository, "rev-parse", "HEAD").strip()
+
+    def commit(self, repository):
+        self.git(repository, "commit", "-qm", "fixture")
+
+    def pin(self, repository, path, commit):
+        self.git(repository, "update-index", "--add", "--cacheinfo", f"160000,{commit},{path}")
+        self.commit(repository)
+
+    def publish_core(self):
+        self.pin(self.kit, "Libraries/ubiquitty-core", self.head(self.core))
+        self.pin(self.app, "Libraries/ubiquitty-kit", self.head(self.kit))
+
+    def docs(self):
+        (self.core / "README.md").write_text("updated guide\n")
+        self.git(self.core, "add", "README.md")
+        self.commit(self.core)
+        self.publish_core()
+
+    def documentation(self):
+        return reach.documentation_push({"GITHUB_EVENT_NAME": "push", "BEFORE_SHA": self.before},
+                                        lambda *arguments: self.git(self.app, *arguments))
+
+
 class ReachTests(unittest.TestCase):
     def test_path_filters_preserve_platform_and_golden_reach(self):
         cases = (
@@ -3142,6 +3192,94 @@ class ReachTests(unittest.TestCase):
         self.assertEqual(reach.select_history([run], "current", lambda run: jobs, sweep=True), ("", ""))
         jobs[0]["conclusion"] = "failure"
         self.assertEqual(reach.tip_verdict(jobs), reach.FAILED)
+
+    def test_documentation_pins_prove_both_dependency_ranges(self):
+        with tempfile.TemporaryDirectory() as directory:
+            chain = DocumentationChain(Path(directory))
+            chain.docs()
+            self.assertEqual(chain.documentation(),
+                             ["Libraries/ubiquitty-kit/Libraries/ubiquitty-core/README.md"])
+            (chain.kit / "README.md").write_text("updated kit guide\n")
+            chain.git(chain.kit, "add", "README.md")
+            chain.commit(chain.kit)
+            chain.pin(chain.app, "Libraries/ubiquitty-kit", chain.head(chain.kit))
+            self.assertCountEqual(chain.documentation(), [
+                "Libraries/ubiquitty-kit/README.md",
+                "Libraries/ubiquitty-kit/Libraries/ubiquitty-core/README.md"])
+            result, _ = reach.decide({"GITHUB_EVENT_NAME": "push", "BEFORE_SHA": chain.before},
+                                    lambda *_: self.fail("proven documentation needs no checkpoint"),
+                                    lambda *arguments: chain.git(chain.app, *arguments))
+            self.assertTrue(result["documentation"])
+            self.assertEqual({key: result[key] for key in reach.OUTPUTS}, reach.all_reach(False))
+
+    def test_documentation_pins_do_not_hide_code_behind_later_documentation(self):
+        for rename in (False, True):
+            with self.subTest(rename=rename), tempfile.TemporaryDirectory() as directory:
+                chain = DocumentationChain(Path(directory))
+                if rename:
+                    (chain.core / "source.cpp").rename(chain.core / "renamed.md")
+                else:
+                    (chain.core / "source.cpp").write_text("int value = 2;\n")
+                chain.git(chain.core, "add", "-A")
+                chain.commit(chain.core)
+                chain.docs()
+                self.assertIsNone(chain.documentation())
+
+    def test_documentation_pins_require_old_objects_and_the_exact_checkout(self):
+        for missing in ("history", "repository", "head"):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                chain = DocumentationChain(Path(directory))
+                chain.docs()
+                if missing == "history":
+                    (chain.core / ".git/objects" / chain.core_before[:2] / chain.core_before[2:]).unlink()
+                elif missing == "repository":
+                    (chain.core / ".git").rename(chain.core / "saved-git")
+                else:
+                    chain.git(chain.core, "checkout", "--detach", "-q", chain.core_before)
+                self.assertIsNone(chain.documentation())
+
+    def test_documentation_pins_reject_added_removed_and_unknown_dependencies(self):
+        for change in ("added", "removed", "unknown"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                chain = DocumentationChain(Path(directory))
+                path = "Libraries/ubiquitty-core"
+                if change == "added":
+                    chain.git(chain.kit, "update-index", "--force-remove", path)
+                    chain.commit(chain.kit)
+                    chain.pin(chain.app, "Libraries/ubiquitty-kit", chain.head(chain.kit))
+                    chain.before = chain.head(chain.app)
+                    chain.docs()
+                else:
+                    chain.docs()
+                    chain.git(chain.kit, "update-index", "--force-remove", path)
+                    if change == "unknown":
+                        chain.git(chain.kit, "update-index", "--add", "--cacheinfo",
+                                  f"160000,{chain.head(chain.core)},Libraries/other")
+                    chain.commit(chain.kit)
+                    chain.pin(chain.app, "Libraries/ubiquitty-kit", chain.head(chain.kit))
+                self.assertIsNone(chain.documentation())
+
+    def test_documentation_pins_do_not_walk_beyond_the_supported_chain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            chain = DocumentationChain(Path(directory))
+            extra = chain.core / "Libraries/ubiquitty-kit"
+            extra.mkdir(parents=True)
+            chain.git(extra, "init", "-q")
+            chain.git(extra, "config", "user.name", "Fixture")
+            chain.git(extra, "config", "user.email", "fixture@example.invalid")
+            chain.git(extra, "config", "core.hooksPath", "/dev/null")
+            (extra / "README.md").write_text("guide\n")
+            chain.git(extra, "add", "README.md")
+            chain.commit(extra)
+            chain.pin(chain.core, "Libraries/ubiquitty-kit", chain.head(extra))
+            chain.publish_core()
+            chain.before = chain.head(chain.app)
+            (extra / "README.md").write_text("updated guide\n")
+            chain.git(extra, "add", "README.md")
+            chain.commit(extra)
+            chain.pin(chain.core, "Libraries/ubiquitty-kit", chain.head(extra))
+            chain.publish_core()
+            self.assertIsNone(chain.documentation())
 
     def test_api_failure_is_conservative_and_visible(self):
         def unavailable(environment):
