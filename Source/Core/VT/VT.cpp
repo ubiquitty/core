@@ -6616,17 +6616,17 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
 
 // Assemble already-decoded, width-stable clusters into a row span. The caller
 // has established a grapheme boundary before the first code point. Narrow
-// bases without an adjacent VS16 and presentation-forced runs retain the
-// character path: later selectors can claim a new column there. These clusters
-// own two cells from placement onward, including the existing VS16 pair fusion.
-[[gnu::always_inline]] static inline int emitWideClusterSpan(Ubiquitty::Terminal& t, std::span<const uint32_t> codePoints, GraphicCapture tailCapture)
+// pictographic and keycap bases retain the character path because later marks
+// can widen them. An adjacent VS16 establishes a pictographic cluster's width.
+// A Prepend's following base must establish its width through scalar placement.
+[[gnu::always_inline]] static inline int emitClusterSpan(Ubiquitty::Terminal& t, std::span<const uint32_t> codePoints, GraphicCapture tailCapture)
 {
     auto* screen = t.screens.active;
     if (!textFastPathEligible(t, screen) || t.triggersEngine)
         return 0; // filled-row triggers must observe the base before its marks
     const int rightMargin = Ubiquitty::Screen::effectiveRight(t);
     const int column = screen->cursorX;
-    if (column < 0 || column + 1 > rightMargin)
+    if (column < 0 || column > rightMargin)
         return 0;
 
     const int writableColumns = columnsBeforeLowerTextBand(t, screen->cursorY, column, rightMargin - column + 1);
@@ -6642,15 +6642,21 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
     std::size_t consumed = 0;
     std::size_t lastStart = 0;
     std::size_t lastEnd = 0;
+    int lastClusterWidth = 0;
     Ubiquitty::Unicode::GraphemeState lastState {};
-    while (consumed < codePoints.size() && cellCount + 1 < writableColumns) {
+    while (consumed < codePoints.size() && cellCount < writableColumns) {
         const uint32_t base = codePoints[consumed];
         const auto properties = Ubiquitty::Unicode::Width::classify(base);
         const bool isPictographic = Ubiquitty::Unicode::isExtendedPictographic(base);
         const bool hasWideSelector = isPictographic && consumed + 1 < codePoints.size()
             && codePoints[consumed + 1] == Ubiquitty::Unicode::Width::variationSelector16;
+        const int width = hasWideSelector ? 2
+                                          : Ubiquitty::Unicode::Width::cellsForWidthClass(Ubiquitty::Unicode::detail::PropWidthField::get(properties), t.ambiguousWidth);
         if (!Ubiquitty::Unicode::isGraphemeRelevant(base)
-            || (!hasWideSelector && Ubiquitty::Unicode::Width::cellsForWidthClass(Ubiquitty::Unicode::detail::PropWidthField::get(properties), t.ambiguousWidth) != 2))
+            || Ubiquitty::Unicode::isGraphemePrepend(base)
+            || (width != 1 && width != 2)
+            || (width == 1 && (isPictographic || Ubiquitty::Unicode::isKeycapBase(base)))
+            || cellCount + width > writableColumns)
             break;
         bool isEmoji = (properties & Ubiquitty::Unicode::detail::PropEmojiPresentationField::mask) != 0;
         Ubiquitty::Unicode::GraphemeState state {};
@@ -6671,7 +6677,7 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
         }
         auto& lead = cells.constructAt(static_cast<std::size_t>(cellCount), cellTemplate);
         lead.codePoint = base;
-        Ubiquitty::cellSetPenAttributes(lead, attributes | VT::Attribute::Wide | (isEmoji ? VT::AttributeSet { VT::Attribute::Emoji } : VT::AttributeSet {}));
+        Ubiquitty::cellSetPenAttributes(lead, attributes | (width == 2 ? VT::AttributeSet { VT::Attribute::Wide } : VT::AttributeSet {}) | (isEmoji ? VT::AttributeSet { VT::Attribute::Emoji } : VT::AttributeSet {}));
         const auto cluster = codePoints.subspan(consumed, end - consumed);
         if (cluster.size() > 1) {
             lead.combining[0] = cluster[1];
@@ -6679,23 +6685,29 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
             if (cluster.size() > 2)
                 lead.setClusterID(t.clusterPool.intern(cluster.first(std::min(cluster.size(), static_cast<std::size_t>(Ubiquitty::clusterPoolMaximumCodePoints)))));
         }
-        auto& continuation = cells.constructAt(static_cast<std::size_t>(cellCount + 1), cellTemplate);
-        continuation.codePoint = Ubiquitty::wideContinuationSentinelCodePoint;
-        Ubiquitty::cellSetPenAttributes(continuation, attributes | VT::Attribute::WideContinuation);
-        cellCount += 2;
+        if (width == 2) {
+            auto& continuation = cells.constructAt(static_cast<std::size_t>(cellCount + 1), cellTemplate);
+            continuation.codePoint = Ubiquitty::wideContinuationSentinelCodePoint;
+            Ubiquitty::cellSetPenAttributes(continuation, attributes | VT::Attribute::WideContinuation);
+        }
+        cellCount += width;
         lastStart = consumed;
         lastEnd = end;
+        lastClusterWidth = width;
         lastState = state;
         consumed = end;
     }
     if (cellCount == 0)
         return 0;
 
-    const bool hasGraphicSuccessor = consumed < codePoints.size() && !isC1CodePoint(codePoints[consumed]);
+    // A zero-width successor need not replace a narrow cluster's cancellable graphic.
+    const bool hasGraphicSuccessor = consumed < codePoints.size() && !isC1CodePoint(codePoints[consumed])
+        && (lastClusterWidth == 2 || Unicode::Width::forCodePoint(codePoints[consumed], t.ambiguousWidth) > 0);
     if (!hasGraphicSuccessor && (consumed < codePoints.size() || tailCapture == GraphicCapture::Retain)) {
-        cellCount -= 2;
+        cellCount -= lastClusterWidth;
         if (cellCount == 0)
             return 0;
+        lastClusterWidth = cells.data()[cellCount - 1].pen.attributes.contains(VT::Attribute::WideContinuation) ? 2 : 1;
         consumed = lastStart;
         lastEnd = consumed;
         lastStart = 0;
@@ -6717,7 +6729,7 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
         eraseOverwrittenTextBands(t, row, column, lastColumn);
     t.grid->clearWideOverlapEdges(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::Column(lastColumn), blank);
     t.grid->setRowSpan(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::RowView { cells.data(), cellCount });
-    const int lastLeadColumn = lastColumn - 1;
+    const int lastLeadColumn = lastColumn + 1 - lastClusterWidth;
     screen->wrapPending = lastColumn == rightMargin;
     screen->cursorX = screen->wrapPending ? lastLeadColumn : lastColumn + 1;
     clusterOpen(t, row, lastLeadColumn, codePoints[lastStart]);
@@ -6828,12 +6840,11 @@ template<GraphicCapture Capture> static int emitClusterRun(Ubiquitty::Terminal& 
                 if constexpr (Capture == GraphicCapture::Discard) {
                     clusterReset(t);
                     continue;
-                } else {
-                    // Scalar placement captures the preceding cluster before crossing the boundary.
-                    codePoint = codePoints[ci];
                 }
+                // Scalar placement captures the preceding cluster before crossing the boundary.
+                codePoint = codePoints[ci];
             }
-            const int placed = emitWideClusterSpan(t, { codePoints + ci, static_cast<std::size_t>(nDec - ci) }, tailCapture);
+            const int placed = emitClusterSpan(t, { codePoints + ci, static_cast<std::size_t>(nDec - ci) }, tailCapture);
             if (placed > 0) {
                 for (int index = 0; index < placed; ++index) {
                     const uint32_t placedCodePoint = codePoints[ci + index];
