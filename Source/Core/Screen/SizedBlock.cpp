@@ -340,13 +340,14 @@ bool placeSizedCluster(Ubiquitty::Terminal& t, std::span<const std::uint32_t> co
     const int row = screen.cursorY;
     const auto stored = codePoints.first(std::min(codePoints.size(), static_cast<std::size_t>(clusterPoolMaximumCodePoints)));
     const auto clusterID = stored.size() > cellMaxCombining + 1 ? t.clusterPool.intern(stored) : 0;
-    bool isEmoji = Unicode::Width::isEmojiPresentation(codePoints.front());
-    const bool isPictographic = Unicode::isExtendedPictographic(codePoints.front());
+    const auto base = codePoints[Unicode::clusterBaseIndex(codePoints)];
+    bool isEmoji = Unicode::Width::isEmojiPresentation(base);
+    const bool isPictographic = Unicode::isExtendedPictographic(base);
     for (const auto codePoint : codePoints) {
         if (isPictographic && codePoint == Unicode::Width::variationSelector15)
             isEmoji = false;
         if ((isPictographic && codePoint == Unicode::Width::variationSelector16)
-            || (Unicode::isKeycapBase(codePoints.front()) && codePoint == 0x20E3))
+            || (Unicode::isKeycapBase(base) && codePoint == 0x20E3))
             isEmoji = true;
     }
     for (int band = 0; band < spec.scale; ++band) {
@@ -522,7 +523,8 @@ GridGrapheme gridGraphemeAt(std::span<const std::uint32_t> codePoints, std::size
     Unicode::graphemeStateReset(&state, codePoints[first]);
     while (grapheme.end < codePoints.size() && Unicode::graphemeExtends(&state, codePoints[grapheme.end - 1], codePoints[grapheme.end]))
         ++grapheme.end;
-    const std::uint32_t base = codePoints[first];
+    const auto cluster = codePoints.subspan(first, grapheme.end - first);
+    const std::uint32_t base = cluster[Unicode::clusterBaseIndex(cluster)];
     int cells = Unicode::Width::forCodePoint(base, ambiguous);
     bool isEmoji = base >= 0x80 && Unicode::Width::isEmojiPresentation(base);
     const bool isPictographic = Unicode::isExtendedPictographic(base);

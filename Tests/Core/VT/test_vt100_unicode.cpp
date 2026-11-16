@@ -1972,3 +1972,127 @@ TEST(reprintingAWideBaseDropsItsPreviousCluster)
     CHECK(cell(terminal, 0, 0)->combiningLength() == 1);
     CHECK(cell(terminal, 0, 0)->combining[0] == 0xFE0F);
 }
+
+TEST(visiblePrependsKeepTheirBaseAcrossInputBoundaries)
+{
+    struct Case {
+        std::string_view bytes;
+        std::uint32_t base;
+        bool isWide;
+        bool isEmoji;
+        int length;
+    };
+    const Case cases[] = {
+        { "\xE0\xB5\x8E\xCE\xB1", 0x03B1, false, false, 2 },
+        { "\xE0\xB5\x8E\xE4\xB8\x80", 0x4E00, true, false, 2 },
+        { "\xE0\xB5\x8E\xF0\x9F\x98\x80", 0x1F600, true, true, 2 },
+        { "\xE0\xB5\x8E\xE2\x9D\xA4\xEF\xB8\x8F", 0x2764, true, true, 3 },
+        { "\xE0\xB5\x8E"
+          "1\xEF\xB8\x8F\xE2\x83\xA3",
+            '1', true, true, 4 },
+        { "\xE0\xB5\x8E\xE0\xB5\x8E\xF0\x9F\x98\x80", 0x1F600, true, true, 3 },
+    };
+    for (const Case& test : cases) {
+        const std::string bytes = std::string(test.bytes) + 'X';
+        for (std::size_t split = 0; split <= bytes.size(); ++split) {
+            Ubiquitty::Terminal terminal;
+            Ubiquitty::hardReset(terminal);
+            feed(terminal, std::string_view(bytes).substr(0, split));
+            feed(terminal, std::string_view(bytes).substr(split));
+            const auto* lead = cell(terminal, 0, 0);
+            std::uint32_t points[8] {};
+            CHECK_EQ(Ubiquitty::cellClusterCodePoints(&terminal, lead, points, 8), test.length);
+            CHECK_EQ(points[0], 0x0D4Eu);
+            CHECK_EQ(points[Ubiquitty::Unicode::clusterBaseIndex(std::span(points, static_cast<std::size_t>(test.length)))], test.base);
+            CHECK_EQ(lead->pen.attributes.contains(Ubiquitty::VT::Attribute::Wide), test.isWide);
+            CHECK_EQ(lead->pen.attributes.contains(Ubiquitty::VT::Attribute::Emoji), test.isEmoji);
+            CHECK_EQ(cell(terminal, 0, test.isWide ? 2 : 1)->codePoint, static_cast<std::uint32_t>('X'));
+            CHECK_EQ(terminal.screens.active->cursorX, test.isWide ? 3 : 2);
+            CHECK(UbiquittyTest::firstOrphanedWideHalf(terminal).empty());
+        }
+    }
+}
+
+TEST(visiblePrependPromotionKeepsStreamingEdgeAndInsertionSemantics)
+{
+    const std::string cluster = "\xE0\xB5\x8E\xF0\x9F\x98\x80";
+    for (const bool shouldWriteRightToLeft : { false, true }) {
+        for (const int column : { 0, 1, 6, 7 }) {
+            for (std::size_t split = 0; split <= cluster.size(); ++split) {
+                Ubiquitty::Terminal terminal;
+                Ubiquitty::hardReset(terminal);
+                Ubiquitty::resize(terminal, 3, 8, Ubiquitty::Modes::ReflowMode::Fixed);
+                terminal.shouldWriteRightToLeft = shouldWriteRightToLeft;
+                const std::string position = "\033[1;" + std::to_string(column + 1) + 'H';
+                feed(terminal, position);
+                feed(terminal, std::string_view(cluster).substr(0, split));
+                feed(terminal, std::string_view(cluster).substr(split));
+                const bool isWide = shouldWriteRightToLeft ? column > 0 : column < 7;
+                const int leadColumn = shouldWriteRightToLeft && isWide ? column - 1 : column;
+                const auto* lead = cell(terminal, 0, leadColumn);
+                CHECK_EQ(lead->pen.attributes.contains(Ubiquitty::VT::Attribute::Wide), isWide);
+                CHECK(lead->pen.attributes.contains(Ubiquitty::VT::Attribute::Emoji));
+                const bool wraps = shouldWriteRightToLeft ? leadColumn == 0 : leadColumn + (isWide ? 1 : 0) == 7;
+                CHECK_EQ(terminal.screens.active->wrapPending, wraps);
+                int expectedCursor = leadColumn;
+                if (shouldWriteRightToLeft)
+                    expectedCursor = std::max(0, leadColumn - 1);
+                else if (!wraps)
+                    expectedCursor += isWide ? 2 : 1;
+                CHECK_EQ(terminal.screens.active->cursorX, expectedCursor);
+                CHECK(UbiquittyTest::firstOrphanedWideHalf(terminal).empty());
+                feed(terminal, "X");
+                CHECK_EQ(terminal.screens.active->cursorY, wraps ? 1 : 0);
+                CHECK(UbiquittyTest::firstOrphanedWideHalf(terminal).empty());
+            }
+        }
+    }
+    for (std::size_t split = 0; split <= cluster.size(); ++split) {
+        Ubiquitty::Terminal terminal;
+        Ubiquitty::hardReset(terminal);
+        Ubiquitty::resize(terminal, 3, 8, Ubiquitty::Modes::ReflowMode::Fixed);
+        feed(terminal, "abcdefgh\033[1;3H\033[4h");
+        feed(terminal, std::string_view(cluster).substr(0, split));
+        feed(terminal, std::string_view(cluster).substr(split));
+        CHECK(cell(terminal, 0, 2)->pen.attributes.contains(Ubiquitty::VT::Attribute::Wide));
+        CHECK_EQ(cell(terminal, 0, 4)->codePoint, static_cast<std::uint32_t>('d'));
+        CHECK_EQ(terminal.screens.active->cursorX, 4);
+        CHECK(UbiquittyTest::firstOrphanedWideHalf(terminal).empty());
+    }
+    for (std::size_t split = 0; split <= cluster.size(); ++split) {
+        Ubiquitty::Terminal terminal;
+        Ubiquitty::hardReset(terminal);
+        Ubiquitty::resize(terminal, 3, 8, Ubiquitty::Modes::ReflowMode::Fixed);
+        feed(terminal, "\033[?69h\033[1;2s\033[1;2H");
+        feed(terminal, std::string_view(cluster).substr(0, split));
+        feed(terminal, std::string_view(cluster).substr(split));
+        CHECK(cell(terminal, 0, 1)->pen.attributes.contains(Ubiquitty::VT::Attribute::Wide));
+        CHECK(cell(terminal, 0, 2)->pen.attributes.contains(Ubiquitty::VT::Attribute::WideContinuation));
+        CHECK(terminal.screens.active->wrapPending);
+        CHECK_EQ(terminal.screens.active->cursorX, 1);
+        feed(terminal, "X");
+        CHECK_EQ(cell(terminal, 1, 0)->codePoint, static_cast<std::uint32_t>('X'));
+        CHECK(UbiquittyTest::firstOrphanedWideHalf(terminal).empty());
+    }
+}
+
+TEST(cancellingAPrependedBaseRestoresItsProvisionalSpan)
+{
+    for (const bool shouldWriteRightToLeft : { false, true }) {
+        Ubiquitty::Terminal terminal;
+        Ubiquitty::hardReset(terminal);
+        Ubiquitty::resize(terminal, 3, 8, Ubiquitty::Modes::ReflowMode::Fixed);
+        terminal.shouldWriteRightToLeft = shouldWriteRightToLeft;
+        feed(terminal, "\033[1;4H\xE0\xB5\x8E");
+        const int cursor = terminal.screens.active->cursorX;
+        feed(terminal, "\xF0\x9F\x98\x80\033T");
+        const auto* lead = cell(terminal, 0, 3);
+        std::uint32_t points[4] {};
+        CHECK_EQ(Ubiquitty::cellClusterCodePoints(&terminal, lead, points, 4), 1);
+        CHECK_EQ(points[0], 0x0D4Eu);
+        CHECK(!lead->pen.attributes.contains(Ubiquitty::VT::Attribute::Wide));
+        CHECK(!lead->pen.attributes.contains(Ubiquitty::VT::Attribute::Emoji));
+        CHECK_EQ(terminal.screens.active->cursorX, cursor);
+        CHECK(UbiquittyTest::firstOrphanedWideHalf(terminal).empty());
+    }
+}

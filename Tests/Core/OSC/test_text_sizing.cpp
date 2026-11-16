@@ -2047,4 +2047,42 @@ TEST(combiningTextAfterSizedBlocksKeepsTheirWidthAndEveryBand)
     }
 }
 
+TEST(sizedClustersUseTheBaseFollowingVisiblePrepends)
+{
+    for (const std::string_view text : { "\xE0\xB5\x8E\xF0\x9F\x98\x80", "\xE0\xB5\x8E\xE2\x9D\xA4\xEF\xB8\x8F", "\xE0\xB5\x8E"
+                                                                                                                 "1\xEF\xB8\x8F\xE2\x83\xA3" }) {
+        Ubiquitty::Terminal terminal;
+        reset(terminal);
+        terminal.drawsSizedText = true;
+        feed(terminal, "\033]66;s=2;" + std::string(text) + "\033\\");
+        CHECK_EQ(terminal.screens.active->cursorX, 4);
+        for (const int band : { 0, 1 }) {
+            const auto* anchor = cell(terminal, band, 0);
+            const auto* spec = terminal.textSizeTable.lookup(anchor->pen.extendedAttributes.textSizeSpecID());
+            REQUIRE(spec);
+            CHECK_EQ(spec->widthCells, 2);
+            CHECK(anchor->pen.attributes.contains(Ubiquitty::VT::Attribute::Emoji));
+            std::uint32_t points[8] {};
+            CHECK(Ubiquitty::cellClusterCodePoints(&terminal, anchor, points, 8) >= 2);
+            CHECK_EQ(points[0], 0x0D4Eu);
+        }
+    }
+}
+
+TEST(gridFaceFallbackUsesTheBaseFollowingVisiblePrepends)
+{
+    Ubiquitty::Terminal terminal;
+    reset(terminal);
+    Ubiquitty::TextSizeSpec spec;
+    spec.isProportional = true;
+    spec.runWidthCells = 3;
+    const std::uint32_t points[] = { 0x0D4E, 0x1F600, 'X' };
+    Ubiquitty::Screen::setProportionalRunInGridFace(terminal, points, spec, { .row = 0, .column = 0 });
+    const auto* lead = cell(terminal, 0, 0);
+    CHECK(lead->pen.attributes.contains(Ubiquitty::VT::Attribute::Wide));
+    CHECK(lead->pen.attributes.contains(Ubiquitty::VT::Attribute::Emoji));
+    CHECK_EQ(cell(terminal, 0, 2)->codePoint, static_cast<std::uint32_t>('X'));
+    CHECK(UbiquittyTest::firstOrphanedWideHalf(terminal).empty());
+}
+
 UBIQUITTY_TEST_MAIN()

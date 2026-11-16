@@ -632,14 +632,15 @@ void handleOSC66(Ubiquitty::Terminal& t, std::string_view payload)
     const auto place = [&](std::span<const std::uint32_t> cluster) {
         auto spec = requested;
         if (spec.widthCells == 0) {
-            int width = Unicode::Width::forCodePoint(cluster.front(), t.ambiguousWidth);
+            const auto base = cluster[Unicode::clusterBaseIndex(cluster)];
+            int width = Unicode::Width::forCodePoint(base, t.ambiguousWidth);
             if (width <= 0) {
                 plain(cluster);
                 return;
             }
             for (const auto codePoint : cluster) {
-                if ((Unicode::isExtendedPictographic(cluster.front()) && codePoint == Unicode::Width::variationSelector16)
-                    || (Unicode::isKeycapBase(cluster.front()) && codePoint == 0x20E3))
+                if ((Unicode::isExtendedPictographic(base) && codePoint == Unicode::Width::variationSelector16)
+                    || (Unicode::isKeycapBase(base) && codePoint == 0x20E3))
                     width = 2;
             }
             spec.widthCells = static_cast<std::uint8_t>(width);
