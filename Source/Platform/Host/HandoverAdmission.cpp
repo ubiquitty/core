@@ -97,8 +97,18 @@ bool isAbsolutePath(std::string_view path)
 }
 
 #if defined(__APPLE__)
-bool validateRunningCode(audit_token_t token, const std::string& executable)
+bool validateRunningCode(audit_token_t token, int executable)
 {
+    // Security performs path-based code discovery. A /dev/fd alias can fail
+    // with EBADF there despite the held file remaining open. Resolve its real
+    // path and bind every path lookup to the held file before and after the
+    // signature checks; a replacement must never supply the expected CDHash.
+    struct stat before {}, namedBefore {};
+    std::array<char, PATH_MAX> path {};
+    if (executable < 0 || ::fstat(executable, &before) != 0 || !S_ISREG(before.st_mode)
+        || ::fcntl(executable, F_GETPATH, path.data()) < 0 || ::stat(path.data(), &namedBefore) != 0
+        || !sameExecutableContents(before, namedBefore))
+        return false;
     // The audit token includes the process incarnation. A static code's path
     // alone is not authority: require the running guest to match that file's
     // exact CDHash under dynamic validation, which detects source replacement.
@@ -117,7 +127,7 @@ bool validateRunningCode(audit_token_t token, const std::string& executable)
     if (guestStatus != errSecSuccess || !guestOwner)
         return false;
     Apple::UniqueCF<CFURLRef> url(CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault,
-        reinterpret_cast<const UInt8*>(executable.data()), static_cast<CFIndex>(executable.size()), false));
+        reinterpret_cast<const UInt8*>(path.data()), static_cast<CFIndex>(std::strlen(path.data())), false));
     if (!url)
         return false;
     SecStaticCodeRef code = nullptr;
@@ -152,15 +162,18 @@ bool validateRunningCode(audit_token_t token, const std::string& executable)
     Apple::UniqueCF<SecRequirementRef> requirementOwner(requirement);
     if (requirementStatus != errSecSuccess || !requirementOwner)
         return false;
-    // The held descriptor pins the expected CDHash, but /dev/fd has no bundle
-    // context for Info.plist and resources. Validate the guest's complete bundle
-    // against that exact hash as well as the audit-token-bound running image.
+    // Validate the guest's complete bundle, including Info.plist and resources,
+    // against the expected hash as well as its audit-token-bound running image.
     SecStaticCodeRef guestCode = nullptr;
     const auto guestCodeStatus = SecCodeCopyStaticCode(guestOwner.get(), kSecCSDefaultFlags, &guestCode);
     Apple::UniqueCF<SecStaticCodeRef> guestCodeOwner(guestCode);
-    return guestCodeStatus == errSecSuccess && guestCodeOwner
-        && SecStaticCodeCheckValidity(guestCodeOwner.get(), kSecCSDefaultFlags, requirementOwner.get()) == errSecSuccess
-        && SecCodeCheckValidity(guestOwner.get(), kSecCSDefaultFlags, requirementOwner.get()) == errSecSuccess;
+    if (guestCodeStatus != errSecSuccess || !guestCodeOwner
+        || SecStaticCodeCheckValidity(guestCodeOwner.get(), kSecCSDefaultFlags, requirementOwner.get()) != errSecSuccess
+        || SecCodeCheckValidity(guestOwner.get(), kSecCSDefaultFlags, requirementOwner.get()) != errSecSuccess)
+        return false;
+    struct stat after {}, namedAfter {};
+    return ::fstat(executable, &after) == 0 && ::stat(path.data(), &namedAfter) == 0
+        && sameExecutableContents(before, after) && sameExecutableContents(before, namedAfter);
 }
 #endif
 
@@ -516,7 +529,7 @@ std::optional<Session::AdoptAuthority> currentLocalAdoptAuthority(int channel, c
     if (allowed == trusted.m_executables.end())
         return std::nullopt;
 #if defined(__APPLE__)
-    if (!validateRunningCode(peer->token, "/dev/fd/" + std::to_string(peer->file.get())))
+    if (!validateRunningCode(peer->token, peer->file.get()))
         return std::nullopt;
 #endif
     // The trusted digest is taken once, on the first adoption that asks.
@@ -543,7 +556,7 @@ std::optional<Session::AdoptAuthority> currentLocalAdoptAuthority(int channel, c
         || !sameExecutableContents(executable, retained) || !sameExecutableContents(executable, running))
         return std::nullopt;
 #if defined(__APPLE__)
-    if (!validateRunningCode(afterPeer->token, "/dev/fd/" + std::to_string(peer->file.get())))
+    if (!validateRunningCode(afterPeer->token, peer->file.get()))
         return std::nullopt;
 #elif defined(__linux__)
     pollfd originalLifetime { peer->process.get(), POLLIN, 0 };
@@ -672,7 +685,7 @@ std::expected<AdmittedHandoverRequest, Protocol::Sync::HandoverRefuseReason> adm
         return std::unexpected(Refusal::NotSuccessor);
 #if defined(__APPLE__)
     // Admitted as the installed file, its running code must be that file's.
-    if (route == SuccessorRoute::ByPlace && !validateRunningCode(peer->token, "/dev/fd/" + std::to_string(installed.get())))
+    if (route == SuccessorRoute::ByPlace && !validateRunningCode(peer->token, installed.get()))
         return std::unexpected(Refusal::NotSuccessor);
 #endif
     const auto leaf = socketLeafForBinary(("/dev/fd/" + std::to_string(peer->file.get())).c_str());

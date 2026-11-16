@@ -19,6 +19,29 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 
+#if defined(__APPLE__)
+#include <CoreFoundation/CoreFoundation.h>
+#include <Security/SecStaticCode.h>
+#include <climits>
+#include <dlfcn.h>
+
+// Security's path discovery can reject a process-local descriptor alias even
+// while that descriptor is open. Make that failure deterministic; real paths
+// still undergo the system's complete signature and resource-seal checks.
+extern "C" OSStatus SecStaticCodeCreateWithPath(CFURLRef path, SecCSFlags flags, SecStaticCodeRef* code)
+{
+    std::array<UInt8, PATH_MAX> bytes {};
+    if (CFURLGetFileSystemRepresentation(path, true, bytes.data(), bytes.size())
+        && std::strncmp(reinterpret_cast<const char*>(bytes.data()), "/dev/fd/", 8) == 0) {
+        *code = nullptr;
+        return 100009;
+    }
+    static const auto create = reinterpret_cast<decltype(&SecStaticCodeCreateWithPath)>(::dlsym(RTLD_NEXT, "SecStaticCodeCreateWithPath"));
+    CHECK(create);
+    return create ? create(path, flags, code) : errSecCSUnimplemented;
+}
+#endif
+
 namespace Host = Ubiquitty::Host;
 namespace Sync = Ubiquitty::Protocol::Sync;
 namespace POSIX = Ubiquitty::POSIX;
