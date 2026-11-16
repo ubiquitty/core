@@ -1193,12 +1193,22 @@ TEST(testATimedPipelinePauseReleasesAHeldFrameBeforeTheBurstEnds)
     IngestLoop loop(runtime, host);
     std::atomic<bool> didFinishTimedPass { false };
     std::atomic<int> releases { 0 };
+    struct TimedPassDelivery {
+        std::atomic<bool>& didFinishTimedPass;
+        std::uint64_t expectedBytes;
+        std::uint64_t deliveredBytes = 0;
+    } delivery { didFinishTimedPass, burstBytes };
     loop.setDeliverHook(
         [](void* context, const DrainOutcome& outcome, std::uint32_t) {
-            if (outcome.end == DrainPassEnd::TimeBudget)
-                static_cast<std::atomic<bool>*>(context)->store(true, std::memory_order_release);
+            auto& observation = *static_cast<TimedPassDelivery*>(context);
+            observation.deliveredBytes += static_cast<std::uint64_t>(outcome.bytesDrained);
+            // Timed passes can close inside a reader bite. Advance the fake
+            // coherence clock only after the unfinished CSI itself was parsed,
+            // rather than while an earlier plain-text pass is still in flight.
+            if (outcome.end == DrainPassEnd::TimeBudget && observation.deliveredBytes == observation.expectedBytes)
+                observation.didFinishTimedPass.store(true, std::memory_order_release);
         },
-        &didFinishTimedPass);
+        &delivery);
     loop.setReleaseHook([](void* context) { static_cast<std::atomic<int>*>(context)->fetch_add(1, std::memory_order_release); }, &releases);
     (void)loop.prepare();
     loop.adoptFloodEndpoint(std::move(floodEndpoint));
