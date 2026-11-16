@@ -13,13 +13,15 @@ consent and command policies for CLI and MCP clients.
 
 [Embed Core](Docs/libubiquittycore.md) · [Use the host and CLI](Docs/ubq.md) · [Get the apps](https://ubiquitty.org/)
 
-**100% conformance: 4,532 / 4,532 applicable cases passed, versus about 66% for the next-best tested engine in our recorded comparison.**
+[![Recorded terminal compatibility](https://ubiquitty.org/reports/compatibility.svg)](https://ubiquitty.org/performance/#conformance)
+
+Recorded tests cover terminal controls and Unicode. [Current results and scope](https://ubiquitty.org/performance/#conformance).
 
 **The fastest parser in our comparative benchmarks, as of 7 November 2026.** [Conformance scope](https://github.com/ubiquitty/ubiquitty#conformance) · [Benchmark methods](https://github.com/ubiquitty/ubiquitty#benchmarks)
 
-Legacy terminal software renders correctly. The most conformant engine in our
-recorded comparison covers DEC rectangular editing, selective erase, protected
-cells, cell checksums, national character sets, double-width and double-height lines.
+Legacy terminal software renders correctly. Core supports DEC rectangular
+editing, selective erase, protected cells, cell checksums, national character
+sets, double-width and double-height lines.
 Modern protocols include Kitty keyboard input, animated Kitty graphics, Sixel,
 iTerm2 images, OSC 8 hyperlinks and synchronized output.
 
@@ -79,11 +81,14 @@ included. Renderers, terminal views and apps live in the repositories above.
 
 ## Correctness and performance
 
-**100% full-suite conformance: 4,532 / 4,532 applicable cases passed.** See the [comparison scope and scoring policy](https://github.com/ubiquitty/ubiquitty#conformance).
+The [current recorded comparison](https://ubiquitty.org/performance/#conformance)
+covers terminal controls and Unicode. The badge above follows its latest
+published [summary data](https://ubiquitty.org/reports/compatibility.json).
+
+A capability-query case can pass by correctly reporting an unsupported mode;
+that query pass does not claim implementation of the mode itself.
 
 **The fastest parser among the engines and workloads in our comparative runs, as of 7 November 2026.** See [benchmarks and measurement scope](https://github.com/ubiquitty/ubiquitty#benchmarks). Parser throughput, rendering, input latency and energy are separate measurements.
-
-Ghostty’s `libghostty-vt` main (`cf3a8a659`) scored **66.3%** in our tests on **12 November 2026**.
 
 ## Build
 
