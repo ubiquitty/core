@@ -6768,7 +6768,7 @@ template<GraphicCapture Capture> static int emitClusterRun(Ubiquitty::Terminal& 
         int ci = 0;
         bool handBack = false; // plain base / control: caller's other paths own it
         while (ci < nDec) {
-            const uint32_t codePoint = codePoints[ci];
+            uint32_t codePoint = codePoints[ci];
             if (!Ubiquitty::Unicode::isGraphemeRelevant(codePoint)) {
                 handBack = true;
                 break; // a plain base — let emitTextRun batch it
@@ -6823,14 +6823,15 @@ template<GraphicCapture Capture> static int emitClusterRun(Ubiquitty::Terminal& 
                         emitCharacter(t, codePoints[ci - 1], codePoints[ci - 1]);
                     }
                 }
-                if (boundary) {
-                    // The break state is already reseeded for this base; clusterReset
-                    // keeps the base emit from re-running the check (clusterOpen
-                    // re-seeds identically).
+                if (!boundary)
+                    break; // plain base for emitTextRun, or decode batch exhausted
+                if constexpr (Capture == GraphicCapture::Discard) {
                     clusterReset(t);
-                    continue; // loop top emits codePoints[ci] as a fresh base
+                    continue;
+                } else {
+                    // Scalar placement captures the preceding cluster before crossing the boundary.
+                    codePoint = codePoints[ci];
                 }
-                break; // plain base for emitTextRun, or decode batch exhausted
             }
             const int placed = emitWideClusterSpan(t, { codePoints + ci, static_cast<std::size_t>(nDec - ci) }, tailCapture);
             if (placed > 0) {
