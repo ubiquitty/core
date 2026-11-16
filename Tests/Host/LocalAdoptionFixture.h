@@ -401,7 +401,16 @@ inline bool receiveBytes(int socket, std::span<std::uint8_t> bytes)
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
     while (!bytes.empty()) {
         const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - std::chrono::steady_clock::now());
-        if (remaining.count() <= 0 || !PAL::setReceiveTimeout(socket, remaining))
+        if (remaining.count() <= 0)
+            return false;
+        // A closed macOS peer can still have its final outcome buffered, but
+        // setting SO_RCVTIMEO then fails with EINVAL. Match the production
+        // handoff reader: poll owns the deadline, including after hang-up.
+        struct pollfd wait { .fd = socket, .events = POLLIN, .revents = 0 };
+        const int ready = ::poll(&wait, 1, static_cast<int>((remaining.count() + 999) / 1000));
+        if (ready < 0 && errno == EINTR)
+            continue;
+        if (ready <= 0 || (wait.revents & POLLNVAL))
             return false;
         alignas(cmsghdr) std::array<char, POSIX::receivedDescriptorControlCapacity> control {};
         struct iovec vector { .iov_base = bytes.data(), .iov_len = bytes.size() };
@@ -410,8 +419,8 @@ inline bool receiveBytes(int socket, std::span<std::uint8_t> bytes)
         message.msg_iovlen = 1;
         message.msg_control = control.data();
         message.msg_controllen = control.size();
-        const auto count = ::recvmsg(socket, &message, POSIX::receivedDescriptorFlags);
-        if (count < 0 && errno == EINTR)
+        const auto count = ::recvmsg(socket, &message, POSIX::receivedDescriptorFlags | MSG_DONTWAIT);
+        if (count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
             continue;
         if (count <= 0)
             return false;

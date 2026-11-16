@@ -8,6 +8,7 @@
 #include "Core/Protocol/Control/Reclaim.h"
 #include "LocalAdoptionFixture.h"
 
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
@@ -22,6 +23,21 @@ bool fail(const char* message)
 {
     std::fprintf(stderr, "adopt_session: FAIL — %s\n", message);
     return false;
+}
+
+bool canReadBufferedReplyAfterPeerExit()
+{
+    int pair[2] { -1, -1 };
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0)
+        return false;
+    Ubiquitty::PAL::UnixFileDescriptor reader(pair[0]);
+    Ubiquitty::PAL::UnixFileDescriptor writer(pair[1]);
+    constexpr std::array<std::uint8_t, 3> expected { 1, 2, 3 };
+    if (!AdoptionProbe::sendBytes(writer.get(), expected))
+        return false;
+    writer.reset();
+    std::array<std::uint8_t, expected.size()> received {};
+    return AdoptionProbe::receiveBytes(reader.get(), received) && received == expected;
 }
 
 // Reclaim uses the same authenticated live attachment, not a fresh socket or
@@ -107,6 +123,10 @@ std::optional<Ubiquitty::Protocol::Sync::ServingSelection> controlSelection(Conn
 int main()
 {
     namespace Sync = Ubiquitty::Protocol::Sync;
+    if (!canReadBufferedReplyAfterPeerExit()) {
+        fail("a buffered reply was discarded after its peer exited");
+        return 1;
+    }
     char directory[] = "/tmp/ubiquitty-adopt.XXXXXX";
     const char* home = ::mkdtemp(directory);
     if (!home)
@@ -115,7 +135,21 @@ int main()
     if (!fixture.start(std::string(home) + "/.ubiquitty"))
         return 1;
     auto* owner = fixture.makeOwner();
-    if (!owner || !fixture.startPausedLeader(*owner) || !fixture.adopt(*owner)) {
+    if (!owner) {
+        fail("the local PTY owner could not be created");
+        return 1;
+    }
+    if (!fixture.startPausedLeader(*owner)) {
+        fail("the local PTY leader did not report readiness");
+        return 1;
+    }
+    if (!fixture.adopt(*owner)) {
+        std::fprintf(stderr, "adopt_session: ownership=%d attempt=%d committed=%d resumed=%d rejection=%d elapsed=%lldms session=%u\n",
+            static_cast<int>(owner->result.ownership), !!owner->result.attempt,
+            owner->result.attempt && owner->result.attempt->isCommitted(),
+            owner->result.attempt && owner->result.attempt->mayResumeLocal(),
+            owner->result.attempt && owner->result.attempt->rejection() ? static_cast<int>(*owner->result.attempt->rejection()) : -1,
+            static_cast<long long>(owner->elapsed.count()), owner->result.adopted.sessionID);
         fail("the real owner did not receive exact Committed evidence");
         return 1;
     }
