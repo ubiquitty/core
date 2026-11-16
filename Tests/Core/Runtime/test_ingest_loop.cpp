@@ -2326,10 +2326,15 @@ enum class FloodContent {
     DenseSGR,
 };
 
+enum class CoherenceClock {
+    ModelWork,
+    WallTime,
+};
+
 // Floods a loop over a prefilled transport read in `shape`, behind a slow
 // parser, and reports what the flood reader did.
 ShapedFloodOutcome runShapedFlood(Ubiquitty::PAL::ReadShape shape, FramePacing pacing = FramePacing::Never,
-    FloodContent content = FloodContent::Lines)
+    FloodContent content = FloodContent::Lines, CoherenceClock clock = CoherenceClock::ModelWork)
 {
     ShapedFloodOutcome outcome;
     // Past the drain pass capacity, so the flood rides the pipeline, and
@@ -2372,7 +2377,8 @@ ShapedFloodOutcome runShapedFlood(Ubiquitty::PAL::ReadShape shape, FramePacing p
         return outcome;
 
     SlowParseDrainHost host(pacing);
-    runtime.setCoherenceClock(&SlowParseDrainHost::readCoherenceClock, &host);
+    if (clock == CoherenceClock::ModelWork)
+        runtime.setCoherenceClock(&SlowParseDrainHost::readCoherenceClock, &host);
     IngestLoop loop(runtime, host);
     host.runtime = &runtime;
     host.loop = &loop;
@@ -2465,6 +2471,24 @@ TEST(testTimedPipelinePassesKeepTheReaderAndEveryUnreadByte)
     CHECK_EQ(outcome.bursts, 1u);
     CHECK(outcome.continuingFrames > 0);
     CHECK(outcome.didReachTail);
+}
+
+// A 64 KiB reader bite contains sixteen one-millisecond model holds. Its
+// eight-millisecond presentation budget must close inside that bite, while
+// the reader keeps the unparsed bytes and delivery accounts for each once.
+TEST(testTimedPipelinePassesCloseInsideAReaderBite)
+{
+    const ShapedFloodOutcome outcome = runShapedFlood({}, FramePacing::AfterCapacity, FloodContent::Lines, CoherenceClock::WallTime);
+    CHECK_EQ(outcome.deliveredBytes, outcome.totalBytes);
+    CHECK_EQ(outcome.bursts, 1u);
+    CHECK(outcome.didReachTail);
+    // The first capacity-limited pass elects the reader. Every eight model
+    // holds spend a presentation interval; the rest of the file must be
+    // published at that cadence, rather than once per 64 KiB reader bite.
+    const auto pipelineBytes = outcome.totalBytes - static_cast<std::uint64_t>(TerminalRuntime::drainPassCapacityBytes);
+    const int minContinuingFrames = static_cast<int>(pipelineBytes / (8 * static_cast<std::uint64_t>(TerminalRuntime::effectiveModelLockBite())));
+    CHECK_MSG(outcome.continuingFrames >= minContinuingFrames,
+        std::format("the reader published {} timed frames, against at least {} inside its bites", outcome.continuingFrames, minContinuingFrames).c_str());
 }
 
 // A presented pane times its passes from the first one. Behind a parser that

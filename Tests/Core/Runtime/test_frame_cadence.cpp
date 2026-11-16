@@ -1731,6 +1731,20 @@ TEST(cadenceOfARepFillFlood)
     });
 }
 
+TEST(cadenceOfARepFillFloodAtLargeGeometry)
+{
+    runAndCheck({
+        .name = "rep_fill flood at 200x50",
+        .rows = 50,
+        .columns = 200,
+        .prologue = repFillFrame(50, 200, 0),
+        .selection = { .row = 3, .fromColumn = 0, .toColumn = 30 },
+        .write = [frames = recording(64, [](int frame) { return repFillFrame(50, 200, frame); })](Writer& writer) { replay(writer, frames); },
+        .minCapturedShare = floodCapturedShare,
+        .maxLiveReads = floodLiveReads,
+    });
+}
+
 // A writer the machine starves: passes close at a would-block long before
 // their budget, and each pass's frame must still reach the glass.
 TEST(cadenceOfAStarvedWriter)

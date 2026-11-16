@@ -817,17 +817,19 @@ private:
 
     /// Parses one ring bite under the model lock, re-taken per lock bite.
     ///
-    /// The ring bite stays 64 KB (its accounting and the pass cadence key off
-    /// it); only the model lock is re-taken per ``effectiveModelLockBite``,
-    /// so a main-thread reader gets a gap it can actually land in.
+    /// The ring bite stays 64 KB for reader accounting. Each model-lock bite
+    /// reports its parsed bytes after releasing the lock, so its owner can
+    /// close a due presentation pass before the whole reader bite ends.
     ///
     /// - Parameters:
     ///   - readIndex: Where in the ring the bite starts.
     ///   - biteBytes: How much this bite parses.
     ///   - parsedBytes: How much of the bite actually entered the model.
+    ///   - noteParsed: Accounts for a lock bite and may close its timed pass.
     /// - Returns: Whether a decode fenced the parse; `parsedBytes` then
     ///   stops in front of the bytes it held back, which stay in the ring.
-    bool parseFloodBite(std::size_t readIndex, int biteBytes, int& parsedBytes)
+    template<typename NoteParsed>
+    bool parseFloodBite(std::size_t readIndex, int biteBytes, int& parsedBytes, NoteParsed& noteParsed)
     {
         // The tap rides every ingest path: a ZMODEM handshake that lands
         // inside a pipelined burst must reach the detector exactly as one
@@ -838,6 +840,7 @@ private:
         const bool isPresentationPaced = m_host.drainPassIntervalMicroseconds() != 0;
         int offset = 0;
         while (offset < parseEnd) {
+            const int lockStart = offset;
             const int lockEnd = std::min(parseEnd, offset + TerminalRuntime::effectiveModelLockBite());
             m_host.lockModel();
             while (offset < lockEnd) {
@@ -852,10 +855,16 @@ private:
                     m_host.unlockModel();
                     m_runtime.noteDecodeFenceRaised();
                     parsedBytes = offset;
+                    noteParsed(offset - lockStart, DrainPassEnd::DecodeFence);
                     return true;
                 }
             }
             m_host.unlockModel();
+            noteParsed(offset - lockStart, DrainPassEnd::None);
+            if (m_runtime.isIngestHeld()) {
+                parsedBytes = offset;
+                break;
+            }
         }
         return false;
     }
@@ -986,8 +995,8 @@ private:
     /// Runs on the loop's thread. Spawns the reader, parses ring bites under
     /// the model lock, and closes a pass with the runtime's shared
     /// end-of-pass bookkeeping at the byte cap or presentation interval.
-    /// The time check follows a whole ring bite, bounding its overshoot to
-    /// that bite's parse time without discarding unread ring bytes. Returns
+    /// The time check follows each model-lock bite, bounding its overshoot to
+    /// that bite's parse time while keeping reader accounting batched. Returns
     /// when the burst ends (reader exited and the ring drained) or on stop.
     ///
     /// - Parameters:
@@ -1040,6 +1049,13 @@ private:
             if (passBytes > 0 && presentationInterval && PAL::monotonicMicros() - budgetStartMicros >= presentationInterval)
                 return DrainPassEnd::TimeBudget;
             return DrainPassEnd::None;
+        };
+        const auto noteParsed = [&](int bytes, DrainPassEnd end) {
+            passBytes += bytes;
+            if (end == DrainPassEnd::None && !m_runtime.isIngestHeld()) {
+                if (const DrainPassEnd due = duePassEnd(); due != DrainPassEnd::None)
+                    finishPass(due);
+            }
         };
         bool isStopping = false;
         // A decode fenced the parse inside the burst: the ring's rest is carried.
@@ -1129,7 +1145,7 @@ private:
             bite = std::min({ bite, floodBiteCapacityBytes, static_cast<std::size_t>(passCapacity - passBytes) });
             const int biteBytes = static_cast<int>(bite);
             int parsedBytes = 0;
-            const bool isFenced = parseFloodBite(readIndex, biteBytes, parsedBytes);
+            const bool isFenced = parseFloodBite(readIndex, biteBytes, parsedBytes, noteParsed);
             m_floodRingControl->consumer.store(consumer + static_cast<std::uint64_t>(isFenced ? parsedBytes : biteBytes), std::memory_order_release);
             // Wake a reader parked on ring-full (uncontended notify: no syscall).
             m_floodRingControl->consumer.notify_one();
@@ -1137,7 +1153,6 @@ private:
                 // A decode fences the parse: the burst ends here, and the ring's
                 // rest is carried once the reader, which stops on the same
                 // fence, has let go of it.
-                passBytes += parsedBytes;
                 isDecodeFenced = true;
                 break;
             }
@@ -1148,15 +1163,7 @@ private:
                 // dropped (the sender retransmits its lead-in until answered;
                 // see drainAvailable). Stop the burst here; the reader observes
                 // the same hold and stops filling the ring.
-                passBytes += parsedBytes;
                 break;
-            }
-            passBytes += biteBytes;
-            if (const DrainPassEnd end = duePassEnd(); end != DrainPassEnd::None) {
-                // Pass boundary: identical cadence to a capacity-limited
-                // sequential pass — commands, pending writes, bookkeeping,
-                // coalesced delivery.
-                finishPass(end);
             }
         }
         // A stop can break out of the loop above while the reader is parked
@@ -1192,19 +1199,13 @@ private:
                 const int biteBytes = static_cast<int>(std::min({ floodBiteCapacityBytes, static_cast<std::size_t>(available), floodRingCapacity - readIndex,
                     static_cast<std::size_t>(passCapacity - passBytes) }));
                 int parsedBytes = 0;
-                if (parseFloodBite(readIndex, biteBytes, parsedBytes)) {
+                if (parseFloodBite(readIndex, biteBytes, parsedBytes, noteParsed)) {
                     m_floodRingControl->consumer.store(consumer + static_cast<std::uint64_t>(parsedBytes), std::memory_order_release);
-                    passBytes += parsedBytes;
                     carryRingResidue();
                     isDecodeFenced = true;
                     break;
                 }
                 m_floodRingControl->consumer.store(consumer + static_cast<std::uint64_t>(biteBytes), std::memory_order_release);
-                passBytes += parsedBytes;
-                if (!m_runtime.isIngestHeld()) {
-                    if (const DrainPassEnd end = duePassEnd(); end != DrainPassEnd::None)
-                        finishPass(end);
-                }
             }
         }
         if (passBytes > 0) {
