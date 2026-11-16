@@ -153,6 +153,16 @@ static void testThreeByteRunBoundaries()
         check(mixed, 64);
     }
 
+    // A four-byte tail admits the generic converter after the vector prefix;
+    // both the output count and consumed bytes must include that prefix.
+    std::vector<char> convertedTail(input.begin(), input.begin() + 16 * 3);
+    for (int index = 0; index < 64; ++index)
+        emit(convertedTail, 0x1F600 + static_cast<std::uint32_t>(index));
+    check(std::span { convertedTail }.first(48 + 96), 40);
+    check(convertedTail, 80);
+    convertedTail.pop_back();
+    check(convertedTail, 80);
+
     // Reject each malformed lane before storing it, including a bad lane
     // after an already converted vector. Preserve the exact scalar stop.
     for (std::size_t offset = 0; offset < input.size(); ++offset) {
