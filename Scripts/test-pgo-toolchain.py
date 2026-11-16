@@ -91,7 +91,8 @@ class BaselineWorktreeTests(unittest.TestCase):
         for should_raise in (False, True):
             with self.subTest(probe_fails=should_raise), tempfile.TemporaryDirectory() as directory, \
                     patch.dict(os.environ, environment, clear=True):
-                root = Path(directory) / "repo"
+                directory = Path(directory).resolve()
+                root = directory / "repo"
                 root.mkdir()
 
                 def git(tree, *arguments):
