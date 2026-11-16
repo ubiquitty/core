@@ -605,12 +605,13 @@ def parameters_of(readable):
 
 
 def archive_names(archives):
-    """(qualified names the archives define, bare name -> qualified, qualified -> parameter lists).
+    """(qualified names, bare name -> qualified, qualified -> parameter lists, mangled identities).
 
     Read from a build rather than from source because a qualified name is what
     the mangler produced, and reconstructing that from declaration text is the
     part that guesses. The third map holds every parameter list seen for a
-    qualified name, because overloads share one.
+    qualified name, because overloads share one. The normalized mangled identities
+    retain definitions whose complete signature the demangler cannot read.
     """
     result = run_tool("llvm-nm", ["--defined-only"] + archives)
     if result.returncode != 0:
@@ -625,7 +626,7 @@ def archive_names(archives):
 
     itanium = sorted(name for name in mangled if name.startswith("_Z"))
     if not itanium:
-        return set(), {}, {}
+        return set(), {}, {}, mangled
     readable = run_tool("llvm-cxxfilt", [], "\n".join(itanium)).stdout.strip().split("\n")
 
     qualified, byBareName, byQualifiedName = set(), {}, {}
@@ -638,7 +639,7 @@ def archive_names(archives):
         parameters = parameters_of(text)
         if parameters is not None:
             byQualifiedName.setdefault(name, set()).add(parameters)
-    return qualified, byBareName, byQualifiedName
+    return qualified, byBareName, byQualifiedName, mangled
 
 
 def qualified_name_of(readable):
@@ -729,8 +730,10 @@ def profile_against_archives(root, profile, archiveRoot):
       - root: The repository root.
       - profile: Path to the profdata.
       - archiveRoot: A caller-named archive directory, or None to search.
-    - Returns: `(counted, demangled, qualified, byBareName, byQualifiedName)`, or
-      an exit code when the archives cannot answer.
+    - Returns: `(counted, demangled, qualified, byBareName, byQualifiedName,
+      exactOpaque)`, or an exit code when the archives cannot answer. Every
+      counted symbol remains in the population; `exactOpaque` proves unchanged
+      mangled identities for signatures the demangler cannot read.
     """
     archiveRoot, archives = resolve_archives(root, archiveRoot)
     if not archives:
@@ -776,20 +779,28 @@ def profile_against_archives(root, profile, archiveRoot):
     demangled = run_tool("llvm-cxxfilt", [],
                          "\n".join(name for name, _ in counted)).stdout.strip().split("\n")
 
-    qualified, byBareName, byQualifiedName = archive_names(archives)
-    if not qualified:
+    if len(demangled) != len(counted):
+        print("check-profile-orphans: llvm-cxxfilt did not return one name per counted symbol.", file=sys.stderr)
+        return 2
+
+    qualified, byBareName, byQualifiedName, emittedMangled = archive_names(archives)
+    opaque = [(name, peak) for (name, peak), text in zip(counted, demangled) if text == name]
+    unreadable = [name for name, _ in opaque if name not in emittedMangled]
+    if unreadable:
+        print("check-profile-orphans: %d profiled symbol(s) did not demangle and have no exact emitted identity."
+              % len(unreadable), file=sys.stderr)
+        print("  Their qualifier and signature cannot be compared without dropping counted symbols.", file=sys.stderr)
+        return 2
+    exactOpaque = {name for name, _ in opaque}
+    if not qualified and len(opaque) != len(counted):
         print("check-profile-orphans: the archives define no qualified names.", file=sys.stderr)
         return 2
+    if opaque:
+        print("check-profile-orphans: proved %d opaque profiled symbol(s) unchanged by exact emitted mangled identity"
+              " (%s peak-block counters); included in the %d-symbol population."
+              % (len(opaque), "{:,}".format(sum(peak for _, peak in opaque)), len(counted)))
 
-    unreadable = [n for (n, _), text in zip(counted, demangled) if text == n]
-    if unreadable:
-        print("check-profile-orphans: %d profiled symbol(s) did not demangle."
-              % len(unreadable), file=sys.stderr)
-        print("  llvm-cxxfilt echoes what it cannot read, so these would be dropped", file=sys.stderr)
-        print("  silently and the list would look shorter and cleaner.", file=sys.stderr)
-        return 2
-
-    return counted, demangled, qualified, byBareName, byQualifiedName
+    return counted, demangled, qualified, byBareName, byQualifiedName, exactOpaque
 
 
 def report_moves(root, profile, archiveRoot):
@@ -810,10 +821,12 @@ def report_moves(root, profile, archiveRoot):
     read = profile_against_archives(root, profile, archiveRoot)
     if isinstance(read, int):
         return read
-    counted, demangled, qualified, byBareName, _ = read
+    counted, demangled, qualified, byBareName, _, exactOpaque = read
 
     moved = []
-    for (_, peak), text in zip(counted, demangled):
+    for (mangled, peak), text in zip(counted, demangled):
+        if mangled in exactOpaque:
+            continue
         name = qualified_name_of(text)
         if not name or "::" not in name or name in qualified:
             continue
@@ -868,10 +881,13 @@ def report_signatures(root, profile, archiveRoot):
     read = profile_against_archives(root, profile, archiveRoot)
     if isinstance(read, int):
         return read
-    counted, demangled, qualified, _, byQualifiedName = read
+    counted, demangled, qualified, _, byQualifiedName, exactOpaque = read
 
     remangled, countersLost, comparable, unemitted = [], 0, 0, 0
-    for (_, peak), text in zip(counted, demangled):
+    for (mangled, peak), text in zip(counted, demangled):
+        if mangled in exactOpaque:
+            comparable += 1
+            continue
         name = qualified_name_of(text)
         # `operator()` puts its own parentheses where the parameter list opens,
         # so the qualified name stops at `operator` and the list read back is the
@@ -1084,6 +1100,8 @@ def selfTest():
     failures.extend(readers[1])
     profiles = profileSelectionFailures()
     failures.extend(profiles[1])
+    identities = archiveIdentityFailures(nestedLambda)
+    failures.extend(identities[1])
 
     for failure in failures:
         print("check-profile-orphans --self-test: " + failure, file=sys.stderr)
@@ -1092,8 +1110,82 @@ def selfTest():
     print(f"check-profile-orphans --self-test: ok ({len(cases)} strip case(s), "
           f"a literal's braces leave the depth alone, a nested aggregate keeps its class, {readers[0]} reader case(s), "
           f"{profiles[0]} profile selection case(s), {len(symbols)} source symbol case(s), "
-          f"{len(prefixCases)} source prefix case(s), recovered owner and name changes)")
+          f"{len(prefixCases)} source prefix case(s), recovered owner and name changes, "
+          f"{identities[0]} archive identity case(s))")
     return 0
+
+
+def archiveIdentityFailures(opaque):
+    """Checks opaque archive identities without dropping a counted symbol.
+
+    - Parameter opaque: A compiler-generated name the demangler echoes.
+    - Returns: The number of cases and their failure descriptions.
+    """
+    import contextlib
+    import io
+    import tempfile
+    from unittest.mock import patch
+
+    kept = "_ZN9Ubiquitty4keptEv"
+    moved = "_ZN9Ubiquitty5Moved4keptEv"
+    changed = "_ZN9Ubiquitty4keptEi"
+    readable = {kept: "Ubiquitty::kept()", moved: "Ubiquitty::Moved::kept()", changed: "Ubiquitty::kept(int)"}
+    cases = [
+        ("exact opaque", [opaque, kept], [(opaque, 7), (kept, 11)], 0, 0),
+        ("normalized opaque", ["_" + opaque, kept], [(opaque, 7), (kept, 11)], 0, 0),
+        ("only opaque", [opaque], [(opaque, 7)], 0, 0),
+        ("missing qualifier population", [opaque], [(opaque, 7), (kept, 11)], 2, 2),
+        ("demangler row count", [opaque, kept], [(opaque, 7), (kept, 11)], 2, 2),
+        ("absent opaque", [kept], [(opaque, 7), (kept, 11)], 2, 2),
+        ("different opaque", [opaque + "_other", kept], [(opaque, 7), (kept, 11)], 2, 2),
+        ("ordinary move", [opaque, moved], [(opaque, 7), (kept, 11)], 1, 0),
+        ("ordinary signature", [opaque, changed], [(opaque, 7), (kept, 11)], 0, 0),
+    ]
+    failures = []
+    with tempfile.TemporaryDirectory() as scratch:
+        archive = os.path.join(scratch, "core.a")
+        with open(archive, "wb"):
+            pass
+        for label, emitted, counted, moveStatus, signatureStatus in cases:
+            def tools(name, arguments, text_input=None):
+                if name == "llvm-nm":
+                    text = "\n".join("---------------- T " + name for name in emitted)
+                elif name == "llvm-cxxfilt":
+                    text = "\n".join(readable.get(name, name) for name in (text_input or "").splitlines())
+                    if label == "demangler row count":
+                        text = readable[kept]
+                else:
+                    raise AssertionError("unexpected tool: " + name)
+                return subprocess.CompletedProcess([], 0, text + "\n", "")
+
+            for mode, expected in (("--moves", moveStatus), ("--signatures", signatureStatus)):
+                output = io.StringIO()
+                with patch.dict(globals(), {
+                        "resolve_archives": lambda *arguments: (scratch, [archive]),
+                        "newest_core_source": lambda root: 0,
+                        "profiled_symbols": lambda profile: counted,
+                        "run_tool": tools,
+                }), contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                    actual = check(["check-profile-orphans", scratch, "--profile", archive, mode, "--archives", scratch])
+                text = output.getvalue()
+                if actual != expected:
+                    failures.append(f"{label} {mode} returned {actual}, wanted {expected}: {text.strip()}")
+                if expected != 2:
+                    proof = f"(7 peak-block counters); included in the {len(counted)}-symbol population."
+                    if proof not in text:
+                        failures.append(f"{label} {mode} lost the opaque count or counter mass: {text.strip()}")
+                    if mode == "--signatures" and label in ("exact opaque", "normalized opaque", "only opaque", "ordinary signature"):
+                        changedCount = 1 if label == "ordinary signature" else 0
+                        if f"{changedCount} of {len(counted)} profiled symbol(s)" not in text:
+                            failures.append(f"{label} {mode} lost the signature population: {text.strip()}")
+                else:
+                    refusal = {
+                        "missing qualifier population": "the archives define no qualified names",
+                        "demangler row count": "did not return one name per counted symbol",
+                    }.get(label, "did not demangle and have no exact emitted identity")
+                    if refusal not in text:
+                        failures.append(f"{label} {mode} did not refuse the unproved population: {text.strip()}")
+    return len(cases) * 2, failures
 
 
 def readerFailures():
