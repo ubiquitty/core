@@ -5,8 +5,8 @@
 #include "Core/Unicode/RangeTable.h"
 #include <cstddef>
 
-// Arabic cursive joining. Tables live in Joining.tables.inc (curated UCD
-// snapshot); see Joining.h for the joining-type / form model.
+// Cursive joining. Tables live in Joining.tables.inc, generated from UCD 18.0.0;
+// see Joining.h for the joining-type / form model.
 
 namespace {
 
@@ -17,6 +17,7 @@ using Ubiquitty::Unicode::JoiningType;
 
 constexpr int joinN = static_cast<int>(sizeof(joiningRanges) / sizeof(joiningRanges[0]));
 constexpr int formN = static_cast<int>(sizeof(presFormB) / sizeof(presFormB[0]));
+constexpr int strongRTLRangeCount = static_cast<int>(sizeof(strongRTLRanges) / sizeof(strongRTLRanges[0]));
 constexpr std::uint32_t lamCodePoint = 0x0644; // ARABIC LETTER LAM — the ligating half of lam-alef
 
 // Binary search the sorted joining ranges; default Non_Joining.
@@ -50,13 +51,14 @@ JoiningType joiningType(std::uint32_t codePoint) { return rawJoiningType(codePoi
 
 bool isCursiveJoiner(std::uint32_t codePoint)
 {
-    // Script-neutral joining controls first (outside the Arabic blocks).
-    if (codePoint == 0x200C || codePoint == 0x200D)
+    if (codePoint == 0x200C)
         return true;
-    // Arabic, Arabic Supplement, Arabic Extended-A.
-    if (codePoint < 0x0600 || codePoint > 0x08FF)
-        return false;
-    return rawJoiningType(codePoint) != JoiningType::NonJoining;
+    const JoiningType type = rawJoiningType(codePoint);
+    // Arabic marks also gate a row; an isolated Latin combining mark does not
+    // require cursive shaping, although it is transparent inside a shaped run.
+    if (type == JoiningType::Transparent)
+        return codePoint >= 0x0600 && codePoint <= 0x08FF;
+    return type != JoiningType::NonJoining;
 }
 
 JoiningForm resolveForm(std::uint32_t codePoint, JoiningType prevType, JoiningType nextType)
@@ -199,28 +201,7 @@ void shapeRun(const std::uint32_t* in, std::uint32_t* outputBuffer, int n)
 
 bool isStrongRTL(std::uint32_t codePoint)
 {
-    // Hebrew (incl. its presentation forms at FB1D–FB4F).
-    if (codePoint >= 0x0590 && codePoint <= 0x05FF)
-        return true;
-    // The Arabic-Indic digit subranges (0660-0669, 06F0-06F9) are weak (bidi
-    // class AN), not strong RTL — exclude so a digit doesn't anchor its own
-    // reversal.
-    if (codePoint >= 0x0660 && codePoint <= 0x0669)
-        return false;
-    if (codePoint >= 0x06F0 && codePoint <= 0x06F9)
-        return false;
-    if (codePoint >= 0x0600 && codePoint <= 0x06FF)
-        return true;
-    if (codePoint >= 0x0750 && codePoint <= 0x077F)
-        return true;
-    if (codePoint >= 0x08A0 && codePoint <= 0x08FF)
-        return true;
-    // Arabic Presentation Forms-A and -B (the forms shapeRun emits).
-    if (codePoint >= 0xFB1D && codePoint <= 0xFDFF)
-        return true;
-    if (codePoint >= 0xFE70 && codePoint <= 0xFEFF)
-        return true;
-    return false;
+    return Ubiquitty::Unicode::rangesContain(strongRTLRanges, strongRTLRangeCount, codePoint);
 }
 
 // BiDi neutral: whitespace takes the surrounding strong direction (N1 rule), so

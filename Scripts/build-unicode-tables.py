@@ -11,14 +11,14 @@ Ubiquitty's Width module classifies each codepoint as zero-width
 script builds the classification deterministically from authoritative
 Unicode source data.
 
-Inputs (one of each, downloaded from https://www.unicode.org/Public/UCD/):
+Inputs (one of each, from https://www.unicode.org/Public/<version>/ucd/):
   EastAsianWidth.txt          — wide-vs-narrow primary signal
   emoji-data.txt              — Emoji_Presentation property
   DerivedGeneralCategory.txt  — Mn / Me / Cf for zero-width
   DerivedCoreProperties.txt   — Default_Ignorable_Code_Point for zero-width
 
-Output is a C++ header fragment that defines two sorted, coalesced
-range arrays (zeroWidthRanges[], wideRanges[]) plus a Unicode-version
+Output is a C++ header fragment that defines sorted, coalesced zero-width,
+wide, ambiguous and emoji-presentation ranges plus a Unicode-version
 banner. Width.cpp #includes the fragment and exposes the public API.
 
 Usage:
@@ -27,7 +27,7 @@ Usage:
       --emoji emoji-data.txt \\
       --gencat DerivedGeneralCategory.txt \\
       --coreprops DerivedCoreProperties.txt \\
-      --unicode-version 16.0.0 \\
+      --unicode-version 18.0.0 \\
       --output Source/Core/Unicode/Width.tables.inc
 
 Policy notes:
@@ -57,7 +57,7 @@ Policy notes:
 
 Regeneration:
   1. Download the four UCD files for the target Unicode version
-     from https://www.unicode.org/Public/UCD/<version>/ucd/.
+     from https://www.unicode.org/Public/<version>/ucd/.
   2. Run this script.
   3. Diff the new inc file against the checked-in version.
   4. Commit the diff if it matches the UCD change; a diff that does not is a
@@ -105,13 +105,21 @@ FORCE_ZERO_WIDTH_RANGES = [
 FORCE_WIDE_RANGES = [
 ]
 
+# Box drawing and block glyphs remain one cell so terminal rules line up;
+# private-use glyphs carry Powerline and Nerd Font icons with the same contract.
+NARROW_AMBIGUOUS_RANGES = [
+    (0x2500, 0x259F),
+    (0xE000, 0xF8FF),
+    (0xF0000, 0xFFFFD),
+    (0x100000, 0x10FFFD),
+]
 
-def parse_eaw(path):
+
+def parse_eaw(path, values=('W', 'F')):
     """EastAsianWidth.txt lines:
         XXXX;K # comment             (single codepoint)
         XXXX..YYYY;W # comment       (range)
-    Width values: A, F, H, N, Na, W. Return the set of codepoints
-    that are W or F."""
+    Width values: A, F, H, N, Na, W. Return the requested values."""
     wide = set()
     rng = re.compile(r'^([0-9A-Fa-f]+)(?:\.\.([0-9A-Fa-f]+))?\s*;\s*(\w+)')
     for line in path.read_text(encoding='utf-8').splitlines():
@@ -124,7 +132,7 @@ def parse_eaw(path):
         first = int(m.group(1), 16)
         last = int(m.group(2), 16) if m.group(2) else first
         width = m.group(3)
-        if width in ('W', 'F'):
+        if width in values:
             for cp in range(first, last + 1):
                 wide.add(cp)
     return wide
@@ -274,6 +282,10 @@ def main(argv):
 
     zero_ranges = coalesce(zero_set)
     wide_ranges = coalesce(wide_set)
+    narrow_ambiguous = set()
+    for first, last in NARROW_AMBIGUOUS_RANGES:
+        narrow_ambiguous.update(range(first, last + 1))
+    ambiguous_ranges = coalesce(parse_eaw(args.eaw, ('A',)) - zero_set - narrow_ambiguous)
     # Emoji_Presentation as its own array. The width tables already consume this
     # parse, and the property has a second consumer — font routing asks whether
     # a code point presents as emoji, which is not answerable from a width. A
@@ -295,6 +307,7 @@ def main(argv):
         fh.write(f' * from the Unicode UCD. */\n\n')
         emit_table('zeroWidthRanges', zero_ranges, fh)
         emit_table('wideRanges', wide_ranges, fh)
+        emit_table('ambiguousRanges', ambiguous_ranges, fh)
         emit_table('emojiPresentationRanges', emoji_presentation_ranges, fh)
 
     print(f'wrote {args.output}: {len(zero_ranges)} zero-width ranges, '

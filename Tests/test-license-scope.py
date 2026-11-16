@@ -257,21 +257,44 @@ class LicenseScopeTests(unittest.TestCase):
         refused = subprocess.run([sys.executable, str(script), str(self.root / unnamed)], capture_output=True)
         self.assertNotEqual(refused.returncode, 0)
 
+    def unicode_grapheme_inputs(self):
+        grapheme = self.root / self.write("grapheme.txt", "0300 ; Extend\n094D ; Extend\n0903 ; SpacingMark\n0600 ; Prepend\n1100 ; L\n1160 ; V\n11A8 ; T\n")
+        core_properties = self.root / self.write("core-properties.txt", "0300 ; InCB; Extend\n200D ; InCB; Extend\n0915 ; InCB; Consonant\n094D ; InCB; Linker\n1CF5 ; InCB; Linker\n")
+        emoji = self.root / self.write("emoji.txt", "1F600 ; Extended_Pictographic\n")
+        return grapheme, core_properties, emoji
+
     def test_unicode_generators_preserve_wrapper_and_data_grants(self):
         repository = Path(__file__).resolve().parents[1]
         empty = self.root / self.write("empty.txt", "")
-        grapheme = self.root / self.write("grapheme.txt", "0300 ; Extend\n0903 ; SpacingMark\n0600 ; Prepend\n1100 ; L\n1160 ; V\n11A8 ; T\n")
-        core_properties = self.root / self.write("core-properties.txt", "0915 ; InCB; Consonant\n094D ; InCB; Linker\n")
-        emoji = self.root / self.write("emoji.txt", "1F600 ; Extended_Pictographic\n")
+        grapheme, core_properties, emoji = self.unicode_grapheme_inputs()
         cases = (("build-normalization-tables.py", ["--unicodedata", str(empty), "--exclusions", str(empty)]),
                  ("build-unicode-tables.py", ["--eaw", str(empty), "--emoji", str(empty), "--gencat", str(empty), "--coreprops", str(empty)]),
-                 ("build-grapheme-tables.py", ["--gcb", str(grapheme), "--coreprops", str(core_properties), "--emoji-data", str(emoji)]))
+                 ("build-grapheme-tables.py", ["--gcb", str(grapheme), "--coreprops", str(core_properties), "--emoji-data", str(emoji)]),
+                 ("build-joining-tables.py", ["--joining", str(empty), "--bidi", str(empty), "--unicodedata", str(empty)]))
         for script, arguments in cases:
             with self.subTest(script=script):
                 output = self.root / (script + ".inc")
                 subprocess.run([sys.executable, str(repository / "Scripts" / script), *arguments,
-                                "--unicode-version", "15.1.0", "--output", str(output)], check=True, capture_output=True)
+                                "--unicode-version", "18.0.0", "--output", str(output)], check=True, capture_output=True)
                 self.assertEqual(license_scope.header_declarations(output)[0], ["Apache-2.0 AND Unicode-3.0"])
+
+    def test_grapheme_generator_rejects_inconsistent_incb_properties(self):
+        repository = Path(__file__).resolve().parents[1]
+        grapheme, core_properties, emoji = self.unicode_grapheme_inputs()
+        valid = core_properties.read_text(encoding="utf-8")
+        cases = ((valid.replace("0300 ; InCB; Extend\n", ""), "runtime GCB shortcut"),
+                 (valid + "0903 ; InCB; Linker\n", "unsupported GCB class"))
+        for index, (body, reason) in enumerate(cases):
+            with self.subTest(reason=reason):
+                core_properties.write_text(body, encoding="utf-8")
+                output = self.root / f"inconsistent-{index}.inc"
+                result = subprocess.run([sys.executable, str(repository / "Scripts/build-grapheme-tables.py"),
+                                         "--gcb", str(grapheme), "--coreprops", str(core_properties),
+                                         "--emoji-data", str(emoji), "--unicode-version", "18.0.0",
+                                         "--output", str(output)], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(reason, result.stderr)
+                self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

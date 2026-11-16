@@ -11,11 +11,11 @@
 
 // UAX #29 extended grapheme cluster segmentation for the terminal grid:
 // graphemeExtends(state, prev, next) returns true when `next` joins the cluster
-// ending in `prev` (no boundary). Rules covered (tables generated from UCD 17.0.0):
+// ending in `prev` (no boundary). Rules covered (tables generated from UCD 18.0.0):
 //   GB6/7/8  Hangul jamo runs                — joined
 //   GB9   × (Extend | ZWJ)                   — combining, VS-15/16, skin tone, ZWJ
 //   GB9a  × SpacingMark / GB9b  Prepend ×    — joined
-//   GB9c  Consonant [Extend|Linker]* Linker × Consonant — Indic conjuncts
+//   GB9c  Linker Extend* × Consonant          — Indic conjuncts
 //   GB11  ExtPict Extend* ZWJ × ExtPict      — ZWJ emoji sequences
 //   GB12/13  RI × RI (even count)            — flag pairs
 //   GB999 any ÷ any                          — default boundary
@@ -37,8 +37,8 @@ struct GraphemeState {
     // Property byte of the cluster's last codePoint — reads prev's GCB class
     // without a second table probe.
     std::uint8_t prevRaw;
-    // GB9c: 0 the cluster cannot conjoin, 1 its base is an InCB=Consonant,
-    // 2 a Linker has followed it so the next consonant joins.
+    // GB9c: 2 a Linker followed only by InCB=Extend permits a consonant
+    // to join; 0 carries no such suffix.
     std::uint8_t incbChain;
 };
 
@@ -50,8 +50,8 @@ void graphemeStateReset(GraphemeState* st, std::uint32_t base);
 // when a boundary falls between them. Advances `st`.
 [[nodiscard]] bool graphemeExtends(GraphemeState* st, std::uint32_t prev, std::uint32_t next);
 
-// Advance the GB9c conjunct chain across a joiner. Out of line and reached
-// only when the chain is live, which no non-Indic cluster ever is.
+// Advance the GB9c conjunct suffix across an Extend, arming it at a Linker
+// and clearing it at a ZWNJ, which is not InCB=Extend.
 void graphemeIncbAdvance(GraphemeState* st, std::uint32_t next);
 
 namespace detail {
@@ -214,8 +214,7 @@ inline constexpr std::uint8_t graphemeClassPrepend = 4;
             st->pictExtend = false;
         } else {
             st->zwjAfterPict = false;
-            if (st->incbChain != 0)
-                graphemeIncbAdvance(st, next); // GB9c; ZWJ is InCB=Extend, no-op there
+            graphemeIncbAdvance(st, next); // GB9c; ZWJ is InCB=Extend, no-op there
         }
 
         st->riCount = 0;
@@ -227,6 +226,7 @@ inline constexpr std::uint8_t graphemeClassPrepend = 4;
         st->zwjAfterPict = false;
         st->riCount = 0;
         st->prevRaw = rawNext;
+        st->incbChain = 0;
         return true;
     }
     return graphemeExtends(st, prev, next);

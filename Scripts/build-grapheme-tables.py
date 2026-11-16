@@ -11,7 +11,7 @@ Extend (GB9), SpacingMark (GB9a), Prepend (GB9b) and the Hangul jamo
 classes L/V/T (GB6/7/8). ZWJ, Regional_Indicator and the precomposed
 Hangul syllable block are single ranges the caller adds directly.
 
-Inputs (downloaded from https://www.unicode.org/Public/UCD/):
+Inputs (downloaded from https://www.unicode.org/Public/<version>/ucd/):
   GraphemeBreakProperty.txt   — the Grapheme_Cluster_Break property
   DerivedCoreProperties.txt   — Indic_Conjunct_Break, for GB9c
   emoji-data.txt              — Extended_Pictographic, for GB11
@@ -24,7 +24,7 @@ Usage:
       --gcb GraphemeBreakProperty.txt \\
       --coreprops DerivedCoreProperties.txt \\
       --emoji-data emoji-data.txt \\
-      --unicode-version 17.0.0 \\
+      --unicode-version 18.0.0 \\
       --output Source/Core/Unicode/GraphemeBreak.tables.inc
 
 Every table the rules read comes from this one run, so they carry one UCD
@@ -192,17 +192,27 @@ def main(argv):
 
     tables = [(name, coalesce(props[prop])) for prop, name in EMITTED]
 
-    # GB9c needs Indic_Conjunct_Break. Consonant is not folded
-    # into the GCB class byte: that byte drives isGraphemeRelevant(), and
-    # marking 900-odd Indic consonants relevant would push ordinary Devanagari
-    # off the caller's fast path. Extend is not emitted either — it is exactly
-    # GCB Extend plus ZWJ minus ZWNJ, which the rule tests directly.
+    # GB9c needs Indic_Conjunct_Break. Linkers whose GCB is Other need their
+    # own class so the fast-path relevance predicate sees them. The remaining
+    # Linkers are GCB Extend; InCB Extend is that same class plus ZWJ, excluding
+    # Linkers and ZWNJ. Check the relation before relying on it at runtime.
     incb = parse_incb(args.coreprops)
     for prop, name in (('Consonant', 'incbConsonant'), ('Linker', 'incbLinker')):
         if prop not in incb:
             print(f'error: {args.coreprops} has no InCB={prop}', file=sys.stderr)
             return 1
         tables.append((name, coalesce(incb[prop])))
+    expected_extend = (props['Extend'] | {0x200D}) - {0x200C} - incb['Linker']
+    if incb.get('Extend') != expected_extend:
+        print('error: InCB Extend no longer matches the runtime GCB shortcut',
+              file=sys.stderr)
+        return 1
+    non_other = set().union(*props.values())
+    other_linkers = incb['Linker'] - non_other
+    if incb['Linker'] - other_linkers - props['Extend']:
+        print('error: an InCB Linker has an unsupported GCB class', file=sys.stderr)
+        return 1
+    tables.append(('incbOtherLinker', coalesce(other_linkers)))
 
     # GB11 needs Extended_Pictographic. Not a GCB class: it is probed directly
     # by the rule, and folding it into the class byte would mark every
