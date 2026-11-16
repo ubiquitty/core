@@ -13,8 +13,9 @@
 // Tests/Core/Rendering/test_glyph_key.cpp.
 //
 // Keyspace partition — one shared R8 atlas hash holds text + box + coverage-
-// cluster keys, so they must never collide. The top two bits partition it:
+// cluster keys, so they must never collide. The high bits partition it:
 //   bit 31 (0x80000000) — cluster keyspace (color cluster / coverage cluster)
+//   bits 31|28 (0x90000000) — wide coverage cluster in a shared atlas
 //   bit 30 (0x40000000) — box/block-glyph-from-font keyspace
 //   bits 29|30 (0x60000000) — wide glyph in a backend that shares one atlas
 //   bit 29 (0x20000000) — DECDLD soft-font (DRCS) glyph keyspace
@@ -413,6 +414,26 @@ inline std::uint32_t coverageClusterKey(const std::uint32_t* codePoints, int n, 
         key ^= 0x20u;
     return key;
 }
+
+/// Keys a whole two-cell cluster separately from one-cell coverage clusters.
+///
+/// - Parameters:
+///   - codePoints: The complete cluster in source order.
+///   - n: The number of code points.
+///   - phase: The subpixel phase, 0-7.
+///   - face: The bold and italic style.
+/// - Returns: A key in the shared atlas's 0x90000000 partition. Hash hits still
+///   require source verification, as for one-cell coverage clusters.
+inline std::uint32_t sharedAtlasWideClusterKey(const std::uint32_t* codePoints, int n, int phase, FontFace face)
+{
+    return coverageClusterKey(codePoints, n, phase, face) | 0x10000000u;
+}
+
+/// Reports whether a key belongs to shared two-cell coverage clusters.
+///
+/// - Parameter key: A shared atlas key.
+/// - Returns: True only for the whole-wide-cluster partition.
+inline bool isSharedAtlasWideClusterKey(std::uint32_t key) { return (key & 0xF0000000u) == 0x90000000u; }
 
 // Double-size (DWL / DHL) master-glyph key: codePoint<<5 | weight<<2 |
 // italic<<1 | bold. A DECDHL top row and its bottom row are independent grid

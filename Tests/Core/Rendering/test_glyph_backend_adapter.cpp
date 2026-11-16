@@ -44,6 +44,8 @@ using namespace Ubiquitty::Rendering;
 struct NativePhaseRasterizer : GlyphRasterizer {
     std::vector<double> scalarPhases;
     std::vector<double> clusterPhases;
+    std::vector<ClusterRasterBounds> clusterBounds;
+    std::vector<int> clusterCanvasWidths;
     CellMetrics cellMetrics() const override { return { .cellWidth = 8, .cellHeight = 16 }; }
     int glyphPhaseCount() const override { return 4; }
     bool rasterizeGlyph(std::uint32_t, FontFace, std::uint32_t, int width, int height, std::uint8_t* out) override
@@ -63,7 +65,34 @@ struct NativePhaseRasterizer : GlyphRasterizer {
         std::fill_n(out, width * height, static_cast<std::uint8_t>(20 + phase * 100));
         return true;
     }
+    bool rasterizeClusterInCell(const std::uint32_t* codePoints, int count, FontFace face, std::uint32_t weight, double phase, ClusterRasterBounds bounds, int width, int height, std::uint8_t* out) override
+    {
+        clusterBounds.push_back(bounds);
+        clusterCanvasWidths.push_back(width);
+        return GlyphRasterizer::rasterizeClusterInCell(codePoints, count, face, weight, phase, bounds, width, height, out);
+    }
 };
+
+TEST(softwareClusterRastersReceiveCellWidthsInsteadOfAtlasPadding)
+{
+    struct PaddedRasterizer : NativePhaseRasterizer {
+        GlyphOverhangInputs glyphOverhang() const override
+        {
+            return { .advanceWidth = 8, .ascent = 12, .descent = 4, .lineHeight = 16, .primaryBboxX = -4, .primaryBboxWidth = 20, .primaryBboxHeight = 16 };
+        }
+    } rasterizer;
+    SoftwareRenderer renderer(rasterizer);
+    const std::array<std::uint32_t, 2> cluster { 0x0915, 0x093F };
+    CHECK(renderer.clusterGlyph(cluster.data(), 2, FontFace::Regular, 0, 1).present);
+    CHECK(renderer.wideClusterGlyph(cluster, FontFace::Regular, 0).present);
+    CHECK_EQ(rasterizer.clusterBounds.size(), 2u);
+    CHECK(rasterizer.clusterBounds[0].left > 0.25);
+    CHECK_EQ(rasterizer.clusterBounds[0].width, 8);
+    CHECK(rasterizer.clusterCanvasWidths[0] > 8);
+    CHECK_EQ(rasterizer.clusterBounds[1].left, 0);
+    CHECK_EQ(rasterizer.clusterBounds[1].width, 16);
+    CHECK_EQ(rasterizer.clusterCanvasWidths[1], 16);
+}
 
 TEST(softwareAtlasMasksUseTheirNativePhaseAndCacheEachRasterOnce)
 {

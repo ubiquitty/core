@@ -69,6 +69,14 @@ struct CountingInner final : GlyphRasterizer {
         return true;
     }
 
+    bool rasterizeClusterInCell(const std::uint32_t*, int, FontFace, std::uint32_t, double phase, ClusterRasterBounds bounds, int, int, std::uint8_t*) override
+    {
+        ++boundedClusterCalls;
+        clusterPhase = phase;
+        clusterBounds = bounds;
+        return true;
+    }
+
     bool rasterizeSizedMaster(std::uint32_t, FontFace, std::uint32_t, const SizedMaster&, int, int, std::uint8_t*) override
     {
         ++scaledCalls;
@@ -82,6 +90,9 @@ struct CountingInner final : GlyphRasterizer {
     int glyphCalls = 0;
     int colorClusterCalls = 0;
     int clusterCalls = 0;
+    int boundedClusterCalls = 0;
+    double clusterPhase = 0;
+    ClusterRasterBounds clusterBounds;
     int scaledCalls = 0;
 };
 
@@ -151,6 +162,20 @@ TEST(testClusterRasterReachesTheInner)
     CHECK(decorator.rasterizeCluster(cluster, 2, FontFace::Regular, 0u, 16, 16, coverage.data()));
     CHECK_EQ(inner.clusterCalls, 1);
     CHECK_EQ(inner.glyphCalls, 0);
+}
+
+TEST(testClusterCellBoundsReachTheInner)
+{
+    CountingInner inner;
+    BoxDrawingRasterizer decorator(inner);
+    std::vector<std::uint8_t> coverage(32 * 16, 0);
+    const std::uint32_t cluster[] = { 0x0915, 0x093F };
+    CHECK(decorator.rasterizeClusterInCell(cluster, 2, FontFace::Regular, 0, 0.25, { 6.25, 9 }, 32, 16, coverage.data()));
+    CHECK_EQ(inner.boundedClusterCalls, 1);
+    CHECK_EQ(inner.clusterCalls, 0);
+    CHECK_EQ(inner.clusterPhase, 0.25);
+    CHECK_EQ(inner.clusterBounds.left, 6.25);
+    CHECK_EQ(inner.clusterBounds.width, 9);
 }
 
 // The metrics reach the inner, which is the case that was already forwarded.

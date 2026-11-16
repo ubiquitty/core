@@ -363,6 +363,24 @@ public:
         return m_inner->rasterizeClusterAtPhase(codePoints, count, face, weight, phaseInPixels, slotWidth, slotHeight, coverageOut);
     }
 
+    /// Forwards the whole cluster and its allocated cell interval.
+    ///
+    /// - Parameters:
+    ///   - codePoints: The cluster's Unicode scalars.
+    ///   - count: The number of scalars to read.
+    ///   - face: The font style to use.
+    ///   - weight: The weight override, or zero for the style's default.
+    ///   - phaseInPixels: The pen's fraction within one device pixel.
+    ///   - bounds: The cell interval inside the padded slot.
+    ///   - slotWidth: The padded destination width in pixels.
+    ///   - slotHeight: The destination height in pixels.
+    ///   - coverageOut: Caller-owned coverage bytes.
+    /// - Returns: What the decorated rasterizer answers.
+    bool rasterizeClusterInCell(const std::uint32_t* codePoints, int count, FontFace face, std::uint32_t weight, double phaseInPixels, ClusterRasterBounds bounds, int slotWidth, int slotHeight, std::uint8_t* coverageOut) override
+    {
+        return m_inner->rasterizeClusterInCell(codePoints, count, face, weight, phaseInPixels, bounds, slotWidth, slotHeight, coverageOut);
+    }
+
     bool rasterizeGlyph(std::uint32_t codePoint, FontFace face, std::uint32_t weight, int slotWidth, int slotHeight, std::uint8_t* coverageOut) override
     {
         if (Rendering::BoxDrawing::prefersProcedural(codePoint)) {

@@ -19,6 +19,7 @@
 // C++: no platform font types (enforced by Scripts/check-boundaries.py).
 
 #include "Core/Rendering/CellMetrics.h"
+#include "Core/Rendering/ClusterRasterGeometry.h"
 #include "Core/Rendering/FontMetrics.h"
 #include "Core/Rendering/GlyphKey.h"
 #include "Core/Rendering/GlyphSlotPolicy.h"
@@ -259,6 +260,27 @@ struct GlyphRasterizer {
     {
         (void)phaseInPixels;
         return rasterizeCluster(codePoints, count, face, weight, slotWidth, slotHeight, coverageOut);
+    }
+
+    /// Draws an ordinary cluster with its cell allocation separate from padding.
+    ///
+    /// Shaping providers fit the complete glyph group to these bounds. Fixed
+    /// bitmap providers retain their existing cluster composition.
+    /// - Parameters:
+    ///   - codePoints: The cluster's Unicode scalars.
+    ///   - count: The number of scalars to read.
+    ///   - face: The font style to use.
+    ///   - weight: The weight override, or zero for the style's default.
+    ///   - phaseInPixels: The pen's fraction within one device pixel.
+    ///   - bounds: The allocated one- or two-cell interval in slot coordinates.
+    ///   - slotWidth: The padded destination width in pixels.
+    ///   - slotHeight: The destination height in pixels.
+    ///   - coverageOut: Caller-owned `slotWidth * slotHeight` coverage bytes.
+    /// - Returns: True when the rasterizer supplies the cluster's coverage.
+    virtual bool rasterizeClusterInCell(const std::uint32_t* codePoints, int count, FontFace face, std::uint32_t weight, double phaseInPixels, ClusterRasterBounds bounds, int slotWidth, int slotHeight, std::uint8_t* coverageOut)
+    {
+        (void)bounds;
+        return rasterizeClusterAtPhase(codePoints, count, face, weight, phaseInPixels, slotWidth, slotHeight, coverageOut);
     }
 
     /// Whether ``rasterizeSizedMaster`` draws at the master's size rather than

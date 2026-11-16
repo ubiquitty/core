@@ -565,7 +565,9 @@ void SoftwareRenderer::rasterizeClusterInto(Atlas& atlas, int slot, std::span<co
     const AtlasSlotRegion region { (slot % geometry.columns) * width, (slot / geometry.columns) * height, width, height };
     // A cluster the rasterizer declines still lands as a blank: the slot is
     // this key's now, not the previous tenant's ink.
-    const bool inked = m_rasterizer.rasterizeClusterAtPhase(codePoints.data(), static_cast<int>(codePoints.size()), face, weight, static_cast<double>(variantPhase(variant)) / std::max(1, m_rasterizer.glyphPhaseCount()), width, height, m_slotScratch.data());
+    const double phase = static_cast<double>(variantPhase(variant)) / std::max(1, m_rasterizer.glyphPhaseCount());
+    const ClusterRasterBounds bounds { geometry.glyphMarginInPixels.width + phase, static_cast<double>(geometry.glyphWidthInPixels) };
+    const bool inked = m_rasterizer.rasterizeClusterInCell(codePoints.data(), static_cast<int>(codePoints.size()), face, weight, phase, bounds, width, height, m_slotScratch.data());
     const std::span<const std::uint8_t> plane = inked ? std::span<const std::uint8_t>(m_slotScratch).first(static_cast<std::size_t>(width) * static_cast<std::size_t>(height)) : std::span<const std::uint8_t> {};
     writeAtlasCoverage(atlas.pixels, atlas.atlasWidth, region, plane);
     atlas.recordInkBox(slot, plane, width, height);
