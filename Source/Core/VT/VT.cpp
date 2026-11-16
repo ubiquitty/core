@@ -6345,8 +6345,8 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
         if (glyphEndColumn >= column + writableColumns)
             break; // glyph would need a wrap
 
-        // Cells share the run's pen, empty cluster, and link id; only ch +
-        // attributes vary. Copy the template then patch those two fields.
+        // Cells share the run's pen, empty cluster, and link id; only the code
+        // point and wide-half attributes vary.
         if (width == 2) {
             Ubiquitty::Cell& leadCell = spanStorage.constructAt(static_cast<std::size_t>(nCells), tmpl);
             leadCell.codePoint = codePoint; // resolveCodePoint is identity for codePoint >= 0x80
@@ -6357,11 +6357,9 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
             Ubiquitty::cellSetPenAttributes(continuationCell, continuationAttributes);
             nCells += 2;
         } else {
-            // A narrow glyph carries the run's pen unchanged — the template was
-            // built from the same screen pen the attributes come from — so the
-            // template copy is the whole pen write.
-            Ubiquitty::Cell& narrowCell = spanStorage.constructAt(static_cast<std::size_t>(nCells), tmpl);
-            narrowCell.codePoint = codePoint;
+            // A narrow glyph carries the run's pen unchanged.
+            assert(nCells >= 0 && nCells < Ubiquitty::maxColumns);
+            std::construct_at(span + nCells, codePoint, tmpl.pen, tmpl.combining, tmpl.linkIDLo, tmpl.linkIDHi, tmpl.clusterPacked);
             nCells += 1;
         }
         lastLeadColumn = currentColumn;
