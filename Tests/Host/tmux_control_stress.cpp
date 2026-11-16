@@ -1150,6 +1150,8 @@ int main(int argc, char** argv)
 {
     ::signal(SIGPIPE, SIG_IGN);
     ::unsetenv("TMUX");
+    // The private HOME has no user terminfo; use the system terminal fallback.
+    ::unsetenv("UBIQUITTY_TERM");
     const std::string tmux = findTmux();
     if (tmux.empty()) {
         std::fprintf(stderr, "tmux_control_stress: no tmux on PATH\n");
