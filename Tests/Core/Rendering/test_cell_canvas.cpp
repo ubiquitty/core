@@ -19,6 +19,7 @@
 #include "Core/VT/Constants.h"
 
 #include <string>
+#include <utility>
 #include <vector>
 
 using Ubiquitty::Cell;
@@ -146,6 +147,50 @@ TEST(cellCanvasDrawsTextAndRefusesToHalveAWideGlyph)
         CHECK(drawText(orphan, 0, 0, "\xCC\x81", inkPen()));
         CHECK_MSG(glyphAt(orphan, 0, 0) == 0, "a mark with nothing to attach to draws nothing");
     }
+}
+
+TEST(cellCanvasReplacesMalformedSubpartsWithoutLosingFollowingText)
+{
+    for (const auto& [text, expected] : std::vector<std::pair<std::string, std::u32string>> {
+             { "\xE2"
+               "A",
+                 U"\uFFFDA" },
+             { "\xE2\x82"
+               "A",
+                 U"\uFFFDA" },
+             { "\xE2\xC3\xA9", U"\uFFFD\u00E9" },
+             { "\xE0\x80\x80", U"\uFFFD\uFFFD\uFFFD" },
+             { "\xED\xA0\x80", U"\uFFFD\uFFFD\uFFFD" },
+             { "\xF4\x90\x80\x80", U"\uFFFD\uFFFD\uFFFD\uFFFD" },
+             { "Z\xE2", U"Z\uFFFD" },
+             { "Z\xE2\x82", U"Z\uFFFD" },
+             { "Z\xF0\x9F\x98", U"Z\uFFFD" },
+         }) {
+        CellCanvas canvas;
+        canvas.resizeAndBlank(1, static_cast<int>(expected.size()) + 1);
+        CHECK(drawText(canvas, 0, 0, text, inkPen()));
+        for (std::size_t index = 0; index < expected.size(); ++index)
+            CHECK_EQ(glyphAt(canvas, 0, static_cast<int>(index)), static_cast<std::uint32_t>(expected[index]));
+        CHECK_EQ(glyphAt(canvas, 0, static_cast<int>(expected.size())), 0u);
+    }
+}
+
+TEST(cellCanvasCountsReplacementCharactersWhenClipping)
+{
+    CellCanvas canvas;
+    canvas.resizeAndBlank(1, 1);
+    CHECK(!drawText(canvas, 0, 0, "\xE2"
+                                  "A",
+        inkPen()));
+    CHECK_EQ(glyphAt(canvas, 0, 0), 0xFFFDu);
+
+    canvas.resizeAndBlank(1, 1);
+    CHECK(!drawText(canvas, 0, 0, "A\xE2\x82", inkPen()));
+    CHECK_EQ(glyphAt(canvas, 0, 0), static_cast<std::uint32_t>('A'));
+
+    canvas.resizeAndBlank(1, 1);
+    CHECK(drawText(canvas, 0, 0, "\xE2\x82", inkPen()));
+    CHECK_EQ(glyphAt(canvas, 0, 0), 0xFFFDu);
 }
 
 TEST(cellCanvasDrawsBordersThatCollapseCleanly)

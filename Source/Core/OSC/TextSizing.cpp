@@ -23,7 +23,7 @@
 #include "Core/Terminal.h"
 #include "Core/TerminalShared.h"
 #include "Core/Unicode/GraphemeBreak.h"
-#include "Core/Unicode/UTF8Decoder.h"
+#include "Core/Unicode/UTF8Repair.h"
 #include "Core/Unicode/Width.h"
 #include "Core/VT/Internal.h"
 #include "PAL/TerminalClients.h"
@@ -249,20 +249,12 @@ void handleProportionalRun(Ubiquitty::Terminal& t, const TextSizing::Request& re
     static_assert(static_cast<std::size_t>(Ubiquitty::runTextMaximumCodePoints) == TextSizing::maxTextBytes,
         "the run-text bound is the OSC payload bound");
     std::size_t count = 0;
-    Unicode::UTF8Decoder decoder;
-    Unicode::utf8Reset(&decoder);
-    for (const char raw : text) {
-        std::uint32_t codePoint = 0;
-        const Unicode::UTF8Status status = Unicode::utf8Feed(&decoder, static_cast<std::uint8_t>(raw), &codePoint);
-        if (status == Unicode::UTF8Status::Need)
-            continue;
-        if (status == Unicode::UTF8Status::Invalid)
-            codePoint = 0xFFFD;
+    while (const auto codePoint = Unicode::takeUTF8CodePoint(text)) {
         // Past the payload bound the code refuses whole: a run truncated to it
         // would print text the application never asked for at that width.
         if (count == codePoints.size())
             return;
-        codePoints[count++] = codePoint;
+        codePoints[count++] = *codePoint;
     }
     if (count == 0)
         return;
@@ -611,7 +603,7 @@ void handleOSC66(Ubiquitty::Terminal& t, std::string_view payload)
     const std::size_t split = payload.find(';');
     if (split == std::string_view::npos)
         return;
-    const std::string_view text = payload.substr(split + 1);
+    std::string_view text = payload.substr(split + 1);
     if (text.size() > TextSizing::maxTextBytes)
         return;
     const std::optional<TextSizing::Request> request = TextSizing::parseRequest(payload.substr(0, split));
@@ -624,14 +616,8 @@ void handleOSC66(Ubiquitty::Terminal& t, std::string_view payload)
 
     std::vector<std::uint32_t> codePoints;
     codePoints.reserve(text.size());
-    Unicode::UTF8Decoder decoder;
-    Unicode::utf8Reset(&decoder);
-    for (const char raw : text) {
-        std::uint32_t codePoint = 0;
-        const auto status = Unicode::utf8Feed(&decoder, static_cast<std::uint8_t>(raw), &codePoint);
-        if (status != Unicode::UTF8Status::Need)
-            codePoints.push_back(status == Unicode::UTF8Status::Invalid ? 0xFFFD : codePoint);
-    }
+    while (const auto codePoint = Unicode::takeUTF8CodePoint(text))
+        codePoints.push_back(*codePoint);
     if (codePoints.empty())
         return;
     const auto plain = [&](std::span<const std::uint32_t> cluster) {

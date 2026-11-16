@@ -147,6 +147,48 @@ TEST(aSizedRunPrintsAsBlocksAndAdvancesTheCursor)
     CHECK_EQ(t.screens.active->cursorY, 0);
 }
 
+TEST(malformedUTF8KeepsFollowingTextAndReplacesTruncatedTailsInEveryRunMode)
+{
+    for (const auto& [metadata, drawsSizedText, drawsProportionalText] : std::array {
+             std::tuple { "", true, true },
+             std::tuple { "s=2", true, true },
+             std::tuple { "s=2:w=3", true, true },
+             std::tuple { "p=1:c=4", true, true },
+             std::tuple { "s=2", false, false },
+             std::tuple { "p=1:c=4", false, false },
+         }) {
+        for (const auto& [text, expected] : std::vector<std::pair<std::string, std::string>> {
+                 { "\xE2"
+                   "A",
+                     "\xEF\xBF\xBD"
+                     "A" },
+                 { "\xE2\x82"
+                   "A",
+                     "\xEF\xBF\xBD"
+                     "A" },
+                 { "\xE2\xC3\xA9", "\xEF\xBF\xBD\xC3\xA9" },
+                 { "\xE0\x80\x80", "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD" },
+                 { "\xED\xA0\x80", "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD" },
+                 { "\xF4\x90\x80\x80", "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD" },
+                 { "Z\xE2", "Z\xEF\xBF\xBD" },
+                 { "Z\xE2\x82", "Z\xEF\xBF\xBD" },
+                 { "Z\xF0\x9F\x98", "Z\xEF\xBF\xBD" },
+             }) {
+            Ubiquitty::Terminal t;
+            reset(t);
+            t.drawsSizedText = drawsSizedText;
+            t.drawsProportionalText = drawsProportionalText;
+            feed(t, std::string("\033]66;") + metadata + ";" + text + "\007");
+            REQUIRE(t.screens.active->cursorX > 0);
+            Ubiquitty::Selection::Session selection;
+            Ubiquitty::Selection::init(selection);
+            Ubiquitty::Selection::beginGesture(selection, t, 0, 0, 1, 0, {});
+            Ubiquitty::Selection::dragGesture(selection, t, 0, t.screens.active->cursorX - 1, 0);
+            CHECK_STR_EQ(Ubiquitty::Selection::selectedText(selection, t), expected);
+        }
+    }
+}
+
 TEST(explicitWidthContainsTheWholePayloadAndCopyKeepsIt)
 {
     for (const auto& [metadata, text, columns] : std::array {

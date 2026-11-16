@@ -20,6 +20,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -34,6 +35,8 @@ struct Sequence {
     std::size_t length = 0;
     /// Whether those bytes are a scalar value's encoding.
     bool isWellFormed = false; // bool-ok: names the one condition it reports
+    /// The scalar value when the sequence is well formed.
+    std::uint32_t codePoint = 0;
 };
 
 /// Reads one sequence from the head of a text.
@@ -45,20 +48,24 @@ struct Sequence {
     const auto byteAt = [&](std::size_t index) { return static_cast<std::uint8_t>(text[index]); };
     const std::uint8_t lead = byteAt(0);
     if (lead < 0x80)
-        return { 1, true };
+        return { 1, true, lead };
     std::size_t length = 0;
+    std::uint32_t codePoint = 0;
     // The range of the second byte, which is where shortest form, the
     // surrogates and the upper bound are each decided.
     std::uint8_t secondLow = 0x80;
     std::uint8_t secondHigh = 0xBF;
     if (lead >= 0xC2 && lead <= 0xDF) {
         length = 2;
+        codePoint = lead & 0x1F;
     } else if (lead >= 0xE0 && lead <= 0xEF) {
         length = 3;
+        codePoint = lead & 0x0F;
         secondLow = lead == 0xE0 ? 0xA0 : 0x80;
         secondHigh = lead == 0xED ? 0x9F : 0xBF;
     } else if (lead >= 0xF0 && lead <= 0xF4) {
         length = 4;
+        codePoint = lead & 0x07;
         secondLow = lead == 0xF0 ? 0x90 : 0x80;
         secondHigh = lead == 0xF4 ? 0x8F : 0xBF;
     } else {
@@ -69,11 +76,28 @@ struct Sequence {
         const std::uint8_t high = index == 1 ? secondHigh : 0xBF;
         if (index >= text.size() || byteAt(index) < low || byteAt(index) > high)
             return { index, false };
+        codePoint = (codePoint << 6) | (byteAt(index) & 0x3F);
     }
-    return { length, true };
+    return { length, true, codePoint };
 }
 
 } // namespace UTF8RepairDetail
+
+/// Takes the next scalar from a complete UTF-8 text, replacing malformed input.
+///
+/// One maximal subpart becomes U+FFFD, including an incomplete trailing
+/// sequence. A byte that breaks a sequence remains for the next call.
+///
+/// - Parameter text: The remaining bytes, advanced past the scalar or subpart.
+/// - Returns: The decoded scalar or U+FFFD; empty when no bytes remain.
+[[nodiscard]] constexpr std::optional<std::uint32_t> takeUTF8CodePoint(std::string_view& text)
+{
+    if (text.empty())
+        return std::nullopt;
+    const UTF8RepairDetail::Sequence sequence = UTF8RepairDetail::sequenceAt(text);
+    text.remove_prefix(sequence.length);
+    return sequence.isWellFormed ? sequence.codePoint : 0xFFFDu;
+}
 
 /// How much of a text is well-formed UTF-8 from its start.
 ///
