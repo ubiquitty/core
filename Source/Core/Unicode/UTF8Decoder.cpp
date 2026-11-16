@@ -9,6 +9,10 @@
 #include <cstdint>
 #include <cstring>
 
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
 namespace Ubiquitty::Unicode {
 
 #if UBIQUITTY_ENABLE_TEST_HOOKS
@@ -18,6 +22,7 @@ namespace Ubiquitty::Unicode {
 // same on both, so a build with the fast path compiled out agrees with itself
 // and reads as a passing comparison.
 std::uint64_t simdRunCountForTest = 0;
+std::uint64_t threeByteSIMDRunCountForTest = 0;
 // Every byte a run decode has consumed, on either path, so a caller can be held
 // to decoding its input once.
 std::uint64_t decodedBytesForTest = 0;
@@ -220,42 +225,90 @@ int utf8DecodeRun(std::span<const char> input, std::span<std::uint32_t> out, int
     const int length = static_cast<int>(input.size());
     std::uint32_t* outputBuffer = out.data();
     const int maxOut = static_cast<int>(out.size());
+    int p = 0, n = 0;
+#if defined(__aarch64__)
+    // Deinterleave complete three-byte sequences without a separate span scan.
+    // Validate every lane before storing: the scalar tail must still stop at
+    // the first malformed sequence, including overlongs and surrogates.
+    if (maxOut >= 32 && length >= 96 && (static_cast<std::uint8_t>(in[0]) & 0xF0) == 0xE0) {
+        while (length - p >= 48 && maxOut - n >= 16) {
+            const uint8x16x3_t bytes = vld3q_u8(reinterpret_cast<const std::uint8_t*>(in + p));
+            const uint8x16_t leads = bytes.val[0];
+            const uint8x16_t seconds = bytes.val[1];
+            const uint8x16_t thirds = bytes.val[2];
+            const uint8x16_t invalidLead = veorq_u8(vandq_u8(leads, vdupq_n_u8(0xF0)), vdupq_n_u8(0xE0));
+            const uint8x16_t invalidSecond = veorq_u8(vandq_u8(seconds, vdupq_n_u8(0xC0)), vdupq_n_u8(0x80));
+            const uint8x16_t invalidThird = veorq_u8(vandq_u8(thirds, vdupq_n_u8(0xC0)), vdupq_n_u8(0x80));
+            const uint8x16_t overlong = vandq_u8(vceqq_u8(leads, vdupq_n_u8(0xE0)), vcltq_u8(seconds, vdupq_n_u8(0xA0)));
+            const uint8x16_t surrogate = vandq_u8(vceqq_u8(leads, vdupq_n_u8(0xED)), vcgeq_u8(seconds, vdupq_n_u8(0xA0)));
+            const uint8x16_t invalid = vorrq_u8(vorrq_u8(invalidLead, invalidSecond),
+                vorrq_u8(invalidThird, vorrq_u8(overlong, surrogate)));
+            if (vmaxvq_u8(invalid))
+                break;
+
+            const uint8x16_t leadPayload = vandq_u8(leads, vdupq_n_u8(0x0F));
+            const uint8x16_t secondPayload = vandq_u8(seconds, vdupq_n_u8(0x3F));
+            const uint8x16_t thirdPayload = vandq_u8(thirds, vdupq_n_u8(0x3F));
+            const uint16x8_t low = vorrq_u16(vshlq_n_u16(vmovl_u8(vget_low_u8(leadPayload)), 12),
+                vorrq_u16(vshlq_n_u16(vmovl_u8(vget_low_u8(secondPayload)), 6), vmovl_u8(vget_low_u8(thirdPayload))));
+            const uint16x8_t high = vorrq_u16(vshlq_n_u16(vmovl_u8(vget_high_u8(leadPayload)), 12),
+                vorrq_u16(vshlq_n_u16(vmovl_u8(vget_high_u8(secondPayload)), 6), vmovl_u8(vget_high_u8(thirdPayload))));
+            vst1q_u32(outputBuffer + n, vmovl_u16(vget_low_u16(low)));
+            vst1q_u32(outputBuffer + n + 4, vmovl_u16(vget_high_u16(low)));
+            vst1q_u32(outputBuffer + n + 8, vmovl_u16(vget_low_u16(high)));
+            vst1q_u32(outputBuffer + n + 12, vmovl_u16(vget_high_u16(high)));
+            p += 48;
+            n += 16;
+        }
+#if UBIQUITTY_ENABLE_TEST_HOOKS
+        if (n) {
+            ++simdRunCountForTest;
+            ++threeByteSIMDRunCountForTest;
+        }
+#endif
+    }
+#endif
     // SIMD fast path: stop before a sequence would exceed maxOut, trim a
     // boundary-split trailing sequence, then validate+convert in one shot.
     // Length gate (~96 bytes): simdutf's per-call cost loses to the scalar loop
     // on short runs. Invalid spans fall through to scalar.
     {
         constexpr int simdMinBytes = 96;
-        if (maxOut >= simdMinBytes / 4) {
+        const int capacity = maxOut - n;
+        const int remainingLength = length - p;
+        if (capacity >= simdMinBytes / 4) {
             // Bound the scan before running it: an unbounded scan over a
             // multibyte flood would walk the whole remaining chunk per call.
             // Four bytes per output also bounds malformed continuation runs.
             // Multiply only when the result cannot exceed the input length.
-            const int scanLimit = maxOut > length / 4 ? length : maxOut * 4;
-            int mb = nonASCIISpanEnd(input.first(static_cast<std::size_t>(scanLimit)), maxOut);
+            const int scanLimit = capacity > remainingLength / 4 ? remainingLength : capacity * 4;
+            int mb = nonASCIISpanEnd(input.subspan(static_cast<std::size_t>(p), static_cast<std::size_t>(scanLimit)), capacity);
             if (mb == 0) {
-                *bytesConsumed = 0;
-                return 0;
+#if UBIQUITTY_ENABLE_TEST_HOOKS
+                decodedBytesForTest += static_cast<std::uint64_t>(p);
+#endif
+                *bytesConsumed = p;
+                return n;
             }
             if (mb >= simdMinBytes)
-                mb = trimSplitTrailingSequence(in, mb);
+                mb = trimSplitTrailingSequence(in + p, mb);
             if (mb >= simdMinBytes) {
                 // convert_utf8_to_utf32 validates and converts in one sweep,
                 // returning 0 on any invalid byte → fall through to scalar, which
                 // stops exactly at the bad byte (preserving bytesConsumed).
-                const std::size_t nc = simdutf::convert_utf8_to_utf32(in, static_cast<std::size_t>(mb), reinterpret_cast<char32_t*>(outputBuffer));
+                const std::size_t nc = simdutf::convert_utf8_to_utf32(in + p, static_cast<std::size_t>(mb), reinterpret_cast<char32_t*>(outputBuffer + n));
                 if (nc > 0) {
 #if UBIQUITTY_ENABLE_TEST_HOOKS
-                    ++simdRunCountForTest;
-                    decodedBytesForTest += static_cast<std::uint64_t>(mb);
+                    if (!n)
+                        ++simdRunCountForTest;
+                    decodedBytesForTest += static_cast<std::uint64_t>(p + mb);
 #endif
-                    *bytesConsumed = mb;
-                    return static_cast<int>(nc);
+                    *bytesConsumed = p + mb;
+                    return n + static_cast<int>(nc);
                 }
             }
         }
     }
-    int p = 0, n = 0;
     while (p < length && n < maxOut) {
         const std::uint8_t b0 = static_cast<std::uint8_t>(in[p]);
         if (b0 < 0xC2)
