@@ -363,10 +363,6 @@ struct Terminal {
         // Substitution policy for invalid/truncated UTF-8: FFFD emits U+FFFD, Drop emits nothing,
         // Latin1 reinterprets each undecodable byte as ISO-8859-1. Read only on the error path.
         Ubiquitty::Unicode::InvalidUTF8Policy invalidUTF8Policy {};
-        // Lead byte of the in-progress multibyte sequence, kept so the Latin1 policy can reinterpret
-        // an abandoned lead after the decoder discards it. Written only when opening a multibyte sequence.
-        std::uint8_t utf8LeadByte {};
-
         // Legacy input characterSet. When != UTF8, processBytes transcodes incoming bytes to UTF-8 through
         // this streaming decoder before the UTF-8 stage. Default UTF8 = pass-through.
         Ubiquitty::Unicode::EncDecoder inputEncoding {};

@@ -1563,6 +1563,32 @@ static inline void emitInvalidUTF8(Ubiquitty::Terminal& t, uint8_t offendingByte
     emitCharacter(t, 0xFFFD, 0xFFFD, 0, capture); // U+FFFD has width 1
 }
 
+// The accumulator retains every byte of a valid prefix. Reconstruct it only
+// for Latin-1 recovery; the other policies substitute for the whole subpart.
+static void emitIncompleteUTF8(Ubiquitty::Terminal& t, const Ubiquitty::Unicode::UTF8Decoder& decoder, GraphicCapture capture)
+{
+    if (t.parser.invalidUTF8Policy != Ubiquitty::Unicode::InvalidUTF8Policy::Latin1) {
+        emitInvalidUTF8(t, 0, capture);
+        return;
+    }
+    assert(decoder.need > 0);
+    const int sequenceLength = decoder.min == 0x80 ? 2 : decoder.min == 0x800 ? 3
+                                                                              : 4;
+    const int prefixLength = sequenceLength - decoder.need;
+    assert(prefixLength > 0 && prefixLength <= 3);
+    std::array<std::uint8_t, 3> bytes;
+    std::uint32_t payload = decoder.acc;
+    for (int index = prefixLength - 1; index > 0; --index) {
+        bytes[index] = static_cast<std::uint8_t>(0x80 | (payload & 0x3F));
+        payload >>= 6;
+    }
+    const std::uint8_t lead = sequenceLength == 2 ? 0xC0 : sequenceLength == 3 ? 0xE0
+                                                                               : 0xF0;
+    bytes[0] = static_cast<std::uint8_t>(lead | payload);
+    for (int index = 0; index < prefixLength; ++index)
+        emitInvalidUTF8(t, bytes[index], capture);
+}
+
 // Close an incomplete UTF-8 sequence that the next byte cannot continue.
 //
 // The decoder only hears about bytes that reach putCharacter, and a C0 control
@@ -1578,8 +1604,9 @@ static void closeTruncatedUTF8(Ubiquitty::Terminal& t, GraphicCapture capture)
 {
     if (t.parser.utf8.need == 0)
         return;
+    const auto decoder = t.parser.utf8;
     resetUTF8(t);
-    emitInvalidUTF8(t, t.parser.utf8LeadByte, capture);
+    emitIncompleteUTF8(t, decoder, capture);
 }
 
 // A C1 control decoded from UTF-8 (U+0080..U+009F, spelled C2 80..C2 9F) has
@@ -1615,6 +1642,9 @@ static void performDecodedC1CodePoint(Ubiquitty::Terminal& t, uint32_t codePoint
     } else {
         uint32_t codePoint;
         bool wasMid = (t.parser.utf8.need > 0);
+        Ubiquitty::Unicode::UTF8Decoder pendingDecoder {};
+        if (wasMid && t.parser.invalidUTF8Policy == Ubiquitty::Unicode::InvalidUTF8Policy::Latin1)
+            pendingDecoder = t.parser.utf8;
         std::uint32_t fed;
         Ubiquitty::Unicode::UTF8Status st = Ubiquitty::Unicode::utf8Feed(&t.parser.utf8, c, &fed);
         if (st == Ubiquitty::Unicode::UTF8Status::Emit) {
@@ -1623,16 +1653,10 @@ static void performDecodedC1CodePoint(Ubiquitty::Terminal& t, uint32_t codePoint
                 performDecodedC1CodePoint(t, codePoint);
             else
                 emitTranslatedGraphic(t, codePoint, GraphicInvocationArea::GL, capture);
-        } else if (st == Ubiquitty::Unicode::UTF8Status::Need) {
-            // Under the Latin1 policy only, remember a fresh sequence's lead byte
-            // so a later substitution can reinterpret it if a bad continuation
-            // aborts the sequence (the decoder discards it).
-            if (!wasMid && t.parser.invalidUTF8Policy == Ubiquitty::Unicode::InvalidUTF8Policy::Latin1)
-                t.parser.utf8LeadByte = c;
         } else if (st == Ubiquitty::Unicode::UTF8Status::Invalid) {
             if (wasMid) {
                 // A byte that cannot continue broke the in-progress sequence: the
-                // abandoned LEAD is what failed to decode (substitute that),
+                // abandoned prefix failed to decode (substitute that),
                 // then re-feed the offending byte — it may itself begin a fresh
                 // sequence (or be plain ASCII).
                 // The lead's substitute is journaled only when its successor
@@ -1644,15 +1668,13 @@ static void performDecodedC1CodePoint(Ubiquitty::Terminal& t, uint32_t codePoint
                 Ubiquitty::Unicode::UTF8Decoder probe = t.parser.utf8;
                 std::uint32_t probed;
                 const bool isC1Lead = c == 0xC2 && Ubiquitty::Unicode::utf8Feed(&probe, c, &probed) == Ubiquitty::Unicode::UTF8Status::Need;
-                emitInvalidUTF8(t, t.parser.utf8LeadByte, isC1Lead ? GraphicCapture::Retain : GraphicCapture::Discard);
+                emitIncompleteUTF8(t, pendingDecoder, isC1Lead ? GraphicCapture::Retain : GraphicCapture::Discard);
                 std::uint32_t codePoint2;
                 Ubiquitty::Unicode::UTF8Status st2 = Ubiquitty::Unicode::utf8Feed(&t.parser.utf8, c, &codePoint2);
                 if (st2 == Ubiquitty::Unicode::UTF8Status::Emit) {
                     if (!isC1CodePoint(codePoint2))
                         emitTranslatedGraphic(t, codePoint2, GraphicInvocationArea::GL, capture);
-                } else if (st2 == Ubiquitty::Unicode::UTF8Status::Need)
-                    t.parser.utf8LeadByte = c;
-                else // Invalid: c is itself a bad lead / lone continuation.
+                } else if (st2 == Ubiquitty::Unicode::UTF8Status::Invalid) // c is itself a bad lead / lone continuation.
                     emitInvalidUTF8(t, c, capture);
             } else {
                 // Byte c is itself a bad lead or lone continuation.
