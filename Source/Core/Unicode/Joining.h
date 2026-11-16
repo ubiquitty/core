@@ -46,14 +46,11 @@ enum class LamAlefLigatureForm : std::uint8_t {
     Final
 };
 
-// Joining_Type for a codePoint. Non-Arabic-script codePoints are NonJoining
-// (breaking a cursive run) except Transparent format marks and Join_Causing
-// ZWJ / tatweel.
+// Joining_Type from the UCD, including transparent marks and joining controls.
 [[nodiscard]] JoiningType joiningType(std::uint32_t codePoint);
 
-// True when codePoint is in a shaped script (Arabic / Supplement / Extended-A)
-// or is a script-neutral joining control (ZWJ, ZWNJ, tatweel). Run-level gate:
-// a row with no such codePoint needs no joining pass.
+// True for a joining letter/control or Arabic transparent mark. Run-level
+// gate: a row with no such codePoint needs no joining pass.
 [[nodiscard]] bool isCursiveJoiner(std::uint32_t codePoint);
 
 // Resolve letter `codePoint`'s form from its nearest NON-Transparent neighbours'

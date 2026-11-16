@@ -15,7 +15,7 @@
 // The corpus (BidiCharacterTest.txt) is vendored beside this file on the same
 // terms as GraphemeBreakTest.txt: a fixture the test needs in order to run
 // cannot be an optional download, or the check never runs. It must track the
-// version the tables were generated from (UCD 17.0.0).
+// version the tables were generated from (UCD 18.0.0).
 //
 // Corpus format, one case per line, five semicolon-separated fields:
 //   codepoints ; paragraph-direction ; paragraph-level ; levels ; visual-order

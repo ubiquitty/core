@@ -222,4 +222,49 @@ TEST(testAValidSequenceEmitsNoReplacement)
     CHECK(cell != nullptr && cell->codePoint == 0x20AC);
 }
 
+TEST(testLatin1PreservesEveryByteOfAnIncompleteSequence)
+{
+    const std::string_view prefixes[] = { "\xC3", "\xE2", "\xE2\xA1", "\xF0", "\xF0\xA1", "\xF0\xA1\xBF" };
+    for (const auto prefix : prefixes) {
+        for (const std::string_view suffix : { ".", "\033[31m.", "\r\n.", "\xC3\xA9" }) {
+            const std::string input = std::string(prefix) + std::string(suffix);
+            for (std::size_t split = 0; split <= input.size(); ++split) {
+                Ubiquitty::Terminal terminal;
+                Ubiquitty::hardReset(terminal);
+                Ubiquitty::Modes::setInvalidUTF8Policy(&terminal, Ubiquitty::Unicode::InvalidUTF8Policy::Latin1);
+                feed(terminal, std::string_view(input).substr(0, split));
+                feed(terminal, std::string_view(input).substr(split));
+                for (std::size_t column = 0; column < prefix.size(); ++column)
+                    CHECK_EQ(Ubiquitty::Screen::visibleCell(&terminal, 0, 0, static_cast<int>(column))->codePoint,
+                        static_cast<std::uint8_t>(prefix[column]));
+                const bool isNewLine = suffix.starts_with('\r');
+                const int row = isNewLine ? 1 : 0;
+                const int column = isNewLine ? 0 : static_cast<int>(prefix.size());
+                CHECK_EQ(Ubiquitty::Screen::visibleCell(&terminal, 0, row, column)->codePoint,
+                    suffix.starts_with('\xC3') ? std::uint32_t { 0xE9 } : std::uint32_t { '.' });
+                CHECK_EQ(replacementCount(terminal), 0);
+            }
+        }
+    }
+}
+
+TEST(testLatin1PolicyChangesAndCancellationKeepPendingPrefixBytes)
+{
+    for (const std::string_view prefix : { "\xC3", "\xE2\xA1", "\xF0\xA1\xBF" }) {
+        for (const bool shouldCancel : { false, true }) {
+            Ubiquitty::Terminal terminal;
+            Ubiquitty::hardReset(terminal);
+            feed(terminal, prefix);
+            Ubiquitty::Modes::setInvalidUTF8Policy(&terminal, Ubiquitty::Unicode::InvalidUTF8Policy::Latin1);
+            feed(terminal, shouldCancel ? "\033TX" : "X");
+            const auto kept = prefix.size() - (shouldCancel ? 1 : 0);
+            for (std::size_t column = 0; column < kept; ++column)
+                CHECK_EQ(Ubiquitty::Screen::visibleCell(&terminal, 0, 0, static_cast<int>(column))->codePoint,
+                    static_cast<std::uint8_t>(prefix[column]));
+            CHECK_EQ(Ubiquitty::Screen::visibleCell(&terminal, 0, 0, static_cast<int>(kept))->codePoint, std::uint32_t { 'X' });
+            CHECK_EQ(terminal.screens.active->cursorX, static_cast<int>(kept) + 1);
+        }
+    }
+}
+
 UBIQUITTY_TEST_MAIN()

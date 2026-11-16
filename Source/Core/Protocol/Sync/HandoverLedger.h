@@ -319,7 +319,6 @@ inline constexpr auto parserHandoverLedger = std::to_array<HandoverLedgerEntry>(
     { "is96CharacterSet", HandoverCarriage::AtGround, HandoverBlocker::ParserMidSequence },
     { "characterSetIntermediate", HandoverCarriage::AtGround, HandoverBlocker::ParserMidSequence },
     { "utf8", HandoverCarriage::AtGround, HandoverBlocker::IncompleteCharacter },
-    { "utf8LeadByte", HandoverCarriage::AtGround, HandoverBlocker::IncompleteCharacter },
 });
 
 static_assert(isHandoverLedgerComplete(terminalLedger, terminalHandoverLedger));

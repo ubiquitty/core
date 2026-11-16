@@ -12,7 +12,7 @@ combining classes that drive the algorithm are too large to hand-curate,
 so this script turns them into a deterministic build from authoritative
 Unicode source data.
 
-Inputs (downloaded from https://www.unicode.org/Public/UCD/):
+Inputs (downloaded from https://www.unicode.org/Public/<version>/ucd/):
   UnicodeData.txt             — canonical combining class (field 3) and
                                 decomposition mapping (field 5)
   CompositionExclusions.txt   — code points barred from recomposition
@@ -31,7 +31,7 @@ Usage:
   Scripts/build-normalization-tables.py \\
       --unicodedata UnicodeData.txt \\
       --exclusions CompositionExclusions.txt \\
-      --unicode-version 15.1.0 \\
+      --unicode-version 18.0.0 \\
       --output Source/Core/Unicode/Normalize.tables.inc
 """
 
@@ -147,7 +147,7 @@ def main():
                  f"Unicode {args.unicode_version}.")
     lines.append(" * Source: UnicodeData.txt + CompositionExclusions.txt.")
     lines.append(" * Regenerate with Scripts/build-normalization-tables.py; "
-                 "do NOT hand-edit.")
+                 "do not edit by hand.")
     lines.append(" * Hangul is algorithmic (see Normalize.cpp), not tabulated "
                  "here.")
     lines.append(" */")

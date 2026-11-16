@@ -6,7 +6,7 @@
 #include "Core/Rendering/CellCanvas.h"
 
 #include "Core/Pen.h"
-#include "Core/Unicode/UTF8Decoder.h"
+#include "Core/Unicode/UTF8Repair.h"
 #include "Core/Unicode/Width.h"
 #include "Core/VT/Constants.h"
 
@@ -92,19 +92,11 @@ bool drawText(CellCanvas& canvas, int row, int column, std::string_view utf8, co
     if (row < 0 || row >= canvas.rows)
         return utf8.empty();
 
-    Unicode::UTF8Decoder decoder;
-    Unicode::utf8Reset(&decoder);
-
     int pen_column = column;
     Cell* base = nullptr; // the cell a combining mark attaches to
 
-    for (const char raw : utf8) {
-        std::uint32_t codePoint = 0;
-        const Unicode::UTF8Status status = Unicode::utf8Feed(&decoder, static_cast<std::uint8_t>(raw), &codePoint);
-        if (status == Unicode::UTF8Status::Need)
-            continue;
-        if (status == Unicode::UTF8Status::Invalid)
-            codePoint = 0xFFFD;
+    while (const auto next = Unicode::takeUTF8CodePoint(utf8)) {
+        const std::uint32_t codePoint = *next;
 
         // A canvas holds frontend chrome, which belongs to no terminal and so
         // measures ambiguous code points at the default.

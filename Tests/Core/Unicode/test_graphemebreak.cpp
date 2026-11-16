@@ -4,7 +4,7 @@
 // UAX #29 extended grapheme cluster segmenter. Pins the break/no-break decision
 // for combining marks, ZWJ emoji sequences, regional-indicator flag pairs,
 // skin-tone modifiers, VS-15/16, Hangul jamo runs, and plain text boundaries
-// against the property tables generated from UCD 17.0.0.
+// against the property tables generated from UCD 18.0.0.
 
 #include "Harness.h"
 
@@ -154,7 +154,7 @@ TEST(graphemebreak)
         CHECK(first == 5);
     }
 
-    // GB9c — Consonant [Extend|Linker]* Linker × Consonant. Devanagari
+    // GB9c — Linker Extend* × Consonant. Devanagari
     // KA VIRAMA TA is one conjunct cluster, and a second virama keeps it
     // open. A SpacingMark is not InCB=Extend and closes the chain.
     {
@@ -361,6 +361,44 @@ TEST(clusterBaseFollowsPrepends)
     const std::uint32_t prependsAlone[] = { 0x0600, 0x0605 };
     CHECK(clusterBaseIndex(prependsAlone) == 0);
     CHECK(clusterBaseIndex({}) == 0);
+}
+
+TEST(linkersArmConjunctsWithoutAPrecedingConsonant)
+{
+    const std::uint32_t linkers[] = { 0x094D, 0x1CF5, 0x1CF6, 0x11A3A };
+    for (const auto linker : linkers) {
+        CHECK(Ubiquitty::Unicode::isGraphemeRelevant(linker));
+        for (const bool usesHotPath : { false, true }) {
+            GraphemeState state {};
+            graphemeStateReset(&state, linker);
+            const auto extends = [&](std::uint32_t previous, std::uint32_t next) {
+                return usesHotPath ? Ubiquitty::Unicode::graphemeExtendsHot(&state, previous, next) : graphemeExtends(&state, previous, next);
+            };
+            CHECK(extends(linker, 0x0308));
+            CHECK(extends(0x0308, 0x0915));
+            CHECK(!extends(0x0915, 0x0915));
+            graphemeStateReset(&state, linker);
+            CHECK(extends(linker, 0x200C));
+            CHECK(!extends(0x200C, 0x0915));
+        }
+    }
+    // A Linker can arm the suffix after a non-Indic base too. Joining an
+    // emoji through GB11 then consumes it, because that pictograph is not Extend.
+    for (const bool usesHotPath : { false, true }) {
+        GraphemeState state {};
+        graphemeStateReset(&state, 0x1F468);
+        const auto extends = [&](std::uint32_t previous, std::uint32_t next) {
+            return usesHotPath ? Ubiquitty::Unicode::graphemeExtendsHot(&state, previous, next) : graphemeExtends(&state, previous, next);
+        };
+        graphemeStateReset(&state, 'A');
+        CHECK(extends('A', 0x094D));
+        CHECK(extends(0x094D, 0x0915));
+        graphemeStateReset(&state, 0x1F468);
+        CHECK(extends(0x1F468, 0x094D));
+        CHECK(extends(0x094D, 0x200D));
+        CHECK(extends(0x200D, 0x1F469));
+        CHECK(!extends(0x1F469, 0x0915));
+    }
 }
 
 UBIQUITTY_TEST_MAIN()

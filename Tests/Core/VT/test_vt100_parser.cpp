@@ -768,6 +768,30 @@ TEST(testUTF8C1InsideASequenceIsIgnored)
     CHECK(cell(t, 2, 3)->codePoint == 'Y');
 }
 
+TEST(testIncompleteUTF8C1InsideCSILeavesNoPendingText)
+{
+    for (const std::string_view sequence : { "\033[\xC2"
+                                             "2;2HX",
+             "\033[2;2\xC2"
+             "HX",
+             "\033[\xC2"
+             "?25lX" }) {
+        for (std::size_t split = 0; split <= sequence.size(); ++split) {
+            Ubiquitty::Terminal terminal;
+            Ubiquitty::hardReset(terminal);
+            feed(terminal, sequence.substr(0, split));
+            feed(terminal, sequence.substr(split));
+            const bool isCursorVisibility = sequence.find('?') != std::string_view::npos;
+            const int row = isCursorVisibility ? 0 : 1;
+            const int column = isCursorVisibility ? 0 : 1;
+            CHECK_EQ(cell(terminal, row, column)->codePoint, std::uint32_t { 'X' });
+            CHECK_EQ(terminal.screens.active->cursorX, column + 1);
+            CHECK_EQ(terminal.screens.active->cursorY, row);
+            CHECK_EQ(terminal.parser.utf8.need, 0);
+        }
+    }
+}
+
 // A second intermediate byte names a control Core does not have, so nothing
 // dispatches: `CSI 1 # # {` is not XTPUSHSGR, nor `CSI * # |` XTREPORTSGR.
 TEST(testASecondIntermediateDispatchesNothing)

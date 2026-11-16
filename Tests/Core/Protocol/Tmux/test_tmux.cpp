@@ -859,6 +859,62 @@ TEST(testWrapPassthrough)
     CHECK(memcmp(outputBuffer, "abc", 3) == 0);
 }
 
+TEST(testRoutedOutputKeepsTheUTF8InputContract)
+{
+    const std::pair<std::string_view, std::string_view> payloads[] = {
+        { "A\x9B"
+          "2;2HX",
+            "A\\2332;2HX" },
+        { "A\x9D"
+          "2;title\aX",
+            "A\\2352;title\\007X" },
+        { "A\x9F"
+          "payloadX",
+            "A\\237payloadX" },
+        { "A\033[2;2HX", "A\\033[2;2HX" },
+        { "A\xC2\x85"
+          "X",
+            "A\\302\\205X" },
+        { "\033[3\xC2\x9B;4HX", "\\033[3\\302\\233;4HX" },
+        { "\xE2\xA1.", "\\342\\241." },
+    };
+    for (const auto& [plain, escaped] : payloads) {
+        for (const bool isEscaped : { false, true }) {
+            const std::string line = "%output %0 " + std::string(isEscaped ? escaped : plain) + "\n";
+            for (const std::size_t chunk : { line.size(), std::size_t { 1 } }) {
+                Ubiquitty::Terminal parent;
+                Ubiquitty::Terminal child;
+                Ubiquitty::Terminal direct;
+                for (auto* terminal : { &parent, &child, &direct }) {
+                    Ubiquitty::hardReset(*terminal);
+                    Ubiquitty::resize(*terminal, 4, 32);
+                }
+                parent.integration.paneRouter.context = &child;
+                parent.integration.paneRouter.lookup = [](void* context, int paneID) -> Ubiquitty::Terminal* {
+                    return paneID == 0 ? static_cast<Ubiquitty::Terminal*>(context) : nullptr;
+                };
+                Ubiquitty::Protocol::Tmux::configure(&parent.integration.tmux, Ubiquitty::Protocol::Tmux::IntegrationMode::Enabled,
+                    Ubiquitty::Protocol::Tmux::AutoDetectMode::Automatic);
+                Ubiquitty::processBytes(&parent, "%begin 1 1 0\n%end 1 1 0\n");
+                for (std::size_t offset = 0; offset < line.size(); offset += chunk)
+                    Ubiquitty::processBytes(&parent, std::string_view(line).substr(offset, chunk));
+                Ubiquitty::processBytes(&direct, plain);
+                CHECK_EQ(child.screens.active->cursorX, direct.screens.active->cursorX);
+                CHECK_EQ(child.screens.active->cursorY, direct.screens.active->cursorY);
+                CHECK_EQ(child.parser.utf8.need, direct.parser.utf8.need);
+                CHECK(!child.parser.parserInputIsUTF8);
+                for (int row = 0; row < child.rows; ++row) {
+                    for (int column = 0; column < child.columns; ++column) {
+                        const auto* actual = child.grid->cellAt(Ubiquitty::Row(row), Ubiquitty::Column(column));
+                        const auto* expected = direct.grid->cellAt(Ubiquitty::Row(row), Ubiquitty::Column(column));
+                        CHECK_EQ(actual->codePoint, expected->codePoint);
+                    }
+                }
+            }
+        }
+    }
+}
+
 TEST(testWrapInControlMode)
 {
     Ubiquitty::Protocol::Tmux::TmuxClient tc;

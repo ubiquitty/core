@@ -511,7 +511,11 @@ static inline void displaySetCell(Ubiquitty::Terminal& t, int row, int column, c
 
 // Forget any open grapheme cluster. A subsequent extending code point
 // then starts a fresh cluster instead of attaching to a stale cell.
-static inline void clusterReset(Ubiquitty::Terminal& t) { t.parser.clusterActive = false; }
+static inline void clusterReset(Ubiquitty::Terminal& t)
+{
+    t.parser.clusterActive = false;
+    t.parser.clusterCodepointLength = 0;
+}
 
 // Snapshot the just-placed cluster's lead cell + the cursor state
 // emitCharacter leaves behind, so the next emitCharacter can tell whether the
@@ -564,14 +568,98 @@ static inline uint16_t internGrownCluster(Ubiquitty::Terminal& t, uint16_t heldI
 // screen, and the cursor + wrapPending match the snapshot emitCharacter left.
 // Any CR / LF / cursor-positioning between calls perturbs the snapshot,
 // so a combining mark cannot retro-attach across a cursor move.
-static bool clusterIsLive(const Ubiquitty::Terminal& t)
+static bool clusterContextMatches(const Ubiquitty::Terminal& t)
 {
-    if (!t.parser.clusterActive)
-        return false;
     if (t.parser.clusterScreen != (t.screens.isUsingAlternateScreen ? 1u : 0u))
         return false;
     const Ubiquitty::Screen::State* s = t.screens.active;
     return s->cursorX == t.parser.clusterAtX && s->cursorY == t.parser.clusterAtY && s->wrapPending == t.parser.clusterAtWrap;
+}
+
+static bool clusterIsLive(const Ubiquitty::Terminal& t)
+{
+    return t.parser.clusterActive && clusterContextMatches(t);
+}
+
+// An unplaced format Prepend has no cell or advance. Keep its bounded prefix
+// until a visible base supplies both; older inactive builders can contain stale
+// ordinary text, so length alone never identifies a pending prefix.
+static bool hasPendingClusterPrefix(const Ubiquitty::Terminal& t)
+{
+    if (t.parser.clusterActive || t.parser.clusterCodepointLength <= 0
+        || t.parser.clusterCodepointLength >= Ubiquitty::clusterPoolMaximumCodePoints || !clusterContextMatches(t))
+        return false;
+    for (const auto codePoint : std::span(t.parser.clusterCodePoints).first(static_cast<std::size_t>(t.parser.clusterCodepointLength))) {
+        if (!Unicode::isGraphemePrepend(codePoint) || Unicode::Width::forCodePoint(codePoint, t.ambiguousWidth) != 0)
+            return false;
+    }
+    return true;
+}
+
+static void discardPendingClusterPrefix(Ubiquitty::Terminal& t)
+{
+    if (!t.parser.clusterActive)
+        t.parser.clusterCodepointLength = 0;
+}
+
+struct PendingClusterPrefix {
+    int length {};
+    uint32_t first {};
+    uint32_t second {};
+};
+
+// Normal placement writes only the first two builder slots. Preserve those
+// slots across it instead of copying the entire bounded builder on every glyph.
+static void attachPendingClusterPrefix(Ubiquitty::Terminal& t, PendingClusterPrefix prefix)
+{
+    if (!prefix.length || !t.parser.clusterActive)
+        return;
+    const auto* current = t.grid->logicalCellAt(Ubiquitty::Row(t.parser.clusterRow), Ubiquitty::Column(t.parser.clusterColumn));
+    assert(current);
+    if (!current)
+        return;
+    Ubiquitty::Cell next = *current;
+    // Graphic-character-set translation belongs to the visible base; REP
+    // separately retains the original data-stream item in precedingItem.
+    const auto base = next.codePoint;
+    const auto selector = t.parser.clusterCodepointLength > 1 ? t.parser.clusterCodePoints[1] : 0;
+    t.parser.clusterCodePoints[0] = prefix.first;
+    if (prefix.length > 1)
+        t.parser.clusterCodePoints[1] = prefix.second;
+    t.parser.clusterCodePoints[prefix.length] = base;
+    t.parser.clusterCodepointLength = prefix.length + 1;
+    if (selector && t.parser.clusterCodepointLength < Ubiquitty::clusterPoolMaximumCodePoints)
+        t.parser.clusterCodePoints[t.parser.clusterCodepointLength++] = selector;
+    const auto id = t.parser.clusterCodepointLength > Ubiquitty::cellMaxCombining + 1 ? internOpenCluster(t) : 0;
+    if (t.parser.clusterCodepointLength > Ubiquitty::cellMaxCombining + 1 && !id) {
+        // Pool refusal must retain the visible base, rather than replace it
+        // with a prefix that has no glyph of its own.
+        if (selector)
+            clusterOpenWithInlineContinuation(t, t.parser.clusterRow, t.parser.clusterColumn, base, selector);
+        else
+            clusterOpen(t, t.parser.clusterRow, t.parser.clusterColumn, base);
+        return;
+    }
+    next.codePoint = prefix.first;
+    next.setCombiningLength(0);
+    next.setClusterID(id);
+    if (!id) {
+        for (int index = 1; index < t.parser.clusterCodepointLength; ++index)
+            next.combining[index - 1] = t.parser.clusterCodePoints[index];
+        next.setCombiningLength(static_cast<uint8_t>(t.parser.clusterCodepointLength - 1));
+    }
+    t.grid->setCell(Ubiquitty::Row(t.parser.clusterRow), Ubiquitty::Column(t.parser.clusterColumn), next);
+    Unicode::graphemeStateReset(&t.parser.clusterState, prefix.first);
+    t.parser.clusterLast = prefix.first;
+    for (int index = 1; index < t.parser.clusterCodepointLength; ++index) {
+        const auto codePoint = t.parser.clusterCodePoints[index];
+        (void)Unicode::graphemeExtends(&t.parser.clusterState, t.parser.clusterLast, codePoint);
+        t.parser.clusterLast = codePoint;
+    }
+    if (selector && t.parser.clusterLast != selector) {
+        (void)Unicode::graphemeExtends(&t.parser.clusterState, t.parser.clusterLast, selector);
+        t.parser.clusterLast = selector;
+    }
 }
 
 // U+20E3 COMBINING ENCLOSING KEYCAP — the mark that, after a keycap base
@@ -596,6 +684,36 @@ static void advanceWidenedCluster(Ubiquitty::Terminal& t)
     }
     t.parser.clusterAtX = screen->cursorX;
     t.parser.clusterAtWrap = screen->wrapPending;
+}
+
+// A cluster can acquire its width after its provisional cell was placed:
+// a selector, keycap mark, or the base following a Prepend makes it wide.
+// Keep the established span at an edge, as for a retroactive VS16, and never
+// insert the provisional cell a second time under IRM.
+static void widenOpenCluster(Ubiquitty::Terminal& t, Ubiquitty::Cell& next, Pen& nextPen, const Ubiquitty::TextSizeSpec* sizeSpec)
+{
+    if ((sizeSpec && sizeSpec->widthCells != 0) || nextPen.attributes.contains(VT::Attribute::Wide))
+        return;
+    const int adjacentColumn = t.shouldWriteRightToLeft ? t.parser.clusterColumn - 1 : t.parser.clusterColumn + 1;
+    const int left = std::max(Screen::effectiveLeft(t), Screen::lineHomeColumn(t));
+    if (adjacentColumn < (t.shouldWriteRightToLeft ? left : 0) || adjacentColumn >= t.columns)
+        return;
+    nextPen.attributes.add(VT::Attribute::Wide);
+    Ubiquitty::Cell continuation;
+    continuation.codePoint = Ubiquitty::wideContinuationSentinelCodePoint;
+    Pen continuationPen = nextPen;
+    continuationPen.attributes.remove({ VT::Attribute::Wide, VT::Attribute::Emoji });
+    continuationPen.attributes.add(VT::Attribute::WideContinuation);
+    Ubiquitty::cellSetPen(continuation, continuationPen);
+    Ubiquitty::Screen::clearCluster(&continuation);
+    continuation.setLinkID(next.linkID());
+    Ubiquitty::Cell blank;
+    Ubiquitty::Screen::eraseCell(&blank, t.screens.active);
+    t.grid->clearWideOverlap(Ubiquitty::Row(t.parser.clusterRow), Ubiquitty::Column(adjacentColumn), Ubiquitty::Column(adjacentColumn), blank);
+    if (t.shouldWriteRightToLeft)
+        --t.parser.clusterColumn;
+    t.grid->setCell(Ubiquitty::Row(t.parser.clusterRow), Ubiquitty::Column(t.parser.clusterColumn + 1), continuation);
+    advanceWidenedCluster(t);
 }
 
 static void writeClusterBands(Ubiquitty::Terminal& terminal, const Ubiquitty::Cell& anchor)
@@ -644,10 +762,9 @@ static void clusterAppend(Ubiquitty::Terminal& t, uint32_t codePoint)
     Pen nextPen = Ubiquitty::cellPen(next);
     const unsigned specID = nextPen.extendedAttributes.textSizeSpecID();
     const auto* sizeSpec = specID ? t.textSizeTable.lookup(specID) : nullptr;
-    const bool hasExplicitWidth = sizeSpec && sizeSpec->widthCells != 0;
-
     // Track the full running sequence so an overflow can intern the complete
     // cluster (the inline buffer alone would be lossy).
+    const auto previousLength = static_cast<std::size_t>(t.parser.clusterCodepointLength);
     if (t.parser.clusterCodepointLength < Ubiquitty::clusterPoolMaximumCodePoints) {
         t.parser.clusterCodePoints[t.parser.clusterCodepointLength] = codePoint;
         t.parser.clusterCodepointLength++;
@@ -665,44 +782,34 @@ static void clusterAppend(Ubiquitty::Terminal& t, uint32_t codePoint)
 
     // VS overrides presentation only for an Extended_Pictographic base (a VS after
     // a letter/digit must not retag). SGR 76 (ForceEmojiPresentation) pins the run.
-    bool isPictographicBase = Ubiquitty::Unicode::isExtendedPictographic(t.parser.clusterCodePoints[0]) && !nextPen.attributes.contains(VT::Attribute::ForceEmojiPresentation);
+    const auto cluster = std::span(t.parser.clusterCodePoints.data(), static_cast<std::size_t>(t.parser.clusterCodepointLength));
+    const auto baseIndex = Ubiquitty::Unicode::clusterBaseIndex(cluster);
+    const auto base = cluster[baseIndex];
+    const bool isNewBase = baseIndex == previousLength;
+    const bool isPresentationForced = nextPen.attributes.contains(VT::Attribute::ForceEmojiPresentation);
+    bool isPictographicBase = Ubiquitty::Unicode::isExtendedPictographic(base) && !isPresentationForced;
     // A keycap base (digit / '#' / '*') becomes a wide emoji only when U+20E3
     // closes the sequence; `1` or `1`+VS16 alone stays a plain digit.
-    bool isKeycapComplete = Ubiquitty::Unicode::isKeycapBase(t.parser.clusterCodePoints[0]) && codePoint == combiningEnclosingKeycap && !nextPen.attributes.contains(VT::Attribute::ForceEmojiPresentation);
+    bool isKeycapComplete = Ubiquitty::Unicode::isKeycapBase(base) && codePoint == combiningEnclosingKeycap && !isPresentationForced;
     bool isEmojiUpgrade = (isPictographicBase && codePoint == Ubiquitty::Unicode::Width::variationSelector16) || isKeycapComplete;
+    bool shouldWiden = false;
+    if (isNewBase) {
+        const bool isForcedBase = isPresentationForced && Ubiquitty::Unicode::isExtendedPictographic(base);
+        const bool isEmoji = isForcedBase ? t.screens.active->pen.attributes.contains(VT::Attribute::Emoji) : Ubiquitty::Unicode::Width::isEmojiPresentation(base);
+        if (isEmoji)
+            nextPen.attributes.add(VT::Attribute::Emoji);
+        else
+            nextPen.attributes.remove(VT::Attribute::Emoji);
+        shouldWiden = isForcedBase ? isEmoji : Ubiquitty::Unicode::Width::forCodePoint(base, t.ambiguousWidth) == 2;
+    }
     if (isEmojiUpgrade) {
         nextPen.attributes.add(VT::Attribute::Emoji);
-        // Claim the adjacent cell in the writing direction. A wide glyph's
-        // lead is always its leftmost cell, even when writing right-to-left.
-        Ubiquitty::Screen::State* s = t.screens.active;
-        if (!hasExplicitWidth && !nextPen.attributes.contains(VT::Attribute::Wide) && (t.shouldWriteRightToLeft ? t.parser.clusterColumn > std::max(Screen::effectiveLeft(t), Screen::lineHomeColumn(t)) : t.parser.clusterColumn + 1 < t.columns)) {
-            nextPen.attributes.add(VT::Attribute::Wide);
-            Ubiquitty::Cell continuation;
-            continuation.codePoint = Ubiquitty::wideContinuationSentinelCodePoint;
-            Pen continuationPen = nextPen;
-            continuationPen.attributes.remove({ VT::Attribute::Wide, VT::Attribute::Emoji });
-            continuationPen.attributes.add(VT::Attribute::WideContinuation);
-            Ubiquitty::cellSetPen(continuation, continuationPen);
-            Ubiquitty::Screen::clearCluster(&continuation);
-            continuation.setLinkID(next.linkID());
-            Ubiquitty::Cell blank;
-            Ubiquitty::Screen::eraseCell(&blank, s);
-            // Clear any glyph (and its wide partner) sitting in the claimed
-            // continuation column, then stamp the continuation half. The
-            // lead cell itself is written once below, after the inline /
-            // pool update.
-            if (t.shouldWriteRightToLeft) {
-                --t.parser.clusterColumn;
-                t.grid->clearWideOverlap(Ubiquitty::Row(t.parser.clusterRow), Ubiquitty::Column(t.parser.clusterColumn), Ubiquitty::Column(t.parser.clusterColumn), blank);
-            } else {
-                t.grid->clearWideOverlap(Ubiquitty::Row(t.parser.clusterRow), Ubiquitty::Column(t.parser.clusterColumn + 1), Ubiquitty::Column(t.parser.clusterColumn + 1), blank);
-            }
-            t.grid->setCell(Ubiquitty::Row(t.parser.clusterRow), Ubiquitty::Column(t.parser.clusterColumn + 1), continuation);
-            advanceWidenedCluster(t);
-        }
+        shouldWiden = true;
     } else if (isPictographicBase && codePoint == Ubiquitty::Unicode::Width::variationSelector15) {
         nextPen.attributes.remove(VT::Attribute::Emoji);
     }
+    if (shouldWiden)
+        widenOpenCluster(t, next, nextPen, sizeSpec);
 
     if (next.clusterID() != 0 || next.combiningLength() >= Ubiquitty::cellMaxCombining) {
         // Overflowed or the inline buffer just filled: (re-)intern the full
@@ -736,6 +843,11 @@ static void clusterAppendRun(Ubiquitty::Terminal& t, std::span<const uint32_t> r
     const int count = static_cast<int>(run.size());
     if (!t.grid || count <= 0)
         return;
+    if (Ubiquitty::Unicode::isGraphemePrepend(t.parser.clusterLast)) {
+        for (const auto codePoint : run)
+            clusterAppend(t, codePoint);
+        return;
+    }
     // logicalCellAt: the lead cell of an open cluster sits below a live
     // deferral's start (this same run wrote it), so the value is real bytes and
     // no fill is needed. Materialising here would blank the rest of a row that
@@ -757,13 +869,14 @@ static void clusterAppendRun(Ubiquitty::Terminal& t, std::span<const uint32_t> r
     Pen nextPen = Ubiquitty::cellPen(next);
     const unsigned specID = nextPen.extendedAttributes.textSizeSpecID();
     const auto* sizeSpec = specID ? t.textSizeTable.lookup(specID) : nullptr;
-    const bool hasExplicitWidth = sizeSpec && sizeSpec->widthCells != 0;
 
     // SGR 76 forcing on the lead cell pins presentation: a VS / keycap arriving
     // as a later grapheme-extension byte must not flip a forced run.
     const bool isPresentationForced = nextPen.attributes.contains(VT::Attribute::ForceEmojiPresentation);
-    const bool isPictographicBase = Ubiquitty::Unicode::isExtendedPictographic(t.parser.clusterCodePoints[0]) && !isPresentationForced;
-    const bool isKeycapBase = Ubiquitty::Unicode::isKeycapBase(t.parser.clusterCodePoints[0]) && !isPresentationForced;
+    const auto cluster = std::span(t.parser.clusterCodePoints.data(), static_cast<std::size_t>(t.parser.clusterCodepointLength));
+    const auto base = cluster[Ubiquitty::Unicode::clusterBaseIndex(cluster)];
+    const bool isPictographicBase = Ubiquitty::Unicode::isExtendedPictographic(base) && !isPresentationForced;
+    const bool isKeycapBase = Ubiquitty::Unicode::isKeycapBase(base) && !isPresentationForced;
     bool didInlineOverflow = false;
     for (int index = 0; index < count; ++index) {
         const uint32_t codePoint = codePoints[index];
@@ -775,26 +888,7 @@ static void clusterAppendRun(Ubiquitty::Terminal& t, std::span<const uint32_t> r
         const bool isEmojiUpgrade = (isPictographicBase && codePoint == Ubiquitty::Unicode::Width::variationSelector16) || isKeycapComplete;
         if (isEmojiUpgrade) {
             nextPen.attributes.add(VT::Attribute::Emoji);
-            // Widen a narrow base to the two-cell emoji span (clusterAppend's
-            // upgrade): claim the cell to the right as the continuation half and
-            // step the cursor + snapshot past it.
-            Ubiquitty::Screen::State* s = t.screens.active;
-            if (!hasExplicitWidth && !nextPen.attributes.contains(VT::Attribute::Wide) && t.parser.clusterColumn + 1 < t.columns) {
-                nextPen.attributes.add(VT::Attribute::Wide);
-                Ubiquitty::Cell continuation;
-                continuation.codePoint = Ubiquitty::wideContinuationSentinelCodePoint;
-                Pen continuationPen = nextPen;
-                continuationPen.attributes.remove({ VT::Attribute::Wide, VT::Attribute::Emoji });
-                continuationPen.attributes.add(VT::Attribute::WideContinuation);
-                Ubiquitty::cellSetPen(continuation, continuationPen);
-                Ubiquitty::Screen::clearCluster(&continuation);
-                continuation.setLinkID(next.linkID());
-                Ubiquitty::Cell blank;
-                Ubiquitty::Screen::eraseCell(&blank, s);
-                t.grid->clearWideOverlap(Ubiquitty::Row(t.parser.clusterRow), Ubiquitty::Column(t.parser.clusterColumn + 1), Ubiquitty::Column(t.parser.clusterColumn + 1), blank);
-                t.grid->setCell(Ubiquitty::Row(t.parser.clusterRow), Ubiquitty::Column(t.parser.clusterColumn + 1), continuation);
-                advanceWidenedCluster(t);
-            }
+            widenOpenCluster(t, next, nextPen, sizeSpec);
         } else if (isPictographicBase && codePoint == Ubiquitty::Unicode::Width::variationSelector15) {
             nextPen.attributes.remove(VT::Attribute::Emoji);
         }
@@ -1112,6 +1206,26 @@ static void emitCharacter(Ubiquitty::Terminal& t, uint32_t codePoint, uint32_t c
         return;
     }
 
+    PendingClusterPrefix pendingPrefix;
+    if (!t.parser.clusterActive && t.parser.clusterCodepointLength) {
+        if (hasPendingClusterPrefix(t)
+            && Unicode::graphemeExtends(&t.parser.clusterState, t.parser.clusterLast, codePoint)) {
+            if (fusedWidth == 0) {
+                if (Unicode::isGraphemePrepend(codePoint)) {
+                    // Leave a slot for the visible base; excess untrusted
+                    // prefixes are dropped without growing storage or work.
+                    if (t.parser.clusterCodepointLength < Ubiquitty::clusterPoolMaximumCodePoints - 1)
+                        t.parser.clusterCodePoints[t.parser.clusterCodepointLength++] = codePoint;
+                    t.parser.clusterLast = codePoint;
+                    return;
+                }
+            } else {
+                pendingPrefix = { t.parser.clusterCodepointLength, t.parser.clusterCodePoints[0], t.parser.clusterCodePoints[1] };
+            }
+        }
+        clusterReset(t);
+    }
+
     // Grapheme-cluster extension (UAX #29). When an open cluster sits under the
     // cursor and the code point extends it (combining mark, VS, ZWJ, RI-pair half,
     // skin-tone modifier), append to the lead cell without advancing the cursor —
@@ -1145,6 +1259,11 @@ static void emitCharacter(Ubiquitty::Terminal& t, uint32_t codePoint, uint32_t c
     const VT::AttributeSet penAttributes = s->pen.attributes - VT::Attribute::Emoji;
 
     if (width == 0) {
+        if (Unicode::isGraphemePrepend(codePoint)) {
+            clusterOpen(t, s->cursorY, s->cursorX, codePoint);
+            t.parser.clusterActive = false;
+            return;
+        }
         // The rules put a boundary before this code point, so the open cluster
         // ends here though the code point takes no cell. The break state has
         // moved past it, and a cluster left open would take the next code point
@@ -1206,6 +1325,7 @@ static void emitCharacter(Ubiquitty::Terminal& t, uint32_t codePoint, uint32_t c
 
     if (width == 2 && column + 1 < t.columns) {
         emitWideCharacter(t, row, column, codePoint, ch, attachedSelector, isEmoji, rightMargin);
+        attachPendingClusterPrefix(t, pendingPrefix);
         return;
     }
 
@@ -1265,6 +1385,7 @@ static void emitCharacter(Ubiquitty::Terminal& t, uint32_t codePoint, uint32_t c
         clusterOpenWithInlineContinuation(t, row, column, codePoint, attachedSelector);
     else
         clusterOpen(t, row, column, codePoint);
+    attachPendingClusterPrefix(t, pendingPrefix);
 }
 
 void finishAlignedTabString(Terminal& terminal)
@@ -1563,6 +1684,32 @@ static inline void emitInvalidUTF8(Ubiquitty::Terminal& t, uint8_t offendingByte
     emitCharacter(t, 0xFFFD, 0xFFFD, 0, capture); // U+FFFD has width 1
 }
 
+// The accumulator retains every byte of a valid prefix. Reconstruct it only
+// for Latin-1 recovery; the other policies substitute for the whole subpart.
+static void emitIncompleteUTF8(Ubiquitty::Terminal& t, const Ubiquitty::Unicode::UTF8Decoder& decoder, GraphicCapture capture)
+{
+    if (t.parser.invalidUTF8Policy != Ubiquitty::Unicode::InvalidUTF8Policy::Latin1) {
+        emitInvalidUTF8(t, 0, capture);
+        return;
+    }
+    assert(decoder.need > 0);
+    const int sequenceLength = decoder.min == 0x80 ? 2 : decoder.min == 0x800 ? 3
+                                                                              : 4;
+    const int prefixLength = sequenceLength - decoder.need;
+    assert(prefixLength > 0 && prefixLength <= 3);
+    std::array<std::uint8_t, 3> bytes;
+    std::uint32_t payload = decoder.acc;
+    for (int index = prefixLength - 1; index > 0; --index) {
+        bytes[index] = static_cast<std::uint8_t>(0x80 | (payload & 0x3F));
+        payload >>= 6;
+    }
+    const std::uint8_t lead = sequenceLength == 2 ? 0xC0 : sequenceLength == 3 ? 0xE0
+                                                                               : 0xF0;
+    bytes[0] = static_cast<std::uint8_t>(lead | payload);
+    for (int index = 0; index < prefixLength; ++index)
+        emitInvalidUTF8(t, bytes[index], capture);
+}
+
 // Close an incomplete UTF-8 sequence that the next byte cannot continue.
 //
 // The decoder only hears about bytes that reach putCharacter, and a C0 control
@@ -1578,8 +1725,9 @@ static void closeTruncatedUTF8(Ubiquitty::Terminal& t, GraphicCapture capture)
 {
     if (t.parser.utf8.need == 0)
         return;
+    const auto decoder = t.parser.utf8;
     resetUTF8(t);
-    emitInvalidUTF8(t, t.parser.utf8LeadByte, capture);
+    emitIncompleteUTF8(t, decoder, capture);
 }
 
 // A C1 control decoded from UTF-8 (U+0080..U+009F, spelled C2 80..C2 9F) has
@@ -1615,6 +1763,9 @@ static void performDecodedC1CodePoint(Ubiquitty::Terminal& t, uint32_t codePoint
     } else {
         uint32_t codePoint;
         bool wasMid = (t.parser.utf8.need > 0);
+        Ubiquitty::Unicode::UTF8Decoder pendingDecoder {};
+        if (wasMid && t.parser.invalidUTF8Policy == Ubiquitty::Unicode::InvalidUTF8Policy::Latin1)
+            pendingDecoder = t.parser.utf8;
         std::uint32_t fed;
         Ubiquitty::Unicode::UTF8Status st = Ubiquitty::Unicode::utf8Feed(&t.parser.utf8, c, &fed);
         if (st == Ubiquitty::Unicode::UTF8Status::Emit) {
@@ -1623,16 +1774,10 @@ static void performDecodedC1CodePoint(Ubiquitty::Terminal& t, uint32_t codePoint
                 performDecodedC1CodePoint(t, codePoint);
             else
                 emitTranslatedGraphic(t, codePoint, GraphicInvocationArea::GL, capture);
-        } else if (st == Ubiquitty::Unicode::UTF8Status::Need) {
-            // Under the Latin1 policy only, remember a fresh sequence's lead byte
-            // so a later substitution can reinterpret it if a bad continuation
-            // aborts the sequence (the decoder discards it).
-            if (!wasMid && t.parser.invalidUTF8Policy == Ubiquitty::Unicode::InvalidUTF8Policy::Latin1)
-                t.parser.utf8LeadByte = c;
         } else if (st == Ubiquitty::Unicode::UTF8Status::Invalid) {
             if (wasMid) {
                 // A byte that cannot continue broke the in-progress sequence: the
-                // abandoned LEAD is what failed to decode (substitute that),
+                // abandoned prefix failed to decode (substitute that),
                 // then re-feed the offending byte — it may itself begin a fresh
                 // sequence (or be plain ASCII).
                 // The lead's substitute is journaled only when its successor
@@ -1644,15 +1789,13 @@ static void performDecodedC1CodePoint(Ubiquitty::Terminal& t, uint32_t codePoint
                 Ubiquitty::Unicode::UTF8Decoder probe = t.parser.utf8;
                 std::uint32_t probed;
                 const bool isC1Lead = c == 0xC2 && Ubiquitty::Unicode::utf8Feed(&probe, c, &probed) == Ubiquitty::Unicode::UTF8Status::Need;
-                emitInvalidUTF8(t, t.parser.utf8LeadByte, isC1Lead ? GraphicCapture::Retain : GraphicCapture::Discard);
+                emitIncompleteUTF8(t, pendingDecoder, isC1Lead ? GraphicCapture::Retain : GraphicCapture::Discard);
                 std::uint32_t codePoint2;
                 Ubiquitty::Unicode::UTF8Status st2 = Ubiquitty::Unicode::utf8Feed(&t.parser.utf8, c, &codePoint2);
                 if (st2 == Ubiquitty::Unicode::UTF8Status::Emit) {
                     if (!isC1CodePoint(codePoint2))
                         emitTranslatedGraphic(t, codePoint2, GraphicInvocationArea::GL, capture);
-                } else if (st2 == Ubiquitty::Unicode::UTF8Status::Need)
-                    t.parser.utf8LeadByte = c;
-                else // Invalid: c is itself a bad lead / lone continuation.
+                } else if (st2 == Ubiquitty::Unicode::UTF8Status::Invalid) // c is itself a bad lead / lone continuation.
                     emitInvalidUTF8(t, c, capture);
             } else {
                 // Byte c is itself a bad lead or lone continuation.
@@ -2055,6 +2198,8 @@ static bool takesSubparameters(const Ubiquitty::Terminal& t, char final)
 static void csiDispatch(Ubiquitty::Terminal& t, char final)
 {
     discardGraphicCancellation(t);
+    if (final != 'm' || t.parser.privatePrefix || t.parser.intermediate)
+        discardPendingClusterPrefix(t);
     if (t.parser.privatePrefix == malformedCSIMarker)
         return;
     if (final != 'm' && hasSubparameters(t) && !takesSubparameters(t, final))
@@ -2154,7 +2299,10 @@ static void tmuxDeliver(void* ctx, uint8_t byte)
         if (t->integration.paneRouter.lookup) {
             Ubiquitty::Terminal* target = tmuxDeliveryTarget(*t);
             if (target && target != t) {
+                const bool wasUTF8 = target->parser.parserInputIsUTF8;
+                target->parser.parserInputIsUTF8 = t->parser.parserInputIsUTF8;
                 processByteInner(*target, byte);
+                target->parser.parserInputIsUTF8 = wasUTF8;
             }
             // target == NULL or self-loop → drop.
             return;
@@ -2171,13 +2319,19 @@ static void tmuxDeliverSpan(void* ctx, std::string_view bytes)
         return;
     Ubiquitty::Terminal* t = static_cast<Ubiquitty::Terminal*>(ctx);
     Ubiquitty::Terminal* target = tmuxDeliveryTarget(*t);
+    const auto deliver = [&] {
+        const bool wasUTF8 = target->parser.parserInputIsUTF8;
+        target->parser.parserInputIsUTF8 = t->parser.parserInputIsUTF8;
+        Ubiquitty::processBytesImpl<false>(*target, bytes, nullptr);
+        target->parser.parserInputIsUTF8 = wasUTF8;
+    };
     if (Ubiquitty::Protocol::Tmux::isActive(&t->integration.tmux) && t->integration.paneRouter.lookup) {
         if (target && target != t)
-            Ubiquitty::processBytesImpl<false>(*target, bytes, nullptr);
+            deliver();
         return;
     }
     if (target && target != t) {
-        Ubiquitty::processBytesImpl<false>(*target, bytes, nullptr);
+        deliver();
         return;
     }
     if (target == t && !Ubiquitty::Protocol::Tmux::isActive(&t->integration.tmux)) {
@@ -3944,6 +4098,7 @@ static void actExecuteAnswerback(Ubiquitty::Terminal& t, uint8_t b)
 }
 static void actExecuteBackspace(Ubiquitty::Terminal& t, uint8_t b)
 {
+    discardPendingClusterPrefix(t);
     finishAlignedTabString(t);
     resetUTF8(t);
     t.parser.precedingItem.setControl(b);
@@ -3957,6 +4112,7 @@ static void actExecuteBackspace(Ubiquitty::Terminal& t, uint8_t b)
 }
 static void actExecuteHorizontalTab(Ubiquitty::Terminal& t, uint8_t b)
 {
+    discardPendingClusterPrefix(t);
     finishAlignedTabString(t);
     resetUTF8(t);
     if (statusTab(t))
@@ -3992,6 +4148,7 @@ void finishLineSemanticRole(Ubiquitty::Terminal& terminal)
 
 static void actExecuteLineFeed(Ubiquitty::Terminal& t, uint8_t b)
 {
+    discardPendingClusterPrefix(t);
     finishAlignedTabString(t);
     finishLineSemanticRole(t);
     resetUTF8(t);
@@ -4005,6 +4162,7 @@ static void actExecuteLineFeed(Ubiquitty::Terminal& t, uint8_t b)
 }
 static void actExecuteCarriageReturn(Ubiquitty::Terminal& t, uint8_t b)
 {
+    discardPendingClusterPrefix(t);
     finishAlignedTabString(t);
     resetUTF8(t);
     if (statusCursorMoveTo(t, t.shouldWriteRightToLeft ? t.columns - 1 : 0))
@@ -4034,6 +4192,7 @@ static void actEnterEscape(Ubiquitty::Terminal& t, uint8_t) { resetUTF8(t); }
 // C1 8-bit controls — equivalent to ESC <X> for the chosen byte.
 static void actC1Index(Ubiquitty::Terminal& t, uint8_t b)
 {
+    discardPendingClusterPrefix(t);
     finishAlignedTabString(t);
     resetUTF8(t);
     t.parser.precedingItem.setControl(b);
@@ -4041,6 +4200,7 @@ static void actC1Index(Ubiquitty::Terminal& t, uint8_t b)
 }
 static void actC1NextLine(Ubiquitty::Terminal& t, uint8_t b)
 {
+    discardPendingClusterPrefix(t);
     finishAlignedTabString(t);
     finishLineSemanticRole(t);
     resetUTF8(t);
@@ -4074,6 +4234,7 @@ static void actC1HorizontalTabJustify(Ubiquitty::Terminal& t, uint8_t b)
 }
 static void actC1ReverseIndex(Ubiquitty::Terminal& t, uint8_t b)
 {
+    discardPendingClusterPrefix(t);
     finishAlignedTabString(t);
     resetUTF8(t);
     t.parser.precedingItem.setControl(b);
@@ -4204,7 +4365,11 @@ static void actEnterCharacterSet96G3(Ubiquitty::Terminal& t, uint8_t)
 // Accumulate the DRCS designator intermediate byte (ESC ( <0x20..0x2F>) so the
 // final-byte handler can match it against the downloaded soft font's designator.
 static void actCharacterSetIntermediateByte(Ubiquitty::Terminal& t, uint8_t b) { t.parser.characterSetIntermediate = b; }
-static void actEscapeDispatch(Ubiquitty::Terminal& t, uint8_t b) { escDispatch(t, b == 0x94 ? 'T' : static_cast<char>(b)); }
+static void actEscapeDispatch(Ubiquitty::Terminal& t, uint8_t b)
+{
+    discardPendingClusterPrefix(t);
+    escDispatch(t, b == 0x94 ? 'T' : static_cast<char>(b));
+}
 
 // CSI accumulation + dispatch.
 static void actCSIPrivatePrefix(Ubiquitty::Terminal& t, uint8_t b)
@@ -5242,6 +5407,10 @@ static inline bool batchedWriteEligible(Ubiquitty::Terminal& t, Ubiquitty::Scree
     if (!t.grid)
         return false;
     if (t.statusLineActive || t.isAlignedTabActive || t.modes.insertMode || s->wrapPending || t.marginBell || t.shouldWriteRightToLeft)
+        return false;
+    // GB9b allows even an ordinary base to join a live Prepend, so the
+    // character path must decide its cluster before any direct span write.
+    if (hasPendingClusterPrefix(t) || (Ubiquitty::Unicode::detail::PropGCBClassField::get(t.parser.clusterState.prevRaw) == Ubiquitty::Unicode::graphemeClassPrepend && clusterIsLive(t)))
         return false;
     // A pending single shift and VT52 graphics both re-point GL for exactly one
     // stretch of bytes, which no prepared table describes.
@@ -6447,17 +6616,17 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
 
 // Assemble already-decoded, width-stable clusters into a row span. The caller
 // has established a grapheme boundary before the first code point. Narrow
-// bases without an adjacent VS16 and presentation-forced runs retain the
-// character path: later selectors can claim a new column there. These clusters
-// own two cells from placement onward, including the existing VS16 pair fusion.
-[[gnu::always_inline]] static inline int emitWideClusterSpan(Ubiquitty::Terminal& t, std::span<const uint32_t> codePoints, GraphicCapture tailCapture)
+// pictographic and keycap bases retain the character path because later marks
+// can widen them. An adjacent VS16 establishes a pictographic cluster's width.
+// A Prepend's following base must establish its width through scalar placement.
+[[gnu::always_inline]] static inline int emitClusterSpan(Ubiquitty::Terminal& t, std::span<const uint32_t> codePoints, GraphicCapture tailCapture)
 {
     auto* screen = t.screens.active;
     if (!textFastPathEligible(t, screen) || t.triggersEngine)
         return 0; // filled-row triggers must observe the base before its marks
     const int rightMargin = Ubiquitty::Screen::effectiveRight(t);
     const int column = screen->cursorX;
-    if (column < 0 || column + 1 > rightMargin)
+    if (column < 0 || column > rightMargin)
         return 0;
 
     const int writableColumns = columnsBeforeLowerTextBand(t, screen->cursorY, column, rightMargin - column + 1);
@@ -6473,15 +6642,21 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
     std::size_t consumed = 0;
     std::size_t lastStart = 0;
     std::size_t lastEnd = 0;
+    int lastClusterWidth = 0;
     Ubiquitty::Unicode::GraphemeState lastState {};
-    while (consumed < codePoints.size() && cellCount + 1 < writableColumns) {
+    while (consumed < codePoints.size() && cellCount < writableColumns) {
         const uint32_t base = codePoints[consumed];
         const auto properties = Ubiquitty::Unicode::Width::classify(base);
         const bool isPictographic = Ubiquitty::Unicode::isExtendedPictographic(base);
         const bool hasWideSelector = isPictographic && consumed + 1 < codePoints.size()
             && codePoints[consumed + 1] == Ubiquitty::Unicode::Width::variationSelector16;
+        const int width = hasWideSelector ? 2
+                                          : Ubiquitty::Unicode::Width::cellsForWidthClass(Ubiquitty::Unicode::detail::PropWidthField::get(properties), t.ambiguousWidth);
         if (!Ubiquitty::Unicode::isGraphemeRelevant(base)
-            || (!hasWideSelector && Ubiquitty::Unicode::Width::cellsForWidthClass(Ubiquitty::Unicode::detail::PropWidthField::get(properties), t.ambiguousWidth) != 2))
+            || Ubiquitty::Unicode::isGraphemePrepend(base)
+            || (width != 1 && width != 2)
+            || (width == 1 && (isPictographic || Ubiquitty::Unicode::isKeycapBase(base)))
+            || cellCount + width > writableColumns)
             break;
         bool isEmoji = (properties & Ubiquitty::Unicode::detail::PropEmojiPresentationField::mask) != 0;
         Ubiquitty::Unicode::GraphemeState state {};
@@ -6502,7 +6677,7 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
         }
         auto& lead = cells.constructAt(static_cast<std::size_t>(cellCount), cellTemplate);
         lead.codePoint = base;
-        Ubiquitty::cellSetPenAttributes(lead, attributes | VT::Attribute::Wide | (isEmoji ? VT::AttributeSet { VT::Attribute::Emoji } : VT::AttributeSet {}));
+        Ubiquitty::cellSetPenAttributes(lead, attributes | (width == 2 ? VT::AttributeSet { VT::Attribute::Wide } : VT::AttributeSet {}) | (isEmoji ? VT::AttributeSet { VT::Attribute::Emoji } : VT::AttributeSet {}));
         const auto cluster = codePoints.subspan(consumed, end - consumed);
         if (cluster.size() > 1) {
             lead.combining[0] = cluster[1];
@@ -6510,23 +6685,29 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
             if (cluster.size() > 2)
                 lead.setClusterID(t.clusterPool.intern(cluster.first(std::min(cluster.size(), static_cast<std::size_t>(Ubiquitty::clusterPoolMaximumCodePoints)))));
         }
-        auto& continuation = cells.constructAt(static_cast<std::size_t>(cellCount + 1), cellTemplate);
-        continuation.codePoint = Ubiquitty::wideContinuationSentinelCodePoint;
-        Ubiquitty::cellSetPenAttributes(continuation, attributes | VT::Attribute::WideContinuation);
-        cellCount += 2;
+        if (width == 2) {
+            auto& continuation = cells.constructAt(static_cast<std::size_t>(cellCount + 1), cellTemplate);
+            continuation.codePoint = Ubiquitty::wideContinuationSentinelCodePoint;
+            Ubiquitty::cellSetPenAttributes(continuation, attributes | VT::Attribute::WideContinuation);
+        }
+        cellCount += width;
         lastStart = consumed;
         lastEnd = end;
+        lastClusterWidth = width;
         lastState = state;
         consumed = end;
     }
     if (cellCount == 0)
         return 0;
 
-    const bool hasGraphicSuccessor = consumed < codePoints.size() && !isC1CodePoint(codePoints[consumed]);
+    // A zero-width successor need not replace a narrow cluster's cancellable graphic.
+    const bool hasGraphicSuccessor = consumed < codePoints.size() && !isC1CodePoint(codePoints[consumed])
+        && (lastClusterWidth == 2 || Unicode::Width::forCodePoint(codePoints[consumed], t.ambiguousWidth) > 0);
     if (!hasGraphicSuccessor && (consumed < codePoints.size() || tailCapture == GraphicCapture::Retain)) {
-        cellCount -= 2;
+        cellCount -= lastClusterWidth;
         if (cellCount == 0)
             return 0;
+        lastClusterWidth = cells.data()[cellCount - 1].pen.attributes.contains(VT::Attribute::WideContinuation) ? 2 : 1;
         consumed = lastStart;
         lastEnd = consumed;
         lastStart = 0;
@@ -6548,7 +6729,7 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
         eraseOverwrittenTextBands(t, row, column, lastColumn);
     t.grid->clearWideOverlapEdges(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::Column(lastColumn), blank);
     t.grid->setRowSpan(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::RowView { cells.data(), cellCount });
-    const int lastLeadColumn = lastColumn - 1;
+    const int lastLeadColumn = lastColumn + 1 - lastClusterWidth;
     screen->wrapPending = lastColumn == rightMargin;
     screen->cursorX = screen->wrapPending ? lastLeadColumn : lastColumn + 1;
     clusterOpen(t, row, lastLeadColumn, codePoints[lastStart]);
@@ -6599,7 +6780,7 @@ template<GraphicCapture Capture> static int emitClusterRun(Ubiquitty::Terminal& 
         int ci = 0;
         bool handBack = false; // plain base / control: caller's other paths own it
         while (ci < nDec) {
-            const uint32_t codePoint = codePoints[ci];
+            uint32_t codePoint = codePoints[ci];
             if (!Ubiquitty::Unicode::isGraphemeRelevant(codePoint)) {
                 handBack = true;
                 break; // a plain base — let emitTextRun batch it
@@ -6654,16 +6835,16 @@ template<GraphicCapture Capture> static int emitClusterRun(Ubiquitty::Terminal& 
                         emitCharacter(t, codePoints[ci - 1], codePoints[ci - 1]);
                     }
                 }
-                if (boundary) {
-                    // The break state is already reseeded for this base; clusterReset
-                    // keeps the base emit from re-running the check (clusterOpen
-                    // re-seeds identically).
+                if (!boundary)
+                    break; // plain base for emitTextRun, or decode batch exhausted
+                if constexpr (Capture == GraphicCapture::Discard) {
                     clusterReset(t);
-                    continue; // loop top emits codePoints[ci] as a fresh base
+                    continue;
                 }
-                break; // plain base for emitTextRun, or decode batch exhausted
+                // Scalar placement captures the preceding cluster before crossing the boundary.
+                codePoint = codePoints[ci];
             }
-            const int placed = emitWideClusterSpan(t, { codePoints + ci, static_cast<std::size_t>(nDec - ci) }, tailCapture);
+            const int placed = emitClusterSpan(t, { codePoints + ci, static_cast<std::size_t>(nDec - ci) }, tailCapture);
             if (placed > 0) {
                 for (int index = 0; index < placed; ++index) {
                     const uint32_t placedCodePoint = codePoints[ci + index];
@@ -6970,6 +7151,7 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                             // Bare LF, inlined: no sync-output side effect, exactly
                             // Action::ExecuteLineFeed without the DFA dispatch.
                             if (c == 0x0A) {
+                                VT::discardPendingClusterPrefix(t);
                                 if (t.shouldEndSemanticRoleAtLineBreak) [[unlikely]]
                                     VT::finishLineSemanticRole(t);
                                 VT::resetUTF8(t);
@@ -7037,6 +7219,7 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                             // CR, inlined (actExecuteCarriageReturn verbatim: status-line
                             // redirect, decoder reset, REP record, DECLRMM landing column).
                             if (c == 0x0D) {
+                                VT::discardPendingClusterPrefix(t);
                                 VT::finishAlignedTabString(t);
                                 VT::resetUTF8(t);
                                 t.parser.precedingItem.setControl(0x0D);
@@ -7102,7 +7285,7 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                         // Batch the CSI body: parameter runs in one scan, plus the final
                         // byte (0x40..0x7E) and private prefix (0x3C..0x3F) inline.
                         // Intermediates, embedded C0, and DEL keep the per-byte driver.
-                        if (c >= 0x30 && c <= 0x7E) {
+                        if (t.parser.utf8.need == 0 && c >= 0x30 && c <= 0x7E) {
                             if (c <= 0x3B) {
                                 int consumed = VT::scanCSIParameters(t, buffer, i, length);
                                 // The byte after a parameter run is the final byte for

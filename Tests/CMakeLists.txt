@@ -185,6 +185,11 @@ set(test_grapheme_conformance_EXTRA_DEFINES
 # changes once per Unicode version and compresses to ~0.4 MB in the object store.
 set(test_bidi_conformance_EXTRA_DEFINES
     BIDI_CHARACTER_TEST_CORPUS="${UBIQUITTY_CORE_SOURCE_DIR}/Tests/Core/Unicode/BidiCharacterTest.txt")
+set(test_normalization_conformance_EXTRA_DEFINES
+    NORMALIZATION_TEST_CORPUS="${UBIQUITTY_CORE_SOURCE_DIR}/Tests/Core/Unicode/NormalizationTest.txt")
+set(test_joining_conformance_EXTRA_DEFINES
+    DERIVED_JOINING_TYPE_CORPUS="${UBIQUITTY_CORE_SOURCE_DIR}/Tests/Core/Unicode/DerivedJoiningType.txt"
+    DERIVED_BIDI_CLASS_CORPUS="${UBIQUITTY_CORE_SOURCE_DIR}/Tests/Core/Unicode/DerivedBidiClass.txt")
 # The Emoji_Presentation authority (emoji-data.txt), vendored beside the test.
 # build-unicode-tables.py emits that property from this same file, so the check
 # holds the generated table against the authority — an emit bug or a version

@@ -26,6 +26,25 @@
 
 using namespace Ubiquitty::Rendering;
 
+TEST(sharedWideClusterKeysKeepTheirAllocationDistinct)
+{
+    const std::uint32_t cluster[] { 0x6F22, 0x0301 };
+    for (const auto face : { FontFace::Regular, FontFace::Bold, FontFace::Italic, FontFace::BoldItalic }) {
+        for (int phase = 0; phase < 8; ++phase) {
+            const auto key = sharedAtlasWideClusterKey(cluster, 2, phase, face);
+            CHECK(isSharedAtlasWideClusterKey(key));
+            CHECK_EQ(key & 0xF0000000u, 0x90000000u);
+            CHECK(key != coverageClusterKey(cluster, 2, phase, face));
+            CHECK(!isSharedAtlasWideGlyphKey(key));
+            CHECK(!isShapedGlyphKey(key));
+            CHECK(key != emptyGlyphKey);
+            CHECK(!isSharedAtlasWideClusterKey(coverageClusterKey(cluster, 2, phase, face)));
+            CHECK(!isSharedAtlasWideClusterKey(sharedAtlasWideGlyphKey(cluster[0], 7, face)));
+            CHECK(!isSharedAtlasWideClusterKey(sizedTileKey(cluster[0], 7, face, phase, 2, 0, 0)));
+        }
+    }
+}
+
 TEST(proportionalGlyphIdentityKeepsEveryBitAndRasterAxis)
 {
     const std::uint64_t basic = proportionalGlyphKey(0x41u, 0, FontFace::Regular, 0);

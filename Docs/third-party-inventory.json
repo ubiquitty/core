@@ -47,8 +47,8 @@
   {
     "name": "Unicode Character Database",
     "category": "generated",
-    "sourceURL": "https://www.unicode.org/Public/",
-    "pinnedRev": "Unicode 17.0.0 (Width, GraphemeBreak, BidiCharacterTest, GraphemeBreakTest, and emoji-data); Unicode 15.1.0 (Normalize); Joining.tables.inc curated by hand over the joining code points of Unicode 11.0.0 (it lists U+08D3, new in 11.0.0, and none of U+08BE..U+08C7, new in 13.0.0; 12.0.0 and 12.1.0 add nothing in its blocks), with 25 types that differ from ArabicShaping.txt, listed in its header",
+    "sourceURL": "https://www.unicode.org/Public/18.0.0/ucd/",
+    "pinnedRev": "Unicode 18.0.0 (Width, GraphemeBreak, Normalize, Joining, bidi properties, and conformance fixtures)",
     "licenseSPDX": "Unicode-3.0",
     "distributionSurface": [
       "source-repo",

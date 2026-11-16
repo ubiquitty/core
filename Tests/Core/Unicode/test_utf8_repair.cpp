@@ -58,6 +58,20 @@ TEST(wellFormedTextIsLeftAsItIs)
     CHECK_EQ(withNUL.size(), 3u);
 }
 
+TEST(takingCodePointsPreservesScalarBoundariesAndEmbeddedNUL)
+{
+    constexpr char bytes[] = "A\0\x7F\xC2\x80\xDF\xBF\xE0\xA0\x80\xED\x9F\xBF\xEE\x80\x80\xEF\xBF\xBF\xF0\x90\x80\x80\xF4\x8F\xBF\xBF";
+    const std::uint32_t expected[] = { 'A', 0, 0x7F, 0x80, 0x7FF, 0x800, 0xD7FF, 0xE000, 0xFFFF, 0x10000, 0x10FFFF };
+    std::string_view text(bytes, sizeof(bytes) - 1);
+    for (const std::uint32_t codePoint : expected) {
+        const auto decoded = Ubiquitty::Unicode::takeUTF8CodePoint(text);
+        REQUIRE(decoded.has_value());
+        CHECK_EQ(*decoded, codePoint);
+    }
+    CHECK(text.empty());
+    CHECK(!Ubiquitty::Unicode::takeUTF8CodePoint(text).has_value());
+}
+
 TEST(aByteThatBeginsNoSequenceBecomesOneReplacement)
 {
     std::string title = "make \xFF"

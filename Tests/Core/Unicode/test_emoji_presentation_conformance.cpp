@@ -19,7 +19,7 @@
 // The corpus (emoji-data.txt) is vendored beside this file and its path is
 // handed in as EMOJI_DATA_FILE by the build (same reason as the grapheme
 // corpus: the compiler cache rewrites __FILE__). It must track the tables'
-// version (Width.tables.inc — UCD 17.0.0). Skin-tone modifiers
+// version (Width.tables.inc — UCD 18.0.0). Skin-tone modifiers
 // (U+1F3FB..U+1F3FF) are Emoji_Presentation but zero-width, so the width overlay
 // excludes them to keep the zero-width contract; the test excludes them the same way.
 

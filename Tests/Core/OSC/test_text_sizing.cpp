@@ -147,6 +147,48 @@ TEST(aSizedRunPrintsAsBlocksAndAdvancesTheCursor)
     CHECK_EQ(t.screens.active->cursorY, 0);
 }
 
+TEST(malformedUTF8KeepsFollowingTextAndReplacesTruncatedTailsInEveryRunMode)
+{
+    for (const auto& [metadata, drawsSizedText, drawsProportionalText] : std::array {
+             std::tuple { "", true, true },
+             std::tuple { "s=2", true, true },
+             std::tuple { "s=2:w=3", true, true },
+             std::tuple { "p=1:c=4", true, true },
+             std::tuple { "s=2", false, false },
+             std::tuple { "p=1:c=4", false, false },
+         }) {
+        for (const auto& [text, expected] : std::vector<std::pair<std::string, std::string>> {
+                 { "\xE2"
+                   "A",
+                     "\xEF\xBF\xBD"
+                     "A" },
+                 { "\xE2\x82"
+                   "A",
+                     "\xEF\xBF\xBD"
+                     "A" },
+                 { "\xE2\xC3\xA9", "\xEF\xBF\xBD\xC3\xA9" },
+                 { "\xE0\x80\x80", "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD" },
+                 { "\xED\xA0\x80", "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD" },
+                 { "\xF4\x90\x80\x80", "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD" },
+                 { "Z\xE2", "Z\xEF\xBF\xBD" },
+                 { "Z\xE2\x82", "Z\xEF\xBF\xBD" },
+                 { "Z\xF0\x9F\x98", "Z\xEF\xBF\xBD" },
+             }) {
+            Ubiquitty::Terminal t;
+            reset(t);
+            t.drawsSizedText = drawsSizedText;
+            t.drawsProportionalText = drawsProportionalText;
+            feed(t, std::string("\033]66;") + metadata + ";" + text + "\007");
+            REQUIRE(t.screens.active->cursorX > 0);
+            Ubiquitty::Selection::Session selection;
+            Ubiquitty::Selection::init(selection);
+            Ubiquitty::Selection::beginGesture(selection, t, 0, 0, 1, 0, {});
+            Ubiquitty::Selection::dragGesture(selection, t, 0, t.screens.active->cursorX - 1, 0);
+            CHECK_STR_EQ(Ubiquitty::Selection::selectedText(selection, t), expected);
+        }
+    }
+}
+
 TEST(explicitWidthContainsTheWholePayloadAndCopyKeepsIt)
 {
     for (const auto& [metadata, text, columns] : std::array {
@@ -2003,6 +2045,44 @@ TEST(combiningTextAfterSizedBlocksKeepsTheirWidthAndEveryBand)
             }
         }
     }
+}
+
+TEST(sizedClustersUseTheBaseFollowingVisiblePrepends)
+{
+    for (const std::string_view text : { "\xE0\xB5\x8E\xF0\x9F\x98\x80", "\xE0\xB5\x8E\xE2\x9D\xA4\xEF\xB8\x8F", "\xE0\xB5\x8E"
+                                                                                                                 "1\xEF\xB8\x8F\xE2\x83\xA3" }) {
+        Ubiquitty::Terminal terminal;
+        reset(terminal);
+        terminal.drawsSizedText = true;
+        feed(terminal, "\033]66;s=2;" + std::string(text) + "\033\\");
+        CHECK_EQ(terminal.screens.active->cursorX, 4);
+        for (const int band : { 0, 1 }) {
+            const auto* anchor = cell(terminal, band, 0);
+            const auto* spec = terminal.textSizeTable.lookup(anchor->pen.extendedAttributes.textSizeSpecID());
+            REQUIRE(spec);
+            CHECK_EQ(spec->widthCells, 2);
+            CHECK(anchor->pen.attributes.contains(Ubiquitty::VT::Attribute::Emoji));
+            std::uint32_t points[8] {};
+            CHECK(Ubiquitty::cellClusterCodePoints(&terminal, anchor, points, 8) >= 2);
+            CHECK_EQ(points[0], 0x0D4Eu);
+        }
+    }
+}
+
+TEST(gridFaceFallbackUsesTheBaseFollowingVisiblePrepends)
+{
+    Ubiquitty::Terminal terminal;
+    reset(terminal);
+    Ubiquitty::TextSizeSpec spec;
+    spec.isProportional = true;
+    spec.runWidthCells = 3;
+    const std::uint32_t points[] = { 0x0D4E, 0x1F600, 'X' };
+    Ubiquitty::Screen::setProportionalRunInGridFace(terminal, points, spec, { .row = 0, .column = 0 });
+    const auto* lead = cell(terminal, 0, 0);
+    CHECK(lead->pen.attributes.contains(Ubiquitty::VT::Attribute::Wide));
+    CHECK(lead->pen.attributes.contains(Ubiquitty::VT::Attribute::Emoji));
+    CHECK_EQ(cell(terminal, 0, 2)->codePoint, static_cast<std::uint32_t>('X'));
+    CHECK(UbiquittyTest::firstOrphanedWideHalf(terminal).empty());
 }
 
 UBIQUITTY_TEST_MAIN()

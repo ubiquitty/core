@@ -2,186 +2,712 @@
 // Copyright © 1991-2026 Unicode, Inc.
 // SPDX-License-Identifier: Apache-2.0 AND Unicode-3.0
 
-// Source/Core/Unicode/Joining.tables.inc — curated Arabic joining tables.
-//
-// Sourced from the Unicode Character Database (ArabicShaping.txt for the
-// Joining_Type field; the Arabic Presentation Forms-A/B blocks U+FB50+
-// and U+FE70+ for the contextual forms). Curated like
-// GraphemeBreak.cpp's GCB ranges: a future regeneration from the UCD via
-// Scripts/build-unicode-tables.py is a file overwrite, not a hand-edit.
-//
-// The table lists every code point in the blocks covered that Unicode 11.0.0
-// gives a joining type other than U: U+08D3, new in 11.0.0, is listed, and
-// U+08BE..U+08C7, new in 13.0.0, are not; 12.0.0 and 12.1.0 add nothing here.
-// The assigned code points it leaves out are all U and take the default.
-//
-// The ranges are grouped by hand, and 25 code points carry a type that
-// ArabicShaping.txt does not give them, in 11.0.0 or any later release: U+0678
-// is R where Unicode has D; U+08AD is D where it has U; and U+0688..U+068D,
-// U+0759..U+075B, U+076B..U+076C, U+0771, U+0773..U+0774, U+0778..U+0779,
-// U+08AA..U+08AC, U+08AE, U+08B1..U+08B2 and U+08B9 are D where it has R, so
-// the letter after an Urdu DDAL (U+0688), for one, takes a form that joins
-// back to it.
-//
-// Three structures:
-//   joiningRanges[]   — {first,last,JoiningType} over the joining scripts
-//                        and the script-neutral joining controls, sorted
-//                        by `first`, binary-searched. The default outside
-//                        these ranges is NonJoining.
-//   presFormB[]       — per Arabic letter, its {isolated,final,initial,
-//                        medial} Presentation-Form-B codepoints (0 where a
-//                        shape does not exist). Keyed by the base letter
-//                        codepoint, sorted, binary-searched.
-//   lamAlef[]         — the four lam+alef ligatures, {alef, isolated,
-//                        final} from the FEF5..FEFC range.
-//
-// Joining_Type letters (ArabicShaping.txt): U Non_Joining, R Right,
-// L Left, D Dual, C Join_Causing, T Transparent.
+// Generated from UCD 18.0.0; do not edit by hand.
+// Regenerate with Scripts/build-joining-tables.py from
+// DerivedJoiningType.txt, DerivedBidiClass.txt and UnicodeData.txt.
 
-// --- joining types ----------------------------------------------------
-//
-// Covers Arabic (0600..06FF), Arabic Supplement (0750..077F), and the
-// common Arabic Extended-A letters, plus the script-neutral controls
-// ZWNJ (U, breaks a join), ZWJ (C, forces a join), and TATWEEL (C).
-// Within a block: harakat / combining marks are Transparent; spaces,
-// digits, punctuation and the standalone hamza are Non_Joining; alef
-// family / dal / reh / zain / waw and friends are Right_Joining; the
-// bulk of the consonants are Dual_Joining.
-struct JoinRange { std::uint32_t first; std::uint32_t last; JoiningType type; };
-
-// Sorted ascending by `first` (binary-searched).
-static const JoinRange joiningRanges[] = {
-    // Arabic block 0600..06FF.
-    { 0x000600, 0x000605, JoiningType::NonJoining },   // Arabic number signs (Prepend, not joiners)
-    { 0x000608, 0x000608, JoiningType::NonJoining },
-    { 0x00060B, 0x00060B, JoiningType::NonJoining },
-    { 0x00060D, 0x00060D, JoiningType::NonJoining },
-    { 0x000610, 0x00061A, JoiningType::Transparent },   // combining marks (high hamza, etc.)
-    { 0x00061C, 0x00061C, JoiningType::Transparent },   // ARABIC LETTER MARK (format)
-    { 0x000620, 0x000620, JoiningType::DualJoining },   // KASHMIRI YEH
-    { 0x000621, 0x000621, JoiningType::NonJoining },   // HAMZA (isolated, non-joining)
-    { 0x000622, 0x000625, JoiningType::RightJoining },   // ALEF madda/hamza variants
-    { 0x000626, 0x000626, JoiningType::DualJoining },   // YEH WITH HAMZA ABOVE
-    { 0x000627, 0x000627, JoiningType::RightJoining },   // ALEF
-    { 0x000628, 0x000628, JoiningType::DualJoining },   // BEH
-    { 0x000629, 0x000629, JoiningType::RightJoining },   // TEH MARBUTA
-    { 0x00062A, 0x00062E, JoiningType::DualJoining },   // TEH..KHAH
-    { 0x00062F, 0x000632, JoiningType::RightJoining },   // DAL DHAL REH ZAIN
-    { 0x000633, 0x00063F, JoiningType::DualJoining },   // SEEN..(extended) all dual
-    { 0x000640, 0x000640, JoiningType::JoinCausing },   // TATWEEL / kashida (join-causing)
-    { 0x000641, 0x000647, JoiningType::DualJoining },   // FEH..HEH dual
-    { 0x000648, 0x000648, JoiningType::RightJoining },   // WAW
-    { 0x000649, 0x00064A, JoiningType::DualJoining },   // ALEF MAKSURA, YEH
-    { 0x00064B, 0x00065F, JoiningType::Transparent },   // harakat / combining marks
-    { 0x000660, 0x000669, JoiningType::NonJoining },   // Arabic-Indic digits
-    { 0x00066A, 0x00066D, JoiningType::NonJoining },   // percent, decimal sep, etc.
-    { 0x00066E, 0x00066F, JoiningType::DualJoining },   // dotless beh / qaf
-    { 0x000670, 0x000670, JoiningType::Transparent },   // superscript alef (combining)
-    { 0x000671, 0x000673, JoiningType::RightJoining },   // ALEF WASLA + variants
-    { 0x000674, 0x000674, JoiningType::NonJoining },   // HIGH HAMZA (non-joining)
-    { 0x000675, 0x000678, JoiningType::RightJoining },   // high-hamza alef/waw/yeh forms
-    { 0x000679, 0x00068D, JoiningType::DualJoining },   // extended dual-joining consonants
-    { 0x00068E, 0x000699, JoiningType::RightJoining },   // extended right-joining (dal/reh family)
-    { 0x00069A, 0x0006BF, JoiningType::DualJoining },   // more extended dual consonants
-    { 0x0006C0, 0x0006C0, JoiningType::RightJoining },   // HEH WITH YEH ABOVE
-    { 0x0006C1, 0x0006C2, JoiningType::DualJoining },   // HEH GOAL variants
-    { 0x0006C3, 0x0006CB, JoiningType::RightJoining },   // teh-marbuta-goal / waw family (right)
-    { 0x0006CC, 0x0006CC, JoiningType::DualJoining },   // FARSI YEH
-    { 0x0006CD, 0x0006CD, JoiningType::RightJoining },   // YEH WITH TAIL
-    { 0x0006CE, 0x0006CE, JoiningType::DualJoining },   // YEH WITH SMALL V
-    { 0x0006CF, 0x0006CF, JoiningType::RightJoining },   // WAW WITH DOT ABOVE
-    { 0x0006D0, 0x0006D1, JoiningType::DualJoining },   // E / yeh variants (dual)
-    { 0x0006D2, 0x0006D3, JoiningType::RightJoining },   // YEH BARREE variants
-    { 0x0006D4, 0x0006D4, JoiningType::NonJoining },   // full stop
-    { 0x0006D5, 0x0006D5, JoiningType::RightJoining },   // AE
-    { 0x0006D6, 0x0006DC, JoiningType::Transparent },   // small high combining marks
-    { 0x0006DD, 0x0006DD, JoiningType::NonJoining },   // end of ayah (Prepend)
-    { 0x0006DF, 0x0006E4, JoiningType::Transparent },   // small high combining marks
-    { 0x0006E5, 0x0006E6, JoiningType::NonJoining },   // small waw / yeh (non-joining)
-    { 0x0006E7, 0x0006E8, JoiningType::Transparent },   // small high marks
-    { 0x0006EA, 0x0006ED, JoiningType::Transparent },   // combining marks below/above
-    { 0x0006EE, 0x0006EF, JoiningType::RightJoining },   // dal/reh inverted-v forms
-    { 0x0006F0, 0x0006F9, JoiningType::NonJoining },   // extended Arabic-Indic digits
-    { 0x0006FA, 0x0006FC, JoiningType::DualJoining },   // sheen/dad/ghain with dot (dual)
-    { 0x0006FF, 0x0006FF, JoiningType::DualJoining },   // HEH WITH INVERTED V
-
-    // Arabic Supplement 0750..077F — all dual-joining consonants.
-    { 0x000750, 0x00077F, JoiningType::DualJoining },
-
-    // Arabic Extended-A 08A0..08FF — letters dual, marks transparent.
-    { 0x0008A0, 0x0008B4, JoiningType::DualJoining },
-    { 0x0008B6, 0x0008BD, JoiningType::DualJoining },
-    { 0x0008D3, 0x0008E1, JoiningType::Transparent },   // combining marks
-    { 0x0008E2, 0x0008E2, JoiningType::NonJoining },   // disputed end of ayah
-    { 0x0008E3, 0x0008FF, JoiningType::Transparent },   // combining marks
-
-    // Script-neutral joining controls (sort after the Arabic blocks).
-    { 0x00200C, 0x00200C, JoiningType::NonJoining },   // ZERO WIDTH NON-JOINER (breaks join)
-    { 0x00200D, 0x00200D, JoiningType::JoinCausing },   // ZERO WIDTH JOINER (forces join)
+struct JoinRange {
+    std::uint32_t first;
+    std::uint32_t last;
+    JoiningType type;
 };
 
-// --- presentation forms (Form-B, U+FE70..FEFC) ------------------------
-//
-// {base, isolated, final, initial, medial}. A 0 in a slot means the
-// letter has no glyph for that shape; resolveForm + presentationForm
-// fall back to the isolated form (or the base) in that case. Right-
-// joining letters have only isolated + final; dual-joining letters have
-// all four.
+static const JoinRange joiningRanges[] = {
+    { 0x0000AD, 0x0000AD, JoiningType::Transparent },
+    { 0x000300, 0x00036F, JoiningType::Transparent },
+    { 0x000483, 0x000489, JoiningType::Transparent },
+    { 0x000591, 0x0005BD, JoiningType::Transparent },
+    { 0x0005BF, 0x0005BF, JoiningType::Transparent },
+    { 0x0005C1, 0x0005C2, JoiningType::Transparent },
+    { 0x0005C4, 0x0005C5, JoiningType::Transparent },
+    { 0x0005C7, 0x0005C9, JoiningType::Transparent },
+    { 0x000610, 0x00061A, JoiningType::Transparent },
+    { 0x00061C, 0x00061C, JoiningType::Transparent },
+    { 0x000620, 0x000620, JoiningType::DualJoining },
+    { 0x000622, 0x000625, JoiningType::RightJoining },
+    { 0x000626, 0x000626, JoiningType::DualJoining },
+    { 0x000627, 0x000627, JoiningType::RightJoining },
+    { 0x000628, 0x000628, JoiningType::DualJoining },
+    { 0x000629, 0x000629, JoiningType::RightJoining },
+    { 0x00062A, 0x00062E, JoiningType::DualJoining },
+    { 0x00062F, 0x000632, JoiningType::RightJoining },
+    { 0x000633, 0x00063F, JoiningType::DualJoining },
+    { 0x000640, 0x000640, JoiningType::JoinCausing },
+    { 0x000641, 0x000647, JoiningType::DualJoining },
+    { 0x000648, 0x000648, JoiningType::RightJoining },
+    { 0x000649, 0x00064A, JoiningType::DualJoining },
+    { 0x00064B, 0x00065F, JoiningType::Transparent },
+    { 0x00066E, 0x00066F, JoiningType::DualJoining },
+    { 0x000670, 0x000670, JoiningType::Transparent },
+    { 0x000671, 0x000673, JoiningType::RightJoining },
+    { 0x000675, 0x000677, JoiningType::RightJoining },
+    { 0x000678, 0x000687, JoiningType::DualJoining },
+    { 0x000688, 0x000699, JoiningType::RightJoining },
+    { 0x00069A, 0x0006BF, JoiningType::DualJoining },
+    { 0x0006C0, 0x0006C0, JoiningType::RightJoining },
+    { 0x0006C1, 0x0006C2, JoiningType::DualJoining },
+    { 0x0006C3, 0x0006CB, JoiningType::RightJoining },
+    { 0x0006CC, 0x0006CC, JoiningType::DualJoining },
+    { 0x0006CD, 0x0006CD, JoiningType::RightJoining },
+    { 0x0006CE, 0x0006CE, JoiningType::DualJoining },
+    { 0x0006CF, 0x0006CF, JoiningType::RightJoining },
+    { 0x0006D0, 0x0006D1, JoiningType::DualJoining },
+    { 0x0006D2, 0x0006D3, JoiningType::RightJoining },
+    { 0x0006D5, 0x0006D5, JoiningType::RightJoining },
+    { 0x0006D6, 0x0006DC, JoiningType::Transparent },
+    { 0x0006DF, 0x0006E4, JoiningType::Transparent },
+    { 0x0006E7, 0x0006E8, JoiningType::Transparent },
+    { 0x0006EA, 0x0006ED, JoiningType::Transparent },
+    { 0x0006EE, 0x0006EF, JoiningType::RightJoining },
+    { 0x0006FA, 0x0006FC, JoiningType::DualJoining },
+    { 0x0006FF, 0x0006FF, JoiningType::DualJoining },
+    { 0x00070F, 0x00070F, JoiningType::Transparent },
+    { 0x000710, 0x000710, JoiningType::RightJoining },
+    { 0x000711, 0x000711, JoiningType::Transparent },
+    { 0x000712, 0x000714, JoiningType::DualJoining },
+    { 0x000715, 0x000719, JoiningType::RightJoining },
+    { 0x00071A, 0x00071D, JoiningType::DualJoining },
+    { 0x00071E, 0x00071E, JoiningType::RightJoining },
+    { 0x00071F, 0x000727, JoiningType::DualJoining },
+    { 0x000728, 0x000728, JoiningType::RightJoining },
+    { 0x000729, 0x000729, JoiningType::DualJoining },
+    { 0x00072A, 0x00072A, JoiningType::RightJoining },
+    { 0x00072B, 0x00072B, JoiningType::DualJoining },
+    { 0x00072C, 0x00072C, JoiningType::RightJoining },
+    { 0x00072D, 0x00072E, JoiningType::DualJoining },
+    { 0x00072F, 0x00072F, JoiningType::RightJoining },
+    { 0x000730, 0x00074A, JoiningType::Transparent },
+    { 0x00074D, 0x00074D, JoiningType::RightJoining },
+    { 0x00074E, 0x000758, JoiningType::DualJoining },
+    { 0x000759, 0x00075B, JoiningType::RightJoining },
+    { 0x00075C, 0x00076A, JoiningType::DualJoining },
+    { 0x00076B, 0x00076C, JoiningType::RightJoining },
+    { 0x00076D, 0x000770, JoiningType::DualJoining },
+    { 0x000771, 0x000771, JoiningType::RightJoining },
+    { 0x000772, 0x000772, JoiningType::DualJoining },
+    { 0x000773, 0x000774, JoiningType::RightJoining },
+    { 0x000775, 0x000777, JoiningType::DualJoining },
+    { 0x000778, 0x000779, JoiningType::RightJoining },
+    { 0x00077A, 0x00077F, JoiningType::DualJoining },
+    { 0x0007A6, 0x0007B0, JoiningType::Transparent },
+    { 0x0007CA, 0x0007EA, JoiningType::DualJoining },
+    { 0x0007EB, 0x0007F3, JoiningType::Transparent },
+    { 0x0007FA, 0x0007FA, JoiningType::JoinCausing },
+    { 0x0007FD, 0x0007FD, JoiningType::Transparent },
+    { 0x000816, 0x000819, JoiningType::Transparent },
+    { 0x00081B, 0x000823, JoiningType::Transparent },
+    { 0x000825, 0x000827, JoiningType::Transparent },
+    { 0x000829, 0x00082D, JoiningType::Transparent },
+    { 0x000840, 0x000840, JoiningType::RightJoining },
+    { 0x000841, 0x000845, JoiningType::DualJoining },
+    { 0x000846, 0x000847, JoiningType::RightJoining },
+    { 0x000848, 0x000848, JoiningType::DualJoining },
+    { 0x000849, 0x000849, JoiningType::RightJoining },
+    { 0x00084A, 0x000853, JoiningType::DualJoining },
+    { 0x000854, 0x000854, JoiningType::RightJoining },
+    { 0x000855, 0x000855, JoiningType::DualJoining },
+    { 0x000856, 0x000858, JoiningType::RightJoining },
+    { 0x000859, 0x00085B, JoiningType::Transparent },
+    { 0x000860, 0x000860, JoiningType::DualJoining },
+    { 0x000862, 0x000865, JoiningType::DualJoining },
+    { 0x000867, 0x000867, JoiningType::RightJoining },
+    { 0x000868, 0x000868, JoiningType::DualJoining },
+    { 0x000869, 0x00086A, JoiningType::RightJoining },
+    { 0x000870, 0x000882, JoiningType::RightJoining },
+    { 0x000883, 0x000885, JoiningType::JoinCausing },
+    { 0x000886, 0x000886, JoiningType::DualJoining },
+    { 0x000889, 0x00088D, JoiningType::DualJoining },
+    { 0x00088E, 0x00088E, JoiningType::RightJoining },
+    { 0x00088F, 0x00088F, JoiningType::DualJoining },
+    { 0x000897, 0x00089F, JoiningType::Transparent },
+    { 0x0008A0, 0x0008A9, JoiningType::DualJoining },
+    { 0x0008AA, 0x0008AC, JoiningType::RightJoining },
+    { 0x0008AE, 0x0008AE, JoiningType::RightJoining },
+    { 0x0008AF, 0x0008B0, JoiningType::DualJoining },
+    { 0x0008B1, 0x0008B2, JoiningType::RightJoining },
+    { 0x0008B3, 0x0008B8, JoiningType::DualJoining },
+    { 0x0008B9, 0x0008B9, JoiningType::RightJoining },
+    { 0x0008BA, 0x0008C8, JoiningType::DualJoining },
+    { 0x0008CA, 0x0008E1, JoiningType::Transparent },
+    { 0x0008E3, 0x000902, JoiningType::Transparent },
+    { 0x00093A, 0x00093A, JoiningType::Transparent },
+    { 0x00093C, 0x00093C, JoiningType::Transparent },
+    { 0x000941, 0x000948, JoiningType::Transparent },
+    { 0x00094D, 0x00094D, JoiningType::Transparent },
+    { 0x000951, 0x000957, JoiningType::Transparent },
+    { 0x000962, 0x000963, JoiningType::Transparent },
+    { 0x000981, 0x000981, JoiningType::Transparent },
+    { 0x0009BC, 0x0009BC, JoiningType::Transparent },
+    { 0x0009C1, 0x0009C4, JoiningType::Transparent },
+    { 0x0009CD, 0x0009CD, JoiningType::Transparent },
+    { 0x0009E2, 0x0009E3, JoiningType::Transparent },
+    { 0x0009FE, 0x0009FE, JoiningType::Transparent },
+    { 0x000A01, 0x000A02, JoiningType::Transparent },
+    { 0x000A3C, 0x000A3C, JoiningType::Transparent },
+    { 0x000A41, 0x000A42, JoiningType::Transparent },
+    { 0x000A47, 0x000A48, JoiningType::Transparent },
+    { 0x000A4B, 0x000A4D, JoiningType::Transparent },
+    { 0x000A51, 0x000A51, JoiningType::Transparent },
+    { 0x000A70, 0x000A71, JoiningType::Transparent },
+    { 0x000A75, 0x000A75, JoiningType::Transparent },
+    { 0x000A81, 0x000A82, JoiningType::Transparent },
+    { 0x000ABC, 0x000ABC, JoiningType::Transparent },
+    { 0x000AC1, 0x000AC5, JoiningType::Transparent },
+    { 0x000AC7, 0x000AC8, JoiningType::Transparent },
+    { 0x000ACD, 0x000ACD, JoiningType::Transparent },
+    { 0x000AE2, 0x000AE3, JoiningType::Transparent },
+    { 0x000AFA, 0x000AFF, JoiningType::Transparent },
+    { 0x000B01, 0x000B01, JoiningType::Transparent },
+    { 0x000B3C, 0x000B3C, JoiningType::Transparent },
+    { 0x000B3F, 0x000B3F, JoiningType::Transparent },
+    { 0x000B41, 0x000B44, JoiningType::Transparent },
+    { 0x000B4D, 0x000B4D, JoiningType::Transparent },
+    { 0x000B53, 0x000B56, JoiningType::Transparent },
+    { 0x000B62, 0x000B63, JoiningType::Transparent },
+    { 0x000B82, 0x000B82, JoiningType::Transparent },
+    { 0x000BC0, 0x000BC0, JoiningType::Transparent },
+    { 0x000BCD, 0x000BCD, JoiningType::Transparent },
+    { 0x000C00, 0x000C00, JoiningType::Transparent },
+    { 0x000C04, 0x000C04, JoiningType::Transparent },
+    { 0x000C3C, 0x000C3C, JoiningType::Transparent },
+    { 0x000C3E, 0x000C40, JoiningType::Transparent },
+    { 0x000C46, 0x000C48, JoiningType::Transparent },
+    { 0x000C4A, 0x000C4D, JoiningType::Transparent },
+    { 0x000C55, 0x000C56, JoiningType::Transparent },
+    { 0x000C62, 0x000C63, JoiningType::Transparent },
+    { 0x000C81, 0x000C81, JoiningType::Transparent },
+    { 0x000CBC, 0x000CBC, JoiningType::Transparent },
+    { 0x000CBF, 0x000CBF, JoiningType::Transparent },
+    { 0x000CC6, 0x000CC6, JoiningType::Transparent },
+    { 0x000CCC, 0x000CCD, JoiningType::Transparent },
+    { 0x000CE2, 0x000CE3, JoiningType::Transparent },
+    { 0x000D00, 0x000D01, JoiningType::Transparent },
+    { 0x000D3B, 0x000D3C, JoiningType::Transparent },
+    { 0x000D41, 0x000D44, JoiningType::Transparent },
+    { 0x000D4D, 0x000D4D, JoiningType::Transparent },
+    { 0x000D62, 0x000D63, JoiningType::Transparent },
+    { 0x000D81, 0x000D81, JoiningType::Transparent },
+    { 0x000DCA, 0x000DCA, JoiningType::Transparent },
+    { 0x000DD2, 0x000DD4, JoiningType::Transparent },
+    { 0x000DD6, 0x000DD6, JoiningType::Transparent },
+    { 0x000E31, 0x000E31, JoiningType::Transparent },
+    { 0x000E34, 0x000E3A, JoiningType::Transparent },
+    { 0x000E47, 0x000E4E, JoiningType::Transparent },
+    { 0x000EB1, 0x000EB1, JoiningType::Transparent },
+    { 0x000EB4, 0x000EBC, JoiningType::Transparent },
+    { 0x000EC8, 0x000ECE, JoiningType::Transparent },
+    { 0x000F18, 0x000F19, JoiningType::Transparent },
+    { 0x000F35, 0x000F35, JoiningType::Transparent },
+    { 0x000F37, 0x000F37, JoiningType::Transparent },
+    { 0x000F39, 0x000F39, JoiningType::Transparent },
+    { 0x000F71, 0x000F7E, JoiningType::Transparent },
+    { 0x000F80, 0x000F84, JoiningType::Transparent },
+    { 0x000F86, 0x000F87, JoiningType::Transparent },
+    { 0x000F8D, 0x000F97, JoiningType::Transparent },
+    { 0x000F99, 0x000FBC, JoiningType::Transparent },
+    { 0x000FC6, 0x000FC6, JoiningType::Transparent },
+    { 0x00102D, 0x001030, JoiningType::Transparent },
+    { 0x001032, 0x001037, JoiningType::Transparent },
+    { 0x001039, 0x00103A, JoiningType::Transparent },
+    { 0x00103D, 0x00103E, JoiningType::Transparent },
+    { 0x001058, 0x001059, JoiningType::Transparent },
+    { 0x00105E, 0x001060, JoiningType::Transparent },
+    { 0x001071, 0x001074, JoiningType::Transparent },
+    { 0x001082, 0x001082, JoiningType::Transparent },
+    { 0x001085, 0x001086, JoiningType::Transparent },
+    { 0x00108D, 0x00108D, JoiningType::Transparent },
+    { 0x00109D, 0x00109D, JoiningType::Transparent },
+    { 0x00135D, 0x00135F, JoiningType::Transparent },
+    { 0x001712, 0x001714, JoiningType::Transparent },
+    { 0x001732, 0x001733, JoiningType::Transparent },
+    { 0x001752, 0x001753, JoiningType::Transparent },
+    { 0x001772, 0x001773, JoiningType::Transparent },
+    { 0x0017B4, 0x0017B5, JoiningType::Transparent },
+    { 0x0017B7, 0x0017BD, JoiningType::Transparent },
+    { 0x0017C6, 0x0017C6, JoiningType::Transparent },
+    { 0x0017C9, 0x0017D3, JoiningType::Transparent },
+    { 0x0017DD, 0x0017DD, JoiningType::Transparent },
+    { 0x001807, 0x001807, JoiningType::DualJoining },
+    { 0x00180A, 0x00180A, JoiningType::JoinCausing },
+    { 0x00180B, 0x00180D, JoiningType::Transparent },
+    { 0x00180F, 0x00180F, JoiningType::Transparent },
+    { 0x001820, 0x001878, JoiningType::DualJoining },
+    { 0x001885, 0x001886, JoiningType::Transparent },
+    { 0x001887, 0x0018A8, JoiningType::DualJoining },
+    { 0x0018A9, 0x0018A9, JoiningType::Transparent },
+    { 0x0018AA, 0x0018AA, JoiningType::DualJoining },
+    { 0x001920, 0x001922, JoiningType::Transparent },
+    { 0x001927, 0x001928, JoiningType::Transparent },
+    { 0x001932, 0x001932, JoiningType::Transparent },
+    { 0x001939, 0x00193B, JoiningType::Transparent },
+    { 0x001A17, 0x001A18, JoiningType::Transparent },
+    { 0x001A1B, 0x001A1B, JoiningType::Transparent },
+    { 0x001A56, 0x001A56, JoiningType::Transparent },
+    { 0x001A58, 0x001A5E, JoiningType::Transparent },
+    { 0x001A60, 0x001A60, JoiningType::Transparent },
+    { 0x001A62, 0x001A62, JoiningType::Transparent },
+    { 0x001A65, 0x001A6C, JoiningType::Transparent },
+    { 0x001A73, 0x001A7C, JoiningType::Transparent },
+    { 0x001A7F, 0x001A7F, JoiningType::Transparent },
+    { 0x001AB0, 0x001AF0, JoiningType::Transparent },
+    { 0x001B00, 0x001B03, JoiningType::Transparent },
+    { 0x001B34, 0x001B34, JoiningType::Transparent },
+    { 0x001B36, 0x001B3A, JoiningType::Transparent },
+    { 0x001B3C, 0x001B3C, JoiningType::Transparent },
+    { 0x001B42, 0x001B42, JoiningType::Transparent },
+    { 0x001B6B, 0x001B73, JoiningType::Transparent },
+    { 0x001B80, 0x001B81, JoiningType::Transparent },
+    { 0x001BA2, 0x001BA5, JoiningType::Transparent },
+    { 0x001BA8, 0x001BA9, JoiningType::Transparent },
+    { 0x001BAB, 0x001BAD, JoiningType::Transparent },
+    { 0x001BE6, 0x001BE6, JoiningType::Transparent },
+    { 0x001BE8, 0x001BE9, JoiningType::Transparent },
+    { 0x001BED, 0x001BED, JoiningType::Transparent },
+    { 0x001BEF, 0x001BF1, JoiningType::Transparent },
+    { 0x001C2C, 0x001C33, JoiningType::Transparent },
+    { 0x001C36, 0x001C37, JoiningType::Transparent },
+    { 0x001CD0, 0x001CD2, JoiningType::Transparent },
+    { 0x001CD4, 0x001CE0, JoiningType::Transparent },
+    { 0x001CE2, 0x001CE8, JoiningType::Transparent },
+    { 0x001CED, 0x001CED, JoiningType::Transparent },
+    { 0x001CF4, 0x001CF4, JoiningType::Transparent },
+    { 0x001CF8, 0x001CF9, JoiningType::Transparent },
+    { 0x001DC0, 0x001DFF, JoiningType::Transparent },
+    { 0x00200B, 0x00200B, JoiningType::Transparent },
+    { 0x00200D, 0x00200D, JoiningType::JoinCausing },
+    { 0x00200E, 0x00200F, JoiningType::Transparent },
+    { 0x00202A, 0x00202E, JoiningType::Transparent },
+    { 0x002060, 0x002064, JoiningType::Transparent },
+    { 0x00206A, 0x00206F, JoiningType::Transparent },
+    { 0x0020D0, 0x0020F0, JoiningType::Transparent },
+    { 0x002CEF, 0x002CF1, JoiningType::Transparent },
+    { 0x002D7F, 0x002D7F, JoiningType::Transparent },
+    { 0x002DE0, 0x002DFF, JoiningType::Transparent },
+    { 0x00302A, 0x00302D, JoiningType::Transparent },
+    { 0x003099, 0x00309A, JoiningType::Transparent },
+    { 0x00A66F, 0x00A672, JoiningType::Transparent },
+    { 0x00A674, 0x00A67D, JoiningType::Transparent },
+    { 0x00A69E, 0x00A69F, JoiningType::Transparent },
+    { 0x00A6F0, 0x00A6F1, JoiningType::Transparent },
+    { 0x00A802, 0x00A802, JoiningType::Transparent },
+    { 0x00A806, 0x00A806, JoiningType::Transparent },
+    { 0x00A80B, 0x00A80B, JoiningType::Transparent },
+    { 0x00A825, 0x00A826, JoiningType::Transparent },
+    { 0x00A82C, 0x00A82C, JoiningType::Transparent },
+    { 0x00A840, 0x00A871, JoiningType::DualJoining },
+    { 0x00A872, 0x00A872, JoiningType::LeftJoining },
+    { 0x00A8C4, 0x00A8C5, JoiningType::Transparent },
+    { 0x00A8E0, 0x00A8F1, JoiningType::Transparent },
+    { 0x00A8FF, 0x00A8FF, JoiningType::Transparent },
+    { 0x00A926, 0x00A92D, JoiningType::Transparent },
+    { 0x00A947, 0x00A951, JoiningType::Transparent },
+    { 0x00A980, 0x00A982, JoiningType::Transparent },
+    { 0x00A9B3, 0x00A9B3, JoiningType::Transparent },
+    { 0x00A9B6, 0x00A9B9, JoiningType::Transparent },
+    { 0x00A9BC, 0x00A9BD, JoiningType::Transparent },
+    { 0x00A9E5, 0x00A9E5, JoiningType::Transparent },
+    { 0x00AA29, 0x00AA2E, JoiningType::Transparent },
+    { 0x00AA31, 0x00AA32, JoiningType::Transparent },
+    { 0x00AA35, 0x00AA36, JoiningType::Transparent },
+    { 0x00AA43, 0x00AA43, JoiningType::Transparent },
+    { 0x00AA4C, 0x00AA4C, JoiningType::Transparent },
+    { 0x00AA7C, 0x00AA7C, JoiningType::Transparent },
+    { 0x00AAB0, 0x00AAB0, JoiningType::Transparent },
+    { 0x00AAB2, 0x00AAB4, JoiningType::Transparent },
+    { 0x00AAB7, 0x00AAB8, JoiningType::Transparent },
+    { 0x00AABE, 0x00AABF, JoiningType::Transparent },
+    { 0x00AAC1, 0x00AAC1, JoiningType::Transparent },
+    { 0x00AAEC, 0x00AAED, JoiningType::Transparent },
+    { 0x00AAF6, 0x00AAF6, JoiningType::Transparent },
+    { 0x00ABE5, 0x00ABE5, JoiningType::Transparent },
+    { 0x00ABE8, 0x00ABE8, JoiningType::Transparent },
+    { 0x00ABED, 0x00ABED, JoiningType::Transparent },
+    { 0x00FB1E, 0x00FB1E, JoiningType::Transparent },
+    { 0x00FE00, 0x00FE0F, JoiningType::Transparent },
+    { 0x00FE20, 0x00FE2F, JoiningType::Transparent },
+    { 0x00FEFF, 0x00FEFF, JoiningType::Transparent },
+    { 0x00FFF9, 0x00FFFB, JoiningType::Transparent },
+    { 0x0101FD, 0x0101FD, JoiningType::Transparent },
+    { 0x0102E0, 0x0102E0, JoiningType::Transparent },
+    { 0x010376, 0x01037A, JoiningType::Transparent },
+    { 0x010A01, 0x010A03, JoiningType::Transparent },
+    { 0x010A05, 0x010A06, JoiningType::Transparent },
+    { 0x010A0C, 0x010A0F, JoiningType::Transparent },
+    { 0x010A38, 0x010A3A, JoiningType::Transparent },
+    { 0x010A3F, 0x010A3F, JoiningType::Transparent },
+    { 0x010AC0, 0x010AC4, JoiningType::DualJoining },
+    { 0x010AC5, 0x010AC5, JoiningType::RightJoining },
+    { 0x010AC7, 0x010AC7, JoiningType::RightJoining },
+    { 0x010AC9, 0x010ACA, JoiningType::RightJoining },
+    { 0x010ACD, 0x010ACD, JoiningType::LeftJoining },
+    { 0x010ACE, 0x010AD2, JoiningType::RightJoining },
+    { 0x010AD3, 0x010AD6, JoiningType::DualJoining },
+    { 0x010AD7, 0x010AD7, JoiningType::LeftJoining },
+    { 0x010AD8, 0x010ADC, JoiningType::DualJoining },
+    { 0x010ADD, 0x010ADD, JoiningType::RightJoining },
+    { 0x010ADE, 0x010AE0, JoiningType::DualJoining },
+    { 0x010AE1, 0x010AE1, JoiningType::RightJoining },
+    { 0x010AE4, 0x010AE4, JoiningType::RightJoining },
+    { 0x010AE5, 0x010AE6, JoiningType::Transparent },
+    { 0x010AEB, 0x010AEE, JoiningType::DualJoining },
+    { 0x010AEF, 0x010AEF, JoiningType::RightJoining },
+    { 0x010B80, 0x010B80, JoiningType::DualJoining },
+    { 0x010B81, 0x010B81, JoiningType::RightJoining },
+    { 0x010B82, 0x010B82, JoiningType::DualJoining },
+    { 0x010B83, 0x010B85, JoiningType::RightJoining },
+    { 0x010B86, 0x010B88, JoiningType::DualJoining },
+    { 0x010B89, 0x010B89, JoiningType::RightJoining },
+    { 0x010B8A, 0x010B8B, JoiningType::DualJoining },
+    { 0x010B8C, 0x010B8C, JoiningType::RightJoining },
+    { 0x010B8D, 0x010B8D, JoiningType::DualJoining },
+    { 0x010B8E, 0x010B8F, JoiningType::RightJoining },
+    { 0x010B90, 0x010B90, JoiningType::DualJoining },
+    { 0x010B91, 0x010B91, JoiningType::RightJoining },
+    { 0x010BA9, 0x010BAC, JoiningType::RightJoining },
+    { 0x010BAD, 0x010BAE, JoiningType::DualJoining },
+    { 0x010D00, 0x010D00, JoiningType::LeftJoining },
+    { 0x010D01, 0x010D21, JoiningType::DualJoining },
+    { 0x010D22, 0x010D22, JoiningType::RightJoining },
+    { 0x010D23, 0x010D23, JoiningType::DualJoining },
+    { 0x010D24, 0x010D27, JoiningType::Transparent },
+    { 0x010D69, 0x010D6D, JoiningType::Transparent },
+    { 0x010EAB, 0x010EAC, JoiningType::Transparent },
+    { 0x010EC2, 0x010EC2, JoiningType::RightJoining },
+    { 0x010EC3, 0x010EC4, JoiningType::DualJoining },
+    { 0x010EC6, 0x010EC7, JoiningType::DualJoining },
+    { 0x010ECB, 0x010ECF, JoiningType::Transparent },
+    { 0x010ED9, 0x010EEE, JoiningType::LeftJoining },
+    { 0x010EF0, 0x010EFF, JoiningType::Transparent },
+    { 0x010F30, 0x010F32, JoiningType::DualJoining },
+    { 0x010F33, 0x010F33, JoiningType::RightJoining },
+    { 0x010F34, 0x010F44, JoiningType::DualJoining },
+    { 0x010F46, 0x010F50, JoiningType::Transparent },
+    { 0x010F51, 0x010F53, JoiningType::DualJoining },
+    { 0x010F54, 0x010F54, JoiningType::RightJoining },
+    { 0x010F70, 0x010F73, JoiningType::DualJoining },
+    { 0x010F74, 0x010F75, JoiningType::RightJoining },
+    { 0x010F76, 0x010F81, JoiningType::DualJoining },
+    { 0x010F82, 0x010F85, JoiningType::Transparent },
+    { 0x010FB0, 0x010FB0, JoiningType::DualJoining },
+    { 0x010FB2, 0x010FB3, JoiningType::DualJoining },
+    { 0x010FB4, 0x010FB6, JoiningType::RightJoining },
+    { 0x010FB8, 0x010FB8, JoiningType::DualJoining },
+    { 0x010FB9, 0x010FBA, JoiningType::RightJoining },
+    { 0x010FBB, 0x010FBC, JoiningType::DualJoining },
+    { 0x010FBD, 0x010FBD, JoiningType::RightJoining },
+    { 0x010FBE, 0x010FBF, JoiningType::DualJoining },
+    { 0x010FC1, 0x010FC1, JoiningType::DualJoining },
+    { 0x010FC2, 0x010FC3, JoiningType::RightJoining },
+    { 0x010FC4, 0x010FC4, JoiningType::DualJoining },
+    { 0x010FC9, 0x010FC9, JoiningType::RightJoining },
+    { 0x010FCA, 0x010FCA, JoiningType::DualJoining },
+    { 0x010FCB, 0x010FCB, JoiningType::LeftJoining },
+    { 0x011001, 0x011001, JoiningType::Transparent },
+    { 0x011038, 0x011046, JoiningType::Transparent },
+    { 0x011070, 0x011070, JoiningType::Transparent },
+    { 0x011073, 0x011074, JoiningType::Transparent },
+    { 0x01107F, 0x011081, JoiningType::Transparent },
+    { 0x0110B3, 0x0110B6, JoiningType::Transparent },
+    { 0x0110B9, 0x0110BA, JoiningType::Transparent },
+    { 0x0110C2, 0x0110C2, JoiningType::Transparent },
+    { 0x011100, 0x011102, JoiningType::Transparent },
+    { 0x011127, 0x01112B, JoiningType::Transparent },
+    { 0x01112D, 0x011134, JoiningType::Transparent },
+    { 0x011173, 0x011173, JoiningType::Transparent },
+    { 0x011180, 0x011181, JoiningType::Transparent },
+    { 0x0111B6, 0x0111BE, JoiningType::Transparent },
+    { 0x0111C9, 0x0111CC, JoiningType::Transparent },
+    { 0x0111CF, 0x0111CF, JoiningType::Transparent },
+    { 0x01122F, 0x011231, JoiningType::Transparent },
+    { 0x011234, 0x011234, JoiningType::Transparent },
+    { 0x011236, 0x011237, JoiningType::Transparent },
+    { 0x01123E, 0x01123E, JoiningType::Transparent },
+    { 0x011241, 0x011241, JoiningType::Transparent },
+    { 0x0112DF, 0x0112DF, JoiningType::Transparent },
+    { 0x0112E3, 0x0112EA, JoiningType::Transparent },
+    { 0x011300, 0x011301, JoiningType::Transparent },
+    { 0x01133B, 0x01133C, JoiningType::Transparent },
+    { 0x011340, 0x011340, JoiningType::Transparent },
+    { 0x011366, 0x01136C, JoiningType::Transparent },
+    { 0x011370, 0x011374, JoiningType::Transparent },
+    { 0x0113BB, 0x0113C0, JoiningType::Transparent },
+    { 0x0113CE, 0x0113CE, JoiningType::Transparent },
+    { 0x0113D0, 0x0113D0, JoiningType::Transparent },
+    { 0x0113D2, 0x0113D2, JoiningType::Transparent },
+    { 0x0113E1, 0x0113E2, JoiningType::Transparent },
+    { 0x011438, 0x01143F, JoiningType::Transparent },
+    { 0x011442, 0x011444, JoiningType::Transparent },
+    { 0x011446, 0x011446, JoiningType::Transparent },
+    { 0x01145E, 0x01145E, JoiningType::Transparent },
+    { 0x0114B3, 0x0114B8, JoiningType::Transparent },
+    { 0x0114BA, 0x0114BA, JoiningType::Transparent },
+    { 0x0114BF, 0x0114C0, JoiningType::Transparent },
+    { 0x0114C2, 0x0114C3, JoiningType::Transparent },
+    { 0x0115B2, 0x0115B5, JoiningType::Transparent },
+    { 0x0115BC, 0x0115BD, JoiningType::Transparent },
+    { 0x0115BF, 0x0115C0, JoiningType::Transparent },
+    { 0x0115DC, 0x0115DD, JoiningType::Transparent },
+    { 0x011633, 0x01163A, JoiningType::Transparent },
+    { 0x01163D, 0x01163D, JoiningType::Transparent },
+    { 0x01163F, 0x011640, JoiningType::Transparent },
+    { 0x0116AB, 0x0116AB, JoiningType::Transparent },
+    { 0x0116AD, 0x0116AD, JoiningType::Transparent },
+    { 0x0116B0, 0x0116B5, JoiningType::Transparent },
+    { 0x0116B7, 0x0116B7, JoiningType::Transparent },
+    { 0x01171D, 0x01171D, JoiningType::Transparent },
+    { 0x01171F, 0x01171F, JoiningType::Transparent },
+    { 0x011722, 0x011725, JoiningType::Transparent },
+    { 0x011727, 0x01172B, JoiningType::Transparent },
+    { 0x01182F, 0x011837, JoiningType::Transparent },
+    { 0x011839, 0x01183A, JoiningType::Transparent },
+    { 0x01193B, 0x01193C, JoiningType::Transparent },
+    { 0x01193E, 0x01193E, JoiningType::Transparent },
+    { 0x011943, 0x011943, JoiningType::Transparent },
+    { 0x0119D4, 0x0119D7, JoiningType::Transparent },
+    { 0x0119DA, 0x0119DB, JoiningType::Transparent },
+    { 0x0119E0, 0x0119E0, JoiningType::Transparent },
+    { 0x011A01, 0x011A0A, JoiningType::Transparent },
+    { 0x011A33, 0x011A38, JoiningType::Transparent },
+    { 0x011A3B, 0x011A3E, JoiningType::Transparent },
+    { 0x011A47, 0x011A47, JoiningType::Transparent },
+    { 0x011A51, 0x011A56, JoiningType::Transparent },
+    { 0x011A59, 0x011A5B, JoiningType::Transparent },
+    { 0x011A8A, 0x011A96, JoiningType::Transparent },
+    { 0x011A98, 0x011A99, JoiningType::Transparent },
+    { 0x011B60, 0x011B60, JoiningType::Transparent },
+    { 0x011B62, 0x011B64, JoiningType::Transparent },
+    { 0x011B66, 0x011B66, JoiningType::Transparent },
+    { 0x011C30, 0x011C36, JoiningType::Transparent },
+    { 0x011C38, 0x011C3D, JoiningType::Transparent },
+    { 0x011C3F, 0x011C3F, JoiningType::Transparent },
+    { 0x011C92, 0x011CA7, JoiningType::Transparent },
+    { 0x011CAA, 0x011CB0, JoiningType::Transparent },
+    { 0x011CB2, 0x011CB3, JoiningType::Transparent },
+    { 0x011CB5, 0x011CB6, JoiningType::Transparent },
+    { 0x011D31, 0x011D36, JoiningType::Transparent },
+    { 0x011D3A, 0x011D3A, JoiningType::Transparent },
+    { 0x011D3C, 0x011D3D, JoiningType::Transparent },
+    { 0x011D3F, 0x011D45, JoiningType::Transparent },
+    { 0x011D47, 0x011D47, JoiningType::Transparent },
+    { 0x011D90, 0x011D91, JoiningType::Transparent },
+    { 0x011D95, 0x011D95, JoiningType::Transparent },
+    { 0x011D97, 0x011D97, JoiningType::Transparent },
+    { 0x011DF0, 0x011DF0, JoiningType::Transparent },
+    { 0x011EF3, 0x011EF4, JoiningType::Transparent },
+    { 0x011F00, 0x011F01, JoiningType::Transparent },
+    { 0x011F36, 0x011F3A, JoiningType::Transparent },
+    { 0x011F40, 0x011F40, JoiningType::Transparent },
+    { 0x011F42, 0x011F42, JoiningType::Transparent },
+    { 0x011F5A, 0x011F5A, JoiningType::Transparent },
+    { 0x013430, 0x013440, JoiningType::Transparent },
+    { 0x013447, 0x013455, JoiningType::Transparent },
+    { 0x01611E, 0x016129, JoiningType::Transparent },
+    { 0x01612D, 0x01612F, JoiningType::Transparent },
+    { 0x016AF0, 0x016AF4, JoiningType::Transparent },
+    { 0x016B30, 0x016B36, JoiningType::Transparent },
+    { 0x016F4F, 0x016F4F, JoiningType::Transparent },
+    { 0x016F8F, 0x016F92, JoiningType::Transparent },
+    { 0x016FE4, 0x016FE4, JoiningType::Transparent },
+    { 0x01BC9D, 0x01BC9E, JoiningType::Transparent },
+    { 0x01BCA0, 0x01BCA3, JoiningType::Transparent },
+    { 0x01CF00, 0x01CF2D, JoiningType::Transparent },
+    { 0x01CF30, 0x01CF46, JoiningType::Transparent },
+    { 0x01D127, 0x01D128, JoiningType::Transparent },
+    { 0x01D167, 0x01D169, JoiningType::Transparent },
+    { 0x01D173, 0x01D182, JoiningType::Transparent },
+    { 0x01D185, 0x01D18B, JoiningType::Transparent },
+    { 0x01D1AA, 0x01D1AD, JoiningType::Transparent },
+    { 0x01D242, 0x01D244, JoiningType::Transparent },
+    { 0x01D25B, 0x01D25C, JoiningType::Transparent },
+    { 0x01DA00, 0x01DA36, JoiningType::Transparent },
+    { 0x01DA3B, 0x01DA6C, JoiningType::Transparent },
+    { 0x01DA75, 0x01DA75, JoiningType::Transparent },
+    { 0x01DA84, 0x01DA84, JoiningType::Transparent },
+    { 0x01DA9B, 0x01DA9F, JoiningType::Transparent },
+    { 0x01DAA1, 0x01DAAF, JoiningType::Transparent },
+    { 0x01E000, 0x01E006, JoiningType::Transparent },
+    { 0x01E008, 0x01E018, JoiningType::Transparent },
+    { 0x01E01B, 0x01E021, JoiningType::Transparent },
+    { 0x01E023, 0x01E024, JoiningType::Transparent },
+    { 0x01E026, 0x01E02A, JoiningType::Transparent },
+    { 0x01E08F, 0x01E08F, JoiningType::Transparent },
+    { 0x01E130, 0x01E136, JoiningType::Transparent },
+    { 0x01E2AE, 0x01E2AE, JoiningType::Transparent },
+    { 0x01E2EC, 0x01E2EF, JoiningType::Transparent },
+    { 0x01E4EC, 0x01E4EF, JoiningType::Transparent },
+    { 0x01E5EE, 0x01E5EF, JoiningType::Transparent },
+    { 0x01E6E3, 0x01E6E3, JoiningType::Transparent },
+    { 0x01E6E6, 0x01E6E6, JoiningType::Transparent },
+    { 0x01E6EE, 0x01E6EF, JoiningType::Transparent },
+    { 0x01E6F5, 0x01E6F5, JoiningType::Transparent },
+    { 0x01E8D0, 0x01E8D6, JoiningType::Transparent },
+    { 0x01E900, 0x01E943, JoiningType::DualJoining },
+    { 0x01E944, 0x01E94B, JoiningType::Transparent },
+    { 0x0E0001, 0x0E0001, JoiningType::Transparent },
+    { 0x0E0020, 0x0E007F, JoiningType::Transparent },
+    { 0x0E0100, 0x0E01EF, JoiningType::Transparent },
+};
+
+struct DirectionRange {
+    std::uint32_t first;
+    std::uint32_t last;
+};
+
+static const DirectionRange strongRTLRanges[] = {
+    { 0x000590, 0x000590 },
+    { 0x0005BE, 0x0005BE },
+    { 0x0005C0, 0x0005C0 },
+    { 0x0005C3, 0x0005C3 },
+    { 0x0005C6, 0x0005C6 },
+    { 0x0005CA, 0x0005FF },
+    { 0x000608, 0x000608 },
+    { 0x00060B, 0x00060B },
+    { 0x00060D, 0x00060D },
+    { 0x00061B, 0x00064A },
+    { 0x00066D, 0x00066F },
+    { 0x000671, 0x0006D5 },
+    { 0x0006E5, 0x0006E6 },
+    { 0x0006EE, 0x0006EF },
+    { 0x0006FA, 0x000710 },
+    { 0x000712, 0x00072F },
+    { 0x00074B, 0x0007A5 },
+    { 0x0007B1, 0x0007EA },
+    { 0x0007F4, 0x0007F5 },
+    { 0x0007FA, 0x0007FC },
+    { 0x0007FE, 0x000815 },
+    { 0x00081A, 0x00081A },
+    { 0x000824, 0x000824 },
+    { 0x000828, 0x000828 },
+    { 0x00082E, 0x000858 },
+    { 0x00085C, 0x00088F },
+    { 0x000892, 0x000896 },
+    { 0x0008A0, 0x0008C9 },
+    { 0x00200F, 0x00200F },
+    { 0x00FB1D, 0x00FB1D },
+    { 0x00FB1F, 0x00FB28 },
+    { 0x00FB2A, 0x00FBC2 },
+    { 0x00FBD3, 0x00FD3D },
+    { 0x00FD50, 0x00FD8F },
+    { 0x00FD92, 0x00FDC7 },
+    { 0x00FDF0, 0x00FDFC },
+    { 0x00FE70, 0x00FEFE },
+    { 0x010800, 0x01091E },
+    { 0x010920, 0x010A00 },
+    { 0x010A04, 0x010A04 },
+    { 0x010A07, 0x010A0B },
+    { 0x010A10, 0x010A37 },
+    { 0x010A3B, 0x010A3E },
+    { 0x010A40, 0x010AE4 },
+    { 0x010AE7, 0x010B38 },
+    { 0x010B40, 0x010D23 },
+    { 0x010D28, 0x010D2F },
+    { 0x010D3A, 0x010D3F },
+    { 0x010D4A, 0x010D68 },
+    { 0x010D6F, 0x010E5F },
+    { 0x010E7F, 0x010EAA },
+    { 0x010EAD, 0x010ECA },
+    { 0x010ED9, 0x010EEF },
+    { 0x010F00, 0x010F45 },
+    { 0x010F51, 0x010F81 },
+    { 0x010F86, 0x010FFF },
+    { 0x01E800, 0x01E8CF },
+    { 0x01E8D7, 0x01E943 },
+    { 0x01E94B, 0x01EEEF },
+    { 0x01EEF2, 0x01EFFF },
+};
+
 struct PresFormB {
     std::uint32_t base;
     std::uint32_t isol, fina, init, medi;
 };
 
 static const PresFormB presFormB[] = {
-    { 0x0621, 0xFE80, 0,      0,      0      },  // HAMZA
-    { 0x0622, 0xFE81, 0xFE82, 0,      0      },  // ALEF MADDA
-    { 0x0623, 0xFE83, 0xFE84, 0,      0      },  // ALEF HAMZA ABOVE
-    { 0x0624, 0xFE85, 0xFE86, 0,      0      },  // WAW HAMZA
-    { 0x0625, 0xFE87, 0xFE88, 0,      0      },  // ALEF HAMZA BELOW
-    { 0x0626, 0xFE89, 0xFE8A, 0xFE8B, 0xFE8C },  // YEH HAMZA (dual)
-    { 0x0627, 0xFE8D, 0xFE8E, 0,      0      },  // ALEF
-    { 0x0628, 0xFE8F, 0xFE90, 0xFE91, 0xFE92 },  // BEH
-    { 0x0629, 0xFE93, 0xFE94, 0,      0      },  // TEH MARBUTA
-    { 0x062A, 0xFE95, 0xFE96, 0xFE97, 0xFE98 },  // TEH
-    { 0x062B, 0xFE99, 0xFE9A, 0xFE9B, 0xFE9C },  // THEH
-    { 0x062C, 0xFE9D, 0xFE9E, 0xFE9F, 0xFEA0 },  // JEEM
-    { 0x062D, 0xFEA1, 0xFEA2, 0xFEA3, 0xFEA4 },  // HAH
-    { 0x062E, 0xFEA5, 0xFEA6, 0xFEA7, 0xFEA8 },  // KHAH
-    { 0x062F, 0xFEA9, 0xFEAA, 0,      0      },  // DAL
-    { 0x0630, 0xFEAB, 0xFEAC, 0,      0      },  // THAL
-    { 0x0631, 0xFEAD, 0xFEAE, 0,      0      },  // REH
-    { 0x0632, 0xFEAF, 0xFEB0, 0,      0      },  // ZAIN
-    { 0x0633, 0xFEB1, 0xFEB2, 0xFEB3, 0xFEB4 },  // SEEN
-    { 0x0634, 0xFEB5, 0xFEB6, 0xFEB7, 0xFEB8 },  // SHEEN
-    { 0x0635, 0xFEB9, 0xFEBA, 0xFEBB, 0xFEBC },  // SAD
-    { 0x0636, 0xFEBD, 0xFEBE, 0xFEBF, 0xFEC0 },  // DAD
-    { 0x0637, 0xFEC1, 0xFEC2, 0xFEC3, 0xFEC4 },  // TAH
-    { 0x0638, 0xFEC5, 0xFEC6, 0xFEC7, 0xFEC8 },  // ZAH
-    { 0x0639, 0xFEC9, 0xFECA, 0xFECB, 0xFECC },  // AIN
-    { 0x063A, 0xFECD, 0xFECE, 0xFECF, 0xFED0 },  // GHAIN
-    { 0x0641, 0xFED1, 0xFED2, 0xFED3, 0xFED4 },  // FEH
-    { 0x0642, 0xFED5, 0xFED6, 0xFED7, 0xFED8 },  // QAF
-    { 0x0643, 0xFED9, 0xFEDA, 0xFEDB, 0xFEDC },  // KAF
-    { 0x0644, 0xFEDD, 0xFEDE, 0xFEDF, 0xFEE0 },  // LAM
-    { 0x0645, 0xFEE1, 0xFEE2, 0xFEE3, 0xFEE4 },  // MEEM
-    { 0x0646, 0xFEE5, 0xFEE6, 0xFEE7, 0xFEE8 },  // NOON
-    { 0x0647, 0xFEE9, 0xFEEA, 0xFEEB, 0xFEEC },  // HEH
-    { 0x0648, 0xFEED, 0xFEEE, 0,      0      },  // WAW
-    { 0x0649, 0xFEEF, 0xFEF0, 0xFBE8, 0xFBE9 },  // ALEF MAKSURA
-    { 0x064A, 0xFEF1, 0xFEF2, 0xFEF3, 0xFEF4 },  // YEH
+    { 0x000621, 0x00FE80, 0x000000, 0x000000, 0x000000 },
+    { 0x000622, 0x00FE81, 0x00FE82, 0x000000, 0x000000 },
+    { 0x000623, 0x00FE83, 0x00FE84, 0x000000, 0x000000 },
+    { 0x000624, 0x00FE85, 0x00FE86, 0x000000, 0x000000 },
+    { 0x000625, 0x00FE87, 0x00FE88, 0x000000, 0x000000 },
+    { 0x000626, 0x00FE89, 0x00FE8A, 0x00FE8B, 0x00FE8C },
+    { 0x000627, 0x00FE8D, 0x00FE8E, 0x000000, 0x000000 },
+    { 0x000628, 0x00FE8F, 0x00FE90, 0x00FE91, 0x00FE92 },
+    { 0x000629, 0x00FE93, 0x00FE94, 0x000000, 0x000000 },
+    { 0x00062A, 0x00FE95, 0x00FE96, 0x00FE97, 0x00FE98 },
+    { 0x00062B, 0x00FE99, 0x00FE9A, 0x00FE9B, 0x00FE9C },
+    { 0x00062C, 0x00FE9D, 0x00FE9E, 0x00FE9F, 0x00FEA0 },
+    { 0x00062D, 0x00FEA1, 0x00FEA2, 0x00FEA3, 0x00FEA4 },
+    { 0x00062E, 0x00FEA5, 0x00FEA6, 0x00FEA7, 0x00FEA8 },
+    { 0x00062F, 0x00FEA9, 0x00FEAA, 0x000000, 0x000000 },
+    { 0x000630, 0x00FEAB, 0x00FEAC, 0x000000, 0x000000 },
+    { 0x000631, 0x00FEAD, 0x00FEAE, 0x000000, 0x000000 },
+    { 0x000632, 0x00FEAF, 0x00FEB0, 0x000000, 0x000000 },
+    { 0x000633, 0x00FEB1, 0x00FEB2, 0x00FEB3, 0x00FEB4 },
+    { 0x000634, 0x00FEB5, 0x00FEB6, 0x00FEB7, 0x00FEB8 },
+    { 0x000635, 0x00FEB9, 0x00FEBA, 0x00FEBB, 0x00FEBC },
+    { 0x000636, 0x00FEBD, 0x00FEBE, 0x00FEBF, 0x00FEC0 },
+    { 0x000637, 0x00FEC1, 0x00FEC2, 0x00FEC3, 0x00FEC4 },
+    { 0x000638, 0x00FEC5, 0x00FEC6, 0x00FEC7, 0x00FEC8 },
+    { 0x000639, 0x00FEC9, 0x00FECA, 0x00FECB, 0x00FECC },
+    { 0x00063A, 0x00FECD, 0x00FECE, 0x00FECF, 0x00FED0 },
+    { 0x000641, 0x00FED1, 0x00FED2, 0x00FED3, 0x00FED4 },
+    { 0x000642, 0x00FED5, 0x00FED6, 0x00FED7, 0x00FED8 },
+    { 0x000643, 0x00FED9, 0x00FEDA, 0x00FEDB, 0x00FEDC },
+    { 0x000644, 0x00FEDD, 0x00FEDE, 0x00FEDF, 0x00FEE0 },
+    { 0x000645, 0x00FEE1, 0x00FEE2, 0x00FEE3, 0x00FEE4 },
+    { 0x000646, 0x00FEE5, 0x00FEE6, 0x00FEE7, 0x00FEE8 },
+    { 0x000647, 0x00FEE9, 0x00FEEA, 0x00FEEB, 0x00FEEC },
+    { 0x000648, 0x00FEED, 0x00FEEE, 0x000000, 0x000000 },
+    { 0x000649, 0x00FEEF, 0x00FEF0, 0x00FBE8, 0x00FBE9 },
+    { 0x00064A, 0x00FEF1, 0x00FEF2, 0x00FEF3, 0x00FEF4 },
+    { 0x000671, 0x00FB50, 0x00FB51, 0x000000, 0x000000 },
+    { 0x000677, 0x00FBDD, 0x000000, 0x000000, 0x000000 },
+    { 0x000679, 0x00FB66, 0x00FB67, 0x00FB68, 0x00FB69 },
+    { 0x00067A, 0x00FB5E, 0x00FB5F, 0x00FB60, 0x00FB61 },
+    { 0x00067B, 0x00FB52, 0x00FB53, 0x00FB54, 0x00FB55 },
+    { 0x00067E, 0x00FB56, 0x00FB57, 0x00FB58, 0x00FB59 },
+    { 0x00067F, 0x00FB62, 0x00FB63, 0x00FB64, 0x00FB65 },
+    { 0x000680, 0x00FB5A, 0x00FB5B, 0x00FB5C, 0x00FB5D },
+    { 0x000683, 0x00FB76, 0x00FB77, 0x00FB78, 0x00FB79 },
+    { 0x000684, 0x00FB72, 0x00FB73, 0x00FB74, 0x00FB75 },
+    { 0x000686, 0x00FB7A, 0x00FB7B, 0x00FB7C, 0x00FB7D },
+    { 0x000687, 0x00FB7E, 0x00FB7F, 0x00FB80, 0x00FB81 },
+    { 0x000688, 0x00FB88, 0x00FB89, 0x000000, 0x000000 },
+    { 0x00068C, 0x00FB84, 0x00FB85, 0x000000, 0x000000 },
+    { 0x00068D, 0x00FB82, 0x00FB83, 0x000000, 0x000000 },
+    { 0x00068E, 0x00FB86, 0x00FB87, 0x000000, 0x000000 },
+    { 0x000691, 0x00FB8C, 0x00FB8D, 0x000000, 0x000000 },
+    { 0x000698, 0x00FB8A, 0x00FB8B, 0x000000, 0x000000 },
+    { 0x0006A4, 0x00FB6A, 0x00FB6B, 0x00FB6C, 0x00FB6D },
+    { 0x0006A6, 0x00FB6E, 0x00FB6F, 0x00FB70, 0x00FB71 },
+    { 0x0006A9, 0x00FB8E, 0x00FB8F, 0x00FB90, 0x00FB91 },
+    { 0x0006AD, 0x00FBD3, 0x00FBD4, 0x00FBD5, 0x00FBD6 },
+    { 0x0006AF, 0x00FB92, 0x00FB93, 0x00FB94, 0x00FB95 },
+    { 0x0006B1, 0x00FB9A, 0x00FB9B, 0x00FB9C, 0x00FB9D },
+    { 0x0006B3, 0x00FB96, 0x00FB97, 0x00FB98, 0x00FB99 },
+    { 0x0006BA, 0x00FB9E, 0x00FB9F, 0x000000, 0x000000 },
+    { 0x0006BB, 0x00FBA0, 0x00FBA1, 0x00FBA2, 0x00FBA3 },
+    { 0x0006BE, 0x00FBAA, 0x00FBAB, 0x00FBAC, 0x00FBAD },
+    { 0x0006C0, 0x00FBA4, 0x00FBA5, 0x000000, 0x000000 },
+    { 0x0006C1, 0x00FBA6, 0x00FBA7, 0x00FBA8, 0x00FBA9 },
+    { 0x0006C5, 0x00FBE0, 0x00FBE1, 0x000000, 0x000000 },
+    { 0x0006C6, 0x00FBD9, 0x00FBDA, 0x000000, 0x000000 },
+    { 0x0006C7, 0x00FBD7, 0x00FBD8, 0x000000, 0x000000 },
+    { 0x0006C8, 0x00FBDB, 0x00FBDC, 0x000000, 0x000000 },
+    { 0x0006C9, 0x00FBE2, 0x00FBE3, 0x000000, 0x000000 },
+    { 0x0006CB, 0x00FBDE, 0x00FBDF, 0x000000, 0x000000 },
+    { 0x0006CC, 0x00FBFC, 0x00FBFD, 0x00FBFE, 0x00FBFF },
+    { 0x0006D0, 0x00FBE4, 0x00FBE5, 0x00FBE6, 0x00FBE7 },
+    { 0x0006D2, 0x00FBAE, 0x00FBAF, 0x000000, 0x000000 },
+    { 0x0006D3, 0x00FBB0, 0x00FBB1, 0x000000, 0x000000 },
 };
 
-// --- lam-alef ligatures (U+FEF5..FEFC) --------------------------------
-//
-// {alef, isolated, final}. The lam (U+0644) preceding any of these four
-// alef variants collapses into one ligature glyph; `final` is used when
-// a letter precedes the lam (so the lam joins on its right), `isolated`
-// otherwise.
-struct LamAlef { std::uint32_t alef; std::uint32_t isol, fina; };
+struct LamAlef {
+    std::uint32_t alef;
+    std::uint32_t isol, fina;
+};
 
 static const LamAlef lamAlef[] = {
-    { 0x0622, 0xFEF5, 0xFEF6 },   // LAM + ALEF MADDA
-    { 0x0623, 0xFEF7, 0xFEF8 },   // LAM + ALEF HAMZA ABOVE
-    { 0x0625, 0xFEF9, 0xFEFA },   // LAM + ALEF HAMZA BELOW
-    { 0x0627, 0xFEFB, 0xFEFC },   // LAM + ALEF
+    { 0x000622, 0x00FEF5, 0x00FEF6 },
+    { 0x000623, 0x00FEF7, 0x00FEF8 },
+    { 0x000625, 0x00FEF9, 0x00FEFA },
+    { 0x000627, 0x00FEFB, 0x00FEFC },
 };

@@ -10,7 +10,7 @@
 #include <mutex>
 #include <vector>
 
-// UAX #29 grapheme-break property tables, generated from UCD 17.0.0 by
+// UAX #29 grapheme-break property tables, generated from UCD 18.0.0 by
 // Scripts/build-grapheme-tables.py, sorted by .first and binary-searched:
 //   Extend                — combining marks, variation selectors, skin tones
 //   ZWJ                   — U+200D
@@ -88,7 +88,8 @@ enum GraphemeBreakClass : std::uint8_t {
     ClassHangulV,
     ClassHangulT,
     ClassHangulSyllable,
-    ClassIncbConsonant
+    ClassIncbConsonant,
+    ClassIncbLinker,
 };
 // Keep the header's pinned copies in lockstep with this enum.
 static_assert(Ubiquitty::Unicode::graphemeClassExtend == ClassExtend);
@@ -142,6 +143,9 @@ void buildGraphemeBreakTrie()
     // which they are once GB9c exists: the caller's fast path must not swallow
     // a consonant that may close a conjunct.
     addClassRanges(incbConsonant, ClassIncbConsonant);
+    // A Linker may itself be a grapheme base. Its GB9c suffix is live from
+    // the start; unlike an Extend Linker it has a boundary before it.
+    addClassRanges(incbOtherLinker, ClassIncbLinker);
     // insertion sort by `first`. The GCB property is a partition, so the ranges
     // are disjoint and need no coalescing.
     for (int i = 1; i < graphemeClassRangeCount; ++i) {
@@ -304,7 +308,7 @@ void graphemeStateReset(GraphemeState* st, std::uint32_t base)
         st->pictExtend = false;
         st->zwjAfterPict = false;
         st->prevRaw = 0; // ASCII / Latin-1: GCB class 0
-        st->incbChain = 0; // ASCII / Latin-1 holds no InCB=Consonant
+        st->incbChain = 0; // ASCII / Latin-1 holds no InCB=Linker
         return;
     }
     const std::uint8_t raw = graphemeBreakRawByte(base);
@@ -312,7 +316,7 @@ void graphemeStateReset(GraphemeState* st, std::uint32_t base)
     st->pictExtend = detail::PropExtPictField::get(raw) != 0;
     st->zwjAfterPict = false;
     st->prevRaw = raw;
-    st->incbChain = detail::PropGCBClassField::get(raw) == ClassIncbConsonant ? 1u : 0u;
+    st->incbChain = isIncbLinker(base) ? 2u : 0u;
 }
 
 // Reset state for a new cluster base whose property byte is already loaded —
@@ -328,12 +332,12 @@ static inline void resetStateFromRaw(GraphemeState* st, std::uint32_t base, std:
         st->pictExtend = detail::PropExtPictField::get(raw) != 0;
     }
     st->zwjAfterPict = false;
-    st->incbChain = detail::PropGCBClassField::get(raw) == ClassIncbConsonant ? 1u : 0u;
+    st->incbChain = isIncbLinker(base) ? 2u : 0u;
 }
 
-// Every joiner reaching this point is InCB=Extend and leaves the conjunct
-// chain intact, bar ZWNJ, which is the one GCB=Extend codepoint that is not.
-// A Linker arms the chain for the consonant that may follow.
+// Every Extend reaching this point leaves the conjunct suffix intact, bar
+// ZWNJ, which is not InCB=Extend. A Linker arms it without a preceding
+// consonant, so an isolated virama and a cluster-initial repha both conjoin.
 void graphemeIncbAdvance(GraphemeState* st, std::uint32_t next)
 {
     if (next == 0x200C) {
@@ -375,8 +379,7 @@ bool graphemeExtends(GraphemeState* st, std::uint32_t prev, std::uint32_t next)
             st->pictExtend = false;
         } else {
             st->zwjAfterPict = false;
-            if (st->incbChain != 0)
-                graphemeIncbAdvance(st, next);
+            graphemeIncbAdvance(st, next);
         }
         st->riCount = 0;
         return true;
@@ -397,6 +400,7 @@ bool graphemeExtends(GraphemeState* st, std::uint32_t prev, std::uint32_t next)
         st->pictExtend = true;
         st->zwjAfterPict = false;
         st->riCount = 0;
+        st->incbChain = 0;
         return true;
     }
 
@@ -429,9 +433,8 @@ bool graphemeExtends(GraphemeState* st, std::uint32_t prev, std::uint32_t next)
         return true;
     }
 
-    // GB9c — Consonant [Extend|Linker]* Linker [Extend|Linker]* × Consonant.
-    // The chain is armed by the Linker above; `next` closes the conjunct and
-    // becomes the base a following conjunct would extend.
+    // GB9c — Linker Extend* × Consonant. The consonant consumes the suffix;
+    // another Linker is needed before a following consonant can join.
     if (st->incbChain == 2 && nc == ClassIncbConsonant) {
         resetStateFromRaw(st, next, rawNext);
         return true;

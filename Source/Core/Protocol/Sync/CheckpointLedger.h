@@ -149,7 +149,6 @@ inline constexpr std::array parserLedger {
     PARSER(characterSetIntermediate, HostOnly, Pending),
     PARSER(utf8, HostOnly, Pending),
     PARSER(invalidUTF8Policy, HostOnly, Policy),
-    PARSER(utf8LeadByte, HostOnly, Pending),
     PARSER(inputEncoding, HostOnly, Policy),
     PARSER(parserInputIsUTF8, HostOnly, Policy),
     // An open grapheme cluster is segmentation in progress, as a partial

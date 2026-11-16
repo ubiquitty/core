@@ -13,7 +13,7 @@
 // test's fixture, not a generation input: table generation fetches UCD per
 // build-grapheme-tables.py, but a fixture the test needs to run cannot be an
 // optional download, or the check never runs. The corpus must track the version
-// the tables were generated from (GraphemeBreak.tables.inc header — UCD 17.0.0);
+// the tables were generated from (GraphemeBreak.tables.inc header — UCD 18.0.0);
 // a mismatch reads version differences as failures, so refresh both together.
 //
 // $GRAPHEME_BREAK_TEST or argv[1] override the vendored corpus, so a newer one

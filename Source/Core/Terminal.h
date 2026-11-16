@@ -363,10 +363,6 @@ struct Terminal {
         // Substitution policy for invalid/truncated UTF-8: FFFD emits U+FFFD, Drop emits nothing,
         // Latin1 reinterprets each undecodable byte as ISO-8859-1. Read only on the error path.
         Ubiquitty::Unicode::InvalidUTF8Policy invalidUTF8Policy {};
-        // Lead byte of the in-progress multibyte sequence, kept so the Latin1 policy can reinterpret
-        // an abandoned lead after the decoder discards it. Written only when opening a multibyte sequence.
-        std::uint8_t utf8LeadByte {};
-
         // Legacy input characterSet. When != UTF8, processBytes transcodes incoming bytes to UTF-8 through
         // this streaming decoder before the UTF-8 stage. Default UTF8 = pass-through.
         Ubiquitty::Unicode::EncDecoder inputEncoding {};
@@ -374,7 +370,8 @@ struct Terminal {
 
         // Live grapheme-cluster accumulation state between emitCharacter calls. emitCharacter appends
         // extending codePoints to the lead cell's combining buffer instead of advancing the cursor.
-        //   clusterActive  — lead cell open for extension.
+        //   clusterActive  — lead cell open for extension. Inactive with a nonempty zero-width
+        //                    Prepend sequence holds an unplaced prefix until its visible base arrives.
         //   clusterRow/Column — active-screen coords of the lead cell.
         //   clusterScreen  — owning screen (0 primary, 1 alternate); a screen flip invalidates it.
         //   clusterLast    — running last codePoint, fed to the segmenter as prev.
@@ -391,8 +388,9 @@ struct Terminal {
         int clusterAtX {};
         int clusterAtY {};
         bool clusterAtWrap {};
-        // Full codePoint sequence of the live cluster; never truncates — once it outgrows the cell's
-        // inline buffer it interns into the cluster pool. Capped at clusterPoolMaximumCodePoints (rest dropped).
+        // Full codePoint sequence of the live cluster, or its unplaced format-Prepend prefix.
+        // Outgrowing the cell's inline buffer interns into the pool; capped at clusterPoolMaximumCodePoints
+        // (rest dropped). An unplaced prefix reserves the final slot for a visible base.
         std::array<uint32_t, clusterPoolMaximumCodePoints> clusterCodePoints {};
         int clusterCodepointLength {};
     } parser;
