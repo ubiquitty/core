@@ -20,9 +20,11 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -681,6 +683,109 @@ class FreshCheckoutQUICTests(unittest.TestCase):
             self.assertIn("could not fetch AWS-LC", checked.stderr)
             self.assertIn("needs network access", checked.stderr)
             self.assertIn("UBIQUITTY_QUIC_PREFIX", checked.stderr)
+
+
+class SanitizedBinarySchedulingTests(unittest.TestCase):
+    def runDriver(self, build, logs, names, **options):
+        return subprocess.run(
+            [sys.executable, str(ROOT / "Scripts/run-sanitized-binaries.py"),
+             "--build", str(build), "--logs", str(logs), "--jobs", "2", *names],
+            text=True, capture_output=True, timeout=30, **options)
+
+    def testEveryWholeBinaryRunsWithLocksSerialityAndFailurePropagation(self):
+        if shutil.which("ctest") is None:
+            self.skipTest("ctest is required")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = root / "build"
+            (build / "Tests").mkdir(parents=True)
+            names = ["test_parallel_a", "test_parallel_b", "test_locked_a", "test_locked_b",
+                     "test_serial", "test_weighted", "test_failure", "test_after"]
+            program = """#!/usr/bin/env python3
+import fcntl,json,sys,time
+from pathlib import Path
+root=Path(ROOT)
+name=Path(sys.argv[0]).name
+info={'weight':2 if name=='test_weighted' else 1,'serial':name=='test_serial',
+      'resource':'shared' if name.startswith('test_locked') else ''}
+with (root/'lock').open('a+') as lock:
+ fcntl.flock(lock,fcntl.LOCK_EX)
+ path=root/'active.json';active=json.loads(path.read_text()) if path.exists() else {}
+ invalid=(info['serial'] and active) or any(row['serial'] for row in active.values())
+ invalid=invalid or sum(row['weight'] for row in active.values())+info['weight']>2
+ invalid=invalid or (info['resource'] and any(row['resource']==info['resource'] for row in active.values()))
+ with (root/'events').open('a') as events:
+  events.write(('VIOLATION ' if invalid else 'start ')+name+' '+str(len(active))+'\\n')
+ active[name]=info;path.write_text(json.dumps(active))
+time.sleep(.25)
+with (root/'lock').open('a+') as lock:
+ fcntl.flock(lock,fcntl.LOCK_EX)
+ path=root/'active.json';active=json.loads(path.read_text());active.pop(name);path.write_text(json.dumps(active))
+ with (root/'events').open('a') as events:events.write('end '+name+'\\n')
+sys.exit(23 if invalid else 17 if name=='test_failure' else 0)
+""".replace("ROOT", repr(str(root)))
+            listing = []
+            for name in names:
+                binary = build / "Tests" / name
+                binary.write_text(program)
+                binary.chmod(0o755)
+                listing.append(f'add_test({name} "{binary}")')
+            listing.extend([
+                'set_tests_properties(test_locked_a test_locked_b PROPERTIES RESOURCE_LOCK shared)',
+                'set_tests_properties(test_serial PROPERTIES RUN_SERIAL TRUE)',
+                'set_tests_properties(test_weighted PROPERTIES PROCESSORS 2)',
+            ])
+            (build / "CTestTestfile.cmake").write_text("\n".join(listing))
+            checked = self.runDriver(build, root / "logs", names)
+            self.assertEqual(checked.returncode, 1, checked.stdout + checked.stderr)
+            events = (root / "events").read_text().splitlines()
+            self.assertFalse(any(line.startswith("VIOLATION") for line in events), events)
+            self.assertCountEqual([line.split()[1] for line in events if line.startswith("start ")], names)
+            self.assertCountEqual([line.split()[1] for line in events if line.startswith("end ")], names)
+            self.assertTrue(any(line.startswith("start test_parallel_") and line.endswith(" 1") for line in events), events)
+            self.assertIn("test_failure", checked.stderr)
+            for name in names:
+                self.assertTrue((root / "logs" / f"sanitized-{name}.log").is_file())
+
+    def testInterruptionStopsTheBoundedChild(self):
+        if shutil.which("ctest") is None:
+            self.skipTest("ctest is required")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = root / "build"
+            (build / "Tests").mkdir(parents=True)
+            marker = root / "child"
+            binary = build / "Tests/test_waiting"
+            binary.write_text("#!/usr/bin/env python3\nimport os,time\nfrom pathlib import Path\n"
+                              f"Path({str(marker)!r}).write_text(str(os.getpid()))\ntime.sleep(100)\n")
+            binary.chmod(0o755)
+            (build / "CTestTestfile.cmake").write_text(f'add_test(test_waiting "{binary}")\n')
+            child = subprocess.Popen(
+                [sys.executable, str(ROOT / "Scripts/run-sanitized-binaries.py"),
+                 "--build", str(build), "--logs", str(root / "logs"), "--jobs", "2", "test_waiting"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            try:
+                deadline = time.monotonic() + 10
+                while not marker.exists() and time.monotonic() < deadline and child.poll() is None:
+                    time.sleep(.02)
+                self.assertTrue(marker.exists())
+                process = int(marker.read_text())
+                child.send_signal(signal.SIGTERM)
+                output, _ = child.communicate(timeout=10)
+                self.assertEqual(child.returncode, 128 + signal.SIGTERM, output)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    try:
+                        os.kill(process, 0)
+                    except ProcessLookupError:
+                        break
+                    time.sleep(.02)
+                else:
+                    self.fail("the private bounded test outlived its runner")
+            finally:
+                if child.poll() is None:
+                    child.terminate()
+                    child.wait(timeout=25)
 
 
 class RemintFingerprint(unittest.TestCase):
