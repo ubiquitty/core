@@ -339,7 +339,10 @@
     {
       "paths": [
         "Tests/Core/Unicode/BidiCharacterTest.txt",
+        "Tests/Core/Unicode/DerivedBidiClass.txt",
+        "Tests/Core/Unicode/DerivedJoiningType.txt",
         "Tests/Core/Unicode/GraphemeBreakTest.txt",
+        "Tests/Core/Unicode/NormalizationTest.txt",
         "Tests/Core/Unicode/emoji-data.txt",
         "Source/Core/Unicode/UNICODE-LICENSE.txt"
       ],
