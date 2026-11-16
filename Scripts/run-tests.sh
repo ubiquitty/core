@@ -3945,19 +3945,8 @@ elif wanted sanitized_sync && command -v cmake >/dev/null 2>&1; then
             build_broken "sanitized_sync build failed (see $SANITIZED_LOG)"
         fi
         ubq_require_sanitized address "$SANITIZED_BUILD/Tests/${SANITIZED_TESTS[0]}" sanitized_sync || exit 1
-        SANITIZED_RED=()
-        for SANITIZED_NAME in "${SANITIZED_TESTS[@]}"; do
-            if ! UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ubq_run_bounded 300 "$SANITIZED_BUILD/Tests/$SANITIZED_NAME" >"$OUT/sanitized-$SANITIZED_NAME.log" 2>&1; then
-                SANITIZED_RED+=("$SANITIZED_NAME")
-                grep -m1 -E 'ERROR: AddressSanitizer|runtime error:|FAILED|FATAL' "$OUT/sanitized-$SANITIZED_NAME.log" | sed "s/^/sanitized_sync: $SANITIZED_NAME: /" >&2
-                echo "  (the whole run is in $OUT/sanitized-$SANITIZED_NAME.log)" >&2
-                cat "$OUT/sanitized-$SANITIZED_NAME.log" >&2
-            fi
-        done
-        if [ "${#SANITIZED_RED[@]}" -ne 0 ]; then
-            echo "sanitized_sync: FAILED — ${#SANITIZED_RED[@]} of ${#SANITIZED_TESTS[@]} test(s) under the sanitizers: ${SANITIZED_RED[*]}" >&2
-            exit 1
-        fi
+        UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 python3 "$CORE_ROOT/Scripts/run-sanitized-binaries.py" \
+            --build "$SANITIZED_BUILD" --logs "$OUT" --jobs "$CTEST_JOBS" "${SANITIZED_TESTS[@]}" || exit 1
         echo "sanitized_sync: ${#SANITIZED_TESTS[@]} test(s) ran clean under AddressSanitizer and UndefinedBehaviorSanitizer"
     fi
 fi
