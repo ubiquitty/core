@@ -3,17 +3,11 @@
 
 #include "Harness.h"
 
-// test_utf8_simd_parity.cpp — fuzz the simdutf-backed utf8DecodeRun against a
-// scalar reference. UTF8Decoder.cpp calls simdutf unconditionally, so the real
-// SIMD path runs here; the scalar reference below is this file's own copy of the
-// loop the decoder falls through to, and the two must agree.
+// Compare batched UTF-8 conversion with a scalar reference. Path counters pin
+// which converter the boundary cases exercise; fuzzing covers mixed runs.
 // Adversarial corpus (valid multibyte, ASCII boundaries, invalid leads, stray
 // continuations, truncated, overlong, surrogates) must produce identical
 // (count, bytesConsumed, codepoints) on both paths.
-//
-//   c++ -std=c++17 -O2 -ISource -ISource/ThirdParty/simdutf \
-//       Tests/Core/Unicode/test_utf8_simd_parity.cpp Source/Core/Unicode/UTF8Decoder.cpp \
-//       Source/ThirdParty/simdutf/simdutf.cpp -o /tmp/ptest && /tmp/ptest
 #include "Core/Unicode/UTF8Decoder.h"
 #include <cstddef>
 #include <cstdint>
@@ -102,6 +96,73 @@ static void emit(std::vector<char>& v, std::uint32_t codePoint)
         v.push_back((char)(0x80 | ((codePoint >> 12) & 0x3F)));
         v.push_back((char)(0x80 | ((codePoint >> 6) & 0x3F)));
         v.push_back((char)(0x80 | (codePoint & 0x3F)));
+    }
+}
+
+static void testThreeByteRunBoundaries()
+{
+    std::vector<char> input;
+    constexpr std::uint32_t codePoints[] = { 0x800, 0xFFF, 0x1000, 0x4E00, 0xD7FF, 0xE000, 0xFFFF };
+    for (int i = 0; i < 64; ++i)
+        emit(input, codePoints[i % std::size(codePoints)]);
+
+    const auto check = [](std::span<const char> bytes, int capacity) {
+        constexpr std::uint32_t canary = 0xDEADBEEF;
+        std::vector<std::uint32_t> actual(static_cast<std::size_t>(capacity) + 2, canary);
+        std::vector<std::uint32_t> expected(static_cast<std::size_t>(capacity) + 2, canary);
+        int actualConsumed = 0;
+        int expectedConsumed = 0;
+        const int actualCount = Ubiquitty::Unicode::utf8DecodeRun(bytes,
+            std::span { actual.data() + 1, static_cast<std::size_t>(capacity) }, &actualConsumed);
+        const int expectedCount = refDecode(bytes.data(), static_cast<int>(bytes.size()), expected.data() + 1,
+            capacity, &expectedConsumed);
+        CHECK_EQ(actualCount, expectedCount);
+        CHECK_EQ(actualConsumed, expectedConsumed);
+        CHECK_EQ(actual.front(), canary);
+        CHECK_EQ(actual.back(), canary);
+        CHECK_EQ(std::memcmp(actual.data() + 1, expected.data() + 1,
+                     static_cast<std::size_t>(expectedCount) * sizeof(std::uint32_t)),
+            0);
+    };
+
+    const auto before = Ubiquitty::Unicode::threeByteSIMDRunCountForTest;
+    for (int capacity = 0; capacity <= 65; ++capacity) {
+        check(input, capacity);
+        for (std::size_t length = 94; length <= 100; ++length)
+            check(std::span { input }.first(length), capacity);
+    }
+#if defined(__aarch64__)
+    CHECK(Ubiquitty::Unicode::threeByteSIMDRunCountForTest > before);
+#else
+    CHECK(Ubiquitty::Unicode::threeByteSIMDRunCountForTest == before);
+#endif
+
+    for (std::size_t padding = 0; padding < 16; ++padding) {
+        std::vector<char> unaligned(padding, 'x');
+        unaligned.insert(unaligned.end(), input.begin(), input.end());
+        check(std::span { unaligned }.subspan(padding), 40);
+        check(std::span { unaligned }.subspan(padding), 64);
+    }
+    for (const int prefix : { 16, 32, 48 }) {
+        std::vector<char> mixed(input.begin(), input.begin() + prefix * 3);
+        emit(mixed, 0xE9);
+        emit(mixed, 0x1F642);
+        emit(mixed, 0x4E0F);
+        mixed.push_back('x');
+        check(mixed, 40);
+        check(mixed, 64);
+    }
+
+    // Reject each malformed lane before storing it, including a bad lane
+    // after an already converted vector. Preserve the exact scalar stop.
+    for (std::size_t offset = 0; offset < input.size(); ++offset) {
+        const char original = input[offset];
+        for (const unsigned byte : { 0x00, 0x7F, 0x80, 0x9F, 0xA0, 0xBF, 0xC0, 0xC2, 0xDF, 0xE0, 0xED, 0xEF, 0xF0, 0xF4, 0xFF }) {
+            input[offset] = static_cast<char>(byte);
+            check(input, 64);
+            check(input, 40);
+        }
+        input[offset] = original;
     }
 }
 
@@ -346,6 +407,7 @@ static void testInvalidInteriorFallsToScalarStop()
 
 int main()
 {
+    testThreeByteRunBoundaries();
     testOutputCapacityUsesSequenceCount();
     testTheOutputCapacityDecidesWhichPathDecodes();
     testByteLimitReturnsWholeSequencePrefix();

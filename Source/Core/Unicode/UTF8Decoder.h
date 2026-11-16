@@ -97,10 +97,10 @@ int utf8DecodeRun(std::span<const char> in, std::span<std::uint32_t> out, int* b
 /// from "there is only one path here".
 extern std::uint64_t simdRunCountForTest;
 
-/// How many bytes run decodes have consumed, on either path.
-///
-/// A batched writer that decodes ahead of what it places can be held to
-/// decoding each byte once by comparing this with the bytes it was given.
+/// How many runs used the uniform three-byte converter.
+extern std::uint64_t threeByteSIMDRunCountForTest;
+
+/// How many input bytes run decodes have consumed, on either path.
 extern std::uint64_t decodedBytesForTest;
 #endif
 
