@@ -1278,4 +1278,48 @@ TEST(aStripSizedToItsInkedRowsCrossesNoRowItDoesNotInk)
     CHECK_MSG(std::ranges::all_of(crossings, [](std::uint8_t entry) { return entry == 0; }), "and crosses no row");
 }
 
+TEST(aRuleOutsideTheGridRequiresItsOuterRowToRepaintTheWholeTarget)
+{
+    TermPalette palette;
+    palette.seedDefaults();
+    constexpr int rows = 3;
+    std::vector<Cell> grid(rows, defaultBlankCell);
+    auto inputs = baseInputs(grid, palette, rows, 1, 8.0f);
+    inputs.metrics.baselineFromTop = 13.5f;
+    std::array<CellInstance, rows> cells;
+    std::array<DecorationInstance, 16> rules;
+    std::array<std::uint8_t, rows + 1> crossings;
+    InstanceBuffers buffers { cells.data(), cells.size(), rules.data(), rules.size() };
+    buffers.rowInkCrossings = crossings.data();
+    buffers.rowInkCrossingCapacity = crossings.size();
+    PhaseAtlas atlas;
+    for (const int row : { 0, rows - 1 }) {
+        grid[row].pen.attributes.add(VT::Attribute::Underline);
+        penSetUnderlineShape(&grid[row].pen, VT::underlineCurly);
+        inputs.metrics.underlineDrop = row == 0 ? -20.0f : 2.0f;
+        const InstanceCounts counts = buildCellInstances(inputs, UbiquittyTest::glyphBackendFor(atlas), buffers);
+        REQUIRE(counts.decorations > 0);
+        const int boundary = row == 0 ? 0 : rows;
+        CHECK(crossings[boundary] != 0);
+        const auto targetWithRule = crossings;
+        grid[row].pen.attributes.remove(VT::Attribute::Underline);
+        penSetUnderlineShape(&grid[row].pen, VT::underlineNone);
+        const InstanceCounts blank = buildCellInstances(inputs, UbiquittyTest::glyphBackendFor(atlas), buffers);
+        REQUIRE(blank.decorations == 0);
+        std::array<std::uint8_t, rows> dirty {};
+        dirty[row] = 1;
+        auto target = targetWithRule;
+        CHECK_MSG(!settleRowInkCrossings(dirty, target, crossings, 0, rows - 1, 0),
+            "removing the rule must clear its ink outside the grid");
+        target.fill(0);
+        CHECK_MSG(!settleRowInkCrossings(dirty, target, targetWithRule, 0, rows - 1, 0),
+            "adding the rule must redraw the target with the complete stroke");
+        dirty.fill(0);
+        dirty[1] = 1;
+        target = targetWithRule;
+        CHECK_MSG(settleRowInkCrossings(dirty, target, crossings, 0, rows - 1, 0),
+            "an unrelated row may still load the retained target");
+    }
+}
+
 UBIQUITTY_TEST_MAIN()

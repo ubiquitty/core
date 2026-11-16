@@ -1150,6 +1150,78 @@ TEST(nativeGlyphInkMayReachIntoTheInternalPadding)
     }
 }
 
+TEST(decorationRulesMayReachIntoTheInternalPadding)
+{
+    UnifontRasterizer rasterizer(2, 4);
+    const CellMetrics metrics = rasterizer.cellMetrics();
+    SoftwareRenderer renderer(static_cast<int>(metrics.cellWidth), static_cast<int>(metrics.cellHeight), rasterizer);
+    TermPalette palette;
+    palette.seedDefaults();
+    palette.indexed[0] = { 19 * 257, 31 * 257, 47 * 257 };
+    palette.indexed[2] = { 0, 65535, 0 };
+    constexpr int columns = 3;
+    constexpr int rows = 3;
+    std::vector<Cell> cells(columns * (rows + 1), defaultBlankCell);
+    for (Cell& cell : cells)
+        cell.pen.backgroundIndex = 0;
+    BuildInputs input;
+    input.cells = cells.data();
+    input.rows = rows;
+    input.columns = columns;
+    input.palette = &palette;
+    input.metrics = metrics;
+    input.isBitmapFace = true;
+    const std::array<std::uint8_t, 4> padding { 19, 31, 47, 255 };
+    const Pixel untouched { 19, 31, 47, 255 };
+    for (const auto style : { VT::underlineSingle, VT::underlineDouble, VT::underlineCurly, VT::underlineDotted }) {
+        for (Cell& cell : std::span(cells).first(columns * rows)) {
+            cell.pen.attributes.add(VT::Attribute::Underline);
+            penSetUnderlineShape(&cell.pen, style);
+            cell.pen.underlineIndex = 2;
+        }
+        input.originInPixels = {};
+        input.viewportSizeInPixels = {};
+        input.rows = rows;
+        std::vector<std::uint8_t> tight;
+        int tightWidth = 0, tightHeight = 0;
+        REQUIRE(renderer.render(input, tight, tightWidth, tightHeight, padding));
+        input.originInPixels = { 5, 7 };
+        input.viewportSizeInPixels = { static_cast<float>(tightWidth + 11), static_cast<float>(tightHeight + 13) };
+        std::vector<std::uint8_t> padded;
+        int width = 0, height = 0;
+        REQUIRE(renderer.render(input, padded, width, height, padding));
+        // One blank row leaves the whole final rule inside a tight drawable.
+        // Its pixels are the independent witness for ink entering padding.
+        input.rows = rows + 1;
+        input.originInPixels = {};
+        input.viewportSizeInPixels = {};
+        std::vector<std::uint8_t> expanded;
+        int expandedWidth = 0, expandedHeight = 0;
+        REQUIRE(renderer.render(input, expanded, expandedWidth, expandedHeight, padding));
+        int changedPixels = 0;
+        int rulePixelsBelowGrid = 0;
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                const Pixel pixel = at(padded, width, x, y);
+                const Pixel expected = x >= 5 && x < 5 + expandedWidth && y >= 7 && y < 7 + expandedHeight
+                    ? at(expanded, expandedWidth, x - 5, y - 7)
+                    : untouched;
+                changedPixels += isSamePixel(pixel, expected) ? 0 : 1;
+                if (y >= 7 + tightHeight)
+                    rulePixelsBelowGrid += isSamePixel(pixel, untouched) ? 0 : 1;
+            }
+        }
+        CHECK_EQ(changedPixels, 0);
+        if (style == VT::underlineDouble || style == VT::underlineCurly)
+            CHECK(rulePixelsBelowGrid > 0);
+        input.rows = rows;
+        input.originInPixels = {};
+        input.viewportSizeInPixels = {};
+        REQUIRE(renderer.render(input, padded, width, height, padding));
+        CHECK(padded == tight);
+    }
+}
+
 // Removing the late padding fill must not let a scrolling inline picture
 // acquire the glyphs' overhang permission. Its resolved quad retains the grid
 // clip for both image bands, with untouched themed padding on every side.

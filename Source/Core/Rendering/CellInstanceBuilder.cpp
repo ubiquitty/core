@@ -1301,9 +1301,16 @@ void markRowInkCrossingsOver(float gridTop, float cellHeight, int rows, const Mo
     markGlyphs(out.doubleGlyphs, counts.doubleGlyphs, tier.doubleGlyphs, out.doubleGlyphCapacity);
     if (out.decorations) {
         const std::size_t head = streamHeads(counts.decorations, tier.decorations, out.decorationCapacity);
-        for (std::size_t index = 0; index < head; ++index)
+        for (std::size_t index = 0; index < head; ++index) {
             markInkSpan(crossings, gridTop, cellHeight, rows, out.decorations[index].topLeftInPixels.y,
                 out.decorations[index].bottomRightInPixels.y, otherStreamCrossing);
+            // Rules can extend farther than the glyph slot's margin strips
+            // repaint. Changing an outer row must clear that overhang too.
+            if (out.decorations[index].topLeftInPixels.y < gridTop)
+                crossings.front() |= otherStreamCrossing;
+            if (out.decorations[index].bottomRightInPixels.y > gridTop + rows * cellHeight)
+                crossings.back() |= otherStreamCrossing;
+        }
     }
     if (out.boxFills) {
         const std::size_t head = streamHeads(counts.boxFills, tier.boxFills, out.boxFillCapacity);
