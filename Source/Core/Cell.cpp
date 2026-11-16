@@ -6,6 +6,7 @@
 #include "Core/Cell.h"
 #include "Core/ClusterPool.h"
 #include "Core/Terminal.h"
+#include "Core/Unicode/GraphemeBreak.h"
 #include <algorithm>
 
 namespace Ubiquitty {
@@ -17,13 +18,22 @@ int cellStoredClusterCodePoints(const Ubiquitty::Terminal& t, const Cell& cell, 
     // first `max` code points. A pool id the pool doesn't hold (a cell copied
     // from another terminal, a planted id) or a freed run id resolves to an
     // empty span and leaves the cell's inline storage to answer.
-    const std::span<const uint32_t> sequence = isRunTextAnchor(&t, cell)
+    const bool isTextRun = isRunTextAnchor(&t, cell);
+    const std::span<const uint32_t> sequence = isTextRun
         ? t.runTextStore.text(cell.clusterID())
         : t.clusterPool.sequence(cell.clusterID());
     if (sequence.empty())
         return -1;
     const int count = std::min(static_cast<int>(sequence.size()), max);
     std::copy_n(sequence.begin(), count, outputBuffer);
+    // Display rows may replace a cluster's base with its contextual form.
+    // Preserve that form just as inline reads do, without changing stored
+    // source text or a run whose text is shaped as a whole.
+    if (!isTextRun && cell.codePoint != sequence.front()) {
+        const auto base = Unicode::clusterBaseIndex(sequence);
+        if (base < static_cast<std::size_t>(count))
+            outputBuffer[base] = cell.codePoint;
+    }
     return count;
 }
 

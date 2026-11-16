@@ -16,6 +16,7 @@
 #include "Core/Rendering/CellDecisions.h"
 #include "Core/Rendering/ColorResolve.h"
 #include "Core/Rendering/RuleGeometry.h"
+#include "Core/Screen/Addressing.h"
 #include "Core/TermPalette.h"
 #include "Core/TerminalOperations.h"
 
@@ -2631,6 +2632,88 @@ struct ClusterScene {
 };
 
 } // namespace
+
+TEST(testPooledArabicDisplayClustersRetainJoiningAndContextSensitiveCacheKeys)
+{
+    struct ArabicAtlas : FakeAtlas {
+        std::vector<std::vector<std::uint32_t>> requests;
+        bool rasteriseClusterGlyph(std::span<const std::uint32_t> points, FontFace, std::uint32_t, int)
+        {
+            requests.emplace_back(points.begin(), points.end());
+            return true;
+        }
+    } atlas;
+    Ubiquitty::Terminal terminal;
+    hardReset(terminal);
+    resize(terminal, 3, 8);
+    processBytes(&terminal, "\xd8\xa8\033[31m\033]8;;https://example.invalid/arabic\033\\"
+                            "\xd8\xa8\xd9\x8e\xd9\x91\033]8;;\033\\\033[0m\xd8\xa8");
+    const Cell source = *terminal.grid->logicalCellAt(Row(0), Column(1));
+    REQUIRE(source.clusterID() != 0);
+    REQUIRE(source.linkID() != 0);
+    constexpr std::array<std::uint32_t, 3> sourceText { 0x628, 0x64e, 0x651 };
+    std::array<std::uint32_t, 3> copied;
+    CHECK_EQ(cellClusterCodePoints(&terminal, &source, copied.data(), copied.size()), 3);
+    CHECK(copied == sourceText);
+
+    std::array<Cell, 8> display;
+    Screen::getDisplayRow(terminal, 0, 0, display.data(), display.size());
+    CHECK_EQ(display[1].codePoint, 0xfe92u);
+    CHECK(std::memcmp(&display[1].pen, &source.pen, sizeof(Pen)) == 0);
+    CHECK_EQ(display[1].linkID(), source.linkID());
+    CHECK_EQ(cellClusterCodePoints(&terminal, &display[1], copied.data(), copied.size()), 3);
+    CHECK((copied == std::array<std::uint32_t, 3> { 0xfe92, 0x64e, 0x651 }));
+    CHECK(std::memcmp(terminal.grid->logicalCellAt(Row(0), Column(1)), &source, sizeof(Cell)) == 0);
+
+    TermPalette palette;
+    palette.seedDefaults();
+    BuildInputs in;
+    in.cells = display.data();
+    in.rows = 1;
+    in.columns = display.size();
+    in.palette = &palette;
+    in.clusterResolverContext = &terminal;
+    in.clusterResolver = [](const Cell* cell, std::span<std::uint32_t> output, void* context) {
+        return cellClusterCodePoints(static_cast<Terminal*>(context), cell, output.data(), output.size());
+    };
+    in.metrics.cellWidth = 8;
+    in.metrics.cellHeight = 16;
+    in.metrics.baselineFromTop = 13;
+    std::array<CellInstance, 8> cells;
+    std::array<DecorationInstance, 32> decorations;
+    InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
+    GlyphBackend backend = UbiquittyTest::glyphBackendFor(atlas);
+    backend.rasteriseClusterGlyph = [](void* context, std::span<const std::uint32_t> points, FontFace face, std::uint32_t variant, int slot) {
+        return static_cast<ArabicAtlas*>(context)->rasteriseClusterGlyph(points, face, variant, slot);
+    };
+    buildCellInstances(in, backend, buffers);
+    buildCellInstances(in, backend, buffers);
+    REQUIRE(atlas.requests.size() == 1);
+    CHECK((atlas.requests[0] == std::vector<std::uint32_t> { 0xfe92, 0x64e, 0x651 }));
+
+    // Removing the next joining letter changes the marked letter's form,
+    // while its source cluster, paint and link retain their identities.
+    processBytes(&terminal, "\033[1;3H ");
+    Screen::getDisplayRow(terminal, 0, 0, display.data(), display.size());
+    const auto marked = std::ranges::find_if(display, [&](const Cell& cell) { return cell.clusterID() == source.clusterID(); });
+    REQUIRE(marked != display.end());
+    CHECK_EQ(marked->codePoint, 0xfe90u);
+    CHECK(std::memcmp(&marked->pen, &source.pen, sizeof(Pen)) == 0);
+    CHECK_EQ(marked->linkID(), source.linkID());
+    buildCellInstances(in, backend, buffers);
+    REQUIRE(atlas.requests.size() == 2);
+    CHECK((atlas.requests[1] == std::vector<std::uint32_t> { 0xfe90, 0x64e, 0x651 }));
+    CHECK(std::memcmp(terminal.grid->logicalCellAt(Row(0), Column(1)), &source, sizeof(Cell)) == 0);
+
+    processBytes(&terminal, "\r\nx\r\nx\r\nx\r\nx");
+    int historyLength = 0;
+    const Cell* history = Screen::absoluteRowCells(&terminal, 0, &historyLength);
+    REQUIRE(history && historyLength > 1);
+    CHECK_EQ(cellClusterCodePoints(&terminal, &history[1], copied.data(), copied.size()), 3);
+    CHECK(copied == sourceText);
+    CHECK(std::memcmp(&history[1].pen, &source.pen, sizeof(Pen)) == 0);
+    CHECK_EQ(history[1].linkID(), source.linkID());
+}
 
 // A cell whose marks live in the cluster pool reaches the resolver, and the
 // resolved run is what the cluster raster is asked for. A refused raster

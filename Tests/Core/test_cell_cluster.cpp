@@ -198,6 +198,64 @@ TEST(testACellNamingAClusterThePoolNoLongerHoldsFallsBackToItsBase)
     CHECK(tight[1] == poison);
 }
 
+TEST(testPooledDisplayClustersKeepTheirContextualBaseWithinTheReadBound)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::hardReset(t);
+    for (const bool hasPrefix : { false, true }) {
+        std::vector<std::uint32_t> source;
+        if (hasPrefix)
+            source.push_back(0x600);
+        source.insert(source.end(), { 0x628, 0x64e, 0x651 });
+        Ubiquitty::Cell original;
+        original.codePoint = source.front();
+        original.setClusterID(t.clusterPool.intern(source));
+        REQUIRE(original.clusterID() != 0);
+        Ubiquitty::Cell display = original;
+        display.codePoint = 0xfe92; // BEH's medial form selected by the row.
+        auto expected = source;
+        expected[hasPrefix ? 1 : 0] = display.codePoint;
+        for (int room = 1; room <= static_cast<int>(source.size()) + 1; ++room) {
+            std::array<std::uint32_t, 6> output;
+            output.fill(poison);
+            const int count = Ubiquitty::cellClusterCodePoints(&t, &display, output.data(), room);
+            CHECK_EQ(count, std::min(room, static_cast<int>(source.size())));
+            CHECK(std::equal(output.begin(), output.begin() + count, expected.begin()));
+            CHECK_EQ(output[static_cast<std::size_t>(count)], poison);
+        }
+        std::array<std::uint32_t, 6> canonical;
+        const int count = Ubiquitty::cellClusterCodePoints(&t, &original, canonical.data(), canonical.size());
+        CHECK(std::equal(canonical.begin(), canonical.begin() + count, source.begin(), source.end()));
+        CHECK(std::ranges::equal(t.clusterPool.sequence(original.clusterID()), source));
+    }
+}
+
+TEST(testRunTextRemainsSourceTextWhenItsAnchorHasAContextualForm)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::hardReset(t);
+    constexpr std::array<std::uint32_t, 4> source { 0x628, 0x64e, 0x651, 0x628 };
+    for (const bool isProportional : { false, true }) {
+        Ubiquitty::TextSizeSpec spec;
+        spec.isProportional = isProportional;
+        spec.isTextRun = !isProportional;
+        spec.widthCells = isProportional ? 0 : 4;
+        spec.runWidthCells = isProportional ? 4 : 0;
+        const unsigned specID = t.textSizeTable.intern(spec);
+        REQUIRE(specID != 0);
+        Ubiquitty::Cell anchor;
+        anchor.codePoint = 0xfe92;
+        anchor.pen.extendedAttributes.setTextSizeSpecID(specID);
+        anchor.setClusterID(t.runTextStore.intern(source));
+        REQUIRE(anchor.clusterID() != 0);
+        std::array<std::uint32_t, 5> output;
+        output.fill(poison);
+        CHECK_EQ(Ubiquitty::cellClusterCodePoints(&t, &anchor, output.data(), output.size()), 4);
+        CHECK(std::equal(source.begin(), source.end(), output.begin()));
+        CHECK_EQ(output[4], poison);
+    }
+}
+
 UBIQUITTY_TEST_MAIN()
 
 namespace {
