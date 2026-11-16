@@ -17,6 +17,8 @@ using UbiquittyTest::feed;
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <string_view>
 
 static std::unique_ptr<Ubiquitty::Terminal> makeTerm()
 {
@@ -635,6 +637,135 @@ static void testRepSelectorKeepsSeparatePlacementBeforeALowerBand()
     printf("PASS testRepSelectorKeepsSeparatePlacementBeforeALowerBand\n");
 }
 
+struct WideClusterRepeatCase {
+    std::string_view text;
+    uint32_t lastGraphic;
+};
+
+static constexpr WideClusterRepeatCase wideClusterRepeatCases[] = {
+    { "👩‍💻", 0x1F4BB },
+    { "👩🏽‍💻", 0x1F4BB },
+    { "👍🏽", 0x1F3FD },
+    { "😀́", 0x301 },
+    { "🇺🇸", 0x1F1F8 },
+    { "❤️́", 0x301 },
+    { "❤́️", 0xFE0F },
+    { "❤️︎", 0xFE0E },
+    { "👩‍💻️", 0xFE0F },
+};
+
+static void checkGraphicPredecessor(const Ubiquitty::Terminal& terminal, uint32_t codePoint, uint32_t selector, uint32_t multiplier)
+{
+    const auto& item = terminal.parser.precedingItem;
+    CHECK(item.kind == Ubiquitty::PrecedingItem::Kind::Graphic);
+    CHECK_EQ(item.codePoint, codePoint);
+    CHECK_EQ(item.resolvedCodePoint, codePoint);
+    CHECK_EQ(item.attachedSelector, selector);
+    CHECK_EQ(item.multiplier, multiplier);
+}
+
+static void testRepAfterWideClusterAcrossInputSplits()
+{
+    auto terminal = makeTerm();
+    Ubiquitty::resize(*terminal, 3, 8);
+    feed(*terminal, "👩‍💻\033[b");
+    CHECK_EQ(cell(*terminal, 0, 2)->codePoint, 0x1F4BBu);
+    std::array<uint32_t, 3> cluster {};
+    CHECK_EQ(Ubiquitty::cellClusterCodePoints(terminal.get(), cell(*terminal, 0, 0), cluster.data(), cluster.size()), 3);
+    CHECK((cluster == std::array<uint32_t, 3> { 0x1F469, 0x200D, 0x1F4BB }));
+
+    for (const auto screen : { Ubiquitty::ScreenMode::Primary, Ubiquitty::ScreenMode::Alternate }) {
+        for (const auto ambiguous : { Ubiquitty::Unicode::Width::AmbiguousWidth::Narrow, Ubiquitty::Unicode::Width::AmbiguousWidth::Wide }) {
+            for (const int columns : { 4, 5, 8, 80 }) {
+                const auto prepare = [&](Ubiquitty::Terminal& target) {
+                    prepareGraphicRepeat(target, screen, columns);
+                    target.ambiguousWidth = ambiguous;
+                    feed(target, "\033[38;2;17;83;129;4m\033]8;;https://example.test/rep\033\\");
+                    if (columns <= 5)
+                        feed(target, columns == 4 ? "\033[3G" : "\033[4G");
+                };
+                for (const auto& graphic : wideClusterRepeatCases) {
+                    for (const std::string_view suffix : { "\033[b", "x\033T\033[b" }) {
+                        const std::string stream = std::string(graphic.text) + std::string(suffix);
+                        auto expected = makeTerm();
+                        prepare(*expected);
+                        for (const char& byte : stream)
+                            feed(*expected, { &byte, 1 });
+                        for (std::size_t split = 0; split <= stream.size(); ++split) {
+                            auto actual = makeTerm();
+                            prepare(*actual);
+                            feed(*actual, std::string_view(stream).substr(0, split));
+                            feed(*actual, std::string_view(stream).substr(split));
+                            checkGraphicRepeatState(*actual, *expected);
+                            checkGraphicPredecessor(*actual, graphic.lastGraphic, 0, 1);
+                            CHECK(UbiquittyTest::firstOrphanedWideHalf(*actual).empty());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    printf("PASS testRepAfterWideClusterAcrossInputSplits\n");
+}
+
+static void testRepRestoresWideClusterPredecessorAfterCancellation()
+{
+    for (const auto& graphic : wideClusterRepeatCases) {
+        auto actual = makeTerm();
+        auto expected = makeTerm();
+        const std::string prefix = std::string(graphic.text) + "x";
+        feed(*actual, prefix);
+        feed(*actual, "\033T");
+        checkGraphicPredecessor(*actual, graphic.lastGraphic, 0, 1);
+        feed(*actual, "\033[2b");
+        for (const char& byte : prefix)
+            feed(*expected, { &byte, 1 });
+        feed(*expected, "\033T\033[2b");
+        checkGraphicRepeatState(*actual, *expected);
+        checkGraphicPredecessor(*actual, graphic.lastGraphic, 0, 2);
+    }
+    printf("PASS testRepRestoresWideClusterPredecessorAfterCancellation\n");
+}
+
+static void testRepPreservesFusedAndSeparateSelectorRoutes()
+{
+    struct SelectorCase {
+        std::string_view base;
+        std::string_view selector;
+        uint32_t baseCodePoint;
+        uint32_t selectorCodePoint;
+    };
+    constexpr SelectorCase cases[] = {
+        { "❤", "️", 0x2764, 0xFE0F },
+        { "😀", "︎", 0x1F600, 0xFE0E },
+    };
+    for (const auto& input : cases) {
+        auto fused = makeTerm();
+        auto literalFused = makeTerm();
+        const std::string pair = std::string(input.base) + std::string(input.selector);
+        feed(*fused, pair + "\033[b");
+        feed(*literalFused, pair + pair);
+        checkGraphicRepeatState(*fused, *literalFused);
+        checkGraphicPredecessor(*fused, input.baseCodePoint, input.selectorCodePoint, 1);
+
+        auto separate = makeTerm();
+        auto literalSeparate = makeTerm();
+        for (auto* target : { separate.get(), literalSeparate.get() }) {
+            feed(*target, input.base);
+            feed(*target, input.selector);
+            checkGraphicPredecessor(*target, input.selectorCodePoint, 0, 1);
+        }
+        // A selector received on its own is the REP item; the fused route
+        // records a base-selector pair.
+        feed(*separate, "\033[b");
+        feed(*literalSeparate, "\033[m");
+        feed(*literalSeparate, input.selector);
+        checkGraphicRepeatState(*separate, *literalSeparate);
+        checkGraphicPredecessor(*separate, input.selectorCodePoint, 0, 1);
+    }
+    printf("PASS testRepPreservesFusedAndSeparateSelectorRoutes\n");
+}
+
 int main(int argc, const char* argv[])
 {
     (void)argc;
@@ -669,6 +800,9 @@ int main(int argc, const char* argv[])
     testRepAvoidsGraphicCancellationStorage();
     testRepCancellationBoundaryAcrossInputChunks();
     testRepSelectorKeepsSeparatePlacementBeforeALowerBand();
+    testRepAfterWideClusterAcrossInputSplits();
+    testRepRestoresWideClusterPredecessorAfterCancellation();
+    testRepPreservesFusedAndSeparateSelectorRoutes();
 
     printf("\n=== Results: %s ===\n", failures ? "FAILED" : "ALL PASSED");
     return failures;

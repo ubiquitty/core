@@ -6557,8 +6557,11 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
     const std::size_t tracked = std::min(lastEnd - lastStart, static_cast<std::size_t>(Ubiquitty::clusterPoolMaximumCodePoints));
     std::copy_n(codePoints.data() + lastStart, tracked, t.parser.clusterCodePoints.data());
     t.parser.clusterCodepointLength = static_cast<uint8_t>(tracked);
-    const uint32_t selector = lastStart + 1 < lastEnd && Ubiquitty::Unicode::Width::isEmojiVariationSelector(codePoints[lastStart + 1]) ? codePoints[lastStart + 1] : 0;
-    t.parser.precedingItem.setGraphic(codePoints[lastStart], codePoints[lastStart], selector);
+    const bool isSelectorPair = lastEnd - lastStart == 2
+        && Ubiquitty::Unicode::Width::isEmojiVariationSelector(codePoints[lastStart + 1]);
+    const uint32_t selector = isSelectorPair ? codePoints[lastStart + 1] : 0;
+    const uint32_t lastGraphic = isSelectorPair ? codePoints[lastStart] : codePoints[lastEnd - 1];
+    t.parser.precedingItem.setGraphic(lastGraphic, lastGraphic, selector);
     return static_cast<int>(consumed);
 }
 
