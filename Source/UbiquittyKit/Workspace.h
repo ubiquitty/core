@@ -26,6 +26,11 @@ public:
         std::uint32_t sessionID = 0;
         std::uint32_t workspaceID = 0;
         std::string name;
+        /// The daemon process that listed `workspaceID`, as
+        /// `SessionDirectoryCore::daemonInstanceID` reports it; zero for any.
+        /// A workspace nothing runs in is restored by id only from the daemon
+        /// that listed it, and another daemon answering is refused.
+        std::uint64_t daemonInstanceID = 0;
     };
     /// Receives workspace changes on the owned dispatcher's thread.
     class Observer {
@@ -83,6 +88,9 @@ public:
     [[nodiscard]] std::uint32_t initialSessionID() const;
     /// The acknowledged daemon socket, retained across reconnects.
     [[nodiscard]] std::string socketName() const;
+    /// The daemon process that acknowledged the workspace, zero before then;
+    /// a target naming it restores a workspace this daemon lists by id.
+    [[nodiscard]] std::uint64_t daemonInstanceID() const;
     /// The workspace carrier's current connection state.
     [[nodiscard]] Ubiquitty::Session::State state() const;
     /// A connection failure, empty while the workspace is healthy.

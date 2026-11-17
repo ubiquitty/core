@@ -116,6 +116,7 @@ struct Workspace::Impl final : Ubiquitty::Session::SessionDirectoryObserver {
         auto& physical = connection.connection();
         physical.setReattachPolicy(Ubiquitty::Session::ReattachPolicy::AttachOnly);
         physical.setAttachWorkspaceID(target.workspaceID);
+        physical.setExpectedDaemonInstanceID(target.daemonInstanceID);
         if (!target.name.empty())
             physical.setWorkspace(target.name, false);
         auto value = std::make_unique<Pane>(*this, connection);
@@ -224,6 +225,7 @@ const Terminal* Workspace::terminal(std::uint32_t sessionID) const
 }
 std::uint32_t Workspace::initialSessionID() const { return m_impl->initialSessionID; }
 std::string Workspace::socketName() const { return m_impl->connection.connection().socketName(); }
+std::uint64_t Workspace::daemonInstanceID() const { return m_impl->connection.connection().daemonInstanceID(); }
 Ubiquitty::Session::State Workspace::state() const { return m_impl->connection.connection().state(); }
 std::string_view Workspace::error() const { return m_impl->error; }
 bool Workspace::hasEnded() const

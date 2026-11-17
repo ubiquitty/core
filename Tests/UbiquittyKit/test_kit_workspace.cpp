@@ -6,6 +6,7 @@
 #include "WorkspaceStructureFixture.h"
 #include <deque>
 #include <memory>
+#include <optional>
 #include <vector>
 
 using namespace Ubiquitty;
@@ -155,6 +156,7 @@ TEST(workspaceEmbeddingOwnsReplicasAndRoutesBinaryInput)
     CHECK(fixture.secondInput.bytes() == std::string("a\0b", 3));
     CHECK(fixture.firstInput.bytes().empty());
     CHECK(fixture.workspace.socketName() == "embedding.sock");
+    CHECK_EQ(fixture.workspace.daemonInstanceID(), std::uint64_t { 17 });
     CHECK(fixture.observer.changes > 0u);
     fixture.workspace.stop();
     fixture.workspace.stop();
@@ -194,6 +196,32 @@ TEST(workspaceEmbeddingPublishesPanePixelsWithoutMutatingTheReplica)
     CHECK(std::ranges::any_of(reports, [](const auto& report) {
         return report.viewport == Sync::Viewport { 23, 40, 12, 24, 480, 552, 480, 552 };
     }));
+}
+
+TEST(workspaceRestoreByIDNamesTheDaemonThatListedIt)
+{
+    auto dispatcher = std::make_unique<Queue>();
+    auto transport = std::make_unique<Factory>();
+    auto* queue = dispatcher.get();
+    auto* factory = transport.get();
+    Observer observer;
+    UbiquittyKit::Workspace workspace { std::move(dispatcher), std::move(transport), observer };
+    Sync::HostConnection host { Sync::measuredHostPolicy(0), Fixture::identity() };
+    std::optional<Sync::AdmissionRequest> greeted;
+    host.setGreetingAdmission([&](const Sync::Greet& greet) -> std::expected<Sync::HostIdentity, Sync::Bye> {
+        greeted = greet.request;
+        return Fixture::identity();
+    });
+    workspace.start({ .workspaceID = 91, .daemonInstanceID = 17 }, 80, 24);
+    queue->drain();
+    REQUIRE(factory->wires.size() == 1u);
+    std::uint64_t now = 1000000;
+    for (const auto& bytes : factory->wires.front()->sent)
+        host.receiveStream(bytes, now += 20000);
+    host.service(now += 20000);
+    REQUIRE(greeted);
+    CHECK_EQ(greeted->workspaceID, 91u);
+    CHECK_EQ(greeted->expectedDaemonInstanceID, std::uint64_t { 17 });
 }
 
 TEST(hostFactoryValidatesBeforeSpawningAndPinsTheAcknowledgedDaemon)
