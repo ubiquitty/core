@@ -7,8 +7,10 @@
 
 #include "LocalAdoptionFixture.h"
 
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 using namespace Ubiquitty::HostTest;
@@ -25,8 +27,19 @@ int main()
         return 1;
     }
     auto* owner = fixture.makeOwner();
-    if (!owner || !fixture.startPausedLeader(*owner) || !fixture.adopt(*owner)) {
-        std::fprintf(stderr, "adopt_fd_cli: FAIL — the genuine ancestor did not receive exact Committed evidence\n");
+    if (!owner) {
+        std::fprintf(stderr, "adopt_fd_cli: FAIL — the genuine ancestor could not open its PTY: %s\n", std::strerror(errno));
+        return 1;
+    }
+    if (!fixture.startPausedLeader(*owner)) {
+        std::fprintf(stderr, "adopt_fd_cli: FAIL — the genuine ancestor's session leader did not become ready\n");
+        return 1;
+    }
+    if (!fixture.adopt(*owner)) {
+        const auto* attempt = owner->result.attempt.get();
+        const int rejection = attempt && attempt->rejection() ? static_cast<int>(*attempt->rejection()) : -1;
+        std::fprintf(stderr, "adopt_fd_cli: FAIL — the genuine ancestor did not receive exact Committed evidence (ownership %u, elapsed %lld ms, attempt %d, rejection %d)\n",
+            static_cast<unsigned>(owner->result.ownership), static_cast<long long>(owner->elapsed.count()), attempt != nullptr, rejection);
         return 1;
     }
     const auto before = publishedAdoptionPaneCount(fixture.socketPath());
