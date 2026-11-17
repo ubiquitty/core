@@ -212,7 +212,7 @@ TEST(workspaceRestoreByIDNamesTheDaemonThatListedIt)
         greeted = greet.request;
         return Fixture::identity();
     });
-    workspace.start({ .workspaceID = 91, .daemonInstanceID = 17 }, 80, 24);
+    workspace.start({ .workspaceID = 91, .name = {}, .daemonInstanceID = 17 }, 80, 24);
     queue->drain();
     REQUIRE(factory->wires.size() == 1u);
     std::uint64_t now = 1000000;
