@@ -26,12 +26,15 @@
 //
 
 #include "Core/Crypto/SHA256.h"
+#include "Core/Modes/SyncOutput.h"
 #include "Core/Protocol/Sync/Connection.h"
 #include "HostConnection.h"
 #include "Platform/Host/HostSocketName.h"
 #include "Platform/Host/TokenStore.h"
 #include "ScreenClient.h"
 
+#include <array>
+#include <climits>
 #include <csignal>
 #include <ctime>
 #include <sys/stat.h>
@@ -41,7 +44,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace Ubiquitty::HostTest;
@@ -62,10 +67,58 @@ std::uint64_t nowMilliseconds()
     return static_cast<std::uint64_t>(ts.tv_sec) * 1000ull + static_cast<std::uint64_t>(ts.tv_nsec) / 1000000ull;
 }
 
-// Eighteen slices with a pause between them: the PTY empties and the emission
-// step is reached repeatedly, and the whole run stays inside maxHoldTicks so the
-// watchdog never ends the block for us.
-const char* const slicedOutput = "for i in $(seq 1 18); do seq 1 40; sleep 0.03; done";
+// One writer keeps process launch outside the hold. Forking seq and sleep for
+// every slice can consume the watchdog budget before composition finishes.
+enum class SlicedComposition {
+    Unblocked,
+    Synchronized,
+};
+
+int emitSlices(const char* receiptPath, SlicedComposition composition)
+{
+    const auto start = nowMilliseconds();
+    if (composition == SlicedComposition::Synchronized)
+        std::printf("\033[?2026h");
+    for (int slice = 0; slice < 18; ++slice) {
+        for (int line = 1; line <= 40; ++line)
+            std::printf("%d\n", line);
+        if (std::fflush(stdout) != 0)
+            return 1;
+        ::usleep(30000);
+    }
+    if (composition == SlicedComposition::Synchronized)
+        std::printf("\033[?2026l");
+    if (std::fflush(stdout) != 0)
+        return 1;
+    std::ofstream receipt(receiptPath);
+    receipt << nowMilliseconds() - start << '\n';
+    receipt.close();
+    return receipt ? 0 : 1;
+}
+
+std::string quoteForShell(std::string_view value)
+{
+    std::string result = "'";
+    for (char character : value) {
+        if (character == '\'')
+            result += "'\\''";
+        else
+            result += character;
+    }
+    return result + "'";
+}
+
+bool compositionStayedWithinHold(const std::string& receiptPath)
+{
+    std::ifstream receipt(receiptPath);
+    std::uint64_t elapsed = 0;
+    if (!(receipt >> elapsed))
+        return fail("the sliced writer did not finish and record its duration");
+    constexpr std::uint64_t maxMilliseconds = Ubiquitty::Modes::SyncOutput::maxHoldTicks * 1000 / 60;
+    std::fprintf(stderr, "sync_output_e2e: sliced writer duration %llu ms; hold budget %llu ms\n",
+        static_cast<unsigned long long>(elapsed), static_cast<unsigned long long>(maxMilliseconds));
+    return elapsed <= maxMilliseconds || fail("the sliced writer outlived the synchronized-output hold budget");
+}
 
 // Counts the updates the client applies in the next `windowMilliseconds`
 // after `command` is typed. Carries the screen plane first so a frame
@@ -85,9 +138,16 @@ int countUpdates(Connection& c, UbiquittyTest::ScreenClient& screen, const std::
 
 int main(int argc, char** argv)
 {
+    if (argc == 4 && std::string_view(argv[1]) == "--emit-slices")
+        return emitSlices(argv[2], std::string_view(argv[3]) == "blocked" ? SlicedComposition::Synchronized : SlicedComposition::Unblocked);
     if (argc < 2) {
         std::fprintf(stderr, "usage: %s <ubiquitty-host>\n", argv[0]);
         return 2;
+    }
+    std::array<char, PATH_MAX> executablePath {};
+    if (!::realpath(argv[0], executablePath.data())) {
+        fail("could not resolve the sliced writer executable");
+        return 1;
     }
 
     char homeTemplate[] = "/tmp/ubiquitty-sync-output.XXXXXX";
@@ -163,9 +223,13 @@ int main(int argc, char** argv)
         }
         (void)UbiquittyTest::carryScreen(c.fileDescriptor, screen, 400); // let the shell reach a prompt
 
-        const int unblocked = countUpdates(c, screen, slicedOutput, 1500);
-        const int blocked = countUpdates(c, screen,
-            std::string("printf \"\\033[?2026h\"; ") + slicedOutput + "; printf \"\\033[?2026l\"", 1500);
+        const std::string writer = quoteForShell(executablePath.data()) + " --emit-slices ";
+        const std::string unblockedReceipt = std::string(home) + "/unblocked-duration";
+        const std::string blockedReceipt = std::string(home) + "/blocked-duration";
+        const int unblocked = countUpdates(c, screen, writer + quoteForShell(unblockedReceipt) + " unblocked", 1500);
+        const int blocked = countUpdates(c, screen, writer + quoteForShell(blockedReceipt) + " blocked", 1500);
+        if (!compositionStayedWithinHold(unblockedReceipt) || !compositionStayedWithinHold(blockedReceipt))
+            break;
 
         std::fprintf(stderr, "sync_output_e2e: sliced output — no block %d updates, one block %d\n", unblocked, blocked);
 
