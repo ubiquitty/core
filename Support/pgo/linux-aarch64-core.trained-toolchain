@@ -4,5 +4,5 @@
   "recipe": "f49e7c678723",
   "compiler": "Ubuntu clang version 22.1.2 (1ubuntu1)",
   "target": "aarch64-unknown-linux-gnu",
-  "profileSha256": "ae27b0b709cce7cfe798d9b768657e44b865f3a607f640b14177434743bd701c"
+  "profileSha256": "c8dff66aff983253d6e5c493e6b945d8f842a02dcf614e0f9b185d57479c57c5"
 }
