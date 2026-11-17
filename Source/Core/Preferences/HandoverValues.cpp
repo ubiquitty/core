@@ -3,6 +3,7 @@
 
 #include "Core/Preferences/HandoverValues.h"
 #include "Core/Preferences/HandoverValuesSchema.h"
+#include "Core/Preferences/PublishedHandoverValuesSchema.h"
 #include "Core/Protocol/Sync/Hash.h"
 #include "Core/Protocol/Sync/Wire.h"
 
@@ -19,8 +20,9 @@ namespace {
 
 namespace Sync = Protocol::Sync;
 using HandoverDetail::Schema;
-/// The version a record is written as, and the only one read.
-constexpr std::uint16_t version = 7;
+/// The current record includes cursor outline thickness; published 7 does not.
+constexpr std::uint16_t version = 8;
+constexpr std::uint16_t publishedVersion = 7;
 constexpr std::size_t digestBytes = 16;
 
 template<typename T> struct OptionalValue : std::false_type { };
@@ -171,9 +173,10 @@ private:
 
 class Decoder : public Admission {
 public:
-    Decoder(std::span<const std::uint8_t> bytes, const HandoverValuesLimits& limits)
+    Decoder(std::span<const std::uint8_t> bytes, const HandoverValuesLimits& limits, std::uint16_t carriedVersion)
         : Admission(limits)
         , m_reader(bytes)
+        , m_version(carriedVersion)
     {
     }
 
@@ -242,11 +245,18 @@ public:
             const auto value = m_reader.u8();
             if (destination)
                 *destination = value;
-        } else
-            std::apply([&](const auto&... field) {
-                (read<std::remove_reference_t<decltype(std::declval<T>().*field.member)>>(destination ? &(destination->*field.member) : nullptr), ...);
-            },
-                Schema<T>::fields);
+        } else {
+            const auto readFields = [&](const auto& fields) {
+                std::apply([&](const auto&... field) {
+                    (read<std::remove_reference_t<decltype(std::declval<T>().*field.member)>>(destination ? &(destination->*field.member) : nullptr), ...);
+                },
+                    fields);
+            };
+            if (m_version == publishedVersion)
+                readFields(PublishedHandoverDetail::Schema<T>::fields);
+            else
+                readFields(Schema<T>::fields);
+        }
         if (!m_reader.ok())
             fail();
     }
@@ -254,6 +264,7 @@ public:
 
 private:
     Sync::WireReader m_reader;
+    const std::uint16_t m_version;
 };
 
 } // namespace
@@ -287,7 +298,7 @@ std::expected<Values, HandoverValuesError> decodeHandoverValues(
     const auto carriedVersion = header.u16();
     if (header.ok() && carriedVersion > version)
         return std::unexpected(HandoverValuesError::NewerVersion);
-    if (!header.ok() || carriedVersion != version || bytes.size() < 2 + digestBytes)
+    if (!header.ok() || (carriedVersion != version && carriedVersion != publishedVersion) || bytes.size() < 2 + digestBytes)
         return std::unexpected(HandoverValuesError::Malformed);
     Sync::WireReader trailer(bytes.last(digestBytes));
     const Sync::Digest128 digest { trailer.u64(), trailer.u64() };
@@ -295,14 +306,14 @@ std::expected<Values, HandoverValuesError> decodeHandoverValues(
         return std::unexpected(HandoverValuesError::DigestMismatch);
     const auto body = bytes.subspan(2, bytes.size() - 2 - digestBytes);
     // The whole record is admitted before any variable-size owner exists.
-    Decoder admission(body, limits);
+    Decoder admission(body, limits, carriedVersion);
     admission.read<Values>(nullptr);
     if (const auto error = admission.error())
         return std::unexpected(*error);
     if (!admission.isAtEnd())
         return std::unexpected(HandoverValuesError::Malformed);
     Values values;
-    Decoder materializer(body, limits);
+    Decoder materializer(body, limits, carriedVersion);
     materializer.read(&values);
     if (const auto error = materializer.error())
         return std::unexpected(*error);

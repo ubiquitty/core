@@ -3,6 +3,7 @@
 
 #include "Core/Preferences/HandoverValues.h"
 #include "Core/Preferences/HandoverValuesSchema.h"
+#include "Core/Preferences/PublishedHandoverValuesSchema.h"
 #include "Core/Protocol/Sync/Hash.h"
 #include "Core/Protocol/Sync/Wire.h"
 #include "Harness.h"
@@ -87,20 +88,20 @@ bool exact(const T& first, const T& second)
 }
 
 /// Writes `value` in the codec's grammar, independently of the codec.
-template<typename T>
+template<bool isPublished = false, typename T>
 void writeIndependently(Sync::WireWriter& writer, const T& value)
 {
     if constexpr (OptionalValue<T>::value) {
         writer.u8(value.has_value());
         if (value)
-            writeIndependently(writer, *value);
+            writeIndependently<isPublished>(writer, *value);
     } else if constexpr (VectorValue<T>::value) {
         writer.u64(value.size());
         for (const auto& entry : value)
-            writeIndependently(writer, entry);
+            writeIndependently<isPublished>(writer, entry);
     } else if constexpr (std::is_array_v<T>) {
         for (const auto& entry : value)
-            writeIndependently(writer, entry);
+            writeIndependently<isPublished>(writer, entry);
     } else if constexpr (std::is_same_v<T, std::string>) {
         writer.u64(value.size());
         for (const char character : value)
@@ -115,17 +116,20 @@ void writeIndependently(Sync::WireWriter& writer, const T& value)
         writer.u32(std::bit_cast<std::uint32_t>(value));
     else if constexpr (std::is_same_v<T, std::uint32_t>)
         writer.u32(value);
+    else if constexpr (isPublished)
+        std::apply([&](const auto&... field) { (writeIndependently<true>(writer, value.*field.member), ...); }, PublishedHandoverDetail::Schema<T>::fields);
     else
         std::apply([&](const auto&... field) { (writeIndependently(writer, value.*field.member), ...); }, Detail::Schema<T>::fields);
 }
 
 /// A whole record, opened with `version` and closed with its digest.
+template<bool isPublished = false>
 std::vector<std::uint8_t> independentRecord(const Values& values, std::uint16_t version)
 {
     std::vector<std::uint8_t> bytes;
     Sync::WireWriter writer(bytes);
     writer.u16(version);
-    writeIndependently(writer, values);
+    writeIndependently<isPublished>(writer, values);
     const auto digest = Sync::digestOf(bytes);
     writer.u64(digest.low);
     writer.u64(digest.high);
@@ -262,7 +266,7 @@ TEST(binaryAndRepeatedListEntriesAreNotParsedOrNormalized)
     source.profiles.back().parentProfile = "Default";
     auto bytes = encodeHandoverValues(source, limits);
     REQUIRE(bytes);
-    const std::array<std::uint8_t, 14> prefix { 7, 0, 1, 3, 0, 0, 0, 0, 0, 0, 0, 'A', 0, 'B' };
+    const std::array<std::uint8_t, 14> prefix { 8, 0, 1, 3, 0, 0, 0, 0, 0, 0, 0, 'A', 0, 'B' };
     CHECK(std::equal(prefix.begin(), prefix.end(), bytes->begin()));
     auto restored = decodeHandoverValues(*bytes, limits);
     REQUIRE(restored);
@@ -284,7 +288,7 @@ TEST(emptyValuesHaveAStableVersionedEncoding)
     auto second = encodeHandoverValues(*restored, limits);
     REQUIRE(second);
     CHECK(*first == *second);
-    CHECK_EQ((*first)[0], 7);
+    CHECK_EQ((*first)[0], 8);
     CHECK_EQ((*first)[1], 0);
 }
 
@@ -306,27 +310,53 @@ TEST(everyTruncationCorruptionAndExtraByteIsRefused)
     (*bytes)[0] = 3;
     redigest(*bytes);
     CHECK(decodeHandoverValues(*bytes, limits).error() == HandoverValuesError::Malformed);
-    (*bytes)[0] = 8;
+    (*bytes)[0] = 9;
     CHECK(decodeHandoverValues(*bytes, limits).error() == HandoverValuesError::NewerVersion);
 }
 
-// A host reads only the configuration record it writes. The same fields
-// under any earlier version are refused rather than read in another layout.
+// Current fields mislabeled as any earlier version remain malformed. An actual
+// published record has the frozen layout exercised separately below.
 TEST(aRecordOfAnEarlierVersionIsRefused)
 {
     Values source;
     unsigned serial = 0;
     fill(source, serial);
-    const auto newest = independentRecord(source, 7);
+    const auto newest = independentRecord(source, 8);
     CHECK(encodeHandoverValues(source, limits).value() == newest);
     const auto restored = decodeHandoverValues(newest, limits);
     REQUIRE(restored);
     CHECK(exact(source, *restored));
-    for (std::uint16_t earlier = 0; earlier < 7; ++earlier) {
+    for (std::uint16_t earlier = 0; earlier < 8; ++earlier) {
         const auto refused = decodeHandoverValues(independentRecord(source, earlier), limits);
         REQUIRE(!refused);
         CHECK(refused.error() == HandoverValuesError::Malformed);
     }
+}
+
+TEST(thePublishedConfigurationKeepsEveryOldFieldAndLeavesNewSettingsAbsent)
+{
+    Values source;
+    unsigned serial = 0;
+    fill(source, serial);
+    source.cursorOutlineThickness = 3.25;
+    const auto bytes = independentRecord<true>(source, 7);
+    const auto restored = decodeHandoverValues(bytes, limits);
+    REQUIRE(restored);
+    source.cursorOutlineThickness.reset();
+    CHECK(exact(source, *restored));
+    CHECK(!restored->cursorOutlineThickness);
+    CHECK(restored->cursorInvertText == source.cursorInvertText);
+    CHECK(restored->profiles.size() == source.profiles.size());
+
+    for (std::size_t length = 0; length < bytes.size(); ++length)
+        CHECK(!decodeHandoverValues(std::span(bytes).first(length), limits));
+    auto corrupt = bytes;
+    corrupt[5] ^= 0x80;
+    CHECK(decodeHandoverValues(corrupt, limits).error() == HandoverValuesError::DigestMismatch);
+    auto extended = bytes;
+    extended.insert(extended.end() - 16, 0);
+    redigest(extended);
+    CHECK(decodeHandoverValues(extended, limits).error() == HandoverValuesError::Malformed);
 }
 
 TEST(recomputedDigestsDoNotAdmitInvalidPresenceLengthsOrEnums)
