@@ -606,6 +606,12 @@ if(TEST test_flood_start)
     set_tests_properties(test_flood_start PROPERTIES RUN_SERIAL TRUE RESOURCE_LOCK timing)
 endif()
 
+# The agent capture fixture times real socket-pair replies and startup against
+# one-second deadlines. Its worker must not compete with CPU-bound test shards.
+if(TEST test_agent_capture)
+    set_tests_properties(test_agent_capture PROPERTIES RUN_SERIAL TRUE RESOURCE_LOCK timing)
+endif()
+
 # test_frame_cadence times a 60 Hz frontend tick and every frontend call against
 # a one-millisecond bound while a drain floods, so it runs alone: a test
 # beside it takes the cores its threads are timed on.
