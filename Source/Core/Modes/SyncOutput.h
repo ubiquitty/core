@@ -54,10 +54,10 @@ constexpr uint32_t maxHoldTicks = 60;
 
 /// Whether the frontend should withhold this frame.
 ///
-/// The whole of the per-frame decision: stamps the block on first sight, expires
-/// it once it has outlived `maxHoldTicks`, and answers false thereafter. A
-/// frontend that repaints whenever bytes arrive — rather than asking this —
-/// renders every intermediate state of a frame the application was still
+/// The whole of the per-frame decision: stamps a block whose opener had no
+/// terminal clock, expires it once it has outlived `maxHoldTicks`, and answers
+/// false thereafter. A frontend that repaints whenever bytes arrive — rather
+/// than asking this — renders every intermediate state of a frame the application was still
 /// composing, which is exactly what synchronised output exists to prevent.
 ///
 /// Two obligations come with a true answer, both of which have been got wrong

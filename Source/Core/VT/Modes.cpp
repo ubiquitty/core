@@ -9,6 +9,7 @@
 
 #include "Core/CellGrid.h"
 #include "Core/Modes/DisplayIdle.h"
+#include "Core/Modes/SyncOutput.h"
 #include "Core/OSC/Dispatch.h"
 #include "Core/Screen/CellBlank.h"
 #include "Core/Screen/Operations.h"
@@ -16,6 +17,7 @@
 #include "Core/TerminalOperations.h"
 #include "Core/Unicode/Width.h"
 #include "Core/VT/Internal.h"
+#include "PAL/TerminalClients.h"
 
 namespace Ubiquitty::VT {
 
@@ -634,6 +636,10 @@ void setPrivateMode(Ubiquitty::Terminal& t, int p, Ubiquitty::Modes::ModeChange 
         if (isEnabled && !t.modes.syncOutput) {
             t.modes.syncOutput = true;
             t.modes.syncOutputTouchTicks = 0;
+            // The owner clock names this read's arrival. Starting the budget
+            // at a later frame ask adds its parsing and scheduling delay.
+            if (TerminalClock* clock = t.tickClock.get())
+                Modes::SyncOutput::touch(&t, clock->now());
         } else if (!isEnabled && t.modes.syncOutput) {
             t.modes.syncOutput = false;
             t.modes.syncOutputTouchTicks = 0;

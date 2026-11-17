@@ -6376,18 +6376,20 @@ TEST(aBlockTheWithholdExpiresIsPublishedClosed)
     constexpr std::string_view open = "\033[?2026h";
     session->feedBytes({ open.data(), open.size() });
     CHECK(session->readSnapshot().syncHoldActive);
-    CHECK(session->shouldWithholdFrame(Ubiquitty::Ticks(100)));
-    CHECK(session->presentationHoldTicksRemaining(Ubiquitty::Ticks(130)) > 0u);
-    CHECK(!session->shouldWithholdFrame(Ubiquitty::Ticks(161)));
+    const Ubiquitty::Ticks openedAt(session->readSnapshot().syncHoldTouchTicks);
+    REQUIRE(openedAt.count > 0);
+    CHECK(session->shouldWithholdFrame(openedAt));
+    CHECK(session->presentationHoldTicksRemaining(openedAt + 30) > 0u);
+    CHECK(!session->shouldWithholdFrame(openedAt + 61));
     CHECK(!session->readSnapshot().syncHoldActive);
     std::uint32_t ticks = 1;
-    CHECK(completesWhileTheModelIsHeld(*session, [&] { ticks = session->presentationHoldTicksRemaining(Ubiquitty::Ticks(161)); }));
+    CHECK(completesWhileTheModelIsHeld(*session, [&] { ticks = session->presentationHoldTicksRemaining(openedAt + 61); }));
     CHECK_EQ(ticks, 0u);
 }
 
-// An open block's budget is read with the model held elsewhere: whole before
-// any frame asked, and counting down from the tick the first ask stamped,
-// which that ask publishes with the block.
+// An open block's budget is read with the model held elsewhere, counting down
+// from the opening's published arrival clock before any frame asked. A first
+// frame ask keeps that stamp.
 TEST(anOpenBlocksBudgetIsReadWithoutTheModel)
 {
     RetainedTerminalSession session { TerminalSession::make() };
@@ -6396,13 +6398,14 @@ TEST(anOpenBlocksBudgetIsReadWithoutTheModel)
     constexpr std::string_view open = "\033[?2026h";
     session->feedBytes({ open.data(), open.size() });
     REQUIRE(session->readSnapshot().syncHoldActive);
-    REQUIRE(session->readSnapshot().syncHoldTouchTicks == 0u);
+    const Ubiquitty::Ticks openedAt(session->readSnapshot().syncHoldTouchTicks);
+    REQUIRE(openedAt.count > 0);
     std::uint32_t ticks = 0;
-    CHECK(completesWhileTheModelIsHeld(*session, [&] { ticks = session->presentationHoldTicksRemaining(Ubiquitty::Ticks(100)); }));
+    CHECK(completesWhileTheModelIsHeld(*session, [&] { ticks = session->presentationHoldTicksRemaining(openedAt); }));
     CHECK_EQ(ticks, Ubiquitty::Modes::SyncOutput::maxHoldTicks + 1);
-    CHECK(session->shouldWithholdFrame(Ubiquitty::Ticks(100)));
-    CHECK_EQ(session->readSnapshot().syncHoldTouchTicks, 100u);
-    CHECK(completesWhileTheModelIsHeld(*session, [&] { ticks = session->presentationHoldTicksRemaining(Ubiquitty::Ticks(130)); }));
+    CHECK(session->shouldWithholdFrame(openedAt));
+    CHECK_EQ(session->readSnapshot().syncHoldTouchTicks, openedAt.count);
+    CHECK(completesWhileTheModelIsHeld(*session, [&] { ticks = session->presentationHoldTicksRemaining(openedAt + 30); }));
     CHECK_EQ(ticks, Ubiquitty::Modes::SyncOutput::maxHoldTicks - 30 + 1);
 }
 
@@ -6416,12 +6419,14 @@ TEST(aBlockStampWrittenThroughTheWritePairReachesTheLockFreeBudget)
     session->start(4, 20);
     session->lockForWrite();
     Ubiquitty::processBytes(session->terminal(), "\033[?2026h");
-    Ubiquitty::Modes::SyncOutput::touch(session->terminal(), Ubiquitty::Ticks(100));
+    const Ubiquitty::Ticks openedAt(session->terminal()->modes.syncOutputTouchTicks);
+    Ubiquitty::Modes::SyncOutput::touch(session->terminal(), openedAt + 5);
     session->unlockAfterWrite();
     CHECK(session->readSnapshot().syncHoldActive);
-    CHECK_EQ(session->readSnapshot().syncHoldTouchTicks, 100u);
+    REQUIRE(openedAt.count > 0);
+    CHECK_EQ(session->readSnapshot().syncHoldTouchTicks, openedAt.count);
     std::uint32_t ticks = 0;
-    CHECK(completesWhileTheModelIsHeld(*session, [&] { ticks = session->presentationHoldTicksRemaining(Ubiquitty::Ticks(130)); }));
+    CHECK(completesWhileTheModelIsHeld(*session, [&] { ticks = session->presentationHoldTicksRemaining(openedAt + 30); }));
     CHECK_EQ(ticks, Ubiquitty::Modes::SyncOutput::maxHoldTicks - 30 + 1);
 }
 
@@ -6498,14 +6503,16 @@ TEST(anExpiredBlockWakesTheHostToReportItsColorsOnce)
     CHECK_EQ(host.reportedBackgrounds.size(), 0u);
     CHECK(session->readSnapshot().syncHoldActive);
 
-    // The host books one wake at the hold's deadline; the first ask stamps
-    // the block, and a block still held wakes nobody.
-    const std::uint32_t untilExpiry = session->presentationHoldTicksRemaining(Ubiquitty::Ticks(100));
+    // The host books one wake at the opening's deadline. A first ask keeps
+    // that stamp, and a block still held wakes nobody.
+    const Ubiquitty::Ticks openedAt(session->readSnapshot().syncHoldTouchTicks);
+    REQUIRE(openedAt.count > 0);
+    const std::uint32_t untilExpiry = session->presentationHoldTicksRemaining(openedAt);
     CHECK(untilExpiry > 0u);
-    CHECK(session->shouldWithholdFrame(Ubiquitty::Ticks(100)));
+    CHECK(session->shouldWithholdFrame(openedAt));
     CHECK_EQ(host.wakes, 1u);
 
-    const Ubiquitty::Ticks deadline(100 + untilExpiry);
+    const Ubiquitty::Ticks deadline = openedAt + untilExpiry;
     CHECK(!session->shouldWithholdFrame(deadline));
     CHECK(!session->readSnapshot().syncHoldActive);
     CHECK_EQ(host.wakes, 2u);
@@ -6532,7 +6539,9 @@ TEST(aBlockClosedBeforeItsBudgetReportsItsColorsOnce)
     ColorReportingHost host(*session);
     session->feedBytes({ openBlockWithBackground.data(), openBlockWithBackground.size() });
     CHECK_EQ(host.serveWake() & screenDirtyFlag, screenDirtyFlag);
-    CHECK(session->shouldWithholdFrame(Ubiquitty::Ticks(100)));
+    const Ubiquitty::Ticks openedAt(session->readSnapshot().syncHoldTouchTicks);
+    REQUIRE(openedAt.count > 0);
+    CHECK(session->shouldWithholdFrame(openedAt));
     CHECK_EQ(host.reportedBackgrounds.size(), 0u);
 
     constexpr std::string_view close = "\033[?2026l";
@@ -6542,8 +6551,8 @@ TEST(aBlockClosedBeforeItsBudgetReportsItsColorsOnce)
     REQUIRE(host.reportedBackgrounds.size() == 1u);
     CHECK_EQ(static_cast<unsigned>(host.reportedBackgrounds[0].green), 0x77u);
 
-    CHECK_EQ(session->presentationHoldTicksRemaining(Ubiquitty::Ticks(130)), 0u);
-    CHECK(!session->shouldWithholdFrame(Ubiquitty::Ticks(161)));
+    CHECK_EQ(session->presentationHoldTicksRemaining(openedAt + 30), 0u);
+    CHECK(!session->shouldWithholdFrame(openedAt + 61));
     CHECK_EQ(host.wakes, 2u);
     CHECK_EQ(host.serveWake() & screenDirtyFlag, 0u);
     CHECK_EQ(host.reportedBackgrounds.size(), 1u);

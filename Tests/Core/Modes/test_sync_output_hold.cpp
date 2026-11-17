@@ -17,6 +17,7 @@
 #include "Core/Modes/SyncOutput.h"
 #include "Core/Terminal.h"
 #include "Core/TerminalOperations.h"
+#include "PAL/TerminalClients.h"
 
 #include <cstring>
 
@@ -34,6 +35,39 @@ std::unique_ptr<Terminal> makeTerminal()
 void feed(Terminal& t, const char* bytes)
 {
     Ubiquitty::processBytes(&t, bytes);
+}
+
+class BlockClock final : public TerminalClock {
+public:
+    Ticks instant { 1000 };
+    Ticks now() override { return instant; }
+};
+
+TEST(aClockedUpdateAgesFromItsOpeningBeforeTheFirstFrameAsk)
+{
+    BlockClock clock;
+    auto terminal = makeTerminal();
+    terminal->tickClock = &clock;
+    feed(*terminal, "\033[?2026h");
+    CHECK_EQ(terminal->modes.syncOutputTouchTicks, clock.instant.count);
+    CHECK_MSG(!Modes::SyncOutput::shouldWithholdFrame(*terminal, clock.instant + Modes::SyncOutput::maxHoldTicks + 1),
+        "a delayed first frame ask must not restart the update's budget");
+}
+
+TEST(repeatedSetPreservesTheOpeningClockAndANewBlockGetsANewStamp)
+{
+    BlockClock clock;
+    auto terminal = makeTerminal();
+    terminal->tickClock = &clock;
+    feed(*terminal, "\033[?2026h");
+    clock.instant = Ticks(1050);
+    feed(*terminal, "\033[?2026h");
+    CHECK_EQ(terminal->modes.syncOutputTouchTicks, 1000u);
+    CHECK(!Modes::SyncOutput::shouldWithholdFrame(*terminal, Ticks(1061)));
+    clock.instant = Ticks(2000);
+    feed(*terminal, "\033[?2026h");
+    CHECK_EQ(terminal->modes.syncOutputTouchTicks, clock.instant.count);
+    CHECK(Modes::SyncOutput::shouldWithholdFrame(*terminal, clock.instant + Modes::SyncOutput::maxHoldTicks));
 }
 
 TEST(testNoBlockMeansPresentEveryFrame)
