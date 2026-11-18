@@ -71,8 +71,9 @@ struct UBIQUITTY_ESCAPABLE CellMetrics {
     /// Device pixels the straight underline strokes rise by to clear the
     /// baseline, scaled with the type size.
     ///
-    /// Dotted and curly rules do not take it: they sit on the line itself, and
-    /// lifting them would leave the dots riding above the text they belong to.
+    /// Dotted and dashed rules take it too, so their marks sit on the single
+    /// rule's rows. A curly rule does not: its wave is centred on the line
+    /// itself, and lifting it would leave it riding into the text.
     ///
     /// ``underlineStrokeLiftForEm`` derives it for a face that has an em. A
     /// rasterizer whose `FaceMetrics::fontSize` is zero has none, and sets this

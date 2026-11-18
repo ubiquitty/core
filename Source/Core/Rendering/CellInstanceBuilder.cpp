@@ -1725,6 +1725,10 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
     // walk is at: a stretch of it a cut leaves is judged across that edge.
     bool isUnderlineContinuedLeft = false;
     bool isUnderlineContinuedRight = false;
+    // Where the run of underlined cells the walk is in starts: a dotted or
+    // dashed rule lays its marks from there, so every run begins with a whole
+    // mark and the marks run on across the cells after it.
+    float patternRunLeft = 0.0f;
     // Skip-ink's reach in the atlas texels the taps are in: the padding
     // across, and the row adjacent to the rule up and down.
     const float atlasToDevice = atlasToDeviceScale(metrics);
@@ -1738,8 +1742,8 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
     };
     // The pitch a patterned rule repeats at, in whole device pixels so every
     // mark sits on the pixel grid: two weights for a dot and its gap, five for
-    // a dash and its (dottedRuleOnShare, dashedRuleOnShare). A curl keeps one
-    // wave a cell, and a solid rule has none.
+    // a dash and its (dashedRuleOnShare).
+    // A curl keeps one wave a cell, and a solid rule has none.
     const auto patternPitch = [&](DecorationKind kind, float weight) {
         if (!(weight > 0.0f) || (kind != DecorationKind::Dotted && kind != DecorationKind::Dashed))
             return metrics.cellWidth;
@@ -1747,6 +1751,23 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
     };
     auto emitRule = [&](DecorationSite site, float cellLeft, float cellRight, float cellTop, float cellHeight, float top, float bottom, Vec4 color, DecorationKind kind, float thickness, InkMask mask) {
         const float pitch = patternPitch(kind, bottom - top);
+        // A dotted or dashed rule's frame starts where its run does, and the
+        // run's last cell stops short of a mark it would end partway through:
+        // a sliver of dot, or of dash shorter than two weights, reads as a
+        // speck rather than as the pattern.
+        const bool isPatterned = kind == DecorationKind::Dotted || kind == DecorationKind::Dashed;
+        const float frameLeft = isPatterned ? patternRunLeft : cellLeft;
+        const float markWeight = snappedRuleWeight(bottom - top);
+        const float markLength = kind == DecorationKind::Dotted ? markWeight : pitch * dashedRuleOnShare;
+        const float shortestMark = kind == DecorationKind::Dotted ? markWeight : 2.0f * markWeight;
+        if (isPatterned && !isUnderlineContinuedRight && pitch > 0.0f) {
+            const float along = cellRight - frameLeft;
+            const float into = along - std::floor(along / pitch) * pitch;
+            if (into > 0.0f && into < markLength && into < shortestMark)
+                cellRight -= into;
+            if (!(cellRight > cellLeft))
+                return;
+        }
         // Recorded before the capacity check: the site was REACHED whether or
         // not the instance fitted, and a coverage answer that changed with the
         // caller's buffer size would report a scene as uncovered for running
@@ -1764,7 +1785,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
             d.dashPeriodInPixels = pitch;
             d.thicknessInPixels = thickness;
             d.cutEnds = static_cast<float>(cutEnds);
-            d.bandTopLeftInPixels = { cellLeft, top };
+            d.bandTopLeftInPixels = { frameLeft, top };
             d.bandBottomRightInPixels = { cellRight, bottom };
         };
         if (mask == InkMask::Absent) {
@@ -1812,13 +1833,13 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
         // A stretch of line shorter than it is thick reads as a speck; an arc
         // of a curl shorter than half its wavelength reads as a blip. A dotted
         // rule's dots are kept whole instead, and a dashed rule's dashes never
-        // left shorter than they are thick.
+        // left shorter than two weights, below which a dash reads as a dot.
         const float weight = bottom - top;
         query.shortestPiece = kind == DecorationKind::Curly ? metrics.cellWidth * 0.5f : (kind == DecorationKind::Dotted ? 0.0f : weight);
         if (kind == DecorationKind::Dotted)
-            query.pattern = { .pitch = pitch, .origin = in.originInPixels.x, .offset = 0.0f, .length = pitch * dottedRuleOnShare, .shortest = pitch * dottedRuleOnShare };
+            query.pattern = { .pitch = pitch, .origin = frameLeft, .offset = 0.0f, .length = markLength, .shortest = shortestMark };
         else if (kind == DecorationKind::Dashed)
-            query.pattern = { .pitch = pitch, .origin = in.originInPixels.x, .offset = 0.0f, .length = pitch * dashedRuleOnShare, .shortest = weight };
+            query.pattern = { .pitch = pitch, .origin = frameLeft, .offset = 0.0f, .length = markLength, .shortest = shortestMark };
         query.continuesLeft = isUnderlineContinuedLeft;
         query.continuesRight = isUnderlineContinuedRight;
         const SkipInkRule rule { .left = cellLeft, .top = top, .right = cellRight, .bottom = bottom };
@@ -5877,9 +5898,9 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                 // A proportional run's rules lie under its text, not across the
                 // alignment slack its claim leaves beside it: a right-aligned or
                 // centred run's rule starts at its pen and ends where its text
-                // does. A patterned rule's phase starts at the rule's left edge,
-                // so it begins at the left edge of the cell the pen stands in,
-                // keeping its period on the cells' pitch.
+                // does. A patterned rule begins at the left edge of the cell the
+                // pen stands in, keeping a curl's period on the cells' pitch;
+                // dots and dashes run on from the start of the run.
                 float ruleLeft = cellLeft;
                 float ruleRight = cellRight;
                 float patternedRuleLeft = cellLeft;
@@ -5890,6 +5911,8 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     underlineRight = proportionalTextRight;
                     patternedRuleLeft = cellLeft + std::floor((proportionalTextLeft - cellLeft) / metrics.cellWidth) * metrics.cellWidth;
                 }
+                if (!isUnderlineContinuedLeft)
+                    patternRunLeft = patternedRuleLeft;
                 // The shader maps a rule's width onto its tap's box, and a point a
                 // fraction across it onto the neighbours' boxes a whole box to
                 // either side. A rule covering only part of its box, as a run's
@@ -6076,7 +6099,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         style = Ubiquitty::VT::UnderlineShape::Single;
                         underlineColor = { in.linkHoverColor.x, in.linkHoverColor.y, in.linkHoverColor.z, foreground.w };
                     }
-                    const float strokeLift = (style == Ubiquitty::VT::UnderlineShape::Dotted || style == Ubiquitty::VT::UnderlineShape::Curly) ? 0.0f : metrics.underlineStrokeLift;
+                    const float strokeLift = style == Ubiquitty::VT::UnderlineShape::Curly ? 0.0f : metrics.underlineStrokeLift;
                     const float uy = baselineY + underlineDrop - strokeLift;
                     switch (style) {
                     case Ubiquitty::VT::UnderlineShape::Double: {
@@ -6104,10 +6127,16 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         break;
                     }
                     case Ubiquitty::VT::UnderlineShape::Curly: {
-                        // band = stroke + amplitude room, kept shallow: the
-                        // amplitude is band/2 - halfThick, so a tall band swings the
-                        // wave down into the descenders it is meant to sit under.
-                        const float band = thickCurly * 2.5f + 2.0f;
+                        // One sine wave a cell, its stroke the single rule's
+                        // weight measured across the curve rather than down it,
+                        // so the curl reads as heavy on its slopes as on its
+                        // crests, swinging a weight either side of its centre
+                        // (curlyRuleSwingInWeights). The band holds the swing,
+                        // the stroke, and the half pixel its antialiased edge
+                        // reaches past it; the renderers take the swing back
+                        // out of the band's height.
+                        const float curlWeight = snapped(thickCurly);
+                        const float band = 2.0f * curlWeight * curlyRuleSwingInWeights + curlWeight + 1.0f;
                         const float curlDrop = 0.75f * metrics.deviceScale;
                         // Diagnostic, off unless asked: the numbers the curl is
                         // built from, so two arms that draw it differently can be
@@ -6116,35 +6145,26 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         if (shouldLogMetrics)
                             PAL::logLine(stderr, "metrics-log curly thickCurly={} curlyThickness={} underlineThickness={} deviceScale={} uy={} band={} cellHeight={}",
                                 thickCurly, metrics.underlineCurlyThickness, metrics.underlineThickness, metrics.deviceScale, uy, band, metrics.cellHeight);
-                        emitMaskedRule(DecorationSite::UnderlineCurly, patternedRuleLeft, ruleRight, uy - band * 0.5f + curlDrop, uy + band * 0.5f + curlDrop, underlineColor, DecorationKind::Curly, thickCurly);
+                        emitMaskedRule(DecorationSite::UnderlineCurly, patternedRuleLeft, ruleRight, uy - band * 0.5f + curlDrop, uy + band * 0.5f + curlDrop, underlineColor, DecorationKind::Curly, curlWeight);
                         break;
                     }
                     case Ubiquitty::VT::UnderlineShape::Dotted: {
-                        // Square dots the single rule's weight, where the single
-                        // rule sits: the band is one dot's height, and the marks
-                        // across it are the pitch's own (dottedRuleOnShare), so a
-                        // dotted line is as dark as a solid one and its dots sit
-                        // on the pixel grid.
+                        // Round dots the single rule's weight across, on the
+                        // single rule's rows: the band is one dot's height, and
+                        // the renderers draw a dot of that diameter at the start
+                        // of each pitch.
                         const float t = snapped(thick);
                         const float top = withinCell(singleUnderlineTop(uy, t, metrics.deviceScale));
                         emitMaskedRule(DecorationSite::UnderlineDotted, patternedRuleLeft, ruleRight, top, top + t, underlineColor, DecorationKind::Dotted, thick);
                         break;
                     }
                     case Ubiquitty::VT::UnderlineShape::Dashed: {
-                        // The dash shader fills the band in the "on" phase, so the
-                        // band is each dash's weight, the single rule's.
-                        // The top sits on the pixel grid and the height is the
-                        // weight itself. A band centred on a fractional position
-                        // splits one dash across three rows and none of them
-                        // reads solid, which is the hairline the dashes showed
-                        // beside the 2px rules; a height rounded to whole rows
-                        // instead answers the thickness setting in whole-pixel
-                        // steps only, and the setting offers finer ones than
-                        // that -- `everyUnderlineShapeAnswersASubPixelThicknessStep`
-                        // is the claim, and a quarter-step is inside one row.
-                        const float dash = std::max(thick, 1.0f);
-                        const float top = withinCell(std::max(std::round(uy - dash * 0.5f + 0.5f * metrics.deviceScale), std::round(uy)));
-                        emitMaskedRule(DecorationSite::UnderlineDashed, patternedRuleLeft, ruleRight, top, top + dash, underlineColor, DecorationKind::Dashed, thick);
+                        // Dashes on the single rule's rows at its weight: the
+                        // band is the stroke, and the renderers fill it in each
+                        // dash's share of the pitch.
+                        const float t = snapped(thick);
+                        const float top = withinCell(singleUnderlineTop(uy, t, metrics.deviceScale));
+                        emitMaskedRule(DecorationSite::UnderlineDashed, patternedRuleLeft, ruleRight, top, top + t, underlineColor, DecorationKind::Dashed, thick);
                         break;
                     }
                     case Ubiquitty::VT::UnderlineShape::Single:

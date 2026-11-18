@@ -1526,7 +1526,7 @@ void SoftwareRenderer::compositeGlyph(const GlyphInstance& g, const Atlas& atlas
 // into pieces keeps its dots where the uncut rule has them. Blends in sRGB
 // (the CPU path's space; the rules' own AA edges feather in sRGB rather than
 // the GPU's linear space).
-void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, float patternOriginX, std::vector<std::uint8_t>& rgba, IntSize surface) const
+void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, std::vector<std::uint8_t>& rgba, IntSize surface) const
 {
     const float minX = d.bandTopLeftInPixels.x;
     const float minY = d.bandTopLeftInPixels.y;
@@ -1607,31 +1607,54 @@ void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, float pa
                 continue;
 
             float alpha = baseAlpha * acrossCoverage;
-            if (isDecorationKind(d.kind, DecorationKind::Dotted) || isDashedRule) {
-                // Marks anchored to the grid's left edge at the pitch the
-                // builder chose (dottedRuleOnShare): the part of this pixel
-                // the mark it lies in covers, and the one before it.
+            if (isDecorationKind(d.kind, DecorationKind::Dotted)) {
+                // Dots the band's height across, one at the start of each
+                // pitch from the band's left edge, where the run starts: the
+                // nearer of the dot this pixel's centre lies in the pitch of
+                // and the next. A dot is a
+                // circle fitted to the pixel grid (dottedRuleCornerInset).
                 const float period = d.dashPeriodInPixels;
-                const float share = isDashedRule ? dashedRuleOnShare : dottedRuleOnShare;
-                const float pixelLeft = static_cast<float>(x) - patternOriginX;
+                const float radius = sizeY * 0.5f;
+                const float corner = std::max(radius - dottedRuleCornerInset, 0.0f);
+                float dot = 0.0f;
+                if (period > 0.0f) {
+                    const float along = localX;
+                    const float first = std::floor(along / period) * period + radius;
+                    for (const float centre : { first, first + period }) {
+                        const float outsideX = std::fabs(along - centre) - (radius - corner);
+                        const float outsideY = std::fabs(localY - radius) - (radius - corner);
+                        const float apart = std::hypot(std::max(outsideX, 0.0f), std::max(outsideY, 0.0f)) + std::min(std::max(outsideX, outsideY), 0.0f) - corner;
+                        dot = std::max(dot, std::clamp(0.5f - apart, 0.0f, 1.0f));
+                    }
+                }
+                alpha *= dot;
+            } else if (isDashedRule) {
+                // Dashes from the band's left edge, where the run starts, at
+                // the pitch the builder chose (dashedRuleOnShare): the part of
+                // this pixel the dash it lies in covers, and the one before it.
+                const float period = d.dashPeriodInPixels;
+                const float pixelLeft = static_cast<float>(x) - minX;
                 float marks = 0.0f;
                 if (period > 0.0f) {
                     const float start = std::floor((pixelLeft + 0.5f) / period) * period;
                     for (const float markStart : { start, start - period })
-                        marks += std::clamp(std::min(pixelLeft + 1.0f, markStart + share * period) - std::max(pixelLeft, markStart), 0.0f, 1.0f);
+                        marks += std::clamp(std::min(pixelLeft + 1.0f, markStart + dashedRuleOnShare * period) - std::max(pixelLeft, markStart), 0.0f, 1.0f);
                 }
                 alpha *= std::min(marks, 1.0f) * bandCoverage;
             } else if (isDecorationKind(d.kind, DecorationKind::Curly)) {
+                // A sine wave a period long, its stroke the weight measured
+                // across the curve: the distance down to the wave over the
+                // length of the curve's normal, so a slope draws as heavy as a
+                // crest. The swing is what the band holds beyond the stroke
+                // and its antialiased edge (curlyRuleSwingInWeights).
                 const float period = d.dashPeriodInPixels > 2.0f ? d.dashPeriodInPixels : 2.0f;
-                const float halfThick = d.thicknessInPixels * 0.8f;
-                float amp = sizeY * 0.5f - halfThick;
-                if (amp < 0.5f)
-                    amp = 0.5f;
-                const float mid = sizeY * 0.5f;
-                const float wave = mid + amp * std::sin(localX / period * 6.2831853f);
-                const float dist = std::fabs(localY - wave);
-                const float c = halfThick + 0.5f - dist;
-                alpha *= c < 0.0f ? 0.0f : (c > 1.0f ? 1.0f : c);
+                const float halfWeight = d.thicknessInPixels * 0.5f;
+                const float swing = std::max(sizeY * 0.5f - halfWeight - 0.5f, 0.25f);
+                const float phase = localX / period * 6.2831853f;
+                const float wave = sizeY * 0.5f + swing * std::sin(phase);
+                const float slope = swing * 6.2831853f / period * std::cos(phase);
+                const float apart = std::fabs(localY - wave) / std::sqrt(1.0f + slope * slope);
+                alpha *= std::clamp(halfWeight + 0.5f - apart, 0.0f, 1.0f);
             }
 
             if (m_isBitmapFace)
@@ -2689,7 +2712,7 @@ bool SoftwareRenderer::render(const BuildInputs& in, std::vector<std::uint8_t>& 
         for (auto [i, end] = segment(colorGlyphs, tier.colorGlyphs, layer); i < end; ++i)
             compositeColorGlyph(m_colorGlyphs[i], rgbaOut, { width, height });
         for (auto [i, end] = segment(decorations, tier.decorations, layer); i < end; ++i)
-            compositeDecoration(m_decorations[i], static_cast<float>(gridOriginX), rgbaOut, { width, height });
+            compositeDecoration(m_decorations[i], rgbaOut, { width, height });
     };
     compositeStreams(StreamLayer::Grid);
     // Inline images, over-text band (kitty z>=0, placeholder cells, sixel and

@@ -58,16 +58,33 @@ enum class DecorationKind {
     Curly = 3,
 };
 
-/// The share of a patterned rule's pitch each mark covers, as every renderer
-/// draws it. A dotted rule's pitch is two weights, a square dot and a dot's
-/// width of gap; a dashed rule's five, three weights of dash and two of gap.
-/// Marks are anchored to the grid's left edge, not to a cell: mark `k` covers
-/// [origin + k * pitch, origin + k * pitch + share * pitch) in device pixels, so
-/// the marks run on across every cell's edge the same, at a whole-pixel pitch
-/// that keeps each mark on the pixel grid, and the grid draws the same marks
-/// wherever the surface places it.
-inline constexpr float dottedRuleOnShare = 0.5f;
+/// The shapes of the patterned rules, as every renderer draws them. Each takes
+/// the single rule's weight, in whole device rows, so no shape reads lighter or
+/// heavier than the straight rule beside it.
+///
+/// A dotted rule is dots a weight across and a weight apart, as the system's
+/// text views draw their dotted marks, each a circle fitted to the pixel grid
+/// (dottedRuleCornerInset). A dashed rule is dashes three weights long, two
+/// weights apart. Marks are laid from the start of the run of underlined cells,
+/// not from each cell: mark `k` starts at the run's left edge + k * pitch, so
+/// every run begins with a whole mark, the marks run on across every cell's
+/// edge the same, and a whole-pixel pitch keeps each mark on the pixel grid.
 inline constexpr float dashedRuleOnShare = 0.6f;
+
+/// How much less than its radius a dot's corners are rounded, in device pixels.
+/// A true circle a pixel or two across cannot be dark on the pixel grid: each
+/// of its pixels is only partly inside it, so the dots read grey beside the
+/// solid rule. Rounding the corners of the dot's square to its radius less half
+/// a pixel rounds them only as far as the grid can show a curve: a dot of one
+/// or two pixels is solid, one of four is visibly round, and a heavier one is
+/// a circle, as the face's rule grows with the font.
+inline constexpr float dottedRuleCornerInset = 0.5f;
+
+/// How far a curly rule swings either side of its centre, in its weights. One
+/// weight keeps the crests round at every size: with a wave a cell long, a
+/// crest turns on a radius of a weight or more inside the stroke, where a
+/// deeper swing pinches it to a point.
+inline constexpr float curlyRuleSwingInWeights = 1.0f;
 
 /// Whether an encoded decoration selector names this kind.
 ///

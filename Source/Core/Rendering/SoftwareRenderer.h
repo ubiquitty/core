@@ -695,7 +695,7 @@ private:
     /// - Parameters:
     ///   - rgba: Destination pixels.
     ///   - surface: The destination's extent.
-    void compositeDecoration(const DecorationInstance&, float patternOriginX, std::vector<std::uint8_t>& rgba, IntSize surface) const;
+    void compositeDecoration(const DecorationInstance&, std::vector<std::uint8_t>& rgba, IntSize surface) const;
     /// Alpha-blends one overlay quad (the cursor) over the composited frame.
     ///
     /// A filled rect, or just the border when `strokeWidth > 0`. The blend is in

@@ -2,23 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // test_rule_weight_tracks_thickness — every underline shape must answer the
-// thickness setting.
+// thickness setting, and in step with the single rule.
 //
-// `underline_thickness` scales `metrics.underlineThickness`, and each shape
-// derives its band from that number, so on the geometry side all five shapes
-// already track it. What reaches the surface is decided one step later, by how
-// the rasterizer turns a band into alpha.
+// `underline_thickness` scales `metrics.underlineThickness`. The single rule
+// takes it in whole device rows, as AppKit paints a face's underline, and the
+// patterned shapes take the single rule's weight: a dash on its rows, a dot its
+// weight across, a curl's stroke its weight measured across the curve. So no
+// shape reads lighter or heavier than the straight rule beside it, and the
+// setting moves them all together.
 //
-// A shape that modulates alpha by the pixel's distance from the band edge
-// answers a band change immediately: a band 30% taller is 30% more coverage,
-// spread across the same rows. A shape that only asks whether a pixel center
-// falls inside answers in whole pixel rows, so a band change smaller than a
-// row is not rendered at all and the setting appears inert until it crosses
-// the next row boundary.
-//
-// This file pins that every shape is in the first group. It is a rasterizer
-// obligation, not a builder one, which is why it measures the composited
-// surface rather than the emitted instance: the instance was always correct.
+// This measures the composited surface rather than the emitted instance: what
+// a user sees is how the rasterizer turns a band into alpha, and a shape whose
+// rasterizer ignored part of its band would pass on the instance alone.
 
 #include "Harness.h"
 
@@ -29,6 +24,7 @@
 #include "Core/TermPalette.h"
 #include "Core/VT/Constants.h"
 
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -131,21 +127,27 @@ TEST(everyUnderlineShapeGrowsHeavierWithTheThicknessSetting)
     }
 }
 
-// The step between neighbouring settings is what a user actually turns. A shape
-// that only answers in whole pixel rows clears the coarse check above while
-// staying visibly inert across the range the preference offers, so the fine
-// step is the one that separates the two rasterizer families.
-TEST(everyUnderlineShapeAnswersASubPixelThicknessStep)
+// The steps between neighbouring settings are what a user turns. A patterned
+// shape that answered them on its own, by a weight finer than the single rule's
+// whole rows, would drift out of balance with it across the range: lighter
+// than the straight rule at one setting, heavier at the next. Each shape grows
+// heavier exactly where the single rule does and holds where it holds.
+TEST(everyPatternedShapeStepsWithTheSingleRule)
 {
+    const float settings[] = { 1.0f, 1.25f, 1.5f, 2.0f, 2.25f, 3.0f };
     const VT::UnderlineShape shapes[] = { VT::UnderlineShape::Curly, VT::UnderlineShape::Dotted, VT::UnderlineShape::Dashed };
-
-    for (const VT::UnderlineShape shape : shapes) {
-        const double base = ruleWeight(shape, 1.0f);
-        const double stepped = ruleWeight(shape, 1.25f);
-        CHECK_MSG(stepped > base,
-            (shapeName(shape) + " answers a quarter-step (base=" + std::to_string(base)
-                + " stepped=" + std::to_string(stepped) + ")")
-                .c_str());
+    for (std::size_t i = 1; i < std::size(settings); ++i) {
+        const float from = settings[i - 1];
+        const float to = settings[i];
+        const bool doesSingleGrow = ruleWeight(VT::UnderlineShape::Single, to) > ruleWeight(VT::UnderlineShape::Single, from);
+        for (const VT::UnderlineShape shape : shapes) {
+            const double before = ruleWeight(shape, from);
+            const double after = ruleWeight(shape, to);
+            CHECK_MSG(doesSingleGrow ? after > before : after == before,
+                (shapeName(shape) + " from " + std::to_string(from) + " to " + std::to_string(to) + (doesSingleGrow ? " grows with" : " holds with")
+                    + " the single rule (before=" + std::to_string(before) + " after=" + std::to_string(after) + ")")
+                    .c_str());
+        }
     }
 }
 

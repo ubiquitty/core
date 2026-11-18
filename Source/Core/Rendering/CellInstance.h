@@ -138,7 +138,7 @@ struct UBIQUITTY_ESCAPABLE DecorationInstance {
     float dashPeriodInPixels; // pattern period for dotted / dashed / curly
     float thicknessInPixels; // stroke thickness (curl / box)
     float cutEnds; // which ends ink cut, drawn in part: 1 the left, 2 the right, 3 both
-    Vec2 bandTopLeftInPixels; // the whole rule: the pattern's frame
+    Vec2 bandTopLeftInPixels; // the whole rule: the pattern's frame, which for dots and dashes starts where their run does
     Vec2 bandBottomRightInPixels;
 };
 
