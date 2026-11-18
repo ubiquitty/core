@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -3650,6 +3651,112 @@ def workflow_jobs(text):
             for index, match in enumerate(starts)}
 
 
+def optional_app_ios_stages(text):
+    """Count the separate iOS battery only when its manual contract is intact."""
+    parsed = draft_workflows().Workflow(text)
+    if set(parsed.events) != {"workflow_dispatch"}:
+        raise ValueError("the optional iOS workflow must be manual-only")
+    if not re.search(r"(?m)^name: iOS \(optional\)$", text):
+        raise ValueError("the optional iOS workflow needs its distinct name")
+    jobs = workflow_jobs(text)
+    if set(jobs) != {"ios"} or not re.search(r"(?m)^    name: iOS tests$", jobs["ios"]):
+        raise ValueError("the optional iOS workflow needs its own test job")
+    job = jobs["ios"]
+    if "if" in parsed.jobs["ios"] or "continue-on-error" in parsed.jobs["ios"]:
+        raise ValueError("the manual iOS job must execute and propagate failures")
+    for match in re.finditer(r"(?m)^\s+UBQ_CI_PREFLIGHT_COMPLETE:\s*([^\n]+)", text):
+        if match[1].strip().strip('\"\'') != "0":
+            raise ValueError("the manual iOS workflow cannot claim an unrun preflight")
+    steps = re.findall(r"(?ms)^      - name: .*?(?=^      - |\Z)", job)
+    command = ('python3 Libraries/ubiquitty-kit/Libraries/ubiquitty-core/Scripts/ci_batteries.py '
+               'run apple --source-root "$GITHUB_WORKSPACE" $STAGES')
+    executed = [step for step in steps if re.search(r"(?m)^          " + re.escape(command) + r"$", step)]
+    if len(executed) != 1 or re.search(r"(?m)^        (if|continue-on-error):", executed[0]):
+        raise ValueError("the manual iOS workflow must run the real strict battery command")
+    for variable in ("UBQ_CI_CODE", "UBQ_CI_CMAKE"):
+        if not re.search(r"(?m)^      " + variable + r': "true"$', job):
+            raise ValueError("the manual iOS battery must enable code and CMake stages")
+    if "      STAGES: ${{ matrix.stages }}\n" not in job:
+        raise ValueError("the manual iOS battery must use its complete stage selection")
+    groups = re.findall(r"(?m)^            stages: (.*)$", job)
+    if len(groups) != 1:
+        raise ValueError("the manual iOS workflow needs one complete stage selection")
+    words = groups[0].split()
+    expected = {"setup", "quic", "ios-build", "ios-smokes", "ios-sync", "ios-ui"}
+    if words[::2] != ["--only"] * (len(words) // 2) or len(words) != 12 or set(words[1::2]) != expected:
+        raise ValueError("the manual iOS workflow must retain every iOS stage")
+    return expected
+
+
+class OptionalIOSWorkflowCoverageTests(unittest.TestCase):
+    """Manual coverage counts only for a real, strict and complete iOS run."""
+
+    workflow = '''name: iOS (optional)
+on:
+  workflow_dispatch:
+jobs:
+  ios:
+    name: iOS tests
+    strategy:
+      matrix:
+        include:
+          - group: ios
+            stages: --only setup --only quic --only ios-build --only ios-smokes --only ios-sync --only ios-ui
+    env:
+      UBQ_CI_CODE: "true"
+      UBQ_CI_CMAKE: "true"
+      UBQ_CI_PREFLIGHT_COMPLETE: "0"
+      STAGES: ${{ matrix.stages }}
+    steps:
+      - name: Run iOS battery
+        run: |
+          python3 Libraries/ubiquitty-kit/Libraries/ubiquitty-core/Scripts/ci_batteries.py run apple --source-root "$GITHUB_WORKSPACE" $STAGES
+'''
+
+    def test_strict_manual_workflow_retains_the_entire_ios_stage_set(self):
+        self.assertEqual(optional_app_ios_stages(self.workflow),
+                         {"setup", "quic", "ios-build", "ios-smokes", "ios-sync", "ios-ui"})
+
+    def test_missing_stages_and_automatic_triggers_are_not_coverage(self):
+        for broken in (self.workflow.replace(" --only ios-sync", ""),
+                       self.workflow.replace("  workflow_dispatch:", "  push:\n  workflow_dispatch:")):
+            with self.subTest(broken=broken), self.assertRaises(ValueError):
+                optional_app_ios_stages(broken)
+
+    def test_skipped_commands_false_preflight_and_ignored_failures_are_rejected(self):
+        for broken in (self.workflow.replace('UBQ_CI_PREFLIGHT_COMPLETE: "0"', 'UBQ_CI_PREFLIGHT_COMPLETE: "1"'),
+                       self.workflow.replace("run apple", "report apple"),
+                       self.workflow.replace("        run: |", "        if: false\n        run: |"),
+                       self.workflow.replace("        run: |", "        continue-on-error: true\n        run: |")):
+            with self.subTest(broken=broken), self.assertRaises(ValueError):
+                optional_app_ios_stages(broken)
+
+    def test_required_and_manual_jobs_union_the_full_hosted_manifest(self):
+        manifest = [stage for stage in batteries.stages("apple") if "app" in stage.repositories and stage.hosted]
+        required = [stage.key for stage in manifest if not stage.key.startswith("ios-")]
+        with tempfile.TemporaryDirectory(prefix="ubq-optional-ios-coverage-") as directory:
+            workflow = Path(directory) / "ci.yml"
+            workflow.write_text("fixture\n")
+            optional = workflow.with_name("ios.yml")
+            optional.write_text(self.workflow)
+            case = EveryWorkflowTests("test_a_battery_split_into_groups_runs_every_stage_of_its_manifest")
+
+            def inspect(keys):
+                job = "    name: Apple battery (${{ matrix.group }})\n            stages: " + " ".join("--only " + key for key in keys) + "\n"
+                with patch.dict(globals(), WORKFLOW=str(workflow), TEST_SOURCES=SimpleNamespace(repositories=("app",))), \
+                        patch.object(case, "jobs", return_value={"apple": job}), \
+                        patch.object(batteries, "source_stages", return_value=manifest):
+                    case.test_a_battery_split_into_groups_runs_every_stage_of_its_manifest()
+
+            inspect(required)
+            for keys in ([key for key in required if key != "macos-build"], [*required, "ios-ui"]):
+                with self.subTest(keys=keys), self.assertRaises(AssertionError):
+                    inspect(keys)
+            optional.unlink()
+            with self.assertRaises(AssertionError):
+                inspect(required)
+
+
 class CoreWorkflowSchedulingTests(unittest.TestCase):
     source_repositories = ("core",)
 
@@ -3766,6 +3873,16 @@ class EveryWorkflowTests(unittest.TestCase):
                         self.assertIn("setup", words[1::2])
                         covered.update(words[1::2])
                     expected = {stage.key for stage in batteries.source_stages(platform, TEST_SOURCES) if stage.hosted}
+                    if platform == "apple" and TEST_SOURCES.repositories == ("app",):
+                        optional = Path(WORKFLOW).with_name("ios.yml")
+                        self.assertTrue(optional.is_file(), "App's manual iOS battery is missing")
+                        try:
+                            manual = optional_app_ios_stages(optional.read_text())
+                        except ValueError as error:
+                            self.fail(str(error))
+                        self.assertFalse(covered & {key for key in manual if key.startswith("ios-")},
+                                         "required App CI must not schedule the optional iOS stages")
+                        covered.update(manual)
                     self.assertEqual(covered, expected)
 
     @unittest.skipUnless(WORKFLOW, "pass --workflow to validate the live workflow contract")
