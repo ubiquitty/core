@@ -30,6 +30,8 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -66,6 +68,8 @@ VENDOR_FONTCONFIG = re.compile(r"\bFc[A-Z][A-Za-z0-9]*")
 # similarly named project variable subject to the normal character rule.
 VENDOR_ENUM_CASE = re.compile(r"\bNSLineBreakMode\.byCharWrapping\b")
 STRING_LITERAL = re.compile(r'"([^"\\]|\\.)*"')
+# A literal stays whole so its contents retain their quote delimiters in a diff.
+WORD_DIFF_REGEX = r'"([^"\\]|\\.)*"|[A-Za-z_][A-Za-z0-9_]*|[^[:space:]]'
 
 RATCHETS = (
     ('\\bg[A-Z][a-z]|\\bg[A-Z]{2,}|\\bg_[a-z]',
@@ -158,7 +162,7 @@ def added_lines(root):
     """
     finished = subprocess.run(
         ["git", "-C", root, "diff", "--cached", "-U0", "--word-diff=porcelain",
-         "--word-diff-regex=[A-Za-z_][A-Za-z0-9_]*|[^[:space:]]",
+         "--word-diff-regex=" + WORD_DIFF_REGEX,
          "--diff-filter=ACM", "--",
          "*.h", "*.cp", "*.cpp", "*.mm", "*.m", "*.swift",
          ":(exclude)*/ThirdParty/*", ":(exclude)ThirdParty/*"],
@@ -298,6 +302,24 @@ def _self_test():
     else:
         print(f"{GATE} self-test: FAIL — word-diff fragments lost Swift label context")
         status = 1
+    with tempfile.TemporaryDirectory(prefix="ubq-naming-quoted-diff-") as temporary:
+        before = Path(temporary) / "before.cpp"
+        after = Path(temporary) / "after.cpp"
+        before.write_text('printf("grid %d %d frames", width, height);\n')
+        for declaration, expected in (("", 0), ("int dx = 2;\n", 1)):
+            after.write_text(declaration + 'printf("grid %dx%d frames", width, height);\n')
+            diff = subprocess.run(
+                ["git", "diff", "--no-index", "-U0", "--word-diff=porcelain",
+                 "--word-diff-regex=" + WORD_DIFF_REGEX, str(before), str(after)],
+                capture_output=True, text=True)
+            actual = len(ratchet_hits(added_word_lines(diff.stdout.splitlines()), offsetRule))
+            if diff.returncode == 1 and actual == expected:
+                print(f"{GATE} self-test: ok — quoted dimensions add no identifiers; "
+                      f"real declarations report {expected}")
+            else:
+                print(f"{GATE} self-test: FAIL — quoted dimensions or a real declaration "
+                      f"reported {actual}, expected {expected}")
+                status = 1
     edgeRule = next(pattern for pattern, _ in RATCHETS if pattern.startswith("[a-z]Min"))
     vendorFields = ["+            .xOffset = fromFixed(affine.dx),",
                     "+            .yOffset = fromFixed(paint.u.translate.dy),",
