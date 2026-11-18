@@ -198,6 +198,7 @@ def stages(platform):
         return (
             Stage("setup", "Style tools and hooks", STYLE_SETUP),
             Stage("orchestration-tests", "CI orchestration tests", r'''unset UBQ_BATTERY UBQ_CI_ANNOTATE UBQ_EVENT_LOG UBQ_RESULT_DIR UBQ_STAGE_KEY UBQ_STAGE_LABEL UBQ_STAGE_LOG_PATH UBQ_STAGE_JUNIT_PATH
+python3 Tests/Tools/test_host_tools.py BuildPrerequisiteTests.test_agent_smokes_resolve_build_root_and_explicit_overrides
 python3 Scripts/test-gate-framework.py
 python3 Scripts/test-prepush-preflight.py
 python3 Scripts/test-prepush-gates.py
