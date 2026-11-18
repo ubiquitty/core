@@ -127,25 +127,26 @@ TEST(everyUnderlineShapeGrowsHeavierWithTheThicknessSetting)
     }
 }
 
-// The steps between neighbouring settings are what a user turns. A patterned
-// shape that answered them on its own, by a weight finer than the single rule's
-// whole rows, would drift out of balance with it across the range: lighter
-// than the straight rule at one setting, heavier at the next. Each shape grows
-// heavier exactly where the single rule does and holds where it holds.
-TEST(everyPatternedShapeStepsWithTheSingleRule)
+// The setting moves every shape together. Each patterned shape takes the
+// single rule's weight, drawn exactly, so a whole step of the setting makes
+// each of them heavier with the single rule. The steps are whole because the
+// marks keep a whole-pixel pitch: between two neighbouring sub-pixel settings
+// the pitch can step up a pixel and leave a dotted line a hair lighter, which
+// is the price of dots that sit on the pixel grid.
+TEST(everyPatternedShapeGrowsWithTheSingleRule)
 {
-    const float settings[] = { 1.0f, 1.25f, 1.5f, 2.0f, 2.25f, 3.0f };
+    const float settings[] = { 1.0f, 2.0f, 3.0f, 4.0f };
     const VT::UnderlineShape shapes[] = { VT::UnderlineShape::Curly, VT::UnderlineShape::Dotted, VT::UnderlineShape::Dashed };
     for (std::size_t i = 1; i < std::size(settings); ++i) {
         const float from = settings[i - 1];
         const float to = settings[i];
-        const bool doesSingleGrow = ruleWeight(VT::UnderlineShape::Single, to) > ruleWeight(VT::UnderlineShape::Single, from);
+        CHECK_MSG(ruleWeight(VT::UnderlineShape::Single, to) > ruleWeight(VT::UnderlineShape::Single, from), "the single rule grows with the setting");
         for (const VT::UnderlineShape shape : shapes) {
             const double before = ruleWeight(shape, from);
             const double after = ruleWeight(shape, to);
-            CHECK_MSG(doesSingleGrow ? after > before : after == before,
-                (shapeName(shape) + " from " + std::to_string(from) + " to " + std::to_string(to) + (doesSingleGrow ? " grows with" : " holds with")
-                    + " the single rule (before=" + std::to_string(before) + " after=" + std::to_string(after) + ")")
+            CHECK_MSG(after > before,
+                (shapeName(shape) + " from " + std::to_string(from) + " to " + std::to_string(to) + " grows with the single rule (before="
+                    + std::to_string(before) + " after=" + std::to_string(after) + ")")
                     .c_str());
         }
     }

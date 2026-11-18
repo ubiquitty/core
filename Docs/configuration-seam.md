@@ -162,6 +162,7 @@ is Preferences' work.
 | `shouldUnderlineSkipInk` | `[underline] skip_ink` |
 | `shouldUnderlineFollowInk` | `[underline] follows_ink` |
 | `underlineSkipInkPaddingPoints` | `[underline] skip_ink_pad` |
+| `curlyRuleShape` | `[underline] curly` |
 | `shouldUnderlineLinks` | `[underline] links` |
 | `linkUnderlineStyle` | `[underline] link_style` |
 | `shouldStyleLinksPerKind` | `[underline] link_style_per_kind` |

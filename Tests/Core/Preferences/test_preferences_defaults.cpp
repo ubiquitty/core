@@ -9,8 +9,8 @@
 // Two contracts:
 //   1. Defaults / PreferencesAccessors: the effective-value accessor for an
 //      UNSET key returns the canonical default, and a SET key returns the
-//      stored value. The headline regression guard is
-//      underlineSkipInkPad == 1.0 — one value, read the same by the macOS
+//      stored value. The headline regression guard is underlineSkipInkPad,
+//      automatic (negative) when unset — one value, read the same by the macOS
 //      interop, the ctor and the renderer.
 //   2. Preferences::Schema: rangeFor() reports the documented bounds, and the TOML
 //      parse clamp honors a schema range for every key the table bounds.
@@ -26,6 +26,7 @@
 #include <sstream>
 #include <string>
 
+using Ubiquitty::Preferences::CurlyUnderlineShape;
 using Ubiquitty::Preferences::CursorShape;
 using Ubiquitty::Preferences::parse;
 using Ubiquitty::Preferences::TabShortcutHints;
@@ -51,10 +52,36 @@ static Values parseString(const std::string& text)
 /// default to state and cannot contradict one.
 TEST(testSkipInkPadIsOneAuthoritativeDefault)
 {
-    CHECK(Defaults::underlineSkipInkPad == 1.0);
+    CHECK_MSG(Defaults::underlineSkipInkPad < 0.0, "the default clearance is automatic");
     Values c; // unset
     CHECK(!c.underlineSkipInkPad.has_value());
-    CHECK(Ubiquitty::Preferences::Effective::underlineSkipInkPad(c) == 1.0);
+    CHECK(Ubiquitty::Preferences::Effective::underlineSkipInkPad(c) == Defaults::underlineSkipInkPad);
+}
+
+/// The clearance reaches the frame style as -1 when automatic and as device
+/// pixels when stated, and an explicit 0 keeps no clearance.
+///
+/// The automatic value must not be scaled: -1 at a backing scale of two would
+/// otherwise reach the renderer as -2, and a renderer reading the magnitude
+/// would take it for a size.
+TEST(testSkipInkPadReachesTheFrameAsAutomaticOrPixels)
+{
+    namespace Effective = Ubiquitty::Preferences::Effective;
+    const Values unset;
+    CHECK(Effective::underlineSkipInkPaddingInPixels(Effective::underlineSkipInkPad(unset), 2.0) == -1.0f);
+    CHECK(Effective::renderConfiguration(unset).underlineSkipInkPaddingPoints < 0.0);
+
+    const Values stated = parseString("[underline]\nskip_ink_pad = 1.5\n");
+    CHECK(Effective::underlineSkipInkPaddingInPixels(Effective::underlineSkipInkPad(stated), 2.0) == 3.0f);
+
+    const Values none = parseString("[underline]\nskip_ink_pad = 0\n");
+    CHECK(none.underlineSkipInkPad == 0.0);
+    CHECK_MSG(Effective::underlineSkipInkPaddingInPixels(Effective::underlineSkipInkPad(none), 2.0) == 0.0f,
+        "an explicit 0 is no clearance, not automatic");
+
+    const Values writtenOut = parseString("[underline]\nskip_ink_pad = -1\n");
+    CHECK_MSG(Effective::underlineSkipInkPaddingInPixels(Effective::underlineSkipInkPad(writtenOut), 3.0) == -1.0f,
+        "the automatic sentinel written into the file reads as automatic");
 }
 
 /// Each target's built-in padding, and a stated value outranking it.
@@ -100,6 +127,8 @@ TEST(testAccessorsReturnDefaultsWhenUnset)
     CHECK(Ubiquitty::Preferences::Effective::underlineThickness(c) == 1.0);
     CHECK(Ubiquitty::Preferences::Effective::underlineOffset(c) == 0.0);
     CHECK(Ubiquitty::Preferences::Effective::underlineSkipInk(c) == true);
+    CHECK(Ubiquitty::Preferences::Effective::curlyUnderlineShape(c) == Defaults::curlyUnderlineShape);
+    CHECK(Ubiquitty::Preferences::Effective::curlyUnderlineShape(c) == CurlyUnderlineShape::Medium);
     CHECK(Ubiquitty::Preferences::Effective::underlineLinks(c) == true);
     CHECK(Ubiquitty::Preferences::Effective::linkUnderlineStyle(c) == 0);
     CHECK(Ubiquitty::Preferences::Effective::backgroundOpacity(c) == 1.0);
@@ -142,7 +171,7 @@ TEST(testTheRenderConfigurationResolvesOnceForEveryFrontend)
 {
     Values c = parseString("[font]\nfamily = \"JetBrains Mono\"\nsize = 14\nline_spacing = 8\n"
                            "[appearance]\npadding_left = 2\npadding_right = 4\npadding_top = 6\npadding_bottom = 8\n"
-                           "[underline]\nthickness = 2.5\noffset = -1\nskip_ink = false\nskip_ink_pad = 3\n");
+                           "[underline]\nthickness = 2.5\noffset = -1\nskip_ink = false\nskip_ink_pad = 3\ncurly = \"wide\"\n");
     const Ubiquitty::Rendering::RenderConfiguration settings = Ubiquitty::Preferences::Effective::renderConfiguration(c);
     CHECK(settings.fontFamily.view() == "JetBrains Mono");
     CHECK(settings.fontSizePoints == 14.0);
@@ -155,12 +184,15 @@ TEST(testTheRenderConfigurationResolvesOnceForEveryFrontend)
     CHECK(settings.underlineOffsetPoints == -1.0);
     CHECK(!settings.shouldUnderlineSkipInk);
     CHECK(settings.underlineSkipInkPaddingPoints == 3.0);
+    CHECK(settings.curlyRuleShape == Ubiquitty::Rendering::CurlyRuleShape::Wide);
 
     const Ubiquitty::Rendering::RenderConfiguration defaults = Ubiquitty::Preferences::Effective::renderConfiguration(Values {});
     CHECK(defaults.fontFamily.view().empty());
     CHECK(defaults.fontSizePoints == Defaults::fontSize);
     CHECK(defaults.lineSpacingPoints == Defaults::lineSpacing);
     CHECK(defaults.underlineThicknessScale == Defaults::underlineThickness);
+    CHECK(defaults.curlyRuleShape == Ubiquitty::Rendering::CurlyRuleShape::Medium);
+    CHECK_MSG(defaults.underlineSkipInkPaddingPoints < 0.0, "an unset skip-ink clearance folds as automatic");
 }
 
 /// [triggers] allow_run_command + allow_webhook are SECURITY GATES: both

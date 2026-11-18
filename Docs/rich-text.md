@@ -824,12 +824,12 @@ breaks only where the style or the line does. Core places a stretch's rows
 as the cell builder places grid text's rules: the weight and drop from the
 run face's underline weight, descent and leading at the run's size, the
 strike at half its x-height, the frame's underline thickness multiplier and
-offset applied, each weight a whole number of device rows and each top a
-whole device pixel. The frame's rule settings ride on the block's quad and
+offset applied, each weight drawn exactly, its last row in part, and each
+top a whole device pixel ([underlines](underlines.md)). The frame's rule settings ride on the block's quad and
 move its key. The macOS raster strokes the rows Core places, under the
 glyphs, and sets every grapheme on a whole-pixel baseline as the grid sets
 its own. With skip-ink on, Core cuts an underline by the rule it cuts the
-grid's with (`Core/Rendering/SkipInk.h`): a pixel is cut whole where glyph
+grid's with (`Core/Rendering/SkipInk.h`, [underlines](underlines.md)): a pixel is cut whole where glyph
 ink touches the rule within the skip-ink padding of it, looking no higher
 than the rule's top row, so a descender opens a gap and a letter sitting on
 the baseline leaves the rule whole. On Linux, Pango draws its own run-level decorations, which meet the

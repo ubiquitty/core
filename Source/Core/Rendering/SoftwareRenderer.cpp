@@ -16,6 +16,7 @@
 #include "Core/Rendering/GlyphKey.h"
 #include "Core/Rendering/ImageQuads.h"
 #include "Core/Rendering/PaddingGeometry.h"
+#include "Core/Rendering/RuleGeometry.h"
 #include "Core/Rendering/ShadeStyle.h"
 #include "Core/Rendering/SizedMaster.h"
 
@@ -1570,40 +1571,20 @@ void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, std::vec
             const float acrossCoverage = std::clamp(std::min(static_cast<float>(x + 1), pieceRight) - std::max(static_cast<float>(x), pieceLeft), 0.0f, 1.0f);
             if (acrossCoverage <= 0.0f)
                 continue;
-            // Half-open coverage (the GPU's top-left fill rule): a pixel is
-            // in the rule iff its center falls in [min, max), so a 1px-tall
-            // rule lights exactly one row rather than smearing across two.
             const float localX = centreX - minX;
             const float localY = centreY - minY;
             if (localX < 0.0f || localX >= sizeX)
                 continue;
 
-            // A dash's band is the stroke itself, so the band's height is the
-            // weight the thickness setting asks for and it has to reach the
-            // surface continuously. The half-open center test answers only in
-            // whole rows, which quantizes that weight to the pixel grid: a band
-            // between two row centers paints the same as the band below it, and
-            // where the setting's step falls relative to those centers decides
-            // whether it is rendered at all. Taking the fraction of its own row
-            // that the band covers makes the summed weight the band's height
-            // exactly, at any sub-pixel size.
-            //
-            // Every other kind draws a shape within a band built with slack —
-            // a dot's diameter, a wave's amplitude — and gets its edge softness
-            // from that shape's own distance falloff, so the band edge is not a
-            // stroke edge and the center test is what belongs there.
+            // The part of this pixel's row the band covers. A straight rule
+            // is drawn at its weight exactly: its top on a whole row, and the
+            // row its weight leaves covered in part (ruleWeight), the way the
+            // face draws the edge of its own underscore. Dots and the curl
+            // draw a shape inside the band and take their edges from it. A
+            // piece of a cut rule draws the rows its own extent reaches.
             const bool isDashedRule = isDecorationKind(d.kind, DecorationKind::Dashed);
-            float bandCoverage = 1.0f;
-            if (isDashedRule) {
-                const float rowTop = localY - 0.5f > 0.0f ? localY - 0.5f : 0.0f;
-                const float rowBottom = localY + 0.5f < sizeY ? localY + 0.5f : sizeY;
-                bandCoverage = rowBottom - rowTop;
-                if (bandCoverage <= 0.0f)
-                    continue;
-                // A piece of a cut rule draws the rows its own extent reaches.
-                if (centreY + 0.5f <= d.topLeftInPixels.y || centreY - 0.5f >= d.bottomRightInPixels.y)
-                    continue;
-            } else if (localY < 0.0f || localY >= sizeY || centreY < d.topLeftInPixels.y || centreY >= d.bottomRightInPixels.y)
+            const float bandCoverage = std::min(localY + 0.5f, sizeY) - std::max(localY - 0.5f, 0.0f);
+            if (bandCoverage <= 0.0f || centreY + 0.5f <= d.topLeftInPixels.y || centreY - 0.5f >= d.bottomRightInPixels.y)
                 continue;
 
             float alpha = baseAlpha * acrossCoverage;
@@ -1642,19 +1623,36 @@ void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, std::vec
                 }
                 alpha *= std::min(marks, 1.0f) * bandCoverage;
             } else if (isDecorationKind(d.kind, DecorationKind::Curly)) {
-                // A sine wave a period long, its stroke the weight measured
-                // across the curve: the distance down to the wave over the
-                // length of the curve's normal, so a slope draws as heavy as a
-                // crest. The swing is what the band holds beyond the stroke
-                // and its antialiased edge (curlyRuleSwingInWeights).
-                const float period = d.dashPeriodInPixels > 2.0f ? d.dashPeriodInPixels : 2.0f;
+                // Circular arcs half a period across, alternately crest and
+                // trough, meeting on the centre line with matching tangents
+                // (curlyRuleProportions): the distance to the nearest of
+                // the arc this pixel lies under and its two neighbours, or to
+                // an arc's end where its circle's nearest point is past it.
                 const float halfWeight = d.thicknessInPixels * 0.5f;
-                const float swing = std::max(sizeY * 0.5f - halfWeight - 0.5f, 0.25f);
-                const float phase = localX / period * 6.2831853f;
-                const float wave = sizeY * 0.5f + swing * std::sin(phase);
-                const float slope = swing * 6.2831853f / period * std::cos(phase);
-                const float apart = std::fabs(localY - wave) / std::sqrt(1.0f + slope * slope);
+                const CurlArcs arcs = curlArcs(d.dashPeriodInPixels, sizeY, d.thicknessInPixels);
+                const float swing = arcs.swing;
+                const float middle = arcs.middle;
+                const float span = arcs.span;
+                const float radius = arcs.radius;
+                const float index = std::floor(localX / span);
+                float apart = std::numeric_limits<float>::max();
+                for (const float arc : { index - 1.0f, index, index + 1.0f }) {
+                    // Even arcs crest toward the text, odd ones dip away from it.
+                    const float side = arc - 2.0f * std::floor(arc * 0.5f) < 0.5f ? -1.0f : 1.0f;
+                    const float arcLeft = arc * span;
+                    const float circleX = arcLeft + span * 0.5f;
+                    const float circleY = middle - side * (radius - swing);
+                    const float reach = std::hypot(localX - circleX, localY - circleY);
+                    const float nearestX = reach > 0.0f ? circleX + (localX - circleX) / reach * radius : circleX;
+                    const float nearestY = reach > 0.0f ? circleY + (localY - circleY) / reach * radius : circleY + side * radius;
+                    const bool isOnArc = nearestX >= arcLeft && nearestX <= arcLeft + span && (side < 0.0f ? nearestY <= middle : nearestY >= middle);
+                    const float distance = isOnArc ? std::fabs(reach - radius)
+                                                   : std::min(std::hypot(localX - arcLeft, localY - middle), std::hypot(localX - arcLeft - span, localY - middle));
+                    apart = std::min(apart, distance);
+                }
                 alpha *= std::clamp(halfWeight + 0.5f - apart, 0.0f, 1.0f);
+            } else {
+                alpha *= bandCoverage;
             }
 
             if (m_isBitmapFace)

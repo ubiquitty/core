@@ -37,6 +37,26 @@ Rendering::FallbackRule ruleFrom(const RangeMapEntry& entry)
     return rule;
 }
 
+/// Returns the rule shape the renderer draws for a curly underline choice.
+///
+/// Spelled case by case rather than cast, so a shape added on one side and
+/// not the other fails to compile here instead of drawing its neighbour.
+///
+/// - Parameter shape: The `[underline] curly` choice.
+/// - Returns: The renderer's shape of the same name.
+Rendering::CurlyRuleShape ruleShapeFrom(CurlyUnderlineShape shape)
+{
+    switch (shape) {
+    case CurlyUnderlineShape::Compact:
+        return Rendering::CurlyRuleShape::Compact;
+    case CurlyUnderlineShape::Medium:
+        return Rendering::CurlyRuleShape::Medium;
+    case CurlyUnderlineShape::Wide:
+        return Rendering::CurlyRuleShape::Wide;
+    }
+    return Rendering::CurlyRuleShape::Compact;
+}
+
 } // namespace
 
 Rendering::RenderConfiguration renderConfiguration(const Values& values)
@@ -84,6 +104,7 @@ Rendering::RenderConfiguration renderConfiguration(const Values& values)
     configuration.shouldUnderlineSkipInk = underlineSkipInk(values);
     configuration.shouldUnderlineFollowInk = underlineFollowsInk(values);
     configuration.underlineSkipInkPaddingPoints = underlineSkipInkPad(values);
+    configuration.curlyRuleShape = ruleShapeFrom(curlyUnderlineShape(values));
     configuration.shouldUnderlineLinks = underlineLinks(values);
     configuration.linkUnderlineStyle = linkUnderlineStyle(values);
     configuration.shouldStyleLinksPerKind = linkStylePerKind(values);
@@ -183,6 +204,7 @@ KeyReach reachOf(Key key)
     case Key::UnderlineSkipInk:
     case Key::UnderlineFollowsInk:
     case Key::UnderlineSkipInkPad:
+    case Key::UnderlineCurly:
     case Key::TextBrightenBold:
     case Key::TekBrightPen:
     case Key::TekGlowVectors:

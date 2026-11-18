@@ -46,7 +46,9 @@ inline constexpr RangeEntry ranges[] = {
     // [underline]
     { "underline", "thickness", { 0.5, 4.0, 0.25, "x" } }, // Underline Thickness stepper
     { "underline", "offset", { -4.0, 8.0, 0.5, "pt" } }, // Underline Offset stepper
-    { "underline", "skip_ink_pad", { 0.0, 3.0, 0.25, "pt" } }, // Skip-Ink Pad stepper
+    // Skip-Ink Gap stepper. Unset is automatic, the underline's own weight;
+    // the parse does not clamp this key, so a negative value stays automatic.
+    { "underline", "skip_ink_pad", { 0.0, 3.0, 0.25, "pt" } },
     // [appearance] padding — all four edges share one range
     { "appearance", "padding", { 0.0, 64.0, 1.0, "pt" } },
     { "appearance", "padding_top", { 0.0, 64.0, 1.0, "pt" } },

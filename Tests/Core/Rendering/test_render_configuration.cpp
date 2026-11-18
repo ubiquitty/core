@@ -152,6 +152,7 @@ const std::vector<Field>& fields()
         UBIQUITTY_FIELD(shouldUnderlineSkipInk),
         UBIQUITTY_FIELD(shouldUnderlineFollowInk),
         UBIQUITTY_FIELD(underlineSkipInkPaddingPoints),
+        UBIQUITTY_FIELD(curlyRuleShape),
         UBIQUITTY_FIELD(shouldUnderlineLinks),
         UBIQUITTY_FIELD(linkUnderlineStyle),
         UBIQUITTY_FIELD(shouldStyleLinksPerKind),
@@ -357,6 +358,41 @@ TEST(testTheFrameAppliersCarryTheCursorAndTheBell)
     CHECK_MSG(Effective::bellFlashAlpha(configured, 0, 1) == 0.0f, "no flash started is no flash");
     const RenderConfiguration quiet = Effective::renderConfiguration(Values {});
     CHECK_MSG(Effective::bellFlashAlpha(quiet, 1, 1) == 0.0f, "an audible bell does not flash");
+}
+
+// Each `[underline] curly` choice reaches the frame style as the rule shape of
+// the same name. The two enums are numbered alike, so a cast between them
+// would pass a test of the default alone; each choice is driven through on its
+// own, so a fold that swapped two of them fails here.
+TEST(testEveryCurlyChoiceReachesTheRuleShapeOfItsName)
+{
+    using Ubiquitty::Rendering::CurlyRuleShape;
+    struct Expectation {
+        const char* token;
+        CurlyRuleShape shape;
+    };
+    constexpr Expectation expectations[] = {
+        { "compact", CurlyRuleShape::Compact },
+        { "medium", CurlyRuleShape::Medium },
+        { "wide", CurlyRuleShape::Wide },
+    };
+    for (const Expectation& expectation : expectations) {
+        const RenderConfiguration configured = Effective::renderConfiguration(
+            parseDocument(std::string("[underline]\ncurly = \"") + expectation.token + "\"\n"));
+        CHECK_MSG(configured.curlyRuleShape == expectation.shape, expectation.token);
+        CHECK_MSG(configured.hasSameTypography(Effective::renderConfiguration(Values {})), "a curl is frame style and cuts no sheets");
+        Ubiquitty::Rendering::TerminalSnapshotStyle style;
+        style.curlyRuleShape = expectation.shape == CurlyRuleShape::Wide ? CurlyRuleShape::Compact : CurlyRuleShape::Wide;
+        Effective::applyRuleSettings(style, configured, 2.0);
+        CHECK_MSG(style.curlyRuleShape == expectation.shape, expectation.token);
+    }
+    CHECK(Effective::renderConfiguration(Values {}).curlyRuleShape == CurlyRuleShape::Medium);
+
+    // UbiquittyKit's `public enum CurlyUnderlineShape` publishes these raw
+    // values; a reorder or an added case here must move it as well.
+    CHECK_MSG(static_cast<unsigned>(CurlyRuleShape::Compact) == 0u, "UbiquittyKit declares `case compact = 0`");
+    CHECK_MSG(static_cast<unsigned>(CurlyRuleShape::Medium) == 1u, "UbiquittyKit declares `case medium = 1`");
+    CHECK_MSG(static_cast<unsigned>(CurlyRuleShape::Wide) == 2u, "UbiquittyKit declares `case wide = 2`");
 }
 
 TEST(fallbackSizingChangesRoutesAndTypography)

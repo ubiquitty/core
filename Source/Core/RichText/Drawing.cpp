@@ -253,13 +253,14 @@ DecorationRows decorationRows(const DecorationFace& face, float baseline, const 
     const float scale = quad.deviceScale > 0 ? quad.deviceScale : 1.0f;
     const Rendering::RuleFaceMetrics metrics {
         .underlineThickness = face.underlineThickness,
+        .underscoreWeight = face.underscoreWeight,
         .descent = face.descent,
         .leading = face.leading,
     };
     const Rendering::RuleGeometry geometry = Rendering::ruleGeometry(face.em, scale, metrics);
     const float multiplier = quad.underlineThicknessScale > 0 ? quad.underlineThicknessScale : 0.0f;
-    const float underlineWeight = Rendering::snappedRuleWeight(geometry.underlineThickness * multiplier);
-    const float strikeWeight = Rendering::snappedRuleWeight(geometry.strikeThickness * multiplier);
+    const float underlineWeight = Rendering::ruleWeight(geometry.underlineThickness * multiplier);
+    const float strikeWeight = Rendering::ruleWeight(geometry.strikeThickness * multiplier);
     const float ruleLine = baseline + geometry.underlineDrop + quad.underlineOffset - Rendering::underlineStrokeLiftForEm(face.em);
     const float underlineTop = Rendering::singleUnderlineTop(ruleLine, underlineWeight, scale);
     const float xHeight = Rendering::xHeightForStrike(face.xHeight >= 1.0f ? face.xHeight : 0.0f, face.ascent);

@@ -637,7 +637,10 @@ TEST(clippingASkipInkMaskPreservesTheVisiblePixels)
     }
 }
 
-TEST(nonpositiveSkipInkPaddingIsZeroForBothGridAndRichText)
+// Zero keeps no clearance; a negative padding, or one that is not a number, is
+// the automatic one, the rule's own weight, and grid and rich text resolve it
+// the same way.
+TEST(aNegativeSkipInkPaddingIsAutomaticForBothGridAndRichText)
 {
     Ubiquitty::Terminal t;
     reset(t);
@@ -649,14 +652,21 @@ TEST(nonpositiveSkipInkPaddingIsZeroForBothGridAndRichText)
     options.style.underlineSkipInkPaddingInPixels = 0;
     REQUIRE(frame.capture(t, options, rasterizer.cellMetrics(), Ubiquitty::Rendering::GlyphSlotGeometry {}));
     REQUIRE(frame.richTextQuads().size() == 1);
-    const auto zeroKey = frame.richTextQuads()[0].contentKey;
+    CHECK_EQ(frame.metrics().skipInkPadding, 0.0f);
+    CHECK_EQ(frame.richTextQuads()[0].skipInkPadding, 0.0f);
+    const float weight = std::max(1.0f, frame.metrics().underlineThickness);
+    options.style.underlineSkipInkPaddingInPixels = -1.0f;
+    REQUIRE(frame.capture(t, options, rasterizer.cellMetrics(), Ubiquitty::Rendering::GlyphSlotGeometry {}));
+    REQUIRE(frame.richTextQuads().size() == 1);
+    const auto automaticKey = frame.richTextQuads()[0].contentKey;
     for (const float padding : { -4.0f, -std::numeric_limits<float>::max(), std::numeric_limits<float>::quiet_NaN() }) {
         options.style.underlineSkipInkPaddingInPixels = padding;
         REQUIRE(frame.capture(t, options, rasterizer.cellMetrics(), Ubiquitty::Rendering::GlyphSlotGeometry {}));
         REQUIRE(frame.richTextQuads().size() == 1);
-        CHECK_EQ(frame.metrics().skipInkPadding, 0.0f);
-        CHECK_EQ(frame.richTextQuads()[0].skipInkPadding, 0.0f);
-        CHECK_EQ(frame.richTextQuads()[0].contentKey, zeroKey);
+        CHECK(frame.metrics().skipInkPadding < 0.0f);
+        CHECK_EQ(Ubiquitty::Rendering::skipInkPaddingInPixels(frame.metrics()), weight);
+        CHECK_EQ(frame.richTextQuads()[0].skipInkPadding, weight);
+        CHECK_EQ(frame.richTextQuads()[0].contentKey, automaticKey);
     }
 }
 

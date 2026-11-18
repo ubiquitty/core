@@ -246,7 +246,22 @@ int boldFontWeight(const Values& c);
 double fontWidthPercent(const Values& c);
 
 // [underline]
+/// Returns the multiplier on the underline's weight: `[underline] thickness`.
+///
+/// 1.0 is the font's own underline weight, the weight its underscore draws at
+/// as the engine renders the face, rather than the thickness the face declares.
+///
+/// - Parameter c: The configuration to read.
+/// - Returns: The multiplier, or its default.
 double underlineThickness(const Values& c);
+/// Returns the points the underline moves from its automatic position:
+/// `[underline] offset`.
+///
+/// Positive moves it down. 0 is automatic: the rule's top sits a clear gap of
+/// 0.85 of its weight below the baseline, in whole device pixels.
+///
+/// - Parameter c: The configuration to read.
+/// - Returns: The offset in points, or its default.
 double underlineOffset(const Values& c);
 bool underlineSkipInk(const Values& c);
 /// Whether a run's outer underline reaches the letter's ink past the cell:
@@ -255,7 +270,33 @@ bool underlineSkipInk(const Values& c);
 /// - Parameter c: The config fold.
 /// - Returns: The setting, or its default.
 bool underlineFollowsInk(const Values& c);
-double underlineSkipInkPad(const Values& c); // authoritative default 1.0
+/// Returns the clearance kept beside ink that crosses the underline:
+/// `[underline] skip_ink_pad`.
+///
+/// A stated value is points, and 0 keeps no clearance. Unset, or any negative
+/// value, is automatic: the clearance is the underline's own weight, which the
+/// renderer resolves once it has the face's metrics.
+///
+/// - Parameter c: The configuration to read.
+/// - Returns: The clearance in points, or a negative number for automatic.
+double underlineSkipInkPad(const Values& c);
+/// Returns the skip-ink clearance a frame draws with, in device pixels.
+///
+/// The one conversion from the preference to the frame style, for every arm.
+/// An automatic clearance goes on as a bare -1 rather than scaled, so the
+/// renderer resolves it to the rule's own weight; a stated one is points, so
+/// it scales, and 0 stays 0.
+///
+/// - Parameters:
+///   - points: The clearance as ``underlineSkipInkPad`` answers it.
+///   - deviceScale: Device pixels per point.
+/// - Returns: The clearance in device pixels, or -1 for automatic.
+float underlineSkipInkPaddingInPixels(double points, double deviceScale);
+/// Returns the shape a curly underline draws at: `[underline] curly`.
+///
+/// - Parameter c: The configuration to read.
+/// - Returns: The shape, or the medium default.
+CurlyUnderlineShape curlyUnderlineShape(const Values& c);
 bool underlineLinks(const Values& c);
 int linkUnderlineStyle(const Values& c);
 
@@ -342,6 +383,14 @@ Ubiquitty::VT::UnderlineShape linkUnderlineVTStyle(int index);
 /// - Returns: The policy the knobs describe.
 [[nodiscard]] Screen::ScrollTuning::Policy wheelPolicy(const Values& c, double pointsPerLine);
 bool linkColorSystemBlue(const Values& c);
+/// Whether each OSC 8 link kind takes its own underline:
+/// `[underline] link_style_per_kind`.
+///
+/// On by default: file links dotted, mailto links dashed, and web links in
+/// `link_style`. Off draws every link in `link_style`.
+///
+/// - Parameter c: The configuration to read.
+/// - Returns: The setting, or its default.
 bool linkStylePerKind(const Values& c);
 bool smartDoubleClick(const Values& c);
 

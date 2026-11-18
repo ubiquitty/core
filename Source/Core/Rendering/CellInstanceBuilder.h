@@ -58,17 +58,28 @@ enum class DecorationKind {
     Curly = 3,
 };
 
-/// The shapes of the patterned rules, as every renderer draws them. Each takes
-/// the single rule's weight, in whole device rows, so no shape reads lighter or
-/// heavier than the straight rule beside it.
+/// The shapes of the patterned rules, as every renderer draws them. Each starts
+/// from the single rule's weight and sits on its top row, so it meets the text
+/// where the straight rule does.
 ///
-/// A dotted rule is dots a weight across and a weight apart, as the system's
-/// text views draw their dotted marks, each a circle fitted to the pixel grid
-/// (dottedRuleCornerInset). A dashed rule is dashes three weights long, two
-/// weights apart. Marks are laid from the start of the run of underlined cells,
-/// not from each cell: mark `k` starts at the run's left edge + k * pitch, so
-/// every run begins with a whole mark, the marks run on across every cell's
-/// edge the same, and a whole-pixel pitch keeps each mark on the pixel grid.
+/// A dotted rule is round dots and a dashed rule dashes, each a little heavier
+/// than the single rule (dottedRuleWeightScale, dashedRuleWeightScale): a line
+/// broken into marks carries about half the ink of a solid one and reads
+/// lighter at the same weight. Dots are a dot's width apart and each a circle
+/// fitted to the pixel grid (dottedRuleCornerInset); dashes are three weights
+/// long and two apart. Marks are laid from the start of the run of underlined
+/// cells, not from each cell: mark `k` starts at the run's left edge + k *
+/// pitch, so every run begins with a whole mark, the marks run on across every
+/// cell's edge the same, and a whole-pixel pitch keeps each mark on the pixel
+/// grid.
+inline constexpr float dottedRuleWeightScale = 1.15f;
+
+/// The shortest stretch of a solid or dashed rule kept between two cuts, or
+/// between a cut and the line's end, in rule weights. A stretch a weight long
+/// reads as a stray dot between two close descenders rather than as the line,
+/// as under the `yg` of "pygmy"; two weights is the shortest that reads as line.
+inline constexpr float shortestRulePieceInWeights = 2.0f;
+inline constexpr float dashedRuleWeightScale = 1.1f;
 inline constexpr float dashedRuleOnShare = 0.6f;
 
 /// How much less than its radius a dot's corners are rounded, in device pixels.
@@ -80,11 +91,53 @@ inline constexpr float dashedRuleOnShare = 0.6f;
 /// a circle, as the face's rule grows with the font.
 inline constexpr float dottedRuleCornerInset = 0.5f;
 
-/// How far a curly rule swings either side of its centre, in its weights. One
-/// weight keeps the crests round at every size: with a wave a cell long, a
-/// crest turns on a radius of a weight or more inside the stroke, where a
-/// deeper swing pinches it to a point.
-inline constexpr float curlyRuleSwingInWeights = 1.0f;
+/// A curly rule's shape: circular arcs, alternately crest and trough,
+/// meeting on the centre line with matching tangents, so the curl has no
+/// straight flank anywhere and every crest is as round as its swing allows.
+/// It is laid from the start of its run, a wave a share of a cell long and
+/// swinging a share of its weight either side of its centre, as the user's
+/// `[underline] curly` choice sets them (curlyRuleProportions); its stroke is
+/// the single rule's weight measured across the curve.
+enum class CurlyRuleShape : std::uint8_t {
+    /// Two thirds of a cell long, swinging two thirds of a weight: a tight
+    /// string of arcs, three to every two letters.
+    Compact = 0,
+    /// A cell long, swinging three quarters of a weight: one wave to each
+    /// letter, the grid's own beat, quiet under the text.
+    Medium = 1,
+    /// A cell long, swinging a whole weight: one wave to each letter, the
+    /// loudest of the three.
+    Wide = 2,
+};
+
+/// A curly shape's wave length in cells and its swing in weights.
+struct CurlyRuleProportions {
+    float wavelengthInCells = 1.0f;
+    float swingInWeights = 0.75f;
+};
+
+/// Returns the proportions a curly shape draws at.
+///
+/// - Parameter shape: The shape.
+/// - Returns: Its wave length in cells and its swing in weights.
+[[nodiscard]] constexpr CurlyRuleProportions curlyRuleProportions(CurlyRuleShape shape)
+{
+    switch (shape) {
+    case CurlyRuleShape::Compact:
+        return { .wavelengthInCells = 2.0f / 3.0f, .swingInWeights = 2.0f / 3.0f };
+    case CurlyRuleShape::Wide:
+        return { .wavelengthInCells = 1.0f, .swingInWeights = 1.0f };
+    case CurlyRuleShape::Medium:
+        break;
+    }
+    return {};
+}
+
+/// The shortest wave a curl is drawn at, in device pixels: a half wave of a
+/// few pixels has no room to curve, and a compact curl on a 1x display or in
+/// small type blurs into a fuzzy band. Below it the wave lengthens and its
+/// swing with it, keeping the arcs' proportions.
+inline constexpr float curlyRuleShortestWavelengthInPixels = 8.0f;
 
 /// Whether an encoded decoration selector names this kind.
 ///
@@ -528,6 +581,10 @@ struct UBIQUITTY_NONESCAPABLE BuildInputs {
     // would silently lose every link underline, and the flag it did set is
     // evidence it wanted one.
     Ubiquitty::VT::UnderlineShape linkUnderlineStyle = defaultLinkUnderlineStyle;
+
+    /// The shape a curly underline draws at, as the user's `[underline] curly`
+    /// choice sets it.
+    CurlyRuleShape curlyRuleShape = CurlyRuleShape::Medium;
 
     // Opt-in subpixel mono glyph pass. false ⇒ a mono glyph is baked into its
     // CellInstance atlas UV at phase 0 (the cell-baked path). true ⇒ a mono

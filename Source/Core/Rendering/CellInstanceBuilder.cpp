@@ -20,6 +20,8 @@
 #include "Core/Rendering/CellDecisions.h"
 #include "Core/Rendering/ColorResolve.h"
 #include "Core/Rendering/DRCSRaster.h"
+#include "Core/Rendering/DottedRuleRun.h"
+#include "Core/Rendering/Enclosure.h"
 #include "Core/Rendering/LetterLayout.h"
 #include "Core/Rendering/OverlayGeometry.h"
 #include "Core/Rendering/ProportionalRun.h"
@@ -37,6 +39,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -873,6 +876,15 @@ struct SkipInkTap {
     Vec2 boxMinUV { 0.0f, 0.0f };
     Vec2 boxMaxUV { 0.0f, 0.0f };
     bool present = false;
+    /// Whether `inkTop` and `inkBottom` are known.
+    bool hasInkRows = false;
+    /// The slot's inked rows (skipInkSlotInkRows): carried with the tap as
+    /// the window rolls along the row, so a cell tells whether its glyphs
+    /// reach its rule without looking anything up.
+    std::int16_t inkTop = 0;
+    std::int16_t inkBottom = -1;
+    /// The glyph's slot in the mono sheet, when the tap reads one; -1 else.
+    std::int32_t slot = -1;
     /// The coverage sheet this tap reads. A shaped run draws a strip slice,
     /// not the glyph the mono sheet holds for its code point, and sampling the
     /// wrong sheet cuts a rule where no visible ink crosses it.
@@ -1112,6 +1124,7 @@ SkipInkTap resolveSkipInkTap(const BuildInputs& in, const GlyphBackend& atlas, c
     tap.boxMinUV = { box.minU, box.minV };
     tap.boxMaxUV = { box.maxU, box.maxV };
     tap.present = true;
+    tap.slot = slot;
     if (!in.subpixelGlyphs) {
         const GlyphUV ink = mono.geometry.atlasRectForSlot(slot, mono.slotCapacity);
         tap.inkMinUV = { ink.minU, ink.minV };
@@ -1736,17 +1749,37 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
     // walk is at: a stretch of it a cut leaves is judged across that edge.
     bool isUnderlineContinuedLeft = false;
     bool isUnderlineContinuedRight = false;
-    // Where the run of underlined cells the walk is in starts: a dotted or
-    // dashed rule lays its marks from there, so every run begins with a whole
-    // mark and the marks run on across the cells after it.
+    // Where the run of underlined cells the walk is in starts: a dotted, dashed
+    // or curly rule lays its marks from there, so every run begins with a whole
+    // mark and the marks run on across the cells after it. Taken from the first
+    // rule the run draws, at the edge its cell's mapping (a fractional block's
+    // area, a proportional run's glyphs) puts it, not the cell's own edge.
     float patternRunLeft = 0.0f;
+    bool isPatternRunStarting = false;
     // Skip-ink's reach in the atlas texels the taps are in: the padding
     // across, and the row adjacent to the rule up and down.
     const float atlasToDevice = atlasToDeviceScale(metrics);
-    const float skipInkPadding = metrics.skipInkPadding > 0.0f && std::isfinite(metrics.skipInkPadding) ? metrics.skipInkPadding : 0.0f;
+    const float skipInkPadding = skipInkPaddingInPixels(metrics);
     const float skipInkReachAcross = skipInkPadding / atlasToDevice;
     const float skipInkReachUpDown = skipInkContactInDevicePixels / atlasToDevice;
-    SkipInkScratch skipInkScratch;
+    // Kept across builds, so a steady frame allocates nothing for skip-ink;
+    // the memo of each glyph's cut lasts the one build (SkipInkMemoTable).
+    // Reached through a plain reference: a thread-local named in the per-cell
+    // lambdas is a call to find it on every use.
+    static thread_local SkipInkScratch skipInkScratchStorage;
+    SkipInkScratch& skipInkScratch = skipInkScratchStorage;
+    skipInkScratch.beginBuild();
+    // A cut rule's pieces, relative to its cell, by the glyphs beside it and
+    // the rule's shape: a rule beside the same glyphs as one the build has cut
+    // already copies its pieces without building its query. Filed as whether
+    // the rule was cut, then each piece's left, top, right, bottom, cut ends
+    // and share of the rule's opacity; a held dotted rule files its cut.
+    using SkipInkPieceMemo = SkipInkMemoTable<14, float>;
+    static thread_local std::vector<SkipInkKeep> skipInkKeepsStorage;
+    std::vector<SkipInkKeep>& skipInkKeeps = skipInkKeepsStorage;
+    static thread_local SkipInkPieceMemo skipInkPieceMemoStorage;
+    SkipInkPieceMemo& skipInkPieceMemo = skipInkPieceMemoStorage;
+    skipInkPieceMemo.begin();
     enum class InkMask {
         Absent,
         Present,
@@ -1755,40 +1788,55 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
     // mark sits on the pixel grid: two weights for a dot and its gap, five for
     // a dash and its (dashedRuleOnShare).
     // A curl keeps one wave a cell, and a solid rule has none.
+    // A curl's wavelength: its share of the cell, never under the shortest a
+    // wave has room to curve in.
+    const CurlyRuleProportions curl = curlyRuleProportions(in.curlyRuleShape);
+    const float curlWavelength = std::max(metrics.cellWidth * curl.wavelengthInCells, curlyRuleShortestWavelengthInPixels);
     const auto patternPitch = [&](DecorationKind kind, float weight) {
+        if (kind == DecorationKind::Curly)
+            return curlWavelength;
         if (!(weight > 0.0f) || (kind != DecorationKind::Dotted && kind != DecorationKind::Dashed))
             return metrics.cellWidth;
-        return snappedRuleWeight(weight) * (kind == DecorationKind::Dotted ? 2.0f : 5.0f);
+        return kind == DecorationKind::Dotted ? std::max(2.0f, std::round(2.0f * weight)) : std::max(3.0f, std::round(5.0f * weight));
     };
-    auto emitRule = [&](DecorationSite site, float cellLeft, float cellRight, float cellTop, float cellHeight, float top, float bottom, Vec4 color, DecorationKind kind, float thickness, InkMask mask) {
-        const float pitch = patternPitch(kind, bottom - top);
-        // A dotted or dashed rule's frame starts where its run does, and the
-        // run's last cell stops short of a mark it would end partway through:
-        // a sliver of dot, or of dash shorter than two weights, reads as a
-        // speck rather than as the pattern.
-        const bool isPatterned = kind == DecorationKind::Dotted || kind == DecorationKind::Dashed;
-        const float frameLeft = isPatterned ? patternRunLeft : cellLeft;
-        const float markWeight = snappedRuleWeight(bottom - top);
-        const float markLength = kind == DecorationKind::Dotted ? markWeight : pitch * dashedRuleOnShare;
-        const float shortestMark = kind == DecorationKind::Dotted ? markWeight : 2.0f * markWeight;
-        if (isPatterned && !isUnderlineContinuedRight && pitch > 0.0f) {
-            const float along = cellRight - frameLeft;
-            const float into = along - std::floor(along / pitch) * pitch;
-            if (into > 0.0f && into < markLength && into < shortestMark)
-                cellRight -= into;
-            if (!(cellRight > cellLeft))
+    // A dotted underline's run of cells, held until the run ends so its dots
+    // are fitted whole between the cuts anywhere along it (DottedRuleRun.h).
+    // A fractional block's rule maps onto the block rather than onto a run,
+    // and is drawn on its own.
+    static thread_local DottedRuleRun dottedRunStorage;
+    DottedRuleRun& dottedRun = dottedRunStorage;
+    dottedRun.reset();
+    bool isFractionalCell = false;
+    // A dotted or dashed rule lays its marks along a pattern from its band.
+    const auto isPatternedRule = [](DecorationKind kind) { return kind == DecorationKind::Dotted || kind == DecorationKind::Dashed; };
+    // A dotted rule skip-ink tests is held in its run, whose dots are fitted
+    // across the whole of it; a cell of a fractionally sized block is drawn
+    // alone.
+    const auto isRuleHeldInRun = [&](DecorationKind kind) { return kind == DecorationKind::Dotted && metrics.skipInk && !isFractionalCell; };
+    const auto pushDecoration = [&](const DecorationInstance& piece) {
+        const std::size_t index = counts.decorations++;
+        if (index < out.decorationCapacity && out.decorations)
+            out.decorations[index] = piece;
+    };
+    const auto releaseDottedRun = [&] {
+        dottedRun.release(pushDecoration, [&](std::size_t traceIndex, std::uint32_t pieceCount) {
+            if (traceIndex == DottedRuleRun::untraced)
                 return;
-        }
-        // Recorded before the capacity check: the site was REACHED whether or
-        // not the instance fitted, and a coverage answer that changed with the
-        // caller's buffer size would report a scene as uncovered for running
-        // out of room.
-        counts.decorationSites |= static_cast<std::uint32_t>(site);
-        const auto emitPiece = [&](float left, float pieceTop, float right, float pieceBottom, std::uint32_t cutEnds) {
-            const std::size_t index = counts.decorations++;
-            if (index >= out.decorationCapacity || !out.decorations)
-                return;
-            DecorationInstance& d = out.decorations[index];
+            SkipInkTrace& trace = out.skipInkTraces[traceIndex];
+            trace.firstPiece = static_cast<std::uint32_t>(counts.decorations - pieceCount);
+            trace.pieceCount = pieceCount;
+        });
+    };
+    // A rule skip-ink tests, or a dotted run holds: kept out of line, so a
+    // plain rule is a handful of stores in the cell walk.
+    const auto emitTestedRule = [&](float cellLeft, float cellRight, float cellTop, float cellHeight, float top, float bottom, Vec4 color, DecorationKind kind,
+                                    float thickness, InkMask mask, float pitch, float frameLeft, float markLength, float shortestMark) __attribute__((noinline)) {
+        const bool isPatterned = isPatternedRule(kind);
+        const bool isHeldInRun = isRuleHeldInRun(kind);
+        // One piece of the rule; its band is the whole rule, from where its
+        // marks start. Written where it is drawn from, so a frame of rules is
+        // not built and then copied.
+        const auto fillPiece = [&](DecorationInstance& d, float left, float pieceTop, float right, float pieceBottom, std::uint32_t cutEnds) {
             d.topLeftInPixels = { left, pieceTop };
             d.bottomRightInPixels = { right, pieceBottom };
             d.color = color;
@@ -1799,11 +1847,123 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
             d.bandTopLeftInPixels = { frameLeft, top };
             d.bandBottomRightInPixels = { cellRight, bottom };
         };
-        if (mask == InkMask::Absent) {
+        const auto pieceOf = [&](float left, float pieceTop, float right, float pieceBottom, std::uint32_t cutEnds) {
+            DecorationInstance d;
+            fillPiece(d, left, pieceTop, right, pieceBottom, cutEnds);
+            return d;
+        };
+        const auto emitPiece = [&](float left, float pieceTop, float right, float pieceBottom, std::uint32_t cutEnds) {
+            const std::size_t index = counts.decorations++;
+            if (index < out.decorationCapacity && out.decorations)
+                fillPiece(out.decorations[index], left, pieceTop, right, pieceBottom, cutEnds);
+        };
+        // A piece drawn at a share of the rule's opacity: a soft cut's.
+        const auto emitShadedPiece = [&](float left, float pieceTop, float right, float pieceBottom, std::uint32_t cutEnds, float alpha) {
+            const std::size_t index = counts.decorations++;
+            if (index < out.decorationCapacity && out.decorations) {
+                fillPiece(out.decorations[index], left, pieceTop, right, pieceBottom, cutEnds);
+                out.decorations[index].color.w *= alpha;
+            }
+        };
+        if (isHeldInRun) {
+            // A rule that does not carry the run held on ends it.
+            if (!dottedRun.isEmpty() && !dottedRun.doesContinueWith(pieceOf(cellLeft, top, cellRight, bottom, 0u)))
+                releaseDottedRun();
+            if (mask == InkMask::Absent) {
+                dottedRun.hold(pieceOf(cellLeft, top, cellRight, bottom, 0u), {}, isUnderlineContinuedRight ? DottedRunEdge::Continues : DottedRunEdge::Ends, DottedRuleRun::untraced);
+                if (!isUnderlineContinuedRight)
+                    releaseDottedRun();
+                return;
+            }
+        } else if (mask == InkMask::Absent) {
             emitPiece(cellLeft, top, cellRight, bottom, 0u);
             return;
         }
         ++counts.skipInkRules;
+        // A rule beside the same glyphs, of the same shape, as one the build
+        // has cut already is cut the same. Only where every glyph beside it is
+        // a mono slot, which names its raster, and no trace asks for the
+        // query; a held dotted rule is cut across its run instead.
+        const auto isNamedTap = [](const SkipInkTap& tap) { return !tap.present || (tap.sheet == SkipInkSheet::Mono && tap.slot >= 0); };
+        // A cell none of whose glyphs' ink comes near the rule's rows is
+        // drawn whole, without a key or a query: most of a page of text. Near
+        // is a touch for a hard cut and the grown reach for a curl's soft one,
+        // with a row to spare for a smooth read.
+        {
+            const float reach = (kind == DecorationKind::Curly ? skipInkReachAcross : skipInkReachUpDown) + 1.0f;
+            const float topShare = cellHeight > 0.0f ? (top - cellTop) / cellHeight : 0.0f;
+            const float bottomShare = cellHeight > 0.0f ? (bottom - cellTop) / cellHeight : 0.0f;
+            const auto reaches = [&](const SkipInkTap& tap) {
+                if (!tap.present)
+                    return false;
+                if (!tap.hasInkRows || tap.sheet != SkipInkSheet::Mono)
+                    return true;
+                if (tap.inkBottom < tap.inkTop)
+                    return false;
+                // Texel rows hold their ink across them.
+                const float span = tap.inkMaxUV.y - tap.inkMinUV.y;
+                const float rowTop = tap.inkMinUV.y + topShare * span;
+                const float rowBottom = tap.inkMinUV.y + bottomShare * span;
+                return static_cast<float>(tap.inkBottom) + 1.0f >= std::min(rowTop, rowBottom) - reach
+                    && static_cast<float>(tap.inkTop) <= std::max(rowTop, rowBottom) + reach;
+            };
+            if (out.skipInkTraces == nullptr && !reaches(selfTap) && !reaches(leftTap) && !reaches(rightTap)) {
+                if (isHeldInRun) {
+                    dottedRun.hold(pieceOf(cellLeft, top, cellRight, bottom, 0u), {}, isUnderlineContinuedRight ? DottedRunEdge::Continues : DottedRunEdge::Ends, DottedRuleRun::untraced);
+                    if (!isUnderlineContinuedRight)
+                        releaseDottedRun();
+                } else
+                    emitPiece(cellLeft, top, cellRight, bottom, 0u);
+                return;
+            }
+        }
+        // A held rule files its cut rather than its pieces: its dots are laid
+        // across the run when the run ends.
+        const bool isPieceMemoised = out.skipInkTraces == nullptr && isNamedTap(selfTap) && isNamedTap(leftTap) && isNamedTap(rightTap);
+        SkipInkPieceMemo::Key pieceKey {};
+        if (isPieceMemoised) {
+            const auto bits = [](float value) { return std::bit_cast<std::uint32_t>(value); };
+            const auto slotOf = [](const SkipInkTap& tap) { return tap.present ? static_cast<std::uint32_t>(tap.slot) : 0xFFFFFFFFu; };
+            // A curl's phase decides where its stroke runs past the ink.
+            const bool isPhased = (isPatterned || kind == DecorationKind::Curly) && pitch > 0.0f;
+            const float along = frameLeft - cellLeft;
+            const float patternPhase = isPhased ? along - std::floor(along / pitch) * pitch : 0.0f;
+            pieceKey = {
+                static_cast<std::uint32_t>(kind) | (isUnderlineContinuedLeft ? 0x100u : 0u) | (isUnderlineContinuedRight ? 0x200u : 0u),
+                slotOf(selfTap),
+                slotOf(leftTap),
+                slotOf(rightTap),
+                bits(selfTap.inkMinUV.x - selfTap.boxMinUV.x),
+                bits(leftTap.inkMinUV.x - leftTap.boxMinUV.x),
+                bits(rightTap.inkMinUV.x - rightTap.boxMinUV.x),
+                bits(selfTap.inkMaxUV.x - selfTap.inkMinUV.x),
+                bits(top - cellTop),
+                bits(bottom - cellTop),
+                bits(cellRight - cellLeft),
+                bits(top - std::floor(top)),
+                bits(patternPhase),
+                bits(cellHeight),
+            };
+            std::span<const float> filed;
+            if (skipInkPieceMemo.find(pieceKey, filed)) {
+                if (filed[0] != 0.0f)
+                    ++counts.skipInkCutRules;
+                if (isHeldInRun) {
+                    std::vector<float>& cuts = skipInkScratch.previousKept;
+                    cuts.clear();
+                    for (std::size_t index = 1; index < filed.size(); ++index)
+                        cuts.push_back(cellLeft + filed[index]);
+                    dottedRun.hold(pieceOf(cellLeft, top, cellRight, bottom, 0u), cuts, isUnderlineContinuedRight ? DottedRunEdge::Continues : DottedRunEdge::Ends, DottedRuleRun::untraced);
+                    if (!isUnderlineContinuedRight)
+                        releaseDottedRun();
+                    return;
+                }
+                for (std::size_t index = 1; index + 5 < filed.size(); index += 6)
+                    emitShadedPiece(cellLeft + filed[index], top + filed[index + 1], cellLeft + filed[index + 2], top + filed[index + 3], static_cast<std::uint32_t>(filed[index + 4]),
+                        filed[index + 5]);
+                return;
+            }
+        }
         // The band is the rule's own rect, so every pixel of the rule is
         // tested against the ink at its own height. A curl's crest or a dot's
         // top sits above the line; a band squeezed to the stroke at the line's
@@ -1832,6 +1992,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
             source.slotTop = tap.boxMinUV.y;
             source.slotRight = tap.boxMaxUV.x;
             source.slotBottom = tap.boxMaxUV.y;
+            source.slot = tap.sheet == SkipInkSheet::Mono ? tap.slot : -1;
             source.isPresent = true;
             return source;
         };
@@ -1841,36 +2002,162 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
         query.right = sourceOf(rightTap, -1.0f);
         query.reachAcross = skipInkReachAcross;
         query.reachUpDown = skipInkReachUpDown;
-        // A stretch of line shorter than it is thick reads as a speck; an arc
-        // of a curl shorter than half its wavelength reads as a blip. A dotted
-        // rule's dots are kept whole instead, and a dashed rule's dashes never
-        // left shorter than two weights, below which a dash reads as a dot.
+        // A stretch of line shorter than two weights reads as a speck
+        // (shortestRulePieceInWeights); an arc of a curl shorter than half its
+        // wavelength reads as a blip. A dotted rule's dots are kept whole
+        // instead, and a dashed rule's dashes never left shorter than two
+        // weights, below which a dash reads as a dot.
         const float weight = bottom - top;
-        query.shortestPiece = kind == DecorationKind::Curly ? metrics.cellWidth * 0.5f : (kind == DecorationKind::Dotted ? 0.0f : weight);
-        if (kind == DecorationKind::Dotted)
+        query.shortestPiece = kind == DecorationKind::Curly ? metrics.cellWidth * 0.5f
+            : kind == DecorationKind::Dotted                ? 0.0f
+                                                            : weight * shortestRulePieceInWeights;
+        // Dots and dashes are cut square, across their full height. A dotted
+        // rule held in its run has its dots fitted across the run; any other
+        // patterned rule's cut ends between its marks or leaves one long
+        // enough to read.
+        if (isPatterned && !isHeldInRun)
             query.pattern = { .pitch = pitch, .origin = frameLeft, .offset = 0.0f, .length = markLength, .shortest = shortestMark };
-        else if (kind == DecorationKind::Dashed)
-            query.pattern = { .pitch = pitch, .origin = frameLeft, .offset = 0.0f, .length = markLength, .shortest = shortestMark };
+        query.isCutAcrossFullHeight = isPatterned;
         query.continuesLeft = isUnderlineContinuedLeft;
         query.continuesRight = isUnderlineContinuedRight;
         const SkipInkRule rule { .left = cellLeft, .top = top, .right = cellRight, .bottom = bottom };
+        // A curl is cut softly: faded where the glyphs' ink, grown by the gap,
+        // reaches it (markSkipInkMask). Hard, a wave falls apart into ticks.
+        if (kind == DecorationKind::Curly) {
+            std::vector<SkipInkKeep>& keeps = skipInkKeeps;
+            const SkipInkCurl curl { .origin = frameLeft, .wavelength = pitch, .thickness = thickness };
+            const bool isMasked = markSkipInkMask(skipInkPlanes, query, rule, curl, keeps, skipInkScratch);
+            if (isMasked)
+                ++counts.skipInkCutRules;
+            const std::size_t traceIndex = counts.skipInkRules - 1;
+            SkipInkTrace* const trace = out.skipInkTraces && traceIndex < out.skipInkTraceCapacity ? &out.skipInkTraces[traceIndex] : nullptr;
+            const std::size_t firstPiece = counts.decorations;
+            const std::int32_t firstRow = rule.firstRow();
+            const std::int32_t rows = rule.rows();
+            const std::size_t firstFiled = skipInkPieceMemo.pool().size();
+            if (isPieceMemoised)
+                skipInkPieceMemo.pool().push_back(isMasked ? 1.0f : 0.0f);
+            const auto emitFiled = [&](float left, float pieceTop, float right, float pieceBottom, float alpha) {
+                emitShadedPiece(left, pieceTop, right, pieceBottom, 0u, alpha);
+                if (isPieceMemoised) {
+                    std::vector<float>& pool = skipInkPieceMemo.pool();
+                    pool.insert(pool.end(), { left - cellLeft, pieceTop - top, right - cellLeft, pieceBottom - top, 0.0f, alpha });
+                }
+            };
+            if (!isMasked)
+                emitFiled(cellLeft, top, cellRight, bottom, 1.0f);
+            for (const SkipInkKeep& keep : keeps) {
+                const float rowTop = keep.row == 0 ? top : static_cast<float>(firstRow + keep.row);
+                const float rowBottom = keep.row + keep.rows >= rows ? bottom : static_cast<float>(firstRow + keep.row + keep.rows);
+                emitFiled(keep.left, rowTop, keep.right, rowBottom, keep.keep);
+            }
+            if (isPieceMemoised)
+                skipInkPieceMemo.insert(pieceKey, firstFiled);
+            if (trace) {
+                trace->rule = rule;
+                trace->query = query;
+                trace->isCut = isMasked;
+                trace->firstPiece = static_cast<std::uint32_t>(firstPiece);
+                trace->pieceCount = static_cast<std::uint32_t>(counts.decorations - firstPiece);
+            }
+            return;
+        }
         const bool isCut = markSkipInkCuts(skipInkPlanes, query, rule, skipInkScratch.cut, skipInkScratch);
-        const std::size_t firstPiece = counts.decorations;
-        if (isCut) {
+        if (isCut)
             ++counts.skipInkCutRules;
-            forEachKeptPiece(rule, skipInkScratch.cut, skipInkScratch, emitPiece);
-        } else
-            emitPiece(cellLeft, top, cellRight, bottom, 0u);
         // The trace a harness or a dump asked for, one entry a tested rule.
         const std::size_t traceIndex = counts.skipInkRules - 1;
-        if (out.skipInkTraces && traceIndex < out.skipInkTraceCapacity) {
-            SkipInkTrace& trace = out.skipInkTraces[traceIndex];
-            trace.rule = rule;
-            trace.query = query;
-            trace.firstPiece = static_cast<std::uint32_t>(firstPiece);
-            trace.pieceCount = static_cast<std::uint32_t>(counts.decorations - firstPiece);
-            trace.isCut = isCut;
+        SkipInkTrace* const trace = out.skipInkTraces && traceIndex < out.skipInkTraceCapacity ? &out.skipInkTraces[traceIndex] : nullptr;
+        if (trace) {
+            trace->rule = rule;
+            trace->query = query;
+            trace->isCut = isCut;
         }
+        if (isHeldInRun) {
+            const std::span<const float> cuts = isCut ? skipInkScratch.cut.row(0) : std::span<const float> {};
+            if (isPieceMemoised) {
+                std::vector<float>& pool = skipInkPieceMemo.pool();
+                const std::size_t first = pool.size();
+                pool.push_back(isCut ? 1.0f : 0.0f);
+                for (const float edge : cuts)
+                    pool.push_back(edge - cellLeft);
+                skipInkPieceMemo.insert(pieceKey, first);
+            }
+            dottedRun.hold(pieceOf(cellLeft, top, cellRight, bottom, 0u), cuts, isUnderlineContinuedRight ? DottedRunEdge::Continues : DottedRunEdge::Ends, trace ? traceIndex : DottedRuleRun::untraced);
+            if (!isUnderlineContinuedRight)
+                releaseDottedRun();
+            return;
+        }
+        const std::size_t firstPiece = counts.decorations;
+        const std::size_t firstFiled = skipInkPieceMemo.pool().size();
+        if (isPieceMemoised)
+            skipInkPieceMemo.pool().push_back(isCut ? 1.0f : 0.0f);
+        const auto emitFiled = [&](float left, float pieceTop, float right, float pieceBottom, std::uint32_t cutEnds) {
+            emitPiece(left, pieceTop, right, pieceBottom, cutEnds);
+            if (isPieceMemoised) {
+                std::vector<float>& pool = skipInkPieceMemo.pool();
+                pool.insert(pool.end(), { left - cellLeft, pieceTop - top, right - cellLeft, pieceBottom - top, static_cast<float>(cutEnds), 1.0f });
+            }
+        };
+        if (isCut)
+            forEachKeptPiece(rule, skipInkScratch.cut, skipInkScratch, emitFiled);
+        else
+            emitFiled(cellLeft, top, cellRight, bottom, 0u);
+        if (isPieceMemoised)
+            skipInkPieceMemo.insert(pieceKey, firstFiled);
+        if (trace) {
+            trace->firstPiece = static_cast<std::uint32_t>(firstPiece);
+            trace->pieceCount = static_cast<std::uint32_t>(counts.decorations - firstPiece);
+        }
+    };
+
+    auto emitRule = [&](DecorationSite site, float cellLeft, float cellRight, float cellTop, float cellHeight, float top, float bottom, Vec4 color, DecorationKind kind, float thickness, InkMask mask) {
+        const float pitch = patternPitch(kind, bottom - top);
+        // A dotted or dashed rule's frame starts where its run does, and the
+        // run's last cell stops short of a mark it would end partway through:
+        // a sliver of dot, or of dash shorter than two weights, reads as a
+        // speck rather than as the pattern. A dotted rule skip-ink tests is
+        // held in its run instead, whose dots end whole of themselves.
+        const bool isPatterned = isPatternedRule(kind);
+        const bool isHeldInRun = isRuleHeldInRun(kind);
+        if ((isPatterned || kind == DecorationKind::Curly) && isPatternRunStarting) {
+            patternRunLeft = cellLeft;
+            isPatternRunStarting = false;
+        }
+        const float frameLeft = isPatterned || kind == DecorationKind::Curly ? patternRunLeft : cellLeft;
+        const float markWeight = bottom - top;
+        const float markLength = kind == DecorationKind::Dotted ? markWeight : pitch * dashedRuleOnShare;
+        const float shortestMark = kind == DecorationKind::Dotted ? markWeight : 2.0f * markWeight;
+        if (isPatterned && !isHeldInRun && !isUnderlineContinuedRight && pitch > 0.0f) {
+            const float along = cellRight - frameLeft;
+            const float into = along - std::floor(along / pitch) * pitch;
+            if (into > 0.0f && into < markLength && into < shortestMark)
+                cellRight -= into;
+            if (!(cellRight > cellLeft))
+                return;
+        }
+        // Recorded before the capacity check: the site was REACHED whether or
+        // not the instance fitted, and a coverage answer that changed with the
+        // caller's buffer size would report a scene as uncovered for running
+        // out of room.
+        counts.decorationSites |= static_cast<std::uint32_t>(site);
+        if (mask == InkMask::Absent && !isHeldInRun) [[likely]] {
+            const std::size_t index = counts.decorations++;
+            if (index < out.decorationCapacity && out.decorations) {
+                DecorationInstance& d = out.decorations[index];
+                d.topLeftInPixels = { cellLeft, top };
+                d.bottomRightInPixels = { cellRight, bottom };
+                d.color = color;
+                d.kind = static_cast<float>(kind);
+                d.dashPeriodInPixels = pitch;
+                d.thicknessInPixels = thickness;
+                d.cutEnds = 0.0f;
+                d.bandTopLeftInPixels = { frameLeft, top };
+                d.bandBottomRightInPixels = { cellRight, bottom };
+            }
+            return;
+        }
+        emitTestedRule(cellLeft, cellRight, cellTop, cellHeight, top, bottom, color, kind, thickness, mask, pitch, frameLeft, markLength, shortestMark);
     };
 
     // Resolved-colour memo, frame-wide rather than per row: a run of one pen
@@ -2037,6 +2324,10 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
         const bool hasProportionalRouteInWalk = hasProportionalRoute;
         const bool wantsCursorTierInWalk = wantsCursorTier;
         for (int pass = 0; pass <= in.rows; ++pass) {
+            // A dotted run ends with its row, and the cursor's tier starts
+            // afresh.
+            if (!dottedRun.isEmpty())
+                releaseDottedRun();
             const bool isTierPass = pass == in.rows;
             if (isTierPass) {
                 if (!wantsCursorTierInWalk)
@@ -2596,10 +2887,53 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                 // the second. Reading it as the wide page would fetch a real,
                 // cached wide glyph for a narrow sized letter: the wrong glyph,
                 // drawn confidently.
+                // At cell scope rather than the lookup's, because the colour
+                // emission arm re-probes the cluster for its sharp sized windows —
+                // resolving it twice would cross the resolver's indirect call a
+                // second time for data already in hand. Left uninitialised: every
+                // reader is bounded by the count read into it, and clearing the
+                // array would store 64 bytes on every cell for entries nothing
+                // reads.
+                std::array<std::uint32_t, clusterPoolMaximumCodePoints> clusterCodePoints;
+                // Whether the cell carries the circle Core draws round a
+                // character (Enclosure.h), U+20DD's or SGR 52's.
+                bool isEnclosedByCircle = false;
+                // The cell's cluster, read before its size is settled: a
+                // character U+20DD encloses is drawn smaller (Enclosure.h), and
+                // its mark may be one of several in the pool. The inline case
+                // first, because it is the common one and it needs nothing this
+                // builder does not already hold. The resolver is a function
+                // pointer into the frontend, so every call through it is an
+                // indirect call the compiler cannot see past — and for a cell
+                // whose marks fit in `combining` it would fetch data already in
+                // the cell being read.
+                int readClusterCount = 0;
+                if (!(ablate & AblateClusterRead) && (cell.combiningLength() > 0 || cell.clusterID() != 0)) [[unlikely]] {
+                    if (cell.clusterID() == 0)
+                        readClusterCount = cellInlineClusterCodePoints(cell, clusterCodePoints.data(), clusterPoolMaximumCodePoints);
+                    else if (in.clusterResolver)
+                        readClusterCount = in.clusterResolver(&cell, std::span(clusterCodePoints), in.clusterResolverContext);
+                    // An enclosing circle is Core's to draw, so the face is
+                    // handed the cluster without it, and a letter whose only
+                    // mark it was draws as the plain letter does.
+                    if (readClusterCount > 1) {
+                        const int kept = dropEnclosingCircles(std::span(clusterCodePoints.data(), static_cast<std::size_t>(readClusterCount)));
+                        isEnclosedByCircle = kept != readClusterCount;
+                        readClusterCount = kept == 1 && clusterCodePoints[0] == cell.codePoint ? 0 : kept;
+                    }
+                }
                 const unsigned textSizeSpecID = pen.extendedAttributes.textSizeSpecID();
                 const Ubiquitty::TextSizeSpec* sizedSpec = (textSizeSpecID != 0 && textSizeTable)
                     ? textSizeTable->lookup(textSizeSpecID)
                     : nullptr;
+                // An enclosed character, SGR 52's or one marked U+20DD, is drawn
+                // at the size its circle encloses (Enclosure.h), by the path an
+                // OSC 66 fraction takes, so the face rasterises it at that size.
+                // A bitmap face keeps its own: its glyphs are whole pixels, and
+                // drawn smaller they would be resampled.
+                if (sizedSpec == nullptr && !in.isBitmapFace && cell.codePoint != 0 && cell.codePoint != ' ' && cell.codePoint != wideContinuationSentinelCodePoint
+                    && (isEnclosedByCircle || pen.attributes.contains(Ubiquitty::VT::Attribute::Encircled))) [[unlikely]]
+                    sizedSpec = &enclosedTextSize;
                 // Kitty's `n`/`d`: the glyph is drawn smaller inside the block it
                 // claims. A proportional run carries no sizing keys.
                 const bool hasFraction = sizedSpec && !sizedSpec->isProportional
@@ -3175,13 +3509,6 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                 AtlasGlyph glyph;
                 // The glyph's right edge in the atlas before the straddle trim.
                 float glyphUnclippedMaxU = 0.0f;
-                // At cell scope rather than the lookup's, because the colour
-                // emission arm re-probes the cluster for its sharp sized windows —
-                // resolving it twice would cross the resolver's indirect call a
-                // second time for data already in hand. Left uninitialised: every
-                // reader is bounded by `clusterCount`, and clearing the array would
-                // store 64 bytes on every cell for entries nothing reads.
-                std::array<std::uint32_t, clusterPoolMaximumCodePoints> clusterCodePoints;
                 int clusterCount = 0;
                 // True only when the backend returned a real 2x master with its region
                 // already applied; the V-halving below is the 1x fallback and must not
@@ -3248,18 +3575,8 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     // drawing of the character, and asking a face first would
                     // spend a hook crossing on an answer nothing reads.
                 } else if (cell.codePoint != wideContinuationSentinelCodePoint && !isLigatureCovered && !isProportionalAnchor) {
-                    if (!(ablate & AblateClusterRead) && (cell.combiningLength() > 0 || cell.clusterID() != 0)) {
-                        // The inline case first, because it is the common one and it
-                        // needs nothing this builder does not already hold. The
-                        // resolver is a function pointer into the frontend, so every
-                        // call through it is an indirect call the compiler cannot see
-                        // past — and for a cell whose marks fit in `combining` it
-                        // would fetch data already in the cell being read.
-                        if (cell.clusterID() == 0)
-                            clusterCount = cellInlineClusterCodePoints(cell, clusterCodePoints.data(), clusterPoolMaximumCodePoints);
-                        else if (in.clusterResolver)
-                            clusterCount = in.clusterResolver(&cell, std::span(clusterCodePoints), in.clusterResolverContext);
-                    }
+                    // The cluster read above, at the cell's size settling.
+                    clusterCount = readClusterCount;
                     // DWL/DHL rows fetch the 2x master first, so the DHL halving
                     // below crops a doubled raster; a backend without a master
                     // (present == false) falls back to the 1x glyph, degrading to
@@ -3325,7 +3642,9 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                             }
                         }();
                     } else {
-                        if (isCellDoubleWide && !isWide && atlas.doubleGlyph
+                        // A cluster's marks are not in a code point's master, so a
+                        // cluster takes its own raster and the 1x fallback below.
+                        if (isCellDoubleWide && !isWide && atlas.doubleGlyph && clusterCount <= 1
                             && (!hasFraction || (out.doubleGlyphs && in.glyphDoubleSlotWidthInPixels > 0.0f))) {
                             [&, cellVariantStyle, isBold, isItalic] [[gnu::noinline]] {
                                 // The backend applies the region and returns the finished
@@ -3733,7 +4052,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                             // whatever the row's pitch. Tiles of the row's pitch would
                             // stretch a cell-wide window across two.
                             if (sizedSpec && sizedSpec->scale >= 2 && isCellDoubleWide && !isWide && atlas.sizedGlyph != nullptr && glyph.present
-                                && !isOwnSheetCell && penScript(&pen) == 0 && cellClipFrac >= 1.0f) {
+                                && !isOwnSheetCell && penScript(&pen) == 0 && cellClipFrac >= 1.0f && clusterCount <= 1) {
                                 const int windows = static_cast<int>(std::lround(glyphWidthCells));
                                 const auto windowAt = [&](int bandRow, int tile) {
                                     SizedTile tileRef { sizedSpec->scale, static_cast<std::uint8_t>(bandRow), static_cast<std::uint8_t>(tile) };
@@ -3757,7 +4076,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                                 }
                             }
                             if (!isSharpBaked && sizedSpec && sizedSpec->scale >= 2 && (isWide ? atlas.sizedWideGlyph != nullptr : atlas.sizedGlyph != nullptr) && glyph.present
-                                && !isOwnSheetCell && !isCellDoubleWide && penScript(&pen) == 0
+                                && !isOwnSheetCell && !isCellDoubleWide && penScript(&pen) == 0 && clusterCount <= 1
                                 && glyphTileCount > 0 && glyphTileCount <= maxSizedWindowsPerBand) {
                                 const auto windowAt = [&](int bandRow, int tile) {
                                     SizedTile tileRef { sizedSpec->scale, static_cast<std::uint8_t>(bandRow), static_cast<std::uint8_t>(tile) };
@@ -3928,6 +4247,26 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                                 out.boxFills + brailleWriteIndex,
                                 static_cast<int>(out.boxFillCapacity - brailleWriteIndex)));
                         }
+                    }();
+                }
+
+                // The circle round a character (Enclosure.h): U+20DD's, and
+                // SGR 52's on a cell with a character to enclose. On the box
+                // fills' stream, by its write-cursor rule.
+                isEnclosedByCircle = isEnclosedByCircle
+                    || (pen.attributes.contains(Ubiquitty::VT::Attribute::Encircled) && cell.codePoint != 0 && cell.codePoint != ' '
+                        && cell.codePoint != wideContinuationSentinelCodePoint);
+                if (isEnclosedByCircle) [[unlikely]] {
+                    [&, cellGridX, cellVisibleWidth, isBold, mayUseNativeBackground] [[gnu::noinline]] {
+                        const float weight = enclosureWeight(std::max(isBold ? metrics.underlineThicknessBold : metrics.underlineThickness, 1.0f));
+                        const float cellsLeft = in.originInPixels.x + cellGridX * metrics.cellWidth;
+                        const float cellsRight = in.originInPixels.x + (cellGridX + cellVisibleWidth) * metrics.cellWidth;
+                        const float rowTop = std::round(in.originInPixels.y + row * metrics.cellHeight);
+                        const float rowBottom = std::round(in.originInPixels.y + (row + 1) * metrics.cellHeight);
+                        const Vec4 ink = mayUseNativeBackground ? nativeSecondaryInk(usesNativeTextVibrancy, foreground, background, in, framePalette8.defaultForeground) : foreground;
+                        if (out.boxFills != nullptr && counts.boxFills < out.boxFillCapacity)
+                            out.boxFills[counts.boxFills] = enclosingCircle(cellsLeft, rowTop, cellsRight, rowBottom, metrics.cellWidth, weight, ink);
+                        ++counts.boxFills;
                     }();
                 }
 
@@ -4131,7 +4470,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                                 sizedSpec->fractionNumerator, sizedSpec->fractionDenominator);
                             const bool keepsItsWidth = std::fabs(glyphWidthCells - static_cast<float>(sizedSpec->scale) * 2.0f) < 0.001f;
                             const bool didDrawWideWindows = wideRaster.scale != 0 && atlas.sizedWideGlyph && isWideOnOwnSheet
-                                && keepsItsWidth && cellXStep == 1.0f && penScript(&pen) == 0 && emitFractionalWideWindows(wideRaster);
+                                && keepsItsWidth && cellXStep == 1.0f && penScript(&pen) == 0 && clusterCount <= 1 && emitFractionalWideWindows(wideRaster);
                             if (!didDrawWideWindows && wholeMaster->present && isWideOnOwnSheet) {
                                 // The wide slot magnified over the whole block is the
                                 // picture the stretched bands below cut; the fraction maps
@@ -4161,7 +4500,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                             // the subpixel arm: no super/subscript, and every window
                             // probed before any quad is emitted.
                             bool didDrawSharpWide = false;
-                            if (sizedSpec && sizedSpec->scale >= 2 && atlas.sizedWideGlyph && penScript(&pen) == 0) {
+                            if (sizedSpec && sizedSpec->scale >= 2 && atlas.sizedWideGlyph && penScript(&pen) == 0 && clusterCount <= 1) {
                                 const int windows = static_cast<int>(std::lround(glyphWidthCells / (2.0f * cellXStep)));
                                 AtlasGlyph tiles[maxSizedWindowsPerBand];
                                 const auto windowAt = [&](int bandRow, int w) {
@@ -4285,8 +4624,11 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                             // The windows hold the glyph at its own width; a `w` narrower
                             // than the text squeezes it, which no window describes.
                             const bool keepsItsWidth = std::fabs(glyphWidthCells - static_cast<float>(sizedSpec->scale) * cellXStep) < 0.001f;
+                            // A cluster takes the cell's raster mapped into the area:
+                            // the windows are a code point's, and a mark the cluster
+                            // carries would not be in them.
                             bool didDrawWindows = false;
-                            if (fractionRaster.scale != 0 && atlas.sizedGlyph && keepsItsWidth && !isSoftFontCell && !isBoxCodePoint) {
+                            if (fractionRaster.scale != 0 && atlas.sizedGlyph && keepsItsWidth && !isSoftFontCell && !isBoxCodePoint && clusterCount <= 1) {
                                 didDrawWindows = emitFractionalWindows(fractionRaster);
                             }
                             if (!didDrawWindows && isDoubleOnOwnSheet) {
@@ -4332,7 +4674,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     [&, cellClipFrac, cellGridX, cellVariantStyle, cellVisibleWidth, glyphWidthCells, isBold, isBoxCodePoint, isDoubleOnOwnSheet, isItalic, isWide, mayUseNativeBackground] [[gnu::noinline]] {
                         bool didDrawSharpDouble = false;
                         if (isDoubleOnOwnSheet && sizedSpec && sizedSpec->scale >= 2 && !isWide && atlas.sizedGlyph
-                            && drawsSubpixelGlyphs && out.glyphs && penScript(&pen) == 0) {
+                            && drawsSubpixelGlyphs && out.glyphs && penScript(&pen) == 0 && clusterCount <= 1) {
                             const int windows = static_cast<int>(std::lround(glyphWidthCells));
                             const SubpixelPhase blockPen = phaseForPen(in.originInPixels.x + cellGridX * metrics.cellWidth,
                                 in.subpixelPhaseCount, in.subpixelPhaseRounding);
@@ -5491,7 +5833,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     // sheet degrades the whole cell to soft rather than leaving a
                     // column of the glyph blank.
                     bool didDrawSharp = false;
-                    if (sizedSpec && sizedSpec->scale >= 2 && atlas.sizedGlyph && penScript(&pen) == 0) {
+                    if (sizedSpec && sizedSpec->scale >= 2 && atlas.sizedGlyph && penScript(&pen) == 0 && clusterCount <= 1) {
                         const int windows = static_cast<int>(std::lround(glyphWidthCells / cellXStep));
                         AtlasGlyph tiles[maxSizedWindowsPerBand];
                         const auto windowAt = [&](int bandRow, int w) {
@@ -5704,7 +6046,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                 // Ideogram attribute (SGR 60-64): a mark on a cell edge. ideogramNone
                 // keeps wantDecoration false so plain rows cost nothing.
                 const uint8_t ideogram = penIdeogram(&pen);
-                const bool wantDecoration = !attributes.contains(Ubiquitty::VT::Attribute::Hidden) && (hasUnderline || attributes.contains(Ubiquitty::VT::Attribute::Strike) || attributes.contains(Ubiquitty::VT::Attribute::Overline) || attributes.containsAny({ Ubiquitty::VT::Attribute::Framed, Ubiquitty::VT::Attribute::Encircled }) || ideogram != Ubiquitty::VT::ideogramNone);
+                const bool wantDecoration = !attributes.contains(Ubiquitty::VT::Attribute::Hidden) && (hasUnderline || attributes.contains(Ubiquitty::VT::Attribute::Strike) || attributes.contains(Ubiquitty::VT::Attribute::Overline) || attributes.contains(Ubiquitty::VT::Attribute::Framed) || ideogram != Ubiquitty::VT::ideogramNone);
                 if (!wantDecoration || (ablate & AblateDecorations))
                     continue;
 
@@ -5836,7 +6178,18 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     if (!isDoubleWide && tapColumn >= 0 && tapColumn < in.columns
                         && Ubiquitty::cellPen(in.cells[static_cast<std::size_t>(rowBase + tapColumn)]).attributes.containsAny({ Ubiquitty::VT::Attribute::Wide, Ubiquitty::VT::Attribute::WideContinuation }))
                         return wideSkipInkTap(in, atlas, wide, mono.weight, rowBase, tapColumn, metrics, cellVariantStyle, rowLetters.empty() ? nullptr : rowLetters.data());
-                    return resolveSkipInkTap(in, atlas, mono, rowBase, tapColumn, metrics, cellVariantStyle, rowLetters.empty() ? nullptr : rowLetters.data());
+                    SkipInkTap tap = resolveSkipInkTap(in, atlas, mono, rowBase, tapColumn, metrics, cellVariantStyle, rowLetters.empty() ? nullptr : rowLetters.data());
+                    std::int32_t inkTop = 0;
+                    std::int32_t inkBottom = -1;
+                    if (tap.present && tap.slot >= 0
+                        && skipInkSlotInkRows(skipInkPlanes.plane(SkipInkSheet::Mono), tap.slot, tap.boxMinUV.x, tap.boxMinUV.y, tap.boxMaxUV.x, tap.boxMaxUV.y, skipInkScratch,
+                            inkTop, inkBottom)
+                        && inkTop >= std::numeric_limits<std::int16_t>::min() && inkBottom <= std::numeric_limits<std::int16_t>::max()) {
+                        tap.hasInkRows = true;
+                        tap.inkTop = static_cast<std::int16_t>(inkTop);
+                        tap.inkBottom = static_cast<std::int16_t>(inkBottom);
+                    }
+                    return tap;
                 };
                 // Whether a neighbour draws an underline of its own: an SGR one,
                 // or a link's. A link's cells carry no SGR underline, so a test
@@ -5855,6 +6208,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                 };
                 isUnderlineContinuedLeft = isUnderlinedColumn(column - 1);
                 isUnderlineContinuedRight = isUnderlinedColumn(column + 1);
+                isFractionalCell = hasFraction;
                 if (metrics.skipInk && mono.cache) {
                     // The window rolls along a run of decorated cells: the
                     // predecessor's self tap is this cell's left, its right this
@@ -5873,7 +6227,9 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     rightTap = tapFor(column + 1);
                     tapWindowColumn = column;
                     haveInkMask = selfTap.present || leftTap.present || rightTap.present;
-                } else {
+                } else if (selfTap.present || leftTap.present || rightTap.present) {
+                    // Nothing sets a tap when skip-ink is off, so a frame
+                    // without it never clears one.
                     selfTap = SkipInkTap {};
                     leftTap = SkipInkTap {};
                     rightTap = SkipInkTap {};
@@ -5921,8 +6277,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     underlineRight = proportionalTextRight;
                     patternedRuleLeft = cellLeft + std::floor((proportionalTextLeft - cellLeft) / metrics.cellWidth) * metrics.cellWidth;
                 }
-                if (!isUnderlineContinuedLeft)
-                    patternRunLeft = patternedRuleLeft;
+                isPatternRunStarting = !isUnderlineContinuedLeft;
                 // The shader maps a rule's width onto its tap's box, and a point a
                 // fraction across it onto the neighbours' boxes a whole box to
                 // either side. A rule covering only part of its box, as a run's
@@ -6010,40 +6365,16 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     emitPerGlyphRule(site, left, right, top, bottom, color, kind, thickness);
                 };
 
-                // Every straight rule snaps its edges and its weight to whole device
-                // pixels. A fractional edge antialiases the stroke across two rows,
-                // which reads as a lighter line than its neighbours and makes the
-                // four sides of a framed box come out at visibly different weights.
-                //
-                // The snapped value is the GEOMETRY only. `thicknessInPixels` keeps
-                // the unrounded weight, which is what the shader scales its dot and
-                // dash periods and its skip-ink band by — rounding that too would
-                // step the pattern a whole pixel between adjacent point sizes.
-                // Whole device pixels, and above 1x the rule keeps the fraction it
-                // asked for rather than losing it.
-                //
-                // Nothing downstream draws a partial row: a rule of 1.5 device
-                // pixels paints one fully inked row and nothing else, so the
-                // fraction is not rendered, it is discarded. Rounding to nearest
-                // therefore costs weight — an 11pt rule wants 1.375 device pixels at
-                // 2x and `std::round` hands it 1, the same single pixel a 6pt rule
-                // gets, so the weight stops tracking the type size.
-                //
-                // That was addressed once by raising ruleGeometry's floor to a
-                // point, which fixed 11pt by making every size from 6pt to 14pt come
-                // out at exactly two device pixels — one weight for the whole range
-                // a terminal is read at, and twice what 6pt had. The floor cannot
-                // tell those cases apart, because it is a constant lower bound and
-                // 6pt's weight is below 11pt's by construction.
-                //
-                // Rounding up can. It moves only the values a round-to-nearest sends
-                // DOWN, which is exactly the population that loses weight: 1.375
-                // becomes 2 and 0.75 stays at the floor's 1. At every scale: AppKit
-                // paints a face's rule as ceil(thickness × scale) rows on a 1x
-                // display too (Monaco 14pt asks 1.06 pixels and gets two), and a
-                // 1x rule rounded down is the one place this renderer would draw a
-                // lighter underline than TextEdit beside it.
-                auto snapped = [](float value) { return snappedRuleWeight(value); };
+                // Every straight rule starts on a whole device row and is drawn at
+                // its weight exactly (ruleWeight): the row its weight leaves is
+                // covered in part, as the face draws the edge of its own
+                // underscore. The weight is the face's rule as its engine draws
+                // it, so rounding it to whole rows would undo the measurement:
+                // a 2.4-pixel underscore would get a 2-pixel underline, lighter
+                // than the letters, or a 3-pixel one, heavier than their stems.
+                // A frame's sides are the exception: their weight is their
+                // width, and a part-covered column reads as a blur, so they
+                // take whole pixels (enclosureWeight).
                 // A rule belongs to its cell. The snapping biases downward by half a
                 // point so a fractional centre cannot smear the stroke across two
                 // rows, and on a cell whose baseline already sits at the last row
@@ -6109,14 +6440,17 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         style = Ubiquitty::VT::UnderlineShape::Single;
                         underlineColor = { in.linkHoverColor.x, in.linkHoverColor.y, in.linkHoverColor.z, foreground.w };
                     }
-                    const float strokeLift = style == Ubiquitty::VT::UnderlineShape::Curly ? 0.0f : metrics.underlineStrokeLift;
-                    const float uy = baselineY + underlineDrop - strokeLift;
+                    const float uy = baselineY + underlineDrop - metrics.underlineStrokeLift;
+                    // Every shape starts on the single rule's top row: the one
+                    // place under the text a rule meets it no sooner than the
+                    // straight one does.
+                    const float t = ruleWeight(thick);
+                    const float singleTop = withinCell(singleUnderlineTop(uy, t, metrics.deviceScale));
                     switch (style) {
                     case Ubiquitty::VT::UnderlineShape::Double: {
                         // Two rules of EQUAL weight a gap apart, fitting below the
                         // baseline without meeting the next row's overline. The gap
                         // floors at a pixel so the pair never merges into one rule.
-                        const float t = snapped(thick);
                         const float gap = doubledRuleGap(t, metrics.deviceScale);
                         // Not passed through withinCell. The pair is three strokes
                         // tall, so fitting it inside the cell lifts both rules a
@@ -6133,21 +6467,21 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         // stroke is thick enough to climb.
                         const float top = std::max(std::round(uy - t + metrics.deviceScale), std::round(uy));
                         emitMaskedRule(DecorationSite::UnderlineDoubleUpper, underlineLeft, underlineRight, top, top + t, underlineColor, DecorationKind::Solid, thick);
-                        emitMaskedRule(DecorationSite::UnderlineDoubleLower, underlineLeft, underlineRight, top + t + gap, top + t + gap + t, underlineColor, DecorationKind::Solid, thick);
+                        const float lowerTop = pairedRuleTop(top, t, gap);
+                        emitMaskedRule(DecorationSite::UnderlineDoubleLower, underlineLeft, underlineRight, lowerTop, lowerTop + t, underlineColor, DecorationKind::Solid, thick);
                         break;
                     }
                     case Ubiquitty::VT::UnderlineShape::Curly: {
-                        // One sine wave a cell, its stroke the single rule's
-                        // weight measured across the curve rather than down it,
-                        // so the curl reads as heavy on its slopes as on its
-                        // crests, swinging a weight either side of its centre
-                        // (curlyRuleSwingInWeights). The band holds the swing,
-                        // the stroke, and the half pixel its antialiased edge
-                        // reaches past it; the renderers take the swing back
-                        // out of the band's height.
-                        const float curlWeight = snapped(thickCurly);
-                        const float band = 2.0f * curlWeight * curlyRuleSwingInWeights + curlWeight + 1.0f;
-                        const float curlDrop = 0.75f * metrics.deviceScale;
+                        // Arcs on the single rule's top row: the band holds the
+                        // half pixel of edge above the crests, the swing either
+                        // side of the centre, the stroke, and the half pixel
+                        // below; the renderers take the swing back out of the
+                        // band's height (curlyRuleProportions).
+                        const float curlWeight = ruleWeight(thickCurly);
+                        // A wave the floor lengthened swings as much further,
+                        // keeping its arcs' proportions.
+                        const float lengthening = metrics.cellWidth > 0.0f ? curlWavelength / (metrics.cellWidth * curl.wavelengthInCells) : 1.0f;
+                        const float band = curlWeight + 2.0f * curlWeight * curl.swingInWeights * std::max(lengthening, 1.0f) + 1.0f;
                         // Diagnostic, off unless asked: the numbers the curl is
                         // built from, so two arms that draw it differently can be
                         // compared on their inputs rather than their pixels.
@@ -6155,31 +6489,27 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         if (shouldLogMetrics)
                             PAL::logLine(stderr, "metrics-log curly thickCurly={} curlyThickness={} underlineThickness={} deviceScale={} uy={} band={} cellHeight={}",
                                 thickCurly, metrics.underlineCurlyThickness, metrics.underlineThickness, metrics.deviceScale, uy, band, metrics.cellHeight);
-                        emitMaskedRule(DecorationSite::UnderlineCurly, patternedRuleLeft, ruleRight, uy - band * 0.5f + curlDrop, uy + band * 0.5f + curlDrop, underlineColor, DecorationKind::Curly, curlWeight);
+                        emitMaskedRule(DecorationSite::UnderlineCurly, patternedRuleLeft, ruleRight, singleTop, singleTop + band, underlineColor, DecorationKind::Curly, curlWeight);
                         break;
                     }
                     case Ubiquitty::VT::UnderlineShape::Dotted: {
-                        // Round dots the single rule's weight across, on the
-                        // single rule's rows: the band is one dot's height, and
-                        // the renderers draw a dot of that diameter at the start
-                        // of each pitch.
-                        const float t = snapped(thick);
-                        const float top = withinCell(singleUnderlineTop(uy, t, metrics.deviceScale));
-                        emitMaskedRule(DecorationSite::UnderlineDotted, patternedRuleLeft, ruleRight, top, top + t, underlineColor, DecorationKind::Dotted, thick);
+                        // Round dots a little heavier than the single rule, on
+                        // its top row: the band is one dot's height, and the
+                        // renderers draw a dot of that diameter at the start of
+                        // each pitch (dottedRuleWeightScale).
+                        emitMaskedRule(DecorationSite::UnderlineDotted, patternedRuleLeft, ruleRight, singleTop, singleTop + t * dottedRuleWeightScale, underlineColor, DecorationKind::Dotted, thick);
                         break;
                     }
                     case Ubiquitty::VT::UnderlineShape::Dashed: {
-                        // Dashes on the single rule's rows at its weight: the
-                        // band is the stroke, and the renderers fill it in each
-                        // dash's share of the pitch.
-                        const float t = snapped(thick);
-                        const float top = withinCell(singleUnderlineTop(uy, t, metrics.deviceScale));
-                        emitMaskedRule(DecorationSite::UnderlineDashed, patternedRuleLeft, ruleRight, top, top + t, underlineColor, DecorationKind::Dashed, thick);
+                        // Dashes a little heavier than the single rule, on its
+                        // top row: the band is the stroke, and the renderers
+                        // fill it in each dash's share of the pitch
+                        // (dashedRuleWeightScale).
+                        emitMaskedRule(DecorationSite::UnderlineDashed, patternedRuleLeft, ruleRight, singleTop, singleTop + t * dashedRuleWeightScale, underlineColor, DecorationKind::Dashed, thick);
                         break;
                     }
                     case Ubiquitty::VT::UnderlineShape::Single:
                     default: {
-                        const float t = snapped(thick);
                         // Centred on the underline position, with the same floor the
                         // double pair carries and for the same reason: above uy is
                         // the type, and skip-ink erases whatever crosses a stem. A
@@ -6192,8 +6522,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         // The floor binds only where the stroke is thick enough to
                         // climb; a hairline straddles uy untouched.
                         //
-                        const float top = withinCell(singleUnderlineTop(uy, t, metrics.deviceScale));
-                        emitMaskedRule(DecorationSite::UnderlineSingle, underlineLeft, underlineRight, top, top + t, underlineColor, DecorationKind::Solid, thick);
+                        emitMaskedRule(DecorationSite::UnderlineSingle, underlineLeft, underlineRight, singleTop, singleTop + t, underlineColor, DecorationKind::Solid, thick);
                         break;
                     }
                     }
@@ -6202,32 +6531,55 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                 if (attributes.contains(Ubiquitty::VT::Attribute::Strike)) {
                     // Rides the x-height midpoint, in the text foreground rather
                     // than the underline colour.
-                    const float strikeSnap = snapped(strikeThick);
+                    const float strikeSnap = ruleWeight(strikeThick);
                     const float strikeRow = strikeTop(baselineY, metrics.xHeight, strikeSnap);
                     emitCellRule(DecorationSite::Strike, ruleLeft, ruleRight, cellTop, metrics.cellHeight, strikeRow, strikeRow + strikeSnap, foreground, DecorationKind::Solid, thick, InkMask::Absent);
                 }
 
                 if (attributes.contains(Ubiquitty::VT::Attribute::Overline)) {
-                    const float overlineWeight = snapped(thick);
+                    const float overlineWeight = ruleWeight(thick);
                     const float overlineTop = std::round(cellTop);
                     emitCellRule(DecorationSite::Overline, ruleLeft, ruleRight, cellTop, metrics.cellHeight, overlineTop, overlineTop + overlineWeight, underlineColor, DecorationKind::Solid, thick, InkMask::Absent);
                 }
 
-                if (attributes.containsAny({ Ubiquitty::VT::Attribute::Framed, Ubiquitty::VT::Attribute::Encircled })) {
-                    // A one-stroke box around the cell; encircled reuses the
-                    // rectangle rather than drawing an ellipse.
-                    const float boxWeight = snapped(thick);
+                if (attributes.contains(Ubiquitty::VT::Attribute::Framed)) {
+                    // A one-stroke box around the run of framed cells: its top
+                    // and bottom run on across every cell, and its sides stand
+                    // only where the run starts and ends. A box a cell boxed
+                    // the text cell by cell, and two cells' sides met as a bar
+                    // twice the frame's weight. Encircled is a circle round
+                    // each character, drawn with the glyphs (Enclosure.h).
+                    const auto isFramedColumn = [&](int neighbourColumn) {
+                        if (neighbourColumn < 0 || neighbourColumn >= in.columns)
+                            return false;
+                        const auto neighbour = in.cells[static_cast<std::size_t>(rowBase + neighbourColumn)].pen.attributes;
+                        return neighbour.contains(Ubiquitty::VT::Attribute::Framed) && !neighbour.contains(Ubiquitty::VT::Attribute::Hidden);
+                    };
+                    const int nextColumn = column + (attributes.contains(Ubiquitty::VT::Attribute::Wide) ? 2 : 1);
+                    const bool isRunStart = !isFramedColumn(column - 1);
+                    const bool isRunEnd = !isFramedColumn(nextColumn);
+                    const float boxWeight = enclosureWeight(thick);
                     const float boxTop = std::round(cellTop);
                     const float boxBottom = std::round(cellBottom);
-                    const float boxLeft = std::round(cellLeft);
-                    const float boxRight = std::round(cellRight);
-                    emitCellRule(DecorationSite::FramedTop, cellLeft, cellRight, cellTop, metrics.cellHeight, boxTop, boxTop + boxWeight, underlineColor, DecorationKind::Solid, thick, InkMask::Absent);
-                    emitCellRule(DecorationSite::FramedBottom, cellLeft, cellRight, cellTop, metrics.cellHeight, boxBottom - boxWeight, boxBottom, underlineColor, DecorationKind::Solid, thick, InkMask::Absent);
+                    // A side stands outside the run, a weight clear of it, in
+                    // the cell beside: a monospaced letter reaches its cell's
+                    // edge (an f's bar, an n's stem), and a side on that edge
+                    // runs into it. A run against the grid's edge keeps its
+                    // side inside, where there is no cell beside to hold it.
+                    const float sideReach = boxWeight * 2.0f;
+                    const float boxLeft = std::round(cellLeft) - (isRunStart && column > 0 ? sideReach : 0.0f);
+                    const float boxRight = std::round(cellRight) + (isRunEnd && nextColumn < in.columns ? sideReach : 0.0f);
+                    const float barLeft = isRunStart ? boxLeft : cellLeft;
+                    const float barRight = isRunEnd ? boxRight : cellRight;
+                    emitCellRule(DecorationSite::FramedTop, barLeft, barRight, cellTop, metrics.cellHeight, boxTop, boxTop + boxWeight, underlineColor, DecorationKind::Solid, thick, InkMask::Absent);
+                    emitCellRule(DecorationSite::FramedBottom, barLeft, barRight, cellTop, metrics.cellHeight, boxBottom - boxWeight, boxBottom, underlineColor, DecorationKind::Solid, thick, InkMask::Absent);
                     // The two vertical edges carry the snapped weight, because their
                     // narrow x span is the stroke rather than a band the shader
                     // fills.
-                    emitCellRule(DecorationSite::FramedLeft, boxLeft, boxLeft + boxWeight, cellTop, metrics.cellHeight, boxTop, boxBottom, underlineColor, DecorationKind::Solid, boxWeight, InkMask::Absent);
-                    emitCellRule(DecorationSite::FramedRight, boxRight - boxWeight, boxRight, cellTop, metrics.cellHeight, boxTop, boxBottom, underlineColor, DecorationKind::Solid, boxWeight, InkMask::Absent);
+                    if (isRunStart)
+                        emitCellRule(DecorationSite::FramedLeft, boxLeft, boxLeft + boxWeight, cellTop, metrics.cellHeight, boxTop, boxBottom, underlineColor, DecorationKind::Solid, boxWeight, InkMask::Absent);
+                    if (isRunEnd)
+                        emitCellRule(DecorationSite::FramedRight, boxRight - boxWeight, boxRight, cellTop, metrics.cellHeight, boxTop, boxBottom, underlineColor, DecorationKind::Solid, boxWeight, InkMask::Absent);
                 }
 
                 if (ideogram != Ubiquitty::VT::ideogramNone) {
@@ -6243,7 +6595,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     // underline uses, because a reader seeing both in one line must
                     // not see two heights of underline: the ideogram marks are the
                     // same typographic furniture reached by a different escape.
-                    const float t = snapped(thick);
+                    const float t = ruleWeight(thick);
                     const float gap = doubledRuleGap(t, metrics.deviceScale);
                     const float uy = baselineY + underlineDrop - metrics.underlineStrokeLift;
 
@@ -6273,7 +6625,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         // from the stroke that made it.
                         emitMaskedRule(DecorationSite::IdeogramUnderLeft, cellLeft, cellRight, top, top + t, underlineColor, DecorationKind::Solid, t);
                         if (ideogram == Ubiquitty::VT::ideogramDoubleUnderline)
-                            emitMaskedRule(DecorationSite::IdeogramUnderRight, cellLeft, cellRight, top + t + gap, top + t + gap + t, underlineColor, DecorationKind::Solid, t);
+                            emitMaskedRule(DecorationSite::IdeogramUnderRight, cellLeft, cellRight, pairedRuleTop(top, t, gap), pairedRuleTop(top, t, gap) + t, underlineColor, DecorationKind::Solid, t);
                     } else if (ideogram == Ubiquitty::VT::ideogramOverline || ideogram == Ubiquitty::VT::ideogramDoubleOverline) {
                         // The pair hangs INWARD from the top edge, as the double
                         // underline hangs down from the rule line: above the cell top
@@ -6282,7 +6634,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         const float top = std::round(cellTop);
                         emitCellRule(DecorationSite::IdeogramOverLeft, cellLeft, cellRight, cellTop, metrics.cellHeight, top, top + t, underlineColor, DecorationKind::Solid, t, InkMask::Absent);
                         if (ideogram == Ubiquitty::VT::ideogramDoubleOverline)
-                            emitCellRule(DecorationSite::IdeogramOverRight, cellLeft, cellRight, cellTop, metrics.cellHeight, top + t + gap, top + t + gap + t, underlineColor, DecorationKind::Solid, t, InkMask::Absent);
+                            emitCellRule(DecorationSite::IdeogramOverRight, cellLeft, cellRight, cellTop, metrics.cellHeight, pairedRuleTop(top, t, gap), pairedRuleTop(top, t, gap) + t, underlineColor, DecorationKind::Solid, t, InkMask::Absent);
                     } else { // ideogramStress
                         // Emphasis marking: the CJK convention is a dot ABOVE each
                         // character in horizontal setting — kenten, the same mark CSS
@@ -6353,6 +6705,9 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
             walkPasses(WalkClassConstant<WalkClass::General> {}, std::false_type {}, std::false_type {});
         break;
     }
+    // The dotted run the walk ended in.
+    if (!dottedRun.isEmpty())
+        releaseDottedRun();
 
     // The tier's tails, per stream, for the backends that draw the heads into
     // a retained grid and the tails after it. Zero when no tier was walked.

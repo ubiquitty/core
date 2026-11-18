@@ -14,6 +14,7 @@
 #include "Core/RichText/Drawing.h"
 #include "Core/Tek/Colors.h"
 
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -54,7 +55,9 @@ struct TerminalSnapshotStyle {
     /// Whether a run's outer underline reaches the letter's ink past the
     /// cell box (`[underline] follows_ink`).
     bool shouldUnderlineFollowInk = false;
-    float underlineSkipInkPaddingInPixels = 1.0f;
+    float underlineSkipInkPaddingInPixels = -1.0f;
+    /// The shape a curly underline draws at (`[underline] curly`).
+    CurlyRuleShape curlyRuleShape = CurlyRuleShape::Medium;
     bool shouldBrightenBold = false;
     /// Whether braille draws as the renderer's 2x4 dot lattice rather
     /// than as glyphs from the face.
@@ -138,7 +141,9 @@ inline void applyRuleStyle(CellMetrics& metrics, const TerminalSnapshotStyle& st
     metrics.underlineOffset = style.underlineOffsetInPixels;
     metrics.skipInk = style.shouldUnderlineSkipInk;
     metrics.shouldUnderlineFollowInk = style.shouldUnderlineFollowInk;
-    metrics.skipInkPadding = style.underlineSkipInkPaddingInPixels > 0.0f ? style.underlineSkipInkPaddingInPixels : 0.0f;
+    // Negative, or not a number, is automatic: the rule's own weight
+    // (skipInkPaddingInPixels). Zero keeps no clearance at all.
+    metrics.skipInkPadding = std::isfinite(style.underlineSkipInkPaddingInPixels) && style.underlineSkipInkPaddingInPixels >= 0.0f ? style.underlineSkipInkPaddingInPixels : -1.0f;
 }
 
 /// Everything one frame's capture and build is steered by.

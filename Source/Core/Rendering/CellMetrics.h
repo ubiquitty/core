@@ -5,6 +5,7 @@
 
 #include "Base/SwiftInterop.h"
 
+#include <algorithm>
 #include <cmath>
 
 // Portable per-cell pixel metrics driving the decoration pass and cell
@@ -48,7 +49,10 @@ struct UBIQUITTY_ESCAPABLE CellMetrics {
     float xHeight = 0.0f; // px; strike rides baseline - xHeight*0.5
     bool skipInk = false; // cut underlines where glyph ink (descenders) crosses
     bool shouldUnderlineFollowInk = false; // a run's outer rule reaches the letter's ink past the cell box
-    float skipInkPadding = 1.0f; // gap kept beside ink that touches a rule, device pixels
+    /// The gap skip-ink keeps beside ink that touches a rule, in device
+    /// pixels; negative leaves it automatic, the rule's own weight
+    /// (skipInkPaddingInPixels).
+    float skipInkPadding = -1.0f;
     /// Device pixels per atlas pixel, independent of the cell's tracking.
     ///
     /// Glyph ink uses this scale while its pen advances by `cellWidth`. The
@@ -110,6 +114,19 @@ struct UBIQUITTY_ESCAPABLE CellMetrics {
     metrics.presentationScale *= scale;
     metrics.underlineStrokeLift *= scale;
     return metrics;
+}
+
+/// Returns the gap skip-ink keeps beside ink that touches a rule, in device
+/// pixels: the one the settings set, or, left automatic, the rule's own
+/// weight, so the white beside a cut grows with the type as the rule does.
+///
+/// - Parameter metrics: The frame's cell metrics.
+/// - Returns: The gap; zero for a padding that is not a number.
+[[nodiscard]] inline float skipInkPaddingInPixels(const CellMetrics& metrics)
+{
+    if (!std::isfinite(metrics.skipInkPadding))
+        return 0.0f;
+    return metrics.skipInkPadding >= 0.0f ? metrics.skipInkPadding : std::max(1.0f, metrics.underlineThickness);
 }
 
 /// Returns the underline lift for a face of the given em, in device pixels.

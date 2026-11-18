@@ -265,6 +265,20 @@ enum class CursorShape : std::uint8_t {
     Bar = 2,
 };
 
+/// The shape a curly underline draws at, as `[underline] curly` names it.
+///
+/// Mirrors `Rendering::CurlyRuleShape` value for value and crosses to it at
+/// the configuration fold, so the renderer alone decides how long each wave
+/// is and how far it swings. Persisted as "compact" | "medium" | "wide".
+enum class CurlyUnderlineShape : std::uint8_t {
+    /// A short, tight curl.
+    Compact = 0,
+    /// One wave per letter; the default.
+    Medium = 1,
+    /// One wave per letter with a deeper swing.
+    Wide = 2,
+};
+
 // Cursor motion smoothing policy, DISTANCE-based. Off never glides; Short glides
 // short moves / snaps long jumps; Long is the inverse; Always glides every move.
 // Persisted under [cursor] motion as "off" | "short" | "long" | "always".
@@ -456,18 +470,20 @@ struct Values {
     std::optional<std::string> brailleStyle;
     std::optional<double> wideGlyphScale; // multiplier for full-width monochrome glyph ink
 
-    // [underline] — tuning layered on the font-derived underline defaults
-    // the renderer computes from CoreText metrics.
-    std::optional<double> underlineThickness; // x font default, 1.0
-    std::optional<double> underlineOffset; // extra pt below baseline
+    // [underline] — tuning layered on the rule the renderer derives from the
+    // font: its weight is the weight the face's own underscore draws at, and
+    // its top sits a clear gap below the baseline.
+    std::optional<double> underlineThickness; // multiplier; 1.0 = the font's own underline weight
+    std::optional<double> underlineOffset; // pt added to the automatic position, +down; 0 = automatic
     std::optional<bool> underlineSkipInk; // descenders break the rule
     std::optional<bool> underlineFollowsInk;
-    std::optional<double> underlineSkipInkPad; // gap beside ink that touches the rule, pt
+    std::optional<double> underlineSkipInkPad; // clearance beside crossing ink, pt; unset = the rule's own weight
+    std::optional<CurlyUnderlineShape> curlyUnderlineShape; // compact | medium (default) | wide
     std::optional<bool> underlineLinks; // OSC 8 link cells dotted-underlined
     std::optional<int> linkUnderlineStyle; // OSC 8 link underline: 0 = single, 1 = dotted
     std::optional<bool> linkColorSystemBlue; // force OSC 8 link text + underline to system blue
-    std::optional<bool> linkStylePerKind; // OSC 8 kinds get distinct underlines (file:// dotted, mailto: dashed, url/other base);
-                                          // off = all links use link_style
+    std::optional<bool> linkStylePerKind; // default on: OSC 8 kinds get distinct underlines (file:// dotted, mailto: dashed,
+                                          // url/other in link_style); off = all links use link_style
     std::optional<bool> smartDoubleClick; // double-click selects URL/path token, not a word
 
     // [text]
@@ -1013,6 +1029,24 @@ bool parseHexColor(const std::string& s, ColorEntry& out);
 // CursorShape, or std::nullopt when out of range — the one place the
 // shape's integer domain is validated.
 [[nodiscard]] std::optional<CursorShape> cursorShapeFromInt(int value);
+
+/// Maps a `[underline] curly` token to its shape.
+///
+/// Matches "compact", "medium" or "wide", ignoring case and surrounding
+/// whitespace, so an unrecognized token leaves the key unset rather than
+/// resolving to a neighbouring shape.
+///
+/// - Parameter token: The value as the file spells it.
+/// - Returns: The shape, or `std::nullopt` for any other token.
+[[nodiscard]] std::optional<CurlyUnderlineShape> curlyUnderlineShapeFromString(const std::string& token);
+
+/// Returns the canonical token for a curly underline shape.
+///
+/// The inverse of ``curlyUnderlineShapeFromString``, for writing the file.
+///
+/// - Parameter shape: The shape to spell.
+/// - Returns: Its lowercase token.
+[[nodiscard]] const char* curlyUnderlineShapeToString(CurlyUnderlineShape shape);
 
 // Map a cursor-motion string ("off" | "short" | "long" | "always", case-
 // insensitive) to a CursorMotionMode, or std::nullopt for unrecognized input.

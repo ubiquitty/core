@@ -364,8 +364,8 @@ SGR parameter handling (`Ubiquitty::SGR::apply`, `Source/Core/SGR.cpp`):
 | 48 | Reserved (ISO 8613-6/T.416 background) | ✅ | Same colon-parametric as 38 |
 | 49 | Default background colour | ✅ | |
 | 50 | Reserved (cancel 26) | ✅ | Clears the proportional bit set by 26 |
-| 51 | Framed | ✅ | |
-| 52 | Encircled | ✅ | |
+| 51 | Framed | ✅ | One box round each run of framed cells, its sides a stroke outside the run ([underlines.md](underlines.md#frames-and-circles)) |
+| 52 | Encircled | ✅ | A circle round each character, the one U+20DD draws ([underlines.md](underlines.md#frames-and-circles)) |
 | 53 | Overlined | ✅ | |
 | 54 | Not framed, not encircled | ✅ | |
 | 55 | Not overlined | ✅ | |

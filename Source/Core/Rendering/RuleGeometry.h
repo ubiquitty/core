@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace Ubiquitty::Rendering {
 
@@ -96,6 +97,15 @@ struct UBIQUITTY_ESCAPABLE RuleFaceMetrics {
     /// The face's underline weight (`post.underlineThickness`, or the engine's
     /// synthesis for a face without one), scaled to device pixels.
     float underlineThickness = 0.0f;
+    /// The weight the face's own underscore draws at, as the engine's glyph
+    /// raster draws it: the coverage down a column through its middle.
+    ///
+    /// The face's rule as its designer drew it, and the weight its strokes are
+    /// seen at: a declared underline thickness is a legacy number, half the
+    /// stem in most faces, while the underscore matches the horizontals of the
+    /// letters around it. Measured from the raster rather than the outline, so
+    /// the stem darkening the engine draws text with is in it too.
+    float underscoreWeight = 0.0f;
     /// The face's descent below the baseline.
     float descent = 0.0f;
     /// The face's line gap, which AppKit counts as part of the space the rule
@@ -103,16 +113,69 @@ struct UBIQUITTY_ESCAPABLE RuleFaceMetrics {
     float leading = 0.0f;
 };
 
-/// Computes where the rules sit for a face, the way AppKit places them.
+/// Returns the weight a face's own underscore draws at, read from its raster:
+/// the coverage summed down each column across the middle third of its ink,
+/// averaged, in the raster's pixels.
 ///
-/// The stroke is the face's own underline weight, floored at one device pixel;
-/// the builder snaps it up to whole pixels, which is the ceil AppKit applies.
+/// The one reading every font engine's underscore goes through, so a face
+/// draws its rules at the same weight whichever engine set it. The middle
+/// third, so ends a face rounds or tapers do not thin the bar, and a bar that
+/// slants or swells is read at its typical weight rather than at one column.
+///
+/// - Parameters:
+///   - coverage: `width * height` coverage bytes, row-major.
+///   - width: The raster's width in pixels.
+///   - height: The raster's height in pixels.
+/// - Returns: The weight, or zero for a raster with no ink.
+[[nodiscard]] inline float measuredUnderscoreWeight(const std::uint8_t* coverage, int width, int height)
+{
+    if (!coverage || width <= 0 || height <= 0)
+        return 0.0f;
+    const auto columnSum = [&](int column) {
+        int sum = 0;
+        for (int row = 0; row < height; ++row)
+            sum += coverage[static_cast<std::size_t>(row) * static_cast<std::size_t>(width) + static_cast<std::size_t>(column)];
+        return sum;
+    };
+    int first = -1;
+    int last = -1;
+    for (int column = 0; column < width; ++column) {
+        if (columnSum(column) > 0) {
+            if (first < 0)
+                first = column;
+            last = column;
+        }
+    }
+    if (first < 0)
+        return 0.0f;
+    const int span = last - first + 1;
+    const int from = first + span / 3;
+    const int to = std::max(from + 1, last + 1 - span / 3);
+    long total = 0;
+    for (int column = from; column < to; ++column)
+        total += columnSum(column);
+    return static_cast<float>(total) / (255.0f * static_cast<float>(to - from));
+}
+
+/// How far below the baseline a rule's top sits, in the rule's own weights.
+///
+/// Faces declare an underline position, and the declarations disagree: one
+/// face's rule all but touches its letters and another's floats a stroke and a
+/// half below them. A gap a little under the rule's weight reads as one rhythm
+/// in every face, letter, space, rule, and keeps a heavier rule from crowding
+/// the text it underlines.
+inline constexpr float underlineGapInWeights = 0.85f;
+
+/// Computes where the rules sit for a face.
+///
+/// The stroke is the face's own rule: its underscore as the engine draws it,
+/// or the declared underline weight where the engine could not measure one,
+/// floored at one device pixel. The builder draws it at that weight exactly
+/// (ruleWeight).
 /// The drop is the offset the builder anchors a straight rule's top at
-/// (`baseline + drop − strokeLift`), chosen so that top lands on
-/// floor(0.48·(descent + leading) − t/2): the lift the builder subtracts is
-/// added back here, and the curly and dotted rules, which take no lift, sit
-/// that much lower than the straight one — under the line rather than through
-/// its descenders.
+/// (`baseline + drop − strokeLift`), chosen so that top lands a clear gap below
+/// the baseline (underlineGapInWeights): the lift the builder subtracts is
+/// added back here.
 ///
 /// - Parameters:
 ///   - fontSizeInDevicePixels: The em size, already multiplied by the display
@@ -124,29 +187,49 @@ struct UBIQUITTY_ESCAPABLE RuleFaceMetrics {
 [[nodiscard]] inline RuleGeometry ruleGeometry(float fontSizeInDevicePixels, float deviceScale, const RuleFaceMetrics& face)
 {
     RuleGeometry geometry = ruleGeometry(fontSizeInDevicePixels, deviceScale);
-    if (face.underlineThickness > 0.0f) {
-        geometry.underlineThickness = std::max(1.0f, face.underlineThickness);
+    const float faceWeight = face.underscoreWeight > 0.0f ? face.underscoreWeight : face.underlineThickness;
+    if (faceWeight > 0.0f) {
+        geometry.underlineThickness = std::max(1.0f, faceWeight);
         geometry.curlyThickness = geometry.underlineThickness;
         geometry.strikeThickness = geometry.underlineThickness;
     }
     if (face.descent > 0.0f) {
-        const float snappedStroke = std::ceil(geometry.underlineThickness);
-        const float centre = 0.48f * (face.descent + std::max(0.0f, face.leading));
-        const float top = std::floor(centre - 0.5f * snappedStroke);
+        // A clear gap below the baseline a little under the rule's own weight
+        // (underlineGapInWeights), whole rows of it. The lift the builder
+        // subtracts is added back here.
+        const float top = std::max(1.0f, std::round(underlineGapInWeights * geometry.underlineThickness));
         geometry.underlineDrop = std::max(1.0f, top + underlineStrokeLiftForEm(fontSizeInDevicePixels));
     }
     return geometry;
 }
 
-/// Returns a rule's weight in whole device rows: the ceiling AppKit paints a
-/// face's underline at, never under one row.
+/// Returns a rule's weight as drawn: the weight itself, never under one device
+/// row.
+///
+/// A rule's top sits on the pixel grid and the part of a row its weight leaves
+/// is drawn in part, as the face's own glyphs draw an edge: rounding to whole
+/// rows would make a face whose underscore is 2.4 pixels draw its underline at
+/// 2, lighter than its letters, or at 3, heavier than its stems.
 ///
 /// - Parameter thickness: The weight, in device pixels.
-/// - Returns: The rows the rule takes.
-[[nodiscard]] inline float snappedRuleWeight(float thickness)
+/// - Returns: The weight to draw.
+[[nodiscard]] inline float ruleWeight(float thickness)
 {
-    const float whole = std::ceil(thickness);
-    return whole < 1.0f ? 1.0f : whole;
+    return thickness < 1.0f ? 1.0f : thickness;
+}
+
+/// Returns the top of the second rule of a pair: the whole row nearest the gap
+/// below the first, so it starts on the pixel grid as the first does, and never
+/// without a clear row between them.
+///
+/// - Parameters:
+///   - top: The first rule's top, on the pixel grid.
+///   - weight: The first rule's weight.
+///   - gap: The gap the pair asks for.
+/// - Returns: The second rule's top.
+[[nodiscard]] inline float pairedRuleTop(float top, float weight, float gap)
+{
+    return std::max(std::round(top + weight + gap), std::ceil(top + weight) + 1.0f);
 }
 
 /// Returns the top row of a single straight underline.
@@ -198,12 +281,49 @@ struct UBIQUITTY_ESCAPABLE RuleFaceMetrics {
 ///
 /// - Parameter strokeThickness: The weight of one stroke, in device pixels.
 /// - Parameter deviceScale: Device pixels per point on the target display.
-/// - Returns: The gap in device pixels, never below one point, so the pair
-///   cannot merge into a single mark on any display.
+/// - Returns: The gap in device pixels: the share of the stroke the rule keeps
+///   from the baseline above it (underlineGapInWeights), so the pair's two
+///   spaces read as one rhythm, and never below one point, so the pair cannot
+///   merge into a single mark on any display.
 [[nodiscard]] inline float doubledRuleGap(float strokeThickness, float deviceScale)
 {
     const float onePoint = deviceScale > 0.0f ? deviceScale : 1.0f;
-    return std::max(onePoint, strokeThickness);
+    return std::max(onePoint, underlineGapInWeights * strokeThickness);
+}
+
+/// A curly rule's circular arcs, as every renderer draws them: half a
+/// wavelength across each, alternately cresting toward the text and dipping
+/// away from it, meeting on the band's centre line with matching tangents.
+struct UBIQUITTY_ESCAPABLE CurlArcs {
+    /// One arc's width: half a wavelength.
+    float span = 0.0f;
+    /// The radius of each arc's circle.
+    float radius = 0.0f;
+    /// How far an arc swings from the centre line.
+    float swing = 0.0f;
+    /// The centre line, down the band from its top.
+    float middle = 0.0f;
+};
+
+/// Returns the arcs of a curl repeating every `wavelength` in a band
+/// `bandHeight` tall, its stroke `thickness` wide.
+[[nodiscard]] inline CurlArcs curlArcs(float wavelength, float bandHeight, float thickness)
+{
+    const float span = std::max(wavelength, 2.0f) * 0.5f;
+    const float swing = std::max(bandHeight * 0.5f - thickness * 0.5f - 0.5f, 0.25f);
+    return { .span = span, .radius = (span * span * 0.25f + swing * swing) / (2.0f * swing), .swing = swing, .middle = bandHeight * 0.5f };
+}
+
+/// Returns where a curl's stroke is centred at `localX` across its band,
+/// down from the band's top.
+[[nodiscard]] inline float curlCentreY(const CurlArcs& arcs, float localX)
+{
+    const float arc = std::floor(localX / arcs.span);
+    // Even arcs crest toward the text, odd ones dip away from it.
+    const float side = arc - 2.0f * std::floor(arc * 0.5f) < 0.5f ? -1.0f : 1.0f;
+    const float deltaX = localX - (arc * arcs.span + arcs.span * 0.5f);
+    const float circleY = arcs.middle - side * (arcs.radius - arcs.swing);
+    return circleY + side * std::sqrt(std::max(arcs.radius * arcs.radius - deltaX * deltaX, 0.0f));
 }
 
 } // namespace Ubiquitty::Rendering

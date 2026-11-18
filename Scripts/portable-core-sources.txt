@@ -182,6 +182,7 @@ Source/Core/Rendering/CellCanvas.cpp
 Source/Core/Rendering/CellInstanceBuilder.cpp
 Source/Core/Rendering/ColorResolve.cpp
 Source/Core/Rendering/DRCSRaster.cpp
+Source/Core/Rendering/DottedRuleRun.cpp
 Source/Core/Rendering/FontFeatureSpecification.cpp
 Source/Core/Rendering/FontMetrics.cpp
 Source/Core/Rendering/FontVariationSpecification.cpp

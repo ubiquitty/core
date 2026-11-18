@@ -203,6 +203,10 @@ struct UBIQUITTY_ESCAPABLE DecorationFace {
     float em = 0;
     /// The face's underline weight; zero when the engine has none.
     float underlineThickness = 0;
+    /// The weight the face's own underscore draws at, read by Core's rule
+    /// (Rendering::measuredUnderscoreWeight); zero when the engine could not
+    /// measure one, and the declared weight stands in.
+    float underscoreWeight = 0;
     float ascent = 0;
     float descent = 0;
     /// The face's line gap.

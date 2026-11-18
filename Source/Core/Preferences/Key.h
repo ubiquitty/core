@@ -104,6 +104,7 @@ enum class Key {
     UnderlineSkipInk,
     UnderlineFollowsInk,
     UnderlineSkipInkPad,
+    UnderlineCurly,
 
     // [text]
     TextBrightenBold,
@@ -349,6 +350,7 @@ inline constexpr WriteDescriptor writeDescriptors[] = {
     { Key::UnderlineSkipInk, "underline", "skip_ink", SerializeKind::Bool },
     { Key::UnderlineFollowsInk, "underline", "follows_ink", SerializeKind::Bool },
     { Key::UnderlineSkipInkPad, "underline", "skip_ink_pad", SerializeKind::Double },
+    { Key::UnderlineCurly, "underline", "curly", SerializeKind::EnumToken },
 
     // [text]
     { Key::TextBrightenBold, "text", "brighten_bold", SerializeKind::Bool },

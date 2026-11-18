@@ -45,6 +45,8 @@ why. The build and release pages say how to produce, ship and measure it. The
 - [Feature test matrix](feature_test_matrix.md): the showcase's fixture
   inventory.
 - [Procedural glyph coverage](procedural-glyphs.md).
+- [Underlines](underlines.md): the five shapes, how ink cuts each, what it
+  costs, and the frames and circles drawn round text.
 - [Embedding the portable Core](libubiquittycore.md) and the
   [UbiquittyKit API](ubiquittykit-api.md).
 - [Emacs terminal client contract](emacs-terminal-spec.md).

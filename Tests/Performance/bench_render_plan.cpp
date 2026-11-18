@@ -15,6 +15,16 @@
 // invents. Only the build is timed.
 //
 //   bench_render_plan --file corpus.vte --rows 50 --columns 200 --iters 2000
+//   bench_render_plan --scene underlined --skip-ink
+//   bench_render_plan --scene dotted --skip-ink
+//   bench_render_plan --scene curly --skip-ink
+//
+// `--scene underlined` fills every row with underlined text full of
+// descenders, the screen skip-ink does the most work on, and `--scene dotted`
+// the same text with dotted underlines, whose runs are held and their dots
+// fitted between the cuts, and `--scene curly` with curly ones, cut softly;
+// `--skip-ink` turns the cut on, with a one-pixel clearance every revision
+// understands.
 //
 // Reports best and average microseconds per frame, and the instance counts, so
 // a change that builds fewer instances is not read as a faster build.
@@ -80,6 +90,21 @@ void paintDefaultScene(Terminal& t)
     }
 }
 
+// A screenful of underlined text whose descenders cross the rule in nearly
+// every cell: the most skip-ink work a screen of text asks for. `style` is
+// the SGR 4 subparameter: 1 a single rule, 4 a dotted one.
+void paintUnderlinedScene(Terminal& t, int style)
+{
+    char command[64];
+    for (int row = 1; row <= t.rows; ++row) {
+        std::snprintf(command, sizeof(command), "\x1b[%d;1H\x1b[4:%dm", row, style);
+        processBytes(&t, command);
+        for (int column = 0; column + 32 <= t.columns; column += 32)
+            processBytes(&t, "gjpqy typography, people agree ");
+        processBytes(&t, "\x1b[0m");
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -89,6 +114,10 @@ int main(int argc, char** argv)
     const char* platform = "portable";
     const char* commit = "";
     bool shouldEmitJSON = false;
+    bool isSkippingInk = false;
+    bool isUnderlinedScene = false;
+    bool isDottedScene = false;
+    bool isCurlyScene = false;
 
     for (int i = 1; i < argc; ++i) {
         auto eq = [&](const char* f) { return std::strcmp(argv[i], f) == 0; };
@@ -108,6 +137,14 @@ int main(int argc, char** argv)
             commit = argv[++i];
         else if (eq("--json"))
             shouldEmitJSON = true;
+        else if (eq("--skip-ink"))
+            isSkippingInk = true;
+        else if (eq("--scene") && i + 1 < argc) {
+            ++i;
+            isUnderlinedScene = std::strcmp(argv[i], "underlined") == 0;
+            isDottedScene = std::strcmp(argv[i], "dotted") == 0;
+            isCurlyScene = std::strcmp(argv[i], "curly") == 0;
+        }
     }
     if (rows <= 0 || rows > argMaxRows || columns <= 0 || columns > argMaxColumns || iters <= 0 || iters > maxIters) {
         std::fprintf(stderr, "bad geometry or iteration count\n");
@@ -121,6 +158,8 @@ int main(int argc, char** argv)
         if (!readFile(file, stream))
             return 1;
         processBytes(terminal.get(), std::string_view(stream.data(), stream.size()));
+    } else if (isUnderlinedScene || isDottedScene || isCurlyScene) {
+        paintUnderlinedScene(*terminal, isDottedScene ? 4 : (isCurlyScene ? 3 : 1));
     } else {
         paintDefaultScene(*terminal);
     }
@@ -162,6 +201,8 @@ int main(int argc, char** argv)
     in.metrics.cellHeight = 16.0f;
     in.metrics.baselineFromTop = 13.0f;
     in.metrics.underlineThickness = 1.0f;
+    in.metrics.skipInk = isSkippingInk;
+    in.metrics.skipInkPadding = 1.0f;
 
     InstanceBuffers out;
     out.cells = cellsOut.data();

@@ -18,7 +18,10 @@
 
 #include "Core/Rendering/RuleGeometry.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <vector>
 
 namespace {
 
@@ -111,10 +114,12 @@ TEST(curlAndStrikeTrackTheUnderline)
 TEST(aDoubledRuleGapTracksItsStrokeSoThePairNeverMerges)
 {
     // Proportional, not constant. A rule four times as heavy is four times as
-    // far from its partner, so the pair reads the same at every weight.
+    // far from its partner, so the pair reads the same at every weight: the
+    // same share of a stroke as the rule keeps from the baseline, floored at a
+    // point.
     CHECK(close(doubledRuleGap(1.0f, 1.0f), 1.0f));
-    CHECK(close(doubledRuleGap(4.0f, 1.0f), 4.0f));
-    CHECK(close(doubledRuleGap(7.0f, 2.0f), 7.0f));
+    CHECK(close(doubledRuleGap(4.0f, 1.0f), 3.4f));
+    CHECK(close(doubledRuleGap(7.0f, 2.0f), 5.95f));
 
     // Monotone, which is the property a constant gap destroys. Asserted rather
     // than assumed: the failure it guards is a gap that stops growing while the
@@ -132,16 +137,55 @@ TEST(aDoubledRuleGapTracksItsStrokeSoThePairNeverMerges)
     CHECK(close(doubledRuleGap(1.0f, 3.0f), 3.0f));
 }
 
+// A face's rule is its underscore as the engine draws it: a bar two rows
+// solid and a third half covered weighs two and a half pixels, whatever its
+// width, and ends a face rounds or tapers do not thin it, because the bar is
+// read across its middle third.
+TEST(theUnderscoreIsReadAtItsMiddleWeight)
+{
+    constexpr int width = 20;
+    constexpr int height = 8;
+    std::vector<std::uint8_t> bar(static_cast<std::size_t>(width * height), 0);
+    const auto paint = [&](int left, int right, int row, std::uint8_t value) {
+        for (int column = left; column < right; ++column)
+            bar[static_cast<std::size_t>(row * width + column)] = value;
+    };
+    paint(4, 16, 3, 255);
+    paint(4, 16, 4, 255);
+    paint(4, 16, 5, 128);
+    CHECK(std::fabs(Ubiquitty::Rendering::measuredUnderscoreWeight(bar.data(), width, height) - (2.0f + 128.0f / 255.0f)) < 1e-4f);
+    // Rounded ends: the outer columns carry a lighter bar.
+    paint(4, 6, 3, 64);
+    paint(14, 16, 3, 64);
+    CHECK(std::fabs(Ubiquitty::Rendering::measuredUnderscoreWeight(bar.data(), width, height) - (2.0f + 128.0f / 255.0f)) < 1e-4f);
+    const std::vector<std::uint8_t> blank(static_cast<std::size_t>(width * height), 0);
+    CHECK(Ubiquitty::Rendering::measuredUnderscoreWeight(blank.data(), width, height) == 0.0f);
+}
+
+// A face's measured underscore is its rule, ahead of the weight it declares:
+// the declaration is a legacy number, the underscore what its letters match.
+TEST(theUnderscoreOutranksTheDeclaredUnderline)
+{
+    Ubiquitty::Rendering::RuleFaceMetrics face;
+    face.underlineThickness = 1.4f;
+    face.underscoreWeight = 2.7f;
+    face.descent = 8.0f;
+    CHECK(std::fabs(ruleGeometry(28.0f, 2.0f, face).underlineThickness - 2.7f) < 1e-4f);
+    face.underscoreWeight = 0.0f;
+    CHECK(std::fabs(ruleGeometry(28.0f, 2.0f, face).underlineThickness - 1.4f) < 1e-4f);
+}
+
 } // namespace
 
 UBIQUITTY_TEST_MAIN()
 
-// The face policy, pinned to what AppKit paints. Each case is a face, size and
-// scale measured on macOS 26.4: the rows
-// NSLayoutManager filled for NSUnderlineStyleSingle, relative to the baseline.
-// The builder ceils the stroke and anchors the rule's top at
-// baseline + drop − lift, so the checks are on those two derived values.
-TEST(faceRuleMatchesAppKitRows)
+// The face policy: a rule's top sits a clear gap below the baseline, 0.85 of
+// the rule's weight in whole rows and never under one, whatever position the
+// face declares — Monaspace Neon declares one that all but touches its letters
+// and JetBrains Mono one a stroke and a half lower, so following them would
+// set the same rule at a different height in every face. The weight is the
+// face's own, drawn exactly. Faces as measured on macOS 26.4 at 2x.
+TEST(faceRuleSitsAGapBelowTheBaseline)
 {
     using Ubiquitty::Rendering::RuleFaceMetrics;
     using Ubiquitty::Rendering::underlineStrokeLiftForEm;
@@ -152,18 +196,18 @@ TEST(faceRuleMatchesAppKitRows)
         float descent;
         float leading;
         int top;
-        int rows;
     };
-    // em, thickness, descent, leading in device pixels (2x); top/rows as measured.
+    // em, thickness, descent, leading in device pixels (2x); the top row below
+    // the baseline, round(0.85 * thickness) floored at one.
     const Case cases[] = {
-        { "Menlo 24pt", 48.0f, 2.109f, 11.32f, 0.0f, 3, 3 },
-        { "Menlo 12pt", 24.0f, 1.055f, 5.66f, 0.0f, 1, 2 },
-        { "System UI 24pt", 48.0f, 2.812f, 10.12f, 0.0f, 3, 3 },
-        { "JetBrains Mono 24pt", 48.0f, 2.40f, 14.40f, 0.0f, 5, 3 },
-        { "JetBrains Mono 12pt", 24.0f, 1.20f, 7.20f, 0.0f, 2, 2 },
-        { "Monaspace Neon 24pt", 48.0f, 1.728f, 9.60f, 4.80f, 5, 2 },
-        { "Monaspace Neon 12pt", 24.0f, 0.864f, 4.80f, 2.40f, 2, 1 },
-        { "System UI 12pt", 24.0f, 1.406f, 5.06f, 0.0f, 1, 2 },
+        { "Menlo 24pt", 48.0f, 2.109f, 11.32f, 0.0f, 2 },
+        { "Menlo 12pt", 24.0f, 1.055f, 5.66f, 0.0f, 1 },
+        { "System UI 24pt", 48.0f, 2.812f, 10.12f, 0.0f, 2 },
+        { "JetBrains Mono 24pt", 48.0f, 2.40f, 14.40f, 0.0f, 2 },
+        { "JetBrains Mono 12pt", 24.0f, 1.20f, 7.20f, 0.0f, 1 },
+        { "Monaspace Neon 24pt", 48.0f, 1.728f, 9.60f, 4.80f, 1 },
+        { "Monaspace Neon 12pt", 24.0f, 0.864f, 4.80f, 2.40f, 1 },
+        { "System UI 12pt", 24.0f, 1.406f, 5.06f, 0.0f, 1 },
     };
     for (const Case& c : cases) {
         RuleFaceMetrics face;
@@ -171,8 +215,8 @@ TEST(faceRuleMatchesAppKitRows)
         face.descent = c.descent;
         face.leading = c.leading;
         const RuleGeometry g = ruleGeometry(c.em, 2.0f, face);
-        // The stroke the builder snaps to: ceil of the face's weight.
-        CHECK_MSG(static_cast<int>(std::ceil(g.underlineThickness)) == c.rows, c.face);
+        // The face's own weight, floored at a pixel and otherwise exact.
+        CHECK_MSG(close(g.underlineThickness, std::max(1.0f, c.thickness)), c.face);
         // The top row: the drop with the builder's lift taken back off.
         const int top = static_cast<int>(std::round(g.underlineDrop - underlineStrokeLiftForEm(c.em)));
         CHECK_MSG(top == c.top, c.face);

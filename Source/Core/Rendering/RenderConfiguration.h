@@ -27,6 +27,7 @@
 #include "Core/Accessibility/ColorblindMode.h"
 #include "Core/Rendering/BackgroundImageLayout.h"
 #include "Core/Rendering/BrailleLattice.h"
+#include "Core/Rendering/CellInstanceBuilder.h"
 #include "Core/Rendering/FontMetrics.h"
 #include "Core/Rendering/OverlayGeometry.h"
 #include "Core/Rendering/RemoteViewport.h"
@@ -165,14 +166,20 @@ struct RenderConfiguration {
     bool shouldBrightenBold = false;
     SelectionStyle selectionStyle = defaultSelectionStyle;
     RemoteViewportPolicy nonOwnerPresentation = RemoteViewportPolicy::Letterbox;
-    /// A multiplier on the face's own underline thickness.
+    /// A multiplier on the font's own underline weight, the weight its
+    /// underscore draws at.
     double underlineThicknessScale = 1;
+    /// Points added to the automatic underline position, positive down; zero
+    /// is automatic.
     double underlineOffsetPoints = 0;
     bool shouldUnderlineSkipInk = false;
     /// Whether a run's outer underline reaches the letter's ink past the cell.
     bool shouldUnderlineFollowInk = false;
-    /// The halo around crossing ink the skip leaves.
+    /// The clearance the skip leaves beside crossing ink; negative is
+    /// automatic, the underline's own weight.
     double underlineSkipInkPaddingPoints = 0;
+    /// The shape a curly underline draws at.
+    CurlyRuleShape curlyRuleShape = CurlyRuleShape::Medium;
     /// Whether link cells draw an underline of their own.
     bool shouldUnderlineLinks = false;
     /// The `link_style` index; zero is solid.

@@ -15,6 +15,7 @@
 #include "Core/Rendering/BrailleLattice.h"
 #include "Core/Rendering/CellDecisions.h"
 #include "Core/Rendering/ColorResolve.h"
+#include "Core/Rendering/Enclosure.h"
 #include "Core/Rendering/RuleGeometry.h"
 #include "Core/Screen/Addressing.h"
 #include "Core/TermPalette.h"
@@ -917,8 +918,9 @@ TEST(theIdeogramUnderlinePairHangsFromTheRuleLine)
     }
     CHECK_MSG(singleTop >= 0.0f, "the fixture's own underline on (1,0) is the line to compare against");
 
-    const float t = std::round(fx.in.metrics.underlineThickness);
+    const float t = Ubiquitty::Rendering::ruleWeight(fx.in.metrics.underlineThickness);
     const float gap = Ubiquitty::Rendering::doubledRuleGap(t, fx.in.metrics.deviceScale);
+    const float lowerTop = Ubiquitty::Rendering::pairedRuleTop(singleTop, t, gap);
     int upperRules = 0, lowerRules = 0;
     for (std::size_t i = 0; i < fx.counts.decorations && i < fx.decorationsOut.size(); ++i) {
         const DecorationInstance& rule = fx.decorationsOut[i];
@@ -929,7 +931,7 @@ TEST(theIdeogramUnderlinePairHangsFromTheRuleLine)
         if (approx(rule.topLeftInPixels.y, singleTop)) {
             ++upperRules;
             CHECK_MSG(rule.bottomRightInPixels.y <= cellBottom, "the upper rule ends at or above its cell's floor");
-        } else if (approx(rule.topLeftInPixels.y, singleTop + t + gap)) {
+        } else if (approx(rule.topLeftInPixels.y, lowerTop)) {
             ++lowerRules;
             CHECK_MSG(rule.bottomRightInPixels.y <= cellBottom + t + gap, "the lower rule hangs no further than a gap and a stroke past the floor");
         } else {
@@ -2275,11 +2277,14 @@ TEST(testOverlineFramedAndEncircledRules)
         const char* what;
         Ubiquitty::VT::Attribute attribute;
         std::size_t rules;
+        std::size_t circles;
     };
+    // Encircled is a circle round the character, drawn with the glyphs
+    // (Enclosure.h), not a rule.
     const Case cases[] = {
-        { "overline", Ubiquitty::VT::Attribute::Overline, 1 },
-        { "framed", Ubiquitty::VT::Attribute::Framed, 4 },
-        { "encircled", Ubiquitty::VT::Attribute::Encircled, 4 },
+        { "overline", Ubiquitty::VT::Attribute::Overline, 1, 0 },
+        { "framed", Ubiquitty::VT::Attribute::Framed, 4, 0 },
+        { "encircled", Ubiquitty::VT::Attribute::Encircled, 0, 1 },
     };
     for (const Case& c : cases) {
         std::vector<Ubiquitty::Cell> row(1, blank);
@@ -2300,9 +2305,13 @@ TEST(testOverlineFramedAndEncircledRules)
         FakeAtlas at;
         std::vector<CellInstance> cells(1);
         std::vector<DecorationInstance> decorations(16);
+        std::vector<OverlayInstance> boxFills(4);
         InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
+        buffers.boxFills = boxFills.data();
+        buffers.boxFillCapacity = boxFills.size();
         const InstanceCounts counts = buildCellInstances(in, UbiquittyTest::glyphBackendFor(at), buffers);
         CHECK_MSG(counts.decorations == c.rules, c.what);
+        CHECK_MSG(counts.boxFills == c.circles, c.what);
         // Each rule has a real extent: a zero-height band draws nothing.
         for (std::size_t i = 0; i < counts.decorations; ++i) {
             CHECK(decorations[i].bottomRightInPixels.y > decorations[i].topLeftInPixels.y);
@@ -2310,7 +2319,8 @@ TEST(testOverlineFramedAndEncircledRules)
         }
     }
 
-    // Framed and encircled together are one box, not two.
+    // Framed and encircled together are the frame's one box, and the circle
+    // drawn with the glyphs.
     std::vector<Ubiquitty::Cell> row(1, blank);
     row[0].codePoint = 0x41u;
     row[0].pen.attributes = { Ubiquitty::VT::Attribute::Framed, Ubiquitty::VT::Attribute::Encircled };
@@ -2327,6 +2337,135 @@ TEST(testOverlineFramedAndEncircledRules)
     std::vector<DecorationInstance> decorations(16);
     InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
     CHECK(buildCellInstances(both, UbiquittyTest::glyphBackendFor(at), buffers).decorations == 4);
+}
+
+// U+20DD is Core's to draw (Enclosure.h). The face is handed the cluster
+// without it, so a letter whose only mark it was is the plain letter's glyph,
+// and a letter with another mark keeps that one. The circle is one hollow
+// overlay centred on the cell, two cells across, at the same height whatever
+// the letter.
+TEST(anEnclosingCircleIsDrawnByCoreRoundTheLetter)
+{
+    struct ClusterCountingAtlas : FakeAtlas {
+        int clusterWrites = 0;
+        GlyphBackend glyphBackend()
+        {
+            auto backend = UbiquittyTest::glyphBackendFor(static_cast<FakeAtlas&>(*this));
+            backend.rasteriseClusterGlyph = [](void* context, ClusterSpan, FontFace, std::uint32_t, int) {
+                ++static_cast<ClusterCountingAtlas*>(static_cast<FakeAtlas*>(context))->clusterWrites;
+                return true;
+            };
+            return backend;
+        }
+    };
+    TermPalette pal;
+    pal.seedDefaults();
+    Ubiquitty::Cell blank {};
+    blank.pen.foregroundIndex = colorDefault;
+    blank.pen.backgroundIndex = colorDefault;
+    std::vector<Ubiquitty::Cell> row(2, blank);
+    row[0].codePoint = 'A';
+    row[0].combining[0] = 0x20DDu;
+    row[0].setCombiningLength(1);
+    // Two marks are more than a cell holds inline, so the e's live in the pool.
+    row[1].codePoint = 'e';
+    row[1].setClusterID(1);
+
+    BuildInputs in;
+    in.cells = row.data();
+    in.rows = 1;
+    in.columns = 2;
+    in.palette = &pal;
+    in.metrics.cellWidth = 8.0f;
+    in.metrics.cellHeight = 16.0f;
+    in.metrics.baselineFromTop = 13.0f;
+    in.metrics.underlineThickness = 1.0f;
+    in.metrics.underlineThicknessBold = 1.0f;
+    in.clusterResolver = [](const Cell*, std::span<std::uint32_t> output, void*) {
+        constexpr std::array<std::uint32_t, 3> marked { 'e', 0x301u, 0x20DDu };
+        std::copy(marked.begin(), marked.end(), output.begin());
+        return static_cast<int>(marked.size());
+    };
+
+    ClusterCountingAtlas atlas;
+    std::vector<CellInstance> cells(2);
+    std::vector<DecorationInstance> decorations(8);
+    std::vector<OverlayInstance> boxFills(4);
+    InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
+    buffers.boxFills = boxFills.data();
+    buffers.boxFillCapacity = boxFills.size();
+    const InstanceCounts counts = buildCellInstances(in, atlas.glyphBackend(), buffers);
+    // The A is the plain A's glyph; the e keeps its acute as a cluster.
+    CHECK(atlas.monoRasterised == 1);
+    CHECK(atlas.clusterWrites == 1);
+    REQUIRE(counts.boxFills == 2);
+    for (std::size_t index = 0; index < 2; ++index) {
+        // Drawn as Braille's dot is: the circle in the ink box, the quad half
+        // a pixel wider for the edge's coverage.
+        const OverlayInstance& circle = boxFills[index];
+        CHECK(circle.shapeKind == enclosingCircleShapeKind);
+        const float side = circle.plA.z - circle.plA.x;
+        CHECK(side == 16.0f);
+        CHECK(circle.plA.w - circle.plA.y == side);
+        CHECK(circle.plA.y == 0.0f);
+        CHECK(circle.cornerRadius == side * 0.5f);
+        CHECK(circle.strokeWidth == 1.0f);
+        CHECK(circle.topLeftInPixels.x == circle.plA.x - 0.5f);
+        CHECK(circle.bottomRightInPixels.y == circle.plA.w + 0.5f);
+        const float cellCentre = 8.0f * static_cast<float>(index) + 4.0f;
+        CHECK(std::fabs(circle.plA.x + side * 0.5f - cellCentre) <= 0.5f);
+    }
+}
+
+// A cluster on a doubled row keeps its marks. The doubled master is a code
+// point's raster, and a mark is not in it, so the cluster takes its own
+// raster and the 1x fallback rather than the master: an e with an acute on a
+// DECDWL row is drawn as e with its acute, not as a bare e.
+TEST(aClusterOnADoubledRowKeepsItsMarks)
+{
+    struct ClusterCountingAtlas : FakeAtlas {
+        int clusterWrites = 0;
+        GlyphBackend glyphBackend()
+        {
+            auto backend = UbiquittyTest::glyphBackendFor(static_cast<FakeAtlas&>(*this));
+            backend.rasteriseClusterGlyph = [](void* context, ClusterSpan, FontFace, std::uint32_t, int) {
+                ++static_cast<ClusterCountingAtlas*>(static_cast<FakeAtlas*>(context))->clusterWrites;
+                return true;
+            };
+            return backend;
+        }
+    };
+    TermPalette pal;
+    pal.seedDefaults();
+    Ubiquitty::Cell blank {};
+    blank.pen.foregroundIndex = colorDefault;
+    blank.pen.backgroundIndex = colorDefault;
+    // A doubled cell spans two columns, so four hold both letters.
+    std::vector<Ubiquitty::Cell> row(4, blank);
+    row[0].codePoint = 'e';
+    row[0].combining[0] = 0x301u;
+    row[0].setCombiningLength(1);
+    row[1].codePoint = 'e';
+    const std::uint8_t lineAttributes[1] = { lineAttributeDoubleWidth };
+
+    BuildInputs in;
+    in.cells = row.data();
+    in.rows = 1;
+    in.columns = 4;
+    in.palette = &pal;
+    in.lineAttributes = lineAttributes;
+    in.metrics.cellWidth = 8.0f;
+    in.metrics.cellHeight = 16.0f;
+    in.metrics.baselineFromTop = 13.0f;
+
+    ClusterCountingAtlas atlas;
+    std::vector<CellInstance> cells(4);
+    std::vector<DecorationInstance> decorations(4);
+    InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
+    buildCellInstances(in, atlas.glyphBackend(), buffers);
+    // The plain e takes the doubled master; the marked one takes its cluster.
+    CHECK(atlas.doubleCalls == 1);
+    CHECK(atlas.clusterWrites == 1);
 }
 
 // A hovered link takes the accent colour and a single rule whatever style the

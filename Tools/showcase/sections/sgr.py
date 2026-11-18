@@ -75,9 +75,9 @@ def _demo_lines_boxes(tui):
             ("CSI 9 m / CSI 29 m", f"{CSI}9m", f"{CSI}29m", "struck out"),
             ("CSI 53 m / CSI 55 m", f"{CSI}53m", f"{CSI}55m", "over the top"),
             ("CSI 51 m / CSI 54 m", f"{CSI}51m", f"{CSI}54m", "framed"),
-            ("CSI 52 m / CSI 54 m", f"{CSI}52m", f"{CSI}54m", "encircled")):
+            ("CSI 52 m / CSI 54 m", f"{CSI}52m", f"{CSI}54m", "1 2 3")):
         tui.label(row, 4, code)
-        tui.write(move(row, 28), tui.fg_default(), set_seq, sample, reset_seq, " plain", RESET)
+        tui.write(move(row, 28), tui.fg_default(), set_seq, sample, reset_seq, "  plain", RESET)
         row += 2
     return tui.footer()
 
@@ -200,12 +200,12 @@ ENTRIES = [
         title="Lines and frames (SGR 9, 51-55)",
         explanation=(
             "SGR 9 strikes through at mid height until 29; 53 draws a rule along "
-            "the top of the cell until 55; 51 frames every cell of the run and "
-            "52 draws that same rectangle, both cleared by 54."
+            "the top of the cell until 55; 51 draws one box round the run and 52 "
+            "a circle two cells across round each character, both cleared by 54."
         ),
         run=_demo_lines_boxes,
         sequence="\x1b[9mstruck out\x1b[29m \x1b[53mover the top\x1b[55m "
-        "\x1b[51mone box per cell\x1b[54m \x1b[52mnot an ellipse\x1b[54m",
+        "\x1b[51mone box a run\x1b[54m  \x1b[52mA B C\x1b[54m ",
         golden="sgr_lines_boxes",
     ),
     Entry(

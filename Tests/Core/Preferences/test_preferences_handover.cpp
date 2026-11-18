@@ -339,12 +339,15 @@ TEST(thePublishedConfigurationKeepsEveryOldFieldAndLeavesNewSettingsAbsent)
     unsigned serial = 0;
     fill(source, serial);
     source.cursorOutlineThickness = 3.25;
+    source.curlyUnderlineShape = CurlyUnderlineShape::Wide;
     const auto bytes = independentRecord<true>(source, 7);
     const auto restored = decodeHandoverValues(bytes, limits);
     REQUIRE(restored);
     source.cursorOutlineThickness.reset();
+    source.curlyUnderlineShape.reset();
     CHECK(exact(source, *restored));
     CHECK(!restored->cursorOutlineThickness);
+    CHECK(!restored->curlyUnderlineShape);
     CHECK(restored->cursorInvertText == source.cursorInvertText);
     CHECK(restored->profiles.size() == source.profiles.size());
 

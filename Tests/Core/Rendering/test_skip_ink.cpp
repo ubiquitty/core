@@ -12,7 +12,9 @@
 // pixel, so every expected column and row can be read off the picture.
 
 #include "Harness.h"
+#include <algorithm>
 
+#include "Core/Rendering/DottedRuleRun.h"
 #include "Core/Rendering/SkipInk.h"
 
 #include <cmath>
@@ -246,6 +248,364 @@ TEST(aStretchOfLineTooShortToReadAsLineIsCutWithTheLetters)
     CHECK_ROW(cutOf(nearTheEnd, rule, stub)[0], std::string("######------------------"));
     stub.continuesLeft = true;
     CHECK_ROW(cutOf(nearTheEnd, rule, stub)[0], std::string("--####------------------"));
+}
+
+TEST(aRuleCutAcrossItsFullHeightTakesEveryRowsCut)
+{
+    // A stem through both rows cuts [7, 11) with a pixel's clearance, and a
+    // blot touching only the upper row cuts [15, 19) there: cut across its
+    // full height, the rule takes both cuts in both rows, so a dot laid on it
+    // is whole or absent.
+    const SkipInkRule rule { .left = 0, .top = 12, .right = 24, .bottom = 14 };
+    Sheet sheet(24, 20);
+    sheet.paint(8, 4, 10, 16);
+    sheet.paint(16, 4, 18, 13);
+    SkipInkQuery dots = query(sheet, rule, 1.0f);
+    dots.reachUpDown = 0.0f;
+    dots.isCutAcrossFullHeight = true;
+    SkipInkScratch scratch;
+    REQUIRE(markSkipInkCuts(sheet.planes(), dots, rule, scratch.cut, scratch));
+    REQUIRE(std::ranges::equal(scratch.cut.row(0), scratch.cut.row(1)));
+    REQUIRE(scratch.cut.row(0).size() == 4u);
+    const auto near = [](float a, float b) { return std::fabs(a - b) < 0.01f; };
+    CHECK(near(scratch.cut.row(1)[0], 7.0f) && near(scratch.cut.row(1)[1], 11.0f));
+    CHECK(near(scratch.cut.row(1)[2], 15.0f) && near(scratch.cut.row(1)[3], 19.0f));
+}
+
+TEST(theMemoCutsAGlyphOnceWhereverItsRuleStands)
+{
+    // One glyph read under two rules of one shape, the second far along the
+    // line at a fractional edge: memoised, the second is served from the
+    // first's entry, and both land where a cut worked out afresh does.
+    const SkipInkRule here { .left = 0, .top = 12, .right = 24, .bottom = 14 };
+    const SkipInkRule there { .left = 240.25f, .top = 12, .right = 264.25f, .bottom = 14 };
+    Sheet sheet(24, 20);
+    sheet.paint(8, 4, 10, 16);
+    const SkipInkQuery stem = query(sheet, here, 1.0f);
+    const auto spansOf = [&](const SkipInkRule& rule, SkipInkScratch& scratch) {
+        CHECK(markSkipInkCuts(sheet.planes(), stem, rule, scratch.cut, scratch));
+        return scratch.cut.spans;
+    };
+    SkipInkScratch fresh;
+    const std::vector<float> freshHere = spansOf(here, fresh);
+    const std::vector<float> freshThere = spansOf(there, fresh);
+    SkipInkScratch memoised;
+    memoised.memo.begin();
+    const std::vector<float> memoHere = spansOf(here, memoised);
+    const std::size_t pooled = memoised.memo.pool().size();
+    const std::vector<float> memoThere = spansOf(there, memoised);
+    CHECK(pooled > 0u);
+    CHECK(memoised.memo.pool().size() == pooled);
+    REQUIRE(memoHere.size() == freshHere.size());
+    REQUIRE(memoThere.size() == freshThere.size());
+    for (std::size_t index = 0; index < freshHere.size(); ++index)
+        CHECK(std::fabs(memoHere[index] - freshHere[index]) < 1.0e-4f);
+    for (std::size_t index = 0; index < freshThere.size(); ++index)
+        CHECK(std::fabs(memoThere[index] - freshThere[index]) < 1.0e-4f);
+    REQUIRE(!freshHere.empty() && !freshThere.empty());
+    CHECK(std::fabs(freshThere[0] - (freshHere[0] + 240.25f)) < 1.0e-3f);
+    // The next build forgets it: the slot may hold another glyph then.
+    memoised.memo.begin();
+    CHECK(memoised.memo.pool().empty());
+}
+
+TEST(theCutMemoServesARuleBesideTheSameGlyphsWhereverItStands)
+{
+    // A whole rule's cut, memoised: the same rule beside the same glyph at
+    // another place is served from the memo and lands where a cut worked out
+    // afresh does; a rule whose line goes on past its edge is another cut.
+    const SkipInkRule here { .left = 0, .top = 12, .right = 24, .bottom = 14 };
+    const SkipInkRule there { .left = 512.5f, .top = 12, .right = 536.5f, .bottom = 14 };
+    Sheet sheet(24, 20);
+    sheet.paint(8, 4, 10, 16);
+    sheet.paint(15, 4, 17, 13);
+    SkipInkQuery stems = query(sheet, here, 1.0f);
+    stems.shortestPiece = 2.0f;
+    SkipInkScratch fresh;
+    SkipInkScratch memoised;
+    memoised.beginBuild();
+    REQUIRE(markSkipInkCuts(sheet.planes(), stems, here, memoised.cut, memoised));
+    const std::size_t filed = memoised.cutMemo.pool().size();
+    REQUIRE(markSkipInkCuts(sheet.planes(), stems, there, memoised.cut, memoised));
+    CHECK(memoised.cutMemo.pool().size() == filed);
+    REQUIRE(markSkipInkCuts(sheet.planes(), stems, there, fresh.cut, fresh));
+    REQUIRE(memoised.cut.rowEnds == fresh.cut.rowEnds);
+    REQUIRE(memoised.cut.spans.size() == fresh.cut.spans.size());
+    for (std::size_t index = 0; index < fresh.cut.spans.size(); ++index)
+        CHECK(std::fabs(memoised.cut.spans[index] - fresh.cut.spans[index]) < 1.0e-3f);
+    stems.continuesRight = true;
+    REQUIRE(markSkipInkCuts(sheet.planes(), stems, there, memoised.cut, memoised));
+    CHECK(memoised.cutMemo.pool().size() > filed);
+}
+
+TEST(aGlyphWhoseInkStopsAboveTheTouchingRowsIsPassedOver)
+{
+    // A round letter resting two rows above the rule: its ink never reaches
+    // the rows where ink touches the rule, so a build that knows its slot's
+    // inked rows passes it over without reading it, and nothing is cut. A
+    // stem through the rule in another slot is cut as ever.
+    const SkipInkRule rule { .left = 0, .top = 12, .right = 24, .bottom = 14 };
+    Sheet round(24, 20);
+    round.paint(6, 4, 18, 9);
+    SkipInkQuery bowl = query(round, rule, 1.0f);
+    bowl.own.slot = 0;
+    SkipInkScratch scratch;
+    scratch.beginBuild();
+    CHECK(!markSkipInkCuts(round.planes(), bowl, rule, scratch.cut, scratch));
+    REQUIRE(scratch.slotInk.size() == 1u);
+    CHECK(scratch.slotInk[0].top == 4 && scratch.slotInk[0].bottom == 8);
+    Sheet stem(24, 20);
+    stem.paint(8, 4, 10, 16);
+    SkipInkQuery through = query(stem, rule, 1.0f);
+    through.own.slot = 1;
+    CHECK(markSkipInkCuts(stem.planes(), through, rule, scratch.cut, scratch));
+}
+
+namespace {
+
+/// The share a soft cut keeps at a pixel; one where no stretch drawn covers it.
+float keptAt(const std::vector<SkipInkKeep>& keeps, std::int32_t row, float x)
+{
+    for (const SkipInkKeep& keep : keeps) {
+        if (keep.row <= row && row < keep.row + keep.rows && keep.left <= x && x < keep.right)
+            return keep.keep;
+    }
+    return 0.0f;
+}
+
+/// A curl over a 24-pixel rule six rows tall, three pixels thick, a crest
+/// every twelve.
+constexpr SkipInkRule curlRule { .left = 0, .top = 10, .right = 24, .bottom = 16 };
+constexpr SkipInkCurl curl { .origin = 0.0f, .wavelength = 12.0f, .thickness = 3.0f };
+
+} // namespace
+
+TEST(aCurlBesideNoInkIsNotCut)
+{
+    Sheet blank(24, 20);
+    std::vector<SkipInkKeep> keeps;
+    SkipInkScratch scratch;
+    CHECK(!markSkipInkMask(blank.planes(), query(blank, curlRule, 2.0f), curlRule, curl, keeps, scratch));
+    CHECK(keeps.empty());
+}
+
+TEST(aStrokeThroughACurlFadesItAroundTheStroke)
+{
+    // A stem through the band, drawn half a texel off the pixel grid: gone
+    // under the stem and the reach either side of it, kept whole far off, and
+    // in part at the reach's edge, where a pixel's centre reads between texels.
+    Sheet stem(24, 20);
+    stem.paint(11, 0, 13, 20);
+    SkipInkQuery shifted = query(stem, curlRule, 2.0f);
+    shifted.own.inkLeft += 0.5f;
+    shifted.own.inkRight += 0.5f;
+    std::vector<SkipInkKeep> keeps;
+    SkipInkScratch scratch;
+    REQUIRE(markSkipInkMask(stem.planes(), shifted, curlRule, curl, keeps, scratch));
+    for (std::int32_t row = 0; row < curlRule.rows(); ++row) {
+        CHECK(keptAt(keeps, row, 11.5f) == 0.0f);
+        CHECK(keptAt(keeps, row, 2.5f) == 1.0f);
+        CHECK(keptAt(keeps, row, 21.5f) == 1.0f);
+    }
+    bool isAnyPartial = false;
+    for (const SkipInkKeep& keep : keeps)
+        isAnyPartial = isAnyPartial || (keep.keep > 0.0f && keep.keep < 1.0f);
+    CHECK(isAnyPartial);
+}
+
+TEST(inkRestingAboveACurlCutsItWithinTheReachDownward)
+{
+    // A blot ending a row above the band, under the reach: grown as far down
+    // as across, it cuts the band's top row, and leaves its bottom row whole.
+    Sheet blot(24, 20);
+    blot.paint(8, 4, 16, 9);
+    std::vector<SkipInkKeep> keeps;
+    SkipInkScratch scratch;
+    REQUIRE(markSkipInkMask(blot.planes(), query(blot, curlRule, 2.0f), curlRule, curl, keeps, scratch));
+    CHECK(keptAt(keeps, 0, 12.5f) < 1.0f);
+    CHECK(keptAt(keeps, curlRule.rows() - 1, 12.5f) == 1.0f);
+}
+
+TEST(aSpeckOfCurlBetweenTheLineEndAndACutGoes)
+{
+    // A stem a few pixels in from where the line starts leaves less than one
+    // and a half stroke widths of curl before it: that speck goes, every row.
+    Sheet stem(24, 20);
+    stem.paint(5, 0, 7, 20);
+    std::vector<SkipInkKeep> keeps;
+    SkipInkScratch scratch;
+    REQUIRE(markSkipInkMask(stem.planes(), query(stem, curlRule, 1.0f), curlRule, curl, keeps, scratch));
+    for (std::int32_t row = 0; row < curlRule.rows(); ++row) {
+        CHECK(keptAt(keeps, row, 0.5f) == 0.0f);
+        CHECK(keptAt(keeps, row, 1.5f) == 0.0f);
+        CHECK(keptAt(keeps, row, 20.5f) == 1.0f);
+    }
+}
+
+TEST(aSoftCutReadsTheSameMemoisedAsWorkedOutAfresh)
+{
+    Sheet stem(24, 20);
+    stem.paint(11, 0, 13, 20);
+    stem.paint(17, 2, 21, 9);
+    const SkipInkQuery stems = query(stem, curlRule, 2.0f);
+    std::vector<SkipInkKeep> fresh;
+    SkipInkScratch freshScratch;
+    REQUIRE(markSkipInkMask(stem.planes(), stems, curlRule, curl, fresh, freshScratch));
+    std::vector<SkipInkKeep> memoised;
+    SkipInkScratch memoScratch;
+    memoScratch.beginBuild();
+    REQUIRE(markSkipInkMask(stem.planes(), stems, curlRule, curl, memoised, memoScratch));
+    const std::size_t grown = memoScratch.grownMemo.pool().size();
+    REQUIRE(markSkipInkMask(stem.planes(), stems, curlRule, curl, memoised, memoScratch));
+    CHECK(memoScratch.grownMemo.pool().size() == grown);
+    REQUIRE(memoised.size() == fresh.size());
+    for (std::size_t index = 0; index < fresh.size(); ++index) {
+        CHECK(memoised[index].row == fresh[index].row);
+        CHECK(memoised[index].rows == fresh[index].rows);
+        CHECK(std::fabs(memoised[index].left - fresh[index].left) < 1.0e-4f);
+        CHECK(std::fabs(memoised[index].right - fresh[index].right) < 1.0e-4f);
+        CHECK(std::fabs(memoised[index].keep - fresh[index].keep) < 1.0e-4f);
+    }
+}
+
+TEST(aDashedRuleIsCutSquareBesideASlantingStroke)
+{
+    // A comma's tail slanting down to the left across the rule's two rows:
+    // it cuts the upper row further right than the lower. Cut square, both
+    // rows take the cut of both, so no dash beside it is left a row tall, and
+    // the dash the cut ends in keeps what is left of it only where that is two
+    // pixels or more.
+    const SkipInkRule rule { .left = 0, .top = 12, .right = 24, .bottom = 14 };
+    Sheet sheet(24, 20);
+    sheet.paint(10, 4, 12, 13);
+    sheet.paint(8, 13, 10, 16);
+    SkipInkQuery dashes = query(sheet, rule, 1.0f);
+    dashes.reachUpDown = 0.0f;
+    dashes.isCutAcrossFullHeight = true;
+    dashes.pattern = { .pitch = 6.0f, .origin = 0.0f, .offset = 0.0f, .length = 4.0f, .shortest = 2.0f };
+    SkipInkScratch scratch;
+    REQUIRE(markSkipInkCuts(sheet.planes(), dashes, rule, scratch.cut, scratch));
+    CHECK(std::ranges::equal(scratch.cut.row(0), scratch.cut.row(1)));
+    REQUIRE(scratch.cut.row(0).size() == 2u);
+    CHECK(scratch.cut.row(0)[0] <= 7.0f);
+    CHECK(scratch.cut.row(0)[1] >= 13.0f);
+}
+
+namespace {
+
+/// A dotted run from 0 to 40 with two-pixel dots every four pixels.
+DottedRunFrame dottedRun(DottedRunEdge rightEdge)
+{
+    return { .left = 0.0f, .right = 40.0f, .origin = 0.0f, .pitch = 4.0f, .dot = 2.0f, .isEnding = rightEdge == DottedRunEdge::Ends };
+}
+
+bool isStretch(const DottedStretch& stretch, float left, float right, float origin)
+{
+    return std::fabs(stretch.left - left) < 0.01f && std::fabs(stretch.right - right) < 0.01f && std::fabs(stretch.origin - origin) < 0.01f;
+}
+
+} // namespace
+
+TEST(theStretchBeforeTheFirstCutKeepsTheRunsRhythmInWholeDots)
+{
+    // Dots at 0 and 4 end before the cut at 9; the one at 8 would end inside
+    // it and is not drawn, so the stretch stops past the dot at 4.
+    std::vector<DottedStretch> stretches;
+    const float cuts[] = { 9.0f, 13.0f };
+    fitDotsBetweenCuts(dottedRun(DottedRunEdge::Ends), cuts, stretches);
+    REQUIRE(stretches.size() == 2u);
+    CHECK(isStretch(stretches[0], 0.0f, 6.5f, 0.0f));
+}
+
+TEST(aStretchBetweenCutsHoldsEveryDotThatFitsCentredOnThePixelGrid)
+{
+    // Nineteen pixels between cuts at 9 and 28 hold five dots, eighteen
+    // pixels end to end: the rhythm would lay four (12 to 24), the dot at 8
+    // and the one at 28 falling in the cuts. Centred they start at 9.5, put on
+    // the rhythm's pixel phase at 10, and the last ends at 28.
+    std::vector<DottedStretch> stretches;
+    const float cuts[] = { 5.0f, 9.0f, 28.0f, 31.0f };
+    fitDotsBetweenCuts(dottedRun(DottedRunEdge::Ends), cuts, stretches);
+    REQUIRE(stretches.size() == 3u);
+    CHECK(isStretch(stretches[1], 9.5f, 28.5f, 10.0f));
+}
+
+TEST(theStretchToTheRunsEndIsCentredWhereTheLineEnds)
+{
+    // From the cut at 13 to the run's end at 40: twenty-seven pixels hold
+    // seven dots, twenty-six end to end, centred at 13.5 and put on the pixel
+    // grid at 14.
+    std::vector<DottedStretch> stretches;
+    const float cuts[] = { 9.0f, 13.0f };
+    fitDotsBetweenCuts(dottedRun(DottedRunEdge::Ends), cuts, stretches);
+    REQUIRE(stretches.size() == 2u);
+    CHECK(isStretch(stretches[1], 13.5f, 40.0f, 14.0f));
+}
+
+TEST(aStretchRunningOnPastTheRunKeepsTheRhythm)
+{
+    // Where the line goes on past the run's right edge the stretch's far end
+    // is not known: it keeps the rhythm, from its first whole dot at 16.
+    std::vector<DottedStretch> stretches;
+    const float cuts[] = { 9.0f, 13.0f };
+    fitDotsBetweenCuts(dottedRun(DottedRunEdge::Continues), cuts, stretches);
+    REQUIRE(stretches.size() == 2u);
+    CHECK(isStretch(stretches[1], 15.5f, 40.0f, 0.0f));
+}
+
+TEST(anUncutRunEndsWithItsLastWholeDot)
+{
+    std::vector<DottedStretch> stretches;
+    DottedRunFrame frame = dottedRun(DottedRunEdge::Ends);
+    frame.right = 39.0f;
+    fitDotsBetweenCuts(frame, {}, stretches);
+    REQUIRE(stretches.size() == 1u);
+    CHECK(isStretch(stretches[0], 0.0f, 38.5f, 0.0f));
+}
+
+TEST(aHeldRunDrawsEachCellsShareOfItsStretches)
+{
+    // Three cells of ten pixels, cut at [8, 12) and [23, 27): the stretch
+    // between the cuts crosses the cell edge at 20, and both cells draw their
+    // part of it from the same origin. Eleven pixels hold three dots, ten end
+    // to end, centred at 12.5 and on the grid at 13.
+    DottedRuleRun run;
+    const auto cell = [](float left) {
+        DecorationInstance rule {};
+        rule.topLeftInPixels = { left, 10.0f };
+        rule.bottomRightInPixels = { left + 10.0f, 12.0f };
+        rule.dashPeriodInPixels = 4.0f;
+        rule.bandTopLeftInPixels = { 0.0f, 10.0f };
+        rule.bandBottomRightInPixels = { left + 10.0f, 12.0f };
+        return rule;
+    };
+    const float firstCuts[] = { 8.0f, 10.0f };
+    const float secondCuts[] = { 10.0f, 12.0f };
+    const float thirdCuts[] = { 23.0f, 27.0f };
+    run.hold(cell(0.0f), firstCuts, DottedRunEdge::Continues, DottedRuleRun::untraced);
+    CHECK(run.doesContinueWith(cell(10.0f)));
+    run.hold(cell(10.0f), secondCuts, DottedRunEdge::Continues, DottedRuleRun::untraced);
+    run.hold(cell(20.0f), thirdCuts, DottedRunEdge::Ends, DottedRuleRun::untraced);
+    std::vector<DecorationInstance> pieces;
+    std::vector<std::uint32_t> counts;
+    run.release([&](const DecorationInstance& piece) { pieces.push_back(piece); },
+        [&](std::size_t, std::uint32_t count) { counts.push_back(count); });
+    CHECK(run.isEmpty());
+    REQUIRE(counts.size() == 3u);
+    CHECK(counts[0] == 1u && counts[1] == 1u && counts[2] == 2u);
+    REQUIRE(pieces.size() == 4u);
+    // The run's own dots before the first cut, at 0 and 4.
+    CHECK(std::fabs(pieces[0].bottomRightInPixels.x - 6.5f) < 0.01f && std::fabs(pieces[0].bandTopLeftInPixels.x) < 0.01f);
+    // The centred stretch, split at the cell edge, from its own origin: the
+    // fringe before its first dot lies outside its band.
+    CHECK(std::fabs(pieces[1].topLeftInPixels.x - 13.0f) < 0.01f && std::fabs(pieces[1].bottomRightInPixels.x - 20.0f) < 0.01f);
+    CHECK(std::fabs(pieces[2].topLeftInPixels.x - 20.0f) < 0.01f && std::fabs(pieces[2].bottomRightInPixels.x - 23.5f) < 0.01f);
+    CHECK(std::fabs(pieces[1].bandTopLeftInPixels.x - 13.0f) < 0.01f && std::fabs(pieces[2].bandTopLeftInPixels.x - 13.0f) < 0.01f);
+    // Every piece lies inside its band, where every renderer draws the same.
+    for (const DecorationInstance& piece : pieces) {
+        CHECK(piece.topLeftInPixels.x >= piece.bandTopLeftInPixels.x);
+        CHECK(piece.bottomRightInPixels.x <= piece.bandBottomRightInPixels.x);
+    }
 }
 
 TEST(aPieceOfLineIsKeptOnlyWhereItIsTheLinesFullHeight)

@@ -2443,8 +2443,21 @@
     "name": "framed_encircled_overline",
     "columns": 12,
     "rows": 6,
-    "feed": "\\e[53m53 overline\\e[0m\\r\\n\\e[51m51 framed\\e[0m\\r\\n\\e[52m52 same box\\e[0m\\r\\n\\e[51;53m51+53 both\\e[0m",
-    "doc": "SGR 51, 52 and 53, one per row, then 51 and 53 together on the last. Framed and encircled draw the same four rules around each cell, there being no circle primitive yet, and overline is a rule above the glyph in the underline colour; a dropped decoration leaves its row as plain text.",
+    "feed": "\\e[53m53 overline\\e[0m\\r\\n\\e[51m51 framed\\e[0m\\r\\n\\e[52m5 2 \u65e5\\e[0m\\r\\n\\e[51;53m51+53 both\\e[0m",
+    "doc": "SGR 51, 52 and 53, one per row, then 51 and 53 together on the last. Framed draws one box round each run of cells, its sides a stroke outside the run's ends; encircled a circle two cells across round each character, the character inside at seven eighths of its size; overline is a rule above the glyph in the underline colour. A dropped decoration leaves its row as plain text.",
+    "settings": {
+      "appearance": {
+        "theme": "Noir Clair"
+      }
+    },
+    "native": "jetbrains_mono_10"
+  },
+  {
+    "name": "enclosing_circle_mark",
+    "columns": 16,
+    "rows": 3,
+    "feed": "A\u20dd b\u20dd g\u20dd \u65e5\u20dd e\u0301\u20dd\r\n\\e[52mA b g \u65e5 \u00e9\\e[0m",
+    "doc": "U+20DD COMBINING ENCLOSING CIRCLE after a capital, an x-height letter, a descender, a wide ideograph and a letter carrying a second mark, then the same characters under SGR 52. Core draws the circle rather than the font: two cells across, centred on the character's cells and the row, one size at one height whatever the letter, never cropped; the character is the plain letter's glyph at seven eighths, and the acute stays on its e. The two rows are one picture.",
     "settings": {
       "appearance": {
         "theme": "Noir Clair"

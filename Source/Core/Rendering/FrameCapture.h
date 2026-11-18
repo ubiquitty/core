@@ -645,7 +645,7 @@ public:
     /// decides the cut with, for a probe across the language seam.
     ///
     /// - Returns: The style-adjusted padding; zero when skip-ink keeps none.
-    [[nodiscard]] float skipInkPaddingInPixels() const { return m_frame->metrics().skipInkPadding; }
+    [[nodiscard]] float skipInkPaddingInPixels() const { return Rendering::skipInkPaddingInPixels(m_frame->metrics()); }
 
     /// The absolute row index of the top visible row.
     [[nodiscard]] int firstAbsoluteRow() const { return m_frame->firstAbsoluteRow(); }

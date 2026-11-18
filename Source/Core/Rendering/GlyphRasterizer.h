@@ -23,6 +23,7 @@
 #include "Core/Rendering/FontMetrics.h"
 #include "Core/Rendering/GlyphKey.h"
 #include "Core/Rendering/GlyphSlotPolicy.h"
+#include "Core/Rendering/RuleGeometry.h"
 #include "Core/Unicode/Width.h"
 #include "PAL/TextShaping.h"
 
@@ -688,5 +689,24 @@ struct GlyphRasterizer {
 protected:
     ~GlyphRasterizer() = default;
 };
+
+/// Returns the weight a face's underscore draws at through a rasterizer: the
+/// underscore drawn into a slot the cell's size, read by the rule every engine
+/// shares (measuredUnderscoreWeight).
+///
+/// - Parameters:
+///   - rasterizer: The engine, already set to the face and size it draws.
+///   - slotWidth: The cell's width in pixels.
+///   - slotHeight: The cell's height in pixels.
+/// - Returns: The weight, or zero when the engine draws no underscore.
+[[nodiscard]] inline float underscoreWeight(GlyphRasterizer& rasterizer, int slotWidth, int slotHeight)
+{
+    if (slotWidth <= 0 || slotHeight <= 0)
+        return 0.0f;
+    std::vector<std::uint8_t> coverage(static_cast<std::size_t>(slotWidth) * static_cast<std::size_t>(slotHeight));
+    if (!rasterizer.rasterizeGlyph(0x5Fu, FontFace::Regular, 0u, slotWidth, slotHeight, coverage.data()))
+        return 0.0f;
+    return measuredUnderscoreWeight(coverage.data(), slotWidth, slotHeight);
+}
 
 } // namespace Ubiquitty::Rendering

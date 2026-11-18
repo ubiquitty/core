@@ -9,6 +9,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -231,7 +233,16 @@ private:
     /// - Returns: False when nothing of the region is on the sheet.
     bool clip(std::int32_t& x, std::int32_t& y, std::int32_t& width, std::int32_t& height, std::int32_t& skipColumns, std::int32_t& skipRows) const;
 
-    std::vector<std::uint8_t> m_coverage;
+    /// Frees the coverage `calloc` made.
+    struct CoverageRelease {
+        void operator()(std::uint8_t* coverage) const noexcept { std::free(coverage); }
+    };
+
+    // From calloc rather than a zero-filled vector: the system hands back zero
+    // pages it commits only when they are written, so a sheet sized for the
+    // largest screen costs memory only for the glyphs recorded on it, where a
+    // vector's zero fill would commit the whole sheet up front.
+    std::unique_ptr<std::uint8_t[], CoverageRelease> m_coverage;
     std::int32_t m_width = 0;
     std::int32_t m_height = 0;
 } UBIQUITTY_SHARED_REFERENCE(retainSkipInkRecord, releaseSkipInkRecord);
@@ -305,6 +316,10 @@ struct UBIQUITTY_ESCAPABLE SkipInkSource {
     float slotTop = 0.0f;
     float slotRight = 0.0f;
     float slotBottom = 0.0f;
+    /// The glyph's slot in the mono sheet, when the source reads one: a build
+    /// that memoises its cuts learns once which rows of the slot hold ink, and
+    /// passes over a glyph whose ink cannot touch the rule. -1 when unknown.
+    std::int32_t slot = -1;
     bool isPresent = false; // bool-ok: an absent neighbour, a blank cell or a grid edge
 };
 
@@ -352,6 +367,11 @@ struct UBIQUITTY_ESCAPABLE SkipInkQuery {
     bool continuesRight = false; // bool-ok: whether the neighbour is underlined too
     /// The marks of a dotted or dashed rule; a pitch of zero for any other.
     SkipInkPattern pattern;
+    /// Whether the rule is cut across its full height: every row takes the
+    /// cut of all of them, so a dot or a dash is cut square. A solid rule's cut
+    /// follows a slanting stroke row by row, keeping its gap along the stroke;
+    /// a dash cut that way beside a comma's tail is left a row tall.
+    bool isCutAcrossFullHeight = false;
 };
 
 /// A rule's rectangle in device pixels and the pixels it covers.
@@ -418,12 +438,194 @@ struct SkipInkRowSpan {
     float right = 0.0f;
 };
 
+/// The hash a skip-ink memo files a key under.
+[[nodiscard]] inline std::uint64_t skipInkMemoHash(std::span<const std::uint32_t> words)
+{
+    // Two words a multiply.
+    std::uint64_t hash = 0x9E3779B97F4A7C15ull;
+    std::size_t index = 0;
+    for (; index + 1 < words.size(); index += 2) {
+        hash ^= static_cast<std::uint64_t>(words[index]) | (static_cast<std::uint64_t>(words[index + 1]) << 32);
+        hash *= 0xBF58476D1CE4E5B9ull;
+        hash ^= hash >> 31;
+    }
+    if (index < words.size()) {
+        hash ^= words[index];
+        hash *= 0xBF58476D1CE4E5B9ull;
+        hash ^= hash >> 31;
+    }
+    return hash;
+}
+
+/// Values a build works out once and reads many times, filed under keys of
+/// `KeyWords` words and forgotten together when the next build begins.
+///
+/// A glyph's cut depends on its raster and on the rule's shape, never on where
+/// the rule stands, so a letter repeated across a screen under the same rule
+/// is cut once a build rather than once for every cell that reads it; a cell
+/// beside the same neighbours under the same rule is cut once too. A build
+/// turns a memo on with ``begin()``, which forgets every earlier entry in
+/// constant time: a slot one frame read may hold another glyph in the next.
+/// Off, everything is worked out afresh.
+template<std::size_t KeyWords, typename Element>
+class SkipInkMemoTable {
+public:
+    using Key = std::array<std::uint32_t, KeyWords>;
+
+    /// Starts a build's memo, forgetting every entry.
+    void begin()
+    {
+        if (m_entries.empty())
+            m_entries.resize(256);
+        // A new generation empties every entry at once; on the rare wrap, the
+        // entries are emptied by hand so none of a long-gone build's reads as
+        // live.
+        if (++m_generation == 0) {
+            for (Entry& entry : m_entries)
+                entry.generation = 0;
+            m_generation = 1;
+        }
+        m_pool.clear();
+        m_used = 0;
+        m_isActive = true;
+    }
+
+    [[nodiscard]] bool isActive() const { return m_isActive; }
+
+    /// Finds the values stored under a key.
+    ///
+    /// - Parameters:
+    ///   - key: The key.
+    ///   - values: Set to the stored values when found.
+    /// - Returns: Whether the key was found.
+    [[nodiscard]] bool find(const Key& key, std::span<const Element>& values) const
+    {
+        if (m_entries.empty())
+            return false;
+        const Entry& entry = m_entries[indexOf(key)];
+        if (entry.generation != m_generation)
+            return false;
+        values = std::span<const Element>(m_pool).subspan(entry.first, entry.count);
+        return true;
+    }
+
+    /// The values' storage: an entry's values are appended here, then filed
+    /// with ``insert(_:first:)``.
+    [[nodiscard]] std::vector<Element>& pool() { return m_pool; }
+
+    /// Files the values appended to ``pool()`` from `first` on under a key.
+    ///
+    /// - Parameters:
+    ///   - key: The key the values are found by for the rest of the build.
+    ///   - first: The index in ``pool()`` of the first value to file.
+    /// - Returns: The values filed.
+    std::span<const Element> insert(const Key& key, std::size_t first)
+    {
+        if ((m_used + 1) * 2 > m_entries.size())
+            grow();
+        Entry& entry = m_entries[indexOf(key)];
+        entry.key = key;
+        entry.first = static_cast<std::uint32_t>(first);
+        entry.count = static_cast<std::uint32_t>(m_pool.size() - first);
+        entry.generation = m_generation;
+        ++m_used;
+        return std::span<const Element>(m_pool).subspan(entry.first, entry.count);
+    }
+
+private:
+    /// One slot of the table: a key and where its values lie in the pool.
+    struct Entry {
+        Key key {};
+        std::uint32_t first = 0;
+        std::uint32_t count = 0;
+        /// The build the entry belongs to; any other build's is empty.
+        std::uint32_t generation = 0;
+    };
+
+    [[nodiscard]] std::size_t indexOf(const Key& key) const
+    {
+        const std::size_t mask = m_entries.size() - 1;
+        std::size_t index = static_cast<std::size_t>(skipInkMemoHash(key)) & mask;
+        while (m_entries[index].generation == m_generation && m_entries[index].key != key)
+            index = (index + 1) & mask;
+        return index;
+    }
+
+    /// Doubles the table, at least to 256 slots, and refiles this build's
+    /// entries; another build's are dropped, being empty already.
+    void grow()
+    {
+        std::vector<Entry> previous = std::move(m_entries);
+        m_entries.assign(std::max<std::size_t>(previous.size() * 2, 256), Entry {});
+        for (const Entry& entry : previous) {
+            if (entry.generation == m_generation)
+                m_entries[indexOf(entry.key)] = entry;
+        }
+    }
+
+    std::vector<Entry> m_entries;
+    std::vector<Element> m_pool;
+    std::size_t m_used = 0;
+    std::uint32_t m_generation = 0;
+    bool m_isActive = false;
+};
+
+/// A source's cut under a rule, by the source's mapping onto its sheet and the
+/// rule's shape, relative to the rule's left edge and first pixel row.
+using SkipInkSourceMemo = SkipInkMemoTable<19, SkipInkRowSpan>;
+
+/// A rule's whole cut, by everything it depends on: its three sources, its
+/// shape, where the line goes on and its pattern's phase, relative to the
+/// rule's left edge. Filed as whether it was cut, each row's end, then the
+/// spans.
+using SkipInkCutMemo = SkipInkMemoTable<48, float>;
+
+/// A glyph's coverage grown by a disc, over the sheet rows a soft cut reads:
+/// worked out once a build for each glyph, slot rect and reach. Filed as its
+/// first column, first row, columns and rows, then the coverage row by row.
+using SkipInkGrownMemo = SkipInkMemoTable<8, float>;
+
 /// Working memory the cut reuses across rules, so a frame allocates once.
 struct SkipInkScratch {
+    /// Starts a build that memoises its cuts (SkipInkMemoTable).
+    void beginBuild()
+    {
+        memo.begin();
+        cutMemo.begin();
+        grownMemo.begin();
+        if (++buildGeneration == 0) {
+            for (SlotInk& ink : slotInk)
+                ink.generation = 0;
+            buildGeneration = 1;
+        }
+    }
+
+    /// The rows of a mono slot holding ink at or over the threshold, as a
+    /// build learns them: `bottom < top` is a blank slot.
+    struct SlotInk {
+        std::uint32_t generation = 0;
+        std::int32_t top = 0;
+        std::int32_t bottom = -1;
+    };
+    /// Each mono slot's inked rows, by slot, for the build of `buildGeneration`.
+    std::vector<SlotInk> slotInk;
+    /// The build the memos and `slotInk` belong to; zero outside a build.
+    std::uint32_t buildGeneration = 0;
+
     SkipInkCut cut;
-    /// The strongest coverage each texel column has in the rows touching a
-    /// rule row.
-    std::vector<std::uint8_t> strongest;
+    /// The cuts the build's sources leave, when the build memoises them.
+    SkipInkSourceMemo memo;
+    /// The build's rules' whole cuts, when the build memoises them.
+    SkipInkCutMemo cutMemo;
+    /// The build's glyphs' grown coverage, for soft cuts.
+    SkipInkGrownMemo grownMemo;
+    /// A soft cut's share kept at each pixel, and along its curl.
+    std::vector<float> keeps;
+    std::vector<float> visibility;
+    /// One glyph's grown coverage, when the memo is off.
+    std::vector<float> grown;
+    /// One source's cut, when the memo is off.
+    std::vector<SkipInkRowSpan> sourceCut;
     /// The ink near a rule, as [left, right) edge pairs in texels, a pair a
     /// run, with the sheet row each run is in and the stroke it belongs to.
     std::vector<float> runEdges;
@@ -446,6 +648,76 @@ struct SkipInkScratch {
 ///   - scratch: Working memory.
 /// - Returns: Whether any of the rule is cut.
 bool markSkipInkCuts(const SkipInkPlanes& planes, const SkipInkQuery& query, const SkipInkRule& rule, SkipInkCut& cut, SkipInkScratch& scratch);
+
+/// The rows of a mono slot holding ink at or over the coverage threshold, as
+/// a build learns them, once a slot. A cell whose glyphs' ink stays clear of
+/// the rule's rows cannot be cut, so it is drawn whole without building its
+/// query.
+///
+/// - Parameters:
+///   - plane: The mono sheet.
+///   - slot: The slot.
+///   - slotLeft: The slot's rect, in sheet texels.
+///   - slotTop: Its top.
+///   - slotRight: Its right.
+///   - slotBottom: Its bottom.
+///   - scratch: The build's working memory.
+///   - top: Set to the first inked row.
+///   - bottom: Set to the last; less than `top` for a blank slot.
+/// - Returns: Whether the rows are known: false outside a build.
+bool skipInkSlotInkRows(const SkipInkPlane& plane, std::int32_t slot, float slotLeft, float slotTop, float slotRight, float slotBottom, SkipInkScratch& scratch,
+    std::int32_t& top, std::int32_t& bottom);
+
+/// A stretch of a rule's pixel row a soft cut draws at a share of the rule's
+/// opacity.
+struct SkipInkKeep {
+    /// The first row, counted from the rule's first.
+    std::int32_t row = 0;
+    /// How many rows the stretch runs down: rows that keep the same are one.
+    std::int32_t rows = 1;
+    float left = 0.0f;
+    float right = 0.0f;
+    /// The share of the rule's opacity kept, above zero and up to one.
+    float keep = 1.0f;
+};
+
+/// The curl a soft cut is judged along.
+struct SkipInkCurl {
+    /// Where the curl's arcs start: its band's left edge, in device pixels.
+    float origin = 0.0f;
+    /// Device pixels from one crest to the next.
+    float wavelength = 0.0f;
+    /// The stroke's width.
+    float thickness = 0.0f;
+};
+
+/// Works out a curly rule's soft cut: each pixel keeps one less the coverage
+/// of the glyphs beside it, their ink grown by a disc `query.reachAcross`
+/// texels across in every direction and read smoothly at the pixel's centre.
+///
+/// A wave cut hard falls apart into ticks; faded where the ink is, it keeps its
+/// rhythm and the letter stays clean. Every glyph the grown ink reaches the
+/// curl from cuts it, an underscore resting on the line as much as a
+/// descender through it. A stretch of the curl's stroke the cut leaves less
+/// than one and a half stroke widths of, between two cut places or a cut place
+/// and the line's own end, reads as a speck and goes: judged two pixels past
+/// each edge the line goes on across, so the cells either side of a speck
+/// agree on it.
+///
+/// - Parameters:
+///   - planes: The sheets the sources read.
+///   - query: The rasters, the reach, and where the line goes on.
+///   - rule: The rule: the curl's band.
+///   - curl: The curl.
+///   - keeps: Where the stretches drawn are written: whole stretches kept
+///     entire, the shares kept beside the ink in steps of a 64th, and rows
+///     keeping the same as one. A pixel the curl's stroke does not pass
+///     through draws nothing, so it joins whichever stretch is beside it.
+///   - scratch: Working memory, and the build's memo when it is on.
+/// - Returns: Whether the rule is cut anywhere; when not, `keeps` is empty and
+///   the rule is drawn whole.
+bool markSkipInkMask(const SkipInkPlanes& planes, const SkipInkQuery& query, const SkipInkRule& rule, const SkipInkCurl& curl, std::vector<SkipInkKeep>& keeps,
+    SkipInkScratch& scratch);
 
 /// Returns how much of a stretch of a row the row's cut spans cover.
 ///

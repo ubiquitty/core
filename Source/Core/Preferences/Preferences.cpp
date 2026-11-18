@@ -635,6 +635,15 @@ AssignmentResult assignSpecial(Values& c, const std::string& section, const std:
         }
         return AssignmentResult::InvalidValue;
     }
+    if (section == "underline" && key == "curly") {
+        if (v.kind == Value::Kind::String) {
+            if (auto shape = curlyUnderlineShapeFromString(v.str)) {
+                c.curlyUnderlineShape = *shape;
+                return AssignmentResult::Assigned;
+            }
+        }
+        return AssignmentResult::InvalidValue;
+    }
     if (section == "cursor" && key == "motion") {
         // "off" | "short" | "long" | "always" (case-insensitive), the
         // distance-based glide modes. Anything else leaves the compiled default
@@ -1073,6 +1082,31 @@ std::optional<CursorShape> cursorShapeFromInt(int value)
             return shape;
     }
     return std::nullopt;
+}
+
+std::optional<CurlyUnderlineShape> curlyUnderlineShapeFromString(const std::string& token)
+{
+    const std::string trimmed = trim(token);
+    if (iequals(trimmed, "compact"))
+        return CurlyUnderlineShape::Compact;
+    if (iequals(trimmed, "medium"))
+        return CurlyUnderlineShape::Medium;
+    if (iequals(trimmed, "wide"))
+        return CurlyUnderlineShape::Wide;
+    return std::nullopt;
+}
+
+const char* curlyUnderlineShapeToString(CurlyUnderlineShape shape)
+{
+    switch (shape) {
+    case CurlyUnderlineShape::Compact:
+        return "compact";
+    case CurlyUnderlineShape::Medium:
+        return "medium";
+    case CurlyUnderlineShape::Wide:
+        return "wide";
+    }
+    return "medium";
 }
 
 std::optional<CursorMotionMode> cursorMotionFromString(const std::string& s)

@@ -476,7 +476,7 @@ void TerminalFrameInputs::collectRichTextQuads(const Terminal& terminal, const T
         quad.underlineThicknessScale = options.style.underlineThicknessScale;
         quad.underlineOffset = options.style.underlineOffsetInPixels;
         quad.isSkippingInk = options.style.shouldUnderlineSkipInk ? 1 : 0;
-        quad.skipInkPadding = m_metrics.skipInkPadding;
+        quad.skipInkPadding = skipInkPaddingInPixels(m_metrics);
         // The placing pen lives in covered cells. A clipped block's origin
         // may belong to a menu, so sample the first visible covered rectangle.
         std::array<std::uint8_t, 3> foreground {};
@@ -1254,6 +1254,7 @@ bool TerminalFrameInputs::captureSource(const FrameSource& source, const Termina
     m_inputs.drawsBrailleGrid = options.style.shouldDrawBrailleGrid;
     m_inputs.brailleStyle = options.style.brailleStyle;
     m_inputs.shadeStyle = options.style.shadeStyle;
+    m_inputs.curlyRuleShape = options.style.curlyRuleShape;
     m_inputs.resolveBlink = options.shouldResolveBlink;
     m_inputs.blinkTicks = options.blinkTicks;
     // The frontend reports where its padding puts the grid; whether the frame

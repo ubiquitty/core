@@ -533,6 +533,22 @@ TEST(testStyleFoldsIntoMetrics)
     t.reset();
 }
 
+// The capture is the route from a frontend's style to the builder, so a curl
+// it dropped would draw the default on every arm whatever the setting said.
+TEST(testTheCurlyShapeReachesTheBuilder)
+{
+    auto t = makeTerminal();
+    TerminalFrameInputs frame;
+    TerminalSnapshotOptions options;
+    REQUIRE(frame.capture(*t, options, unifontMetrics(), GlyphSlotGeometry {}));
+    CHECK(frame.inputs().curlyRuleShape == TerminalSnapshotStyle {}.curlyRuleShape);
+    for (const CurlyRuleShape shape : { CurlyRuleShape::Wide, CurlyRuleShape::Compact, CurlyRuleShape::Medium }) {
+        options.style.curlyRuleShape = shape;
+        REQUIRE(frame.capture(*t, options, unifontMetrics(), GlyphSlotGeometry {}));
+        CHECK(frame.inputs().curlyRuleShape == shape);
+    }
+}
+
 TEST(testTheBitmapTierIsCoresVerdictFromTheUnifontScale)
 {
     // The style's unifont scale is the routing verdict Core hands a frontend
@@ -579,7 +595,10 @@ TEST(testNegativeStyleScalesAreClampedNotPropagated)
     TerminalFrameInputs frame;
     CHECK(frame.capture(*t, options, unifontMetrics(), GlyphSlotGeometry {}));
     CHECK_MSG(frame.metrics().underlineThickness == 0.0f, "a negative scale clamps to zero, not a mirrored rule");
-    CHECK(frame.metrics().skipInkPadding == 0.0f);
+    // A negative padding is the automatic one, the rule's own weight, never a
+    // negative gap.
+    CHECK(frame.metrics().skipInkPadding < 0.0f);
+    CHECK(skipInkPaddingInPixels(frame.metrics()) == 1.0f);
     CHECK_MSG(frame.inputs().backgroundOpacity == 1.0f, "opacity above one clamps to opaque");
 
     options.style.backgroundOpacity = -1.0f;

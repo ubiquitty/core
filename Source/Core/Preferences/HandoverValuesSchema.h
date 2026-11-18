@@ -256,6 +256,7 @@ template<> struct Schema<Values> {
         MEMBER(Values, underlineSkipInk),
         MEMBER(Values, underlineFollowsInk),
         MEMBER(Values, underlineSkipInkPad),
+        MEMBER(Values, curlyUnderlineShape),
         MEMBER(Values, underlineLinks),
         MEMBER(Values, linkUnderlineStyle),
         MEMBER(Values, linkColorSystemBlue),

@@ -39,6 +39,9 @@ using Ubiquitty::Preferences::colorSpaceFromInt;
 using Ubiquitty::Preferences::colorSpaceFromString;
 using Ubiquitty::Preferences::colorSpaceToInt;
 using Ubiquitty::Preferences::colorSpaceToString;
+using Ubiquitty::Preferences::CurlyUnderlineShape;
+using Ubiquitty::Preferences::curlyUnderlineShapeFromString;
+using Ubiquitty::Preferences::curlyUnderlineShapeToString;
 using Ubiquitty::Preferences::CursorMotionMode;
 using Ubiquitty::Preferences::CursorShape;
 using Ubiquitty::Preferences::cursorShapeFromInt;
@@ -277,7 +280,9 @@ TEST(testDefaultsWhenEmpty)
     CHECK(c.bellVisual.value_or(Ubiquitty::Preferences::Defaults::bellVisual) == false);
     CHECK_EQ(c.underlineThickness.value_or(Ubiquitty::Preferences::Defaults::underlineThickness), 1.0);
     CHECK(c.underlineSkipInk.value_or(Ubiquitty::Preferences::Defaults::underlineSkipInk) == true);
-    CHECK_EQ(c.underlineSkipInkPad.value_or(Ubiquitty::Preferences::Defaults::underlineSkipInkPad), 1.0);
+    CHECK(!c.underlineSkipInkPad.has_value());
+    CHECK(c.underlineSkipInkPad.value_or(Ubiquitty::Preferences::Defaults::underlineSkipInkPad) < 0.0); // automatic: the rule's own weight
+    CHECK(c.curlyUnderlineShape.value_or(Ubiquitty::Preferences::Defaults::curlyUnderlineShape) == CurlyUnderlineShape::Medium);
     CHECK(c.notifications.value_or(Ubiquitty::Preferences::Defaults::notifications) == true); // OS notifications default on
     CHECK(c.notificationSound.value_or(Ubiquitty::Preferences::Defaults::notificationSound) == true); // banner sound default on
     CHECK(c.clipboardRead.value_or("prompt") == "prompt"); // OSC 52 read gate defaults to prompt
@@ -306,6 +311,10 @@ TEST(testStrictParseRejectsFixtureMistakes)
     CHECK(!parseStrict("[cursor]\nshape = \"triangle\"\n", badEnum));
     CHECK(!badEnum.cursorShape.has_value());
 
+    Values badCurl;
+    CHECK(!parseStrict("[underline]\ncurly = \"squiggly\"\n", badCurl));
+    CHECK(!badCurl.curlyUnderlineShape.has_value());
+
     Values permissive;
     std::istringstream input("[font]\nfuture_key = true\n");
     CHECK(parse(input, permissive));
@@ -317,11 +326,33 @@ TEST(testUnderlineSection)
                            "thickness = 1.5\n"
                            "offset = 2\n"
                            "skip_ink = false\n"
-                           "skip_ink_pad = 2.5\n");
+                           "skip_ink_pad = 2.5\n"
+                           "curly = \"compact\"\n");
     CHECK(c.underlineThickness == 1.5);
     CHECK(c.underlineOffset == 2.0);
     CHECK(c.underlineSkipInk == false);
     CHECK(c.underlineSkipInkPad == 2.5);
+    CHECK(c.curlyUnderlineShape == CurlyUnderlineShape::Compact);
+
+    // An unset or unrecognized curl leaves the field empty, and the accessor
+    // answers the medium default over it.
+    CHECK(!parseString("").curlyUnderlineShape.has_value());
+    const Values unknownCurl = parseString("[underline]\ncurly = \"squiggly\"\n");
+    CHECK(!unknownCurl.curlyUnderlineShape.has_value());
+    CHECK(Ubiquitty::Preferences::Effective::curlyUnderlineShape(unknownCurl) == CurlyUnderlineShape::Medium);
+    const Values numericCurl = parseString("[underline]\ncurly = 2\n");
+    CHECK_MSG(!numericCurl.curlyUnderlineShape.has_value(), "the curl is a token, not the enumerator's number");
+}
+
+TEST(testCurlyUnderlineShapeStrings)
+{
+    CHECK(curlyUnderlineShapeFromString("compact") == CurlyUnderlineShape::Compact);
+    CHECK(curlyUnderlineShapeFromString("MEDIUM") == CurlyUnderlineShape::Medium);
+    CHECK(curlyUnderlineShapeFromString(" wide ") == CurlyUnderlineShape::Wide);
+    CHECK(curlyUnderlineShapeFromString("loose") == std::nullopt);
+    CHECK(curlyUnderlineShapeFromString("") == std::nullopt);
+    for (const CurlyUnderlineShape shape : { CurlyUnderlineShape::Compact, CurlyUnderlineShape::Medium, CurlyUnderlineShape::Wide })
+        CHECK(curlyUnderlineShapeFromString(curlyUnderlineShapeToString(shape)) == shape);
 }
 
 TEST(testTekColorSection)

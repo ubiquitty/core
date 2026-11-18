@@ -72,18 +72,32 @@ inline constexpr double fontWidthPercent = 0.0;
 inline constexpr double wideGlyphScale = 1.2;
 
 // [underline]
-inline constexpr double underlineThickness = 1.0; // x font default
-inline constexpr double underlineOffset = 0.0; // extra pt below baseline
+// A multiplier: 1.0 is the weight the font's own underscore draws at, measured
+// from the face as the engine renders it.
+inline constexpr double underlineThickness = 1.0;
+// Points added to the automatic position, positive down: 0 is automatic, the
+// rule's top a clear gap of 0.85 of its weight below the baseline, in whole
+// device pixels.
+inline constexpr double underlineOffset = 0.0;
 inline constexpr bool underlineSkipInk = true;
 // [underline] follows_ink — a run's outer rule reaches the letter's ink past
 // the cell box. AppKit and CSS stop at the advance; the ink is what the eye
 // reads as the word's end, and the product's choice.
 inline constexpr bool underlineFollowsInk = true; // bool-ok: mirrors a boolean config key
-inline constexpr double underlineSkipInkPad = 1.0; // skip-ink gap beside touching ink, pt
+// [underline] skip_ink_pad — negative is automatic: the clearance kept beside
+// crossing ink is the underline's own weight, so it grows with the font. A
+// stated number is points, and 0 keeps no clearance.
+inline constexpr double underlineSkipInkPad = -1.0;
+// [underline] curly — one wave per letter, so the curl's rhythm follows the
+// text it marks.
+inline constexpr CurlyUnderlineShape curlyUnderlineShape = CurlyUnderlineShape::Medium;
 inline constexpr bool underlineLinks = true;
 inline constexpr int linkUnderlineStyle = 0; // 0 = solid/single
 inline constexpr bool linkColorSystemBlue = false;
-inline constexpr bool linkStylePerKind = false; // off = all link kinds use link_style; on = OSC 8 kinds distinct
+// [underline] link_style_per_kind — on: file links dotted, mailto links
+// dashed, web links in link_style, so a link's kind reads before it is opened;
+// off: every link uses link_style.
+inline constexpr bool linkStylePerKind = true; // bool-ok: mirrors a boolean config key
 inline constexpr bool smartDoubleClick = false;
 
 // [text]

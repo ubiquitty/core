@@ -57,6 +57,8 @@ std::optional<Value> specialValue(Key key, const Values& values)
     case Key::AppearanceColorblindMode:
         return token(SerializeKind::EnumToken,
             colorblindModeToString(Effective::colorblindMode(values)));
+    case Key::UnderlineCurly:
+        return token(SerializeKind::EnumToken, curlyUnderlineShapeToString(Effective::curlyUnderlineShape(values)));
     case Key::CursorShape:
         return token(SerializeKind::EnumToken, cursorShapeToString(Effective::cursorShape(values)));
     case Key::CursorMotion:
@@ -209,8 +211,13 @@ std::optional<Value> effectiveValue(Key key, const Values& values)
         return Value::ofBool(SerializeKind::Bool, Effective::underlineSkipInk(values));
     case Key::UnderlineFollowsInk:
         return Value::ofBool(SerializeKind::Bool, Effective::underlineFollowsInk(values));
+    // Unset reads as the automatic sentinel, -1, the way `[font] width` reads 0
+    // for the face's own: a number a row can show as "Automatic" and a write
+    // of it parses back to the same automatic clearance.
     case Key::UnderlineSkipInkPad:
         return Value::ofNumber(SerializeKind::Double, static_cast<double>(Effective::underlineSkipInkPad(values)));
+    case Key::UnderlineCurly:
+        return specialValue(Key::UnderlineCurly, values);
     case Key::TextBrightenBold:
         return Value::ofBool(SerializeKind::Bool, Effective::brightenBold(values));
     case Key::AppearanceBeamTerminalFont:

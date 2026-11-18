@@ -20,7 +20,8 @@ namespace {
 
 namespace Sync = Protocol::Sync;
 using HandoverDetail::Schema;
-/// The current record includes cursor outline thickness; published 7 does not.
+/// The current record includes cursor outline thickness and the curly
+/// underline shape; published 7 does not.
 constexpr std::uint16_t version = 8;
 constexpr std::uint16_t publishedVersion = 7;
 constexpr std::size_t digestBytes = 16;
@@ -43,6 +44,7 @@ template<> constexpr auto lastEnumerator<TitlebarStyle> = TitlebarStyle::Native;
 template<> constexpr auto lastEnumerator<BeamSurface> = BeamSurface::InTerminal;
 template<> constexpr auto lastEnumerator<BackgroundImageMode> = BackgroundImageMode::Center;
 template<> constexpr auto lastEnumerator<CursorShape> = CursorShape::Bar;
+template<> constexpr auto lastEnumerator<CurlyUnderlineShape> = CurlyUnderlineShape::Wide;
 template<> constexpr auto lastEnumerator<CursorMotionMode> = CursorMotionMode::Always;
 template<> constexpr auto lastEnumerator<RemoteClipboardTools> = RemoteClipboardTools::Client;
 template<> constexpr auto lastEnumerator<TabShortcutHints> = TabShortcutHints::OnCommand;

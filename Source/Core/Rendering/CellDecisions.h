@@ -430,7 +430,7 @@ inline bool isBlankFillable(const Cell& c)
     const Pen& pen = Ubiquitty::cellPen(c);
     if (pen.attributes.containsAny({ Ubiquitty::VT::Attribute::Wide, Ubiquitty::VT::Attribute::WideContinuation,
             Ubiquitty::VT::Attribute::Underline, Ubiquitty::VT::Attribute::Strike, Ubiquitty::VT::Attribute::Overline,
-            Ubiquitty::VT::Attribute::Framed, Ubiquitty::VT::Attribute::Encircled, Ubiquitty::VT::Attribute::Emoji }))
+            Ubiquitty::VT::Attribute::Framed, Ubiquitty::VT::Attribute::Emoji }))
         return false;
     // SGR 58 shapes and the ideogram marks live outside `attributes`, and both
     // draw a rule under a cell that carries no character.

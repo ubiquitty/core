@@ -80,7 +80,8 @@ inline void applyRuleSettings(Rendering::TerminalSnapshotStyle& style, const Ren
     style.underlineOffsetInPixels = static_cast<float>(configuration.underlineOffsetPoints * deviceScale);
     style.shouldUnderlineSkipInk = configuration.shouldUnderlineSkipInk;
     style.shouldUnderlineFollowInk = configuration.shouldUnderlineFollowInk;
-    style.underlineSkipInkPaddingInPixels = static_cast<float>(configuration.underlineSkipInkPaddingPoints * deviceScale);
+    style.underlineSkipInkPaddingInPixels = underlineSkipInkPaddingInPixels(configuration.underlineSkipInkPaddingPoints, deviceScale);
+    style.curlyRuleShape = configuration.curlyRuleShape;
     style.shouldBrightenBold = configuration.shouldBrightenBold;
     style.shouldDrawBrailleGrid = configuration.shouldDrawBrailleGrid;
     style.brailleStyle = configuration.brailleStyle;

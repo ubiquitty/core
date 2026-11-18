@@ -102,7 +102,7 @@ TEST(testEveryVocabularyIsWellFormed)
         }
     }
     // The table is not vacuously well-formed: it really does cover keys.
-    CHECK(withVocabulary == 15);
+    CHECK(withVocabulary == 16);
 }
 
 TEST(testBrailleVocabularyRoundTripsInEnumOrder)
@@ -159,11 +159,12 @@ TEST(testDragModifierIsOpenByDesign)
         CHECK(descriptor->kind == SerializeKind::EnumToken);
 }
 
-// Contracts 2+3 for the six vocabularies backed by a C++ enum.
+// Contracts 2+3 for the vocabularies backed by a C++ enum.
 TEST(testEnumVocabulariesRoundTripThroughTheirConverters)
 {
     using namespace Ubiquitty::Preferences;
     checkEnumVocabulary<CursorShape>(Key::CursorShape, cursorShapeFromString, cursorShapeToString);
+    checkEnumVocabulary<CurlyUnderlineShape>(Key::UnderlineCurly, curlyUnderlineShapeFromString, curlyUnderlineShapeToString);
     checkEnumVocabulary<CursorMotionMode>(Key::CursorMotion, cursorMotionFromString, cursorMotionToString);
     checkEnumVocabulary<TabShortcutHints>(Key::TabsShowShortcuts, tabShortcutHintsFromString, tabShortcutHintsToString);
     checkEnumVocabulary<TitlebarStyle>(Key::AppearanceTitlebarStyle, titlebarStyleFromString, titlebarStyleToString);
@@ -207,6 +208,12 @@ TEST(testLabelsMatchTheShippedPickers)
     const std::span<const VocabularyTerm> motion = vocabularyFor(Key::CursorMotion);
     CHECK(sameString(motion[0].label, "Off"));
     CHECK(sameString(motion[3].label, "Always"));
+
+    const std::span<const VocabularyTerm> curl = vocabularyFor(Key::UnderlineCurly);
+    CHECK(curl.size() == 3);
+    CHECK(sameString(curl[0].label, "Compact"));
+    CHECK(sameString(curl[1].label, "Medium"));
+    CHECK(sameString(curl[2].label, "Wide"));
 
     // The two a title-cased token would have got wrong.
     const std::span<const VocabularyTerm> space = vocabularyFor(Key::AppearanceColorSpace);
