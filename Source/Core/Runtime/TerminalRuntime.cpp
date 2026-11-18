@@ -2043,6 +2043,12 @@ bool TerminalRuntime::advanceHistoryRewrap(DrainHost& host, std::uint32_t budget
     if (!m_term)
         return false;
     host.lockModel();
+    // A quiet turn inside a drag is not its settle: the next width would
+    // discard this work, while the reader is still moving the frame.
+    if (liveResize() == LiveResize::Active) {
+        host.unlockModel();
+        return false;
+    }
     const auto progress = Ubiquitty::advanceHistoryRewrap(m_term.get(), budgetMicros);
     if (progress == HistoryRewrapProgress::Finished) {
         republishSnapshot();

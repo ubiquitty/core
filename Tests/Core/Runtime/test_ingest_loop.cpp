@@ -2152,8 +2152,16 @@ TEST(testASettleOnALoopDrainedPaneIsRewrappedByTheLoop)
     // A pipe has no shell in front, so only the alternate screen is reflowed freely; the primary's history
     // is rewrapped behind it.
     REQUIRE(loop.write("\033[?1049h"));
+    loop.session().setLiveResize(Ubiquitty::Runtime::LiveResize::Active);
     loop.session().resize(24, 23, TerminalSession::ResizeGesture::Interactive, Ubiquitty::Modes::AnchorMode::Top);
     REQUIRE(loop.session().hasDeferredHistoryRewrap());
+    // Quiet producer turns during a held drag must leave its history debt
+    // intact. Only ending the gesture permits the worker to pay it.
+    for (int turn = 0; turn < 3; ++turn) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        REQUIRE(loop.session().hasDeferredHistoryRewrap());
+    }
+    loop.session().setLiveResize(Ubiquitty::Runtime::LiveResize::Idle);
     const auto started = std::chrono::steady_clock::now();
     loop.session().settleResize();
     const auto returned = std::chrono::steady_clock::now();
