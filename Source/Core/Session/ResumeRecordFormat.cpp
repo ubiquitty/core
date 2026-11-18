@@ -451,7 +451,9 @@ std::expected<void, ResumeRecordError> readReplica(WireReader& reader, ScreenRep
             pen = readPen(penReader);
         for (std::size_t screen = 0; screen < 2; ++screen) {
             WireReader hashes(rowBytes[screen]);
-            for (auto& hash : storage->rowHashes()[screen])
+            // Named, so the span outlives the array rowHashes() returns by value.
+            const auto screenHashes = storage->rowHashes()[screen];
+            for (auto& hash : screenHashes)
                 hash = hashes.u64();
         }
         replica.storage = std::move(*storage).publish();

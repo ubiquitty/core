@@ -1320,6 +1320,12 @@ void markRowInkCrossingsOver(float gridTop, float cellHeight, int rows, const Mo
     }
 }
 
+// GCC 14 rejects the first formation of std::span<LigatureRun> when it happens
+// inside buildCellInstances ("used before its definition" on the library's own
+// constexpr helpers). Asking the question here, at namespace scope, lets every
+// supported compiler form it there and leaves that function's body alone.
+static_assert(std::is_constructible_v<std::span<LigatureRun>, std::vector<LigatureRun>&>);
+
 } // namespace
 
 InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBackend& atlas, const InstanceBuffers& out)

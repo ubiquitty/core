@@ -340,7 +340,10 @@ inline constexpr std::array screenStateLedger {
 };
 
 /// The carriage of every `Terminal` member.
-inline constexpr std::array terminalLedger {
+///
+/// Spelled through `std::to_array` because deducing `std::array` from this many
+/// initializers exceeds Clang's fold-expression nesting limit on libstdc++ 14.
+inline constexpr auto terminalLedger = std::to_array<LedgerEntry>({
 #define MEMBER(member, carriage) UBIQUITTY_SYNC_LEDGER(Ubiquitty::Terminal, member, carriage)
     // The screen plane proper: both screens' rows and cursors, the geometry,
     // the modes and the palette. The grid's rows travel as row records.
@@ -755,7 +758,7 @@ inline constexpr std::array terminalLedger {
     MEMBER(softFont, HostOnly),
     MEMBER(tek, HostOnly),
 #undef MEMBER
-};
+});
 
 #undef UBIQUITTY_SYNC_LEDGER
 
