@@ -44,6 +44,7 @@
 #include "re2/re2.h"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <new>
@@ -67,9 +68,10 @@ struct ScrollSearchProgram {
 namespace Screen::ScrollSearch {
 
 // The person's [unicode] normalization form, which copy applies as it is.
-// Set once by the frontend at config load; a torn read can only misclassify
-// one in-flight search, which the next search corrects.
-static Ubiquitty::Unicode::NormalizationForm s_normalizationForm = Ubiquitty::Unicode::NormalizationForm::None;
+// The frontend sets it at config load and searches read it from any thread, so
+// it is atomic; a search in flight keeps the form it started with.
+static std::atomic<Ubiquitty::Unicode::NormalizationForm> s_normalizationForm { Ubiquitty::Unicode::NormalizationForm::None };
+static_assert(std::atomic<Ubiquitty::Unicode::NormalizationForm>::is_always_lock_free, "a search must never wait on a lock to read the form");
 
 // The form search compares text in: the configured one, or NFC when none is
 // configured. Search always treats canonically equivalent text as equal, so a
@@ -80,11 +82,11 @@ static Ubiquitty::Unicode::NormalizationForm matchingForm(Ubiquitty::Unicode::No
     return configured == Ubiquitty::Unicode::NormalizationForm::None ? Ubiquitty::Unicode::NormalizationForm::NFC : configured;
 }
 
-void setNormalizationForm(Ubiquitty::Unicode::NormalizationForm form) { s_normalizationForm = form; }
+void setNormalizationForm(Ubiquitty::Unicode::NormalizationForm form) { s_normalizationForm.store(form, std::memory_order_relaxed); }
 
 Ubiquitty::Unicode::NormalizationForm matchingNormalizationForm(Ubiquitty::Unicode::NormalizationForm configured) { return matchingForm(configured); }
 
-Ubiquitty::Unicode::NormalizationForm normalizationForm() { return s_normalizationForm; }
+Ubiquitty::Unicode::NormalizationForm normalizationForm() { return s_normalizationForm.load(std::memory_order_relaxed); }
 
 // Mirrors RE2::QuoteMeta: backslash-escape every byte outside [A-Za-z0-9_]
 // below 0x80 — legal RE2 syntax for any ASCII punctuation byte, and the
@@ -163,7 +165,7 @@ bool compile(const char* pattern, CaseSensitivity caseSensitivity, CompiledRegex
     }
     out->program.reset();
     std::string error;
-    out->program = compileProgram(pattern, caseSensitivity, s_normalizationForm, &error);
+    out->program = compileProgram(pattern, caseSensitivity, normalizationForm(), &error);
     if (!out->program) {
         setError(output, error.c_str());
         return false;
