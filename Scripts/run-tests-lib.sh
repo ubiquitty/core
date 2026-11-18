@@ -55,6 +55,14 @@ wanted() {
         return 1
     fi
     if [ ${#FILTERS[@]} -eq 0 ]; then
+        # The exact-head CI preflight already ran these self-test-only recipes.
+        # CMake omits them too; keep the outer loop from adding them back.
+        # Explicit filters below still run the requested control.
+        if [ "${UBQ_CI_PREFLIGHT_COMPLETE:-0}" = "1" ] && [ "${ROOT:-}" = "${CORE_ROOT:-}" ]; then
+            case "$1" in
+                gate_self_tests | pgo_commit_shape | pgo_applies | license_scope) return 1 ;;
+            esac
+        fi
         if [ "$SKIP_CTEST_COVERED" = "1" ]; then
             # Recorded because the verdict cannot otherwise say whether the
             # covered list decided anything: a run where it skipped forty

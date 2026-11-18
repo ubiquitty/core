@@ -695,7 +695,7 @@ function(ubq_schedule_run_tests_stanzas driver)
     # style aggregate already executes every gate self-test. The workflow sets
     # this only for those jobs; standalone and local suites retain the stanza.
     if("$ENV{UBQ_CI_PREFLIGHT_COMPLETE}" STREQUAL "1")
-        list(REMOVE_ITEM _stanzas gate_self_tests)
+        list(REMOVE_ITEM _stanzas gate_self_tests pgo_commit_shape pgo_applies license_scope)
         message(STATUS "Ubiquitty tests: gate self-tests covered by exact-head preflight")
     endif()
 

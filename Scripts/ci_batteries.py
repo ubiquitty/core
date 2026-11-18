@@ -233,9 +233,24 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
             Stage("portable-build", "Portable snapshot build", "./Scripts/build-core-snapshot.sh", repositories=("core",)),
             Stage("portable-snapshots", "Portable reference catalog", "python3 Tests/Snapshots/run.py --backend portable --quiet",
                   requires=("portable-build",), repositories=("core",)),
-            Stage("host-glibc", "Linux host glibc-x86_64", "./Scripts/build-host.sh --release", "code", repositories=("core",)),
-            Stage("agent-smokes", "Agent CLI, authentication, MCP, and completions",
-                  './Scripts/build-agent.sh\nUBQ_REQUIRED_TOOLS="${UBQ_REQUIRED_TOOLS:-} ubiquitty-host ubq" ./Scripts/run-tests.sh agent_smoke agent_auth_smoke agent_mcp_smoke agent_completions_smoke ubq_smoke ubq_smoke_cleanup', "code", repositories=("core",)),
+            # The release host and agent share the GCC root. CTest's daemon
+            # remains Debug; this stage exercises the Release daemon instead.
+            Stage("host-glibc", "Linux host glibc-x86_64", "./Scripts/build-host.sh --release", "code", "gcc", repositories=("core",)),
+            Stage("agent-smokes", "Release Agent CLI, authentication, MCP, and completions",
+                  'releaseHostBuild="$UBQ_BUILD_ROOT/host"\n'
+                  'releaseHost="$releaseHostBuild/ubiquitty-host"\n'
+                  'if [ ! -x "$releaseHost" ] || [ ! -f "$releaseHostBuild/.ubiquitty-build-provenance" ] '
+                  '|| ! grep -qx "CMAKE_BUILD_TYPE:STRING=Release" "$releaseHostBuild/CMakeCache.txt" '
+                  '|| ! grep -qx "UBIQUITTY_FRONTEND:STRING=Host" "$releaseHostBuild/CMakeCache.txt"; then\n'
+                  '    echo "agent-smokes: the current Release host build is required; run host-glibc first" >&2\n'
+                  '    exit 2\n'
+                  'fi\n'
+                  '. ./Scripts/build-provenance.sh\n'
+                  'build_provenance_current "$UBQ_CORE_ROOT" "$releaseHostBuild" "agent-smokes" || exit 2\n'
+                  './Scripts/build-agent.sh\n'
+                  'UBIQUITTY_HOST_BIN="$releaseHost" UBQ_REQUIRED_TOOLS="${UBQ_REQUIRED_TOOLS:-} ubiquitty-host ubq" '
+                  './Scripts/run-tests.sh agent_smoke agent_auth_smoke agent_mcp_smoke agent_completions_smoke ubq_smoke ubq_smoke_cleanup',
+                  "code", "gcc", repositories=("core",), requires=("host-glibc",)),
             Stage("host-musl", "Linux host static-musl-x86_64", "./Scripts/build-host-linux.sh x86_64", "code", repositories=("core",)),
             Stage("sanitizers", "Clang ASan and UBSan suite", "./Scripts/run-sanitized-tests.sh --no-host", "code", "clang", repositories=("core",)),
             Stage("sanitized-host", "Clang ASan and UBSan host", "./Scripts/run-sanitized-tests.sh --host-only", "code", "clang", repositories=("core",)),

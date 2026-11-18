@@ -18,6 +18,118 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+class PreflightControlOwnership(unittest.TestCase):
+    controls = {
+        "pgo_commit_shape": "check-pgo-commit-shape.py",
+        "pgo_applies": "check-pgo-applies.py",
+        "license_scope": "check-licenses.py",
+    }
+    retained = ("empty_array_expansion", "sync_struct_defaults", "core_subset_symbols")
+
+    def registration(self, directory, preflight):
+        driver = directory / "driver.sh"
+        names = ["gate_self_tests", *self.controls, *self.retained]
+        driver.write_text("#!/bin/sh\nprintf '%s\\n' " + " ".join(names) + "\n")
+        driver.chmod(0o755)
+        owner = (ROOT / "Tests/CMakeLists.txt").read_text()
+        start = owner.index("function(ubq_schedule_run_tests_stanzas driver)")
+        end = owner.index("    # The stanzas that share a CMake build directory", start)
+        scheduler = owner[start:end] + '''
+    ubiquitty_schedule_shell_stanzas(DRIVER ${driver} STANZAS ${_stanzas})
+endfunction()
+'''
+        (directory / "CMakeLists.txt").write_text(f'''
+cmake_minimum_required(VERSION 3.20)
+project(PreflightOwnership NONE)
+enable_testing()
+set(UBIQUITTY_CORE_SOURCE_DIR "{ROOT}")
+set(UBIQUITTY_CTEST_SHELL_REMAINDER ON)
+include("{ROOT}/Scripts/cmake/UbiquittyTests.cmake")
+{scheduler}
+ubq_schedule_run_tests_stanzas("{driver}")
+ubiquitty_finish_host_tests()
+''')
+        environment = {**os.environ, "UBQ_CI_PREFLIGHT_COMPLETE": preflight}
+        build = directory / "build"
+        configured = subprocess.run(["cmake", "-S", str(directory), "-B", str(build), "-G", "Ninja"],
+                                    env=environment, capture_output=True, text=True, timeout=30)
+        self.assertEqual(configured.returncode, 0, configured.stdout + configured.stderr)
+        listed = subprocess.run(["ctest", "--test-dir", str(build), "--show-only=json-v1"],
+                                capture_output=True, text=True, timeout=15, check=True)
+        tests = json.JSONDecoder().raw_decode(listed.stdout)[0]["tests"]
+        return {test["name"] for test in tests}, build / "ctest-covered.txt"
+
+    def outer_selection(self, covered, preflight, filters=()):
+        script = '''
+set -euo pipefail
+. "$1/Scripts/run-tests-lib.sh"
+ROOT="$1" CORE_ROOT="$1" FUZZ_ONLY=0 SKIP_CTEST_COVERED=1
+CTEST_COVERED="$2" CTEST_COVERED_CONSULTED=0 FILTERS_MATCHED=" "
+shift 2
+FILTERS=("$@")
+for name in gate_self_tests pgo_commit_shape pgo_applies license_scope empty_array_expansion sync_struct_defaults core_subset_symbols; do
+    if wanted "$name"; then printf '%s\\n' "$name"; fi
+done
+'''
+        result = subprocess.run(["bash", "-c", script, "fixture", str(ROOT), str(covered), *filters],
+                                env={**os.environ, "UBQ_CI_PREFLIGHT_COMPLETE": preflight},
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout.splitlines()
+
+    def test_exact_head_preflight_owns_pure_controls_without_outer_replay(self):
+        with tempfile.TemporaryDirectory(prefix="ubiquitty-preflight-ownership-") as temporary:
+            tests, covered = self.registration(Path(temporary), "1")
+            self.assertTrue(all("shell_" + name not in tests for name in self.controls))
+            self.assertNotIn("shell_gate_self_tests", tests)
+            self.assertTrue(all("shell_" + name in tests for name in self.retained))
+            self.assertEqual(self.outer_selection(covered, "1"), [])
+            self.assertEqual(self.outer_selection(covered, "1", tuple(self.controls)), list(self.controls))
+            self.assertEqual(self.outer_selection(covered, "1", ("gate_self_tests",)), ["gate_self_tests"])
+            # A stale covered file must not cause the outer loop to replay
+            # controls CMake omitted after the preflight.
+            covered.write_text("\n".join(self.retained) + "\n")
+            self.assertEqual(self.outer_selection(covered, "1"), [])
+
+    def test_without_preflight_each_control_keeps_one_ctest_owner(self):
+        with tempfile.TemporaryDirectory(prefix="ubiquitty-local-ownership-") as temporary:
+            tests, covered = self.registration(Path(temporary), "")
+            self.assertTrue(all("shell_" + name in tests for name in self.controls))
+            self.assertEqual(self.outer_selection(covered, ""), [])
+            covered.unlink()
+            self.assertTrue(set(self.controls).issubset(self.outer_selection(covered, "")))
+
+    def test_preflight_style_aggregate_executes_every_reused_control(self):
+        style = (ROOT / "Scripts/check-style.py").read_text()
+        self.assertIn("['python3', './Scripts/run-gate-self-tests.py']", style)
+        with tempfile.TemporaryDirectory(prefix="ubiquitty-preflight-controls-") as temporary:
+            directory = Path(temporary)
+            scripts = directory / "Scripts"
+            scripts.mkdir()
+            trace = directory / "calls"
+            for name in self.controls.values():
+                (scripts / name).write_text(
+                    "import os, sys\n"
+                    "assert sys.argv[1:] == ['--self-test']\n"
+                    "with open(os.environ['CONTROL_TRACE'], 'a') as output:\n"
+                    "    output.write(os.path.basename(__file__) + '\\n')\n")
+            script = '''
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("aggregate", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.REPO = sys.argv[2]
+module.ubq_roots.ledger = lambda root: ({"gate-self-tests-uncovered": 0}, (), ())
+sys.argv = [sys.argv[1]]
+sys.exit(module.main())
+'''
+            result = subprocess.run([sys.executable, "-c", script, str(ROOT / "Scripts/run-gate-self-tests.py"),
+                                     str(directory)], env={**os.environ, "CONTROL_TRACE": str(trace)},
+                                    capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertCountEqual(trace.read_text().splitlines(), self.controls.values())
+
+
 class TestDriverTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="ubiquitty-driver-contract-")

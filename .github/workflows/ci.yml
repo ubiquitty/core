@@ -177,12 +177,15 @@ jobs:
           - group: fuzz
             stages: --only setup --only quic --only fuzz
             families: ""
+            ccache_maxsize: 384M
           - group: sanitizers
             stages: --only setup --only quic --only sanitizers
             families: ""
+            ccache_maxsize: 1280M
           - group: sanitized-host
             stages: --only setup --only quic --only sanitized-host
             families: ""
+            ccache_maxsize: 384M
           # The host, ubq and the test tree built with Clang, then every tree
           # checked to have compiled with UBIQUITTY_OWNERSHIP_ANALYSIS on; a
           # group of its own keeps that build off the sanitizer build's runner.
@@ -193,6 +196,8 @@ jobs:
             stages: --only setup --only wasm-tools --only wasm-smoke
             families: core_gate_wasm
     env:
+      # The three Clang caches share the previous combined cache's 2 GiB cap.
+      CCACHE_MAXSIZE: ${{ matrix.ccache_maxsize || '2G' }}
       UBQ_CI_CODE: ${{ needs.preflight.outputs.code }}
       UBQ_CI_CMAKE: ${{ needs.preflight.outputs.cmake }}
       UBQ_CI_PREFLIGHT_COMPLETE: "1"
@@ -312,6 +317,8 @@ jobs:
         run: |
           jobCommand=$(cat <<'UBQ_SCRIPT'
           if [ -s "$CCACHE_STATSLOG" ]; then ccache --show-log-stats; else echo "No compiler invocations recorded in this job"; fi
+          ccache --cleanup
+          ccache --show-stats --verbose
           UBQ_SCRIPT
           )
           ./Scripts/ci-linux-image.sh bash -c "$jobCommand"
@@ -412,6 +419,8 @@ jobs:
         if: always()
         run: |
           if [ -s "$CCACHE_STATSLOG" ]; then ccache --show-log-stats; else echo "No compiler invocations recorded in this job"; fi
+          ccache --cleanup
+          ccache --show-stats --verbose
       - name: Save QUIC dependencies
         if: always() && steps.roots.outputs.build != ''
         continue-on-error: true
@@ -485,6 +494,8 @@ jobs:
         run: |
           jobCommand=$(cat <<'UBQ_SCRIPT'
           if [ -s "$CCACHE_STATSLOG" ]; then ccache --show-log-stats; else echo "No compiler invocations recorded in this job"; fi
+          ccache --cleanup
+          ccache --show-stats --verbose
           UBQ_SCRIPT
           )
           ./Scripts/ci-linux-image.sh bash -c "$jobCommand"
@@ -576,6 +587,8 @@ jobs:
         run: |
           jobCommand=$(cat <<'UBQ_SCRIPT'
           if [ -s "$CCACHE_STATSLOG" ]; then ccache --show-log-stats; else echo "No compiler invocations recorded in this job"; fi
+          ccache --cleanup
+          ccache --show-stats --verbose
           UBQ_SCRIPT
           )
           ./Scripts/ci-linux-image.sh bash -c "$jobCommand"

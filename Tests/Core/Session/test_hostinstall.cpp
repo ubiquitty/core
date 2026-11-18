@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "Harness.h"
+#include "POSIXChildProcess.h"
 
 // test_hostinstall.cpp — the remote host install (Session/HostInstall.h) and
 // the bootstrap step that finishes a deferred one (Session/RemoteBootstrap.h).
@@ -72,10 +73,7 @@ bool exists(const std::string& path)
     return ::stat(path.c_str(), &status) == 0;
 }
 
-// Whether a process is running: an ended one nobody has reaped is not. The
-// stand-in daemon is an orphan, reaped by the machine's first process; a
-// container started without one keeps it as a zombie, which still answers a
-// signal.
+// Whether the fixture's unreaped child is running: a zombie has already ended.
 bool isAlive(pid_t pid)
 {
     if (pid <= 0 || ::kill(pid, 0) != 0)
@@ -131,10 +129,17 @@ public:
     {
         const std::string leaf = Ubiquitty::Session::socketLeafForBinary(binary().c_str());
         const std::string pidFile = m_directory + "/" + leaf.substr(0, leaf.size() - 5) + ".pid";
-        const std::string command = "sh -c 'sh -c \"while kill -0 \\$PPID 2>/dev/null; do sleep 0.2; done\" & wait' >/dev/null 2>&1 & echo $! > "
-            + Ubiquitty::Transport::shellSingleQuote(pidFile);
-        CHECK_EQ(std::system(command.c_str()), 0);
-        m_daemon = static_cast<pid_t>(std::atoi(readFile(pidFile).c_str()));
+        REQUIRE(m_daemon.canOwnChildren());
+        const pid_t daemon = ::fork();
+        REQUIRE(daemon >= 0);
+        if (daemon == 0) {
+            ::execl("/bin/sh", "sh", "-c",
+                "exec >/dev/null 2>&1; sh -c 'while kill -0 \"$PPID\" 2>/dev/null; do sleep 0.2; done' & wait",
+                nullptr);
+            ::_exit(127);
+        }
+        REQUIRE(m_daemon.adoptForkResult(daemon));
+        writeFile(pidFile, std::to_string(daemon) + "\n", 0600);
         // The daemon's session is its child; wait until the process table shows it.
         for (int attempt = 0; attempt < 200 && sessionsOfDaemon() == 0; ++attempt)
             ::usleep(10'000);
@@ -145,29 +150,36 @@ public:
     {
         // pkill succeeds only when it signalled a process, and the session it
         // ends here is one the case started.
-        CHECK_EQ(std::system(("pkill -P " + std::to_string(m_daemon)).c_str()), 0);
-        for (int attempt = 0; attempt < 300 && isAlive(m_daemon); ++attempt)
+        const pid_t daemon = m_daemon.processID();
+        REQUIRE(daemon > 1);
+        CHECK_EQ(std::system(("pkill -P " + std::to_string(daemon)).c_str()), 0);
+        for (int attempt = 0; attempt < 300; ++attempt) {
+            const pid_t exited = m_daemon.reap(WNOHANG);
+            if (exited != 0) {
+                CHECK_EQ(exited, daemon);
+                break;
+            }
             ::usleep(10'000);
+        }
     }
 
     void stopDaemon()
     {
-        if (m_daemon <= 0)
+        if (m_daemon.reap(WNOHANG) != 0)
             return;
         // The session may have ended already, which pkill reports as a failure;
         // teardown needs it gone, not found.
-        [[maybe_unused]] const int signalStatus = std::system(("pkill -P " + std::to_string(m_daemon) + " 2>/dev/null").c_str());
-        ::kill(m_daemon, SIGKILL);
-        m_daemon = 0;
+        [[maybe_unused]] const int signalStatus = std::system(("pkill -P " + std::to_string(m_daemon.processID()) + " 2>/dev/null").c_str());
+        CHECK(m_daemon.stop());
     }
 
-    pid_t daemon() const { return m_daemon; }
+    pid_t daemon() const { return m_daemon.processID(); }
 
     int sessionsOfDaemon() const
     {
-        if (m_daemon <= 0)
+        if (m_daemon.processID() <= 0)
             return 0;
-        const std::string command = "ps -A -o ppid= | grep -c '^ *" + std::to_string(m_daemon) + "$'";
+        const std::string command = "ps -A -o ppid= | grep -c '^ *" + std::to_string(m_daemon.processID()) + "$'";
         std::FILE* pipe = ::popen(command.c_str(), "r");
         if (!pipe)
             return 0;
@@ -219,7 +231,7 @@ public:
 private:
     std::string m_home;
     std::string m_directory;
-    pid_t m_daemon { 0 };
+    UbiquittyTest::OwnedChildProcess<> m_daemon;
     int m_exitStatus = -1;
 };
 

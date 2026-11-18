@@ -91,6 +91,9 @@ class BatteryTests(unittest.TestCase):
         keys = [stage.key for stage in stages]
         stage = stages[keys.index("agent-smokes")]
         self.assertGreater(keys.index("agent-smokes"), keys.index("host-glibc"))
+        self.assertEqual(stage.requires, ("host-glibc",))
+        self.assertEqual(stage.toolchain, "gcc")
+        self.assertEqual(stages[keys.index("host-glibc")].toolchain, "gcc")
         self.assertIn("./Scripts/build-agent.sh", stage.command)
         self.assertIn("ubiquitty-host ubq", stage.command)
         for name in ("agent_smoke", "agent_auth_smoke", "agent_mcp_smoke", "agent_completions_smoke", "ubq_smoke"):
@@ -3663,6 +3666,21 @@ class CoreWorkflowSchedulingTests(unittest.TestCase):
         self.assertIn("fail-fast: false", jobs["linux"])
         self.assertIn("matrix.group", jobs["linux"].split("name: Restore the compiler cache", 1)[1])
 
+    def test_split_clang_cache_capacity_does_not_multiply_the_previous_quota(self):
+        job = workflow_jobs((batteries.ROOT / ".github/workflows/ci.yml").read_text())["linux"]
+        entries = re.split(r"(?m)^          - group: ", job)[1:]
+        capacities = {}
+        for entry in entries:
+            group = entry.splitlines()[0]
+            match = re.search(r"(?m)^            ccache_maxsize: (\d+)M$", entry)
+            if match:
+                capacities[group] = int(match[1])
+        self.assertEqual(set(capacities), {"fuzz", "sanitizers", "sanitized-host"})
+        self.assertEqual(sum(capacities.values()), 2048)
+        self.assertIn("CCACHE_MAXSIZE: ${{ matrix.ccache_maxsize || '2G' }}", job)
+        self.assertIn("ccache --cleanup", job)
+        self.assertIn("ccache --show-stats --verbose", job)
+
     def test_apple_bounds_the_profile_once_through_the_unchanged_strict_gate_family(self):
         stage = next(stage for stage in batteries.stages("apple") if stage.key == "pgo")
         for argument in ("check-profile-orphans.py --profile Support/pgo/portable-core.profdata",
@@ -3838,6 +3856,87 @@ class SourceCompositionBatteryTests(unittest.TestCase):
                         'with open(os.environ["UBQ_ROUTING_LOG"], "a") as stream: '
                         'stream.write(json.dumps(row)+"\\n")\n')
         path.chmod(0o755)
+
+    def release_agent_fixture(self):
+        self.tool(self.core, "Scripts/build-host.sh", "core-release-host")
+        self.tool(self.core, "Scripts/build-agent.sh", "core-agent-build")
+        provenance = self.core / "Scripts/build-provenance.sh"
+        shutil.copyfile(batteries.ROOT / "Scripts/build-provenance.sh", provenance)
+        source = self.core / "Source/Core/Fixture.cpp"
+        source.parent.mkdir(parents=True)
+        source.write_text("int fixture;\n")
+        for arguments in (("init", "-q"), ("add", "."),
+                          ("-c", "user.name=Stanislav Yaglo", "-c", "user.email=yaglo@me.com",
+                           "commit", "-qm", "Fixture release inputs")):
+            subprocess.run(["git", "-C", str(self.core), *arguments], check=True, capture_output=True)
+        producer = self.core / "Scripts/build-host.sh"
+        with producer.open("a") as output:
+            output.write(
+                "import subprocess\n"
+                "build = Path(os.environ['UBQ_BUILD_ROOT']) / 'host'\n"
+                "build.mkdir(parents=True, exist_ok=True)\n"
+                "binary = build / 'ubiquitty-host'\n"
+                "binary.write_text('#!/bin/sh\\nexit 0\\n')\n"
+                "binary.chmod(0o755)\n"
+                f"(build / 'build.ninja').write_text({str(source)!r} + '\\n')\n"
+                "(build / 'CMakeCache.txt').write_text('CMAKE_BUILD_TYPE:STRING=Release\\nUBIQUITTY_FRONTEND:STRING=Host\\n')\n"
+                "subprocess.run(['bash', '-c', '. \"$1\"; build_provenance_stamp \"$2\" \"$3\"', 'fixture',\n"
+                f"                {str(provenance)!r}, {str(self.core)!r}, str(build)], check=True)\n")
+        driver = self.core / "Scripts/run-tests.sh"
+        driver.write_text(driver.read_text().replace(
+            "with open(", 'row.update(host=os.environ.get("UBIQUITTY_HOST_BIN"))\nwith open(', 1))
+        context = source_roots(self.core, environment={})
+        environment = self.environment(context)
+        stages = {stage.key: stage for stage in batteries.source_stages("linux", context, ("host-glibc", "agent-smokes"))}
+        return stages, environment, source
+
+    def run_release_stage(self, stage, environment):
+        return subprocess.run(["bash", "-euo", "pipefail", "-c", stage.command],
+                              cwd=stage.working_directory, env=batteries.stage_environment(stage, "linux", environment),
+                              capture_output=True, text=True, timeout=20)
+
+    def test_agent_stage_reuses_the_release_daemon_and_existing_gcc_agent_tree(self):
+        stages, environment, _ = self.release_agent_fixture()
+        host_environment = batteries.stage_environment(stages["host-glibc"], "linux", environment)
+        agent_environment = batteries.stage_environment(stages["agent-smokes"], "linux", environment)
+        self.assertEqual(host_environment["UBQ_BUILD_ROOT"], agent_environment["UBQ_BUILD_ROOT"])
+        self.assertTrue(host_environment["UBQ_BUILD_ROOT"].endswith("/build-gcc"))
+        for key in ("host-glibc", "agent-smokes"):
+            checked = self.run_release_stage(stages[key], environment)
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        rows = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual([row["label"] for row in rows], ["core-release-host", "core-agent-build", "core-tests"])
+        self.assertEqual(rows[-1]["host"], str(Path(host_environment["UBQ_BUILD_ROOT"]) / "host/ubiquitty-host"))
+        self.assertEqual(rows[-1]["arguments"], [
+            "agent_smoke", "agent_auth_smoke", "agent_mcp_smoke",
+            "agent_completions_smoke", "ubq_smoke", "ubq_smoke_cleanup",
+        ])
+        with self.assertRaisesRegex(ValueError, "host-glibc"):
+            batteries.source_stages("linux", source_roots(self.core, environment={}), ("agent-smokes",))
+
+    def test_agent_stage_refuses_missing_stale_debug_or_unstamped_daemons(self):
+        stages, environment, source = self.release_agent_fixture()
+        build = Path(batteries.stage_environment(stages["host-glibc"], "linux", environment)["UBQ_BUILD_ROOT"]) / "host"
+        original_source = source.read_text()
+        for fault in ("missing", "stale", "debug", "unstamped", "wrong-frontend"):
+            with self.subTest(fault=fault):
+                source.write_text(original_source)
+                checked = self.run_release_stage(stages["host-glibc"], environment)
+                self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+                if fault == "missing":
+                    (build / "ubiquitty-host").unlink()
+                elif fault == "stale":
+                    source.write_text(original_source + "// Changed after the producer.\n")
+                elif fault == "unstamped":
+                    (build / ".ubiquitty-build-provenance").unlink()
+                else:
+                    cache = build / "CMakeCache.txt"
+                    cache.write_text(cache.read_text().replace(
+                        "Release" if fault == "debug" else "Host", "Debug" if fault == "debug" else "Agent"))
+                self.log.unlink()
+                checked = self.run_release_stage(stages["agent-smokes"], environment)
+                self.assertEqual(checked.returncode, 2, checked.stdout + checked.stderr)
+                self.assertFalse(self.log.exists(), "invalid artifacts must not fall back to another daemon or run a smoke")
 
     def environment(self, context):
         return batteries.platform_environment("linux", {
