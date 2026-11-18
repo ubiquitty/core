@@ -1089,6 +1089,7 @@ CORE_SRCS=(
     "$ROOT/Source/Core/RichText/Document.cpp"
     "$ROOT/Source/Core/RichText/Drawing.cpp"
     "$ROOT/Source/Core/Rendering/SkipInk.cpp"
+    "$ROOT/Source/Core/Rendering/DottedRuleRun.cpp"
     "$ROOT/Source/Core/RichText/Layout.cpp"
     "$ROOT/Source/Core/RichText/RTFReader.cpp"
     "$ROOT/Source/Core/RichText/BlockStore.cpp"
