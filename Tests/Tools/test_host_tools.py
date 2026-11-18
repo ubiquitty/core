@@ -150,7 +150,7 @@ class BuildPrerequisiteTests(unittest.TestCase):
                         if override:
                             expected = str(Path(directory) / "explicit binary")
                             environment[variable] = expected
-                        checked = subprocess.run(["bash", str(ROOT / f"Tests/Agent/{script}.sh")],
+                        checked = subprocess.run(["bash", str(ROOT / f"Tests/Smokes/Agent/{script}.sh")],
                                                  env=environment, text=True, capture_output=True)
                         self.assertNotEqual(checked.returncode, 0)
                         self.assertIn("not built at " + expected, checked.stdout + checked.stderr)
