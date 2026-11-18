@@ -6,6 +6,7 @@
 #include "Core/Rendering/CellLayout.h"
 #include "Core/Rendering/CellMetrics.h"
 #include "Core/Rendering/RuleGeometry.h"
+#include "Core/Rendering/SkipInk.h"
 
 #include <algorithm>
 #include <cmath>
@@ -289,56 +290,47 @@ void skipInkRuleAlpha(InkCoverage ink, int inkWidth, int inkHeight, PixelRect ru
     if (rule.width <= 0 || rule.height <= 0 || static_cast<std::size_t>(rule.width) > alpha.size() / static_cast<std::size_t>(rule.height))
         return;
     const auto ruleAlpha = alpha.first(static_cast<std::size_t>(rule.width) * static_cast<std::size_t>(rule.height));
-    if (inkWidth <= 0 || inkHeight <= 0 || !std::isfinite(ruleTop) || static_cast<std::size_t>(inkWidth) > ink.size() / static_cast<std::size_t>(inkHeight)) {
-        std::ranges::fill(ruleAlpha, std::uint8_t { 255 });
+    std::ranges::fill(ruleAlpha, std::uint8_t { 255 });
+    if (inkWidth <= 0 || inkHeight <= 0 || !std::isfinite(ruleTop) || static_cast<std::size_t>(inkWidth) > ink.size() / static_cast<std::size_t>(inkHeight))
         return;
-    }
-    // A coverage read between pixel centres, as a sampler reads a sheet;
-    // outside the raster is no ink.
-    const auto at = [&](int x, int y) -> float {
-        if (x < 0 || y < 0 || x >= inkWidth || y >= inkHeight)
-            return 0.0f;
-        return static_cast<float>(ink[static_cast<std::size_t>(y) * static_cast<std::size_t>(inkWidth) + static_cast<std::size_t>(x)]);
-    };
-    const auto sample = [&](float x, float y) {
-        const float left = std::floor(x - 0.5f);
-        const float top = std::floor(y - 0.5f);
-        // A very large configured reach can put a tap beyond any integer
-        // coordinate. Such a tap sees no ink; reject it before narrowing.
-        if (!std::isfinite(left) || !std::isfinite(top) || left < -1 || top < -1 || static_cast<double>(left) >= inkWidth || static_cast<double>(top) >= inkHeight)
-            return 0.0f;
-        const float across = x - 0.5f - left;
-        const float down = y - 0.5f - top;
-        const int column = static_cast<int>(left);
-        const int row = static_cast<int>(top);
-        const float upper = at(column, row) + (at(column + 1, row) - at(column, row)) * across;
-        const float lower = at(column, row + 1) + (at(column + 1, row + 1) - at(column, row + 1)) * across;
-        return upper + (lower - upper) * down;
-    };
-    const Rendering::SkipInkReach reach = Rendering::skipInkReach(padding);
-    const float stepX = reach.horizontal / static_cast<float>(reach.steps);
-    const float stepY = reach.vertical / static_cast<float>(reach.steps);
+    // The grid's cut (SkipInk.h), read straight from the block's coverage:
+    // the raster is in device pixels, so the rule maps onto it unscaled.
+    Rendering::SkipInkPlanes planes;
+    planes.mono.coverage = ink.data();
+    planes.mono.width = inkWidth;
+    planes.mono.height = inkHeight;
+    planes.mono.stride = inkWidth;
+    Rendering::SkipInkQuery query;
+    Rendering::SkipInkSource& source = query.own;
+    source.sheet = Rendering::SkipInkSheet::Mono;
+    source.inkLeft = static_cast<float>(rule.left);
+    source.inkRight = static_cast<float>(rule.left + rule.width);
+    source.bandTop = static_cast<float>(rule.top);
+    source.bandBottom = static_cast<float>(rule.top + rule.height);
+    source.slotRight = static_cast<float>(inkWidth);
+    source.slotBottom = static_cast<float>(inkHeight);
+    source.isPresent = true;
+    query.reachAcross = padding > 0.0f && std::isfinite(padding) ? padding : 0.0f;
+    query.reachUpDown = Rendering::skipInkContactInDevicePixels;
+    // A stretch of the line shorter than it is thick reads as a speck.
+    query.shortestPiece = static_cast<float>(rule.height);
+    // A block's rule can hang a single row under its baseline, where the
+    // grid's never does, and every round letter's overshoot would rest on it:
+    // ink above the rule's top row does not touch it. A rule clipped at the
+    // raster's top has its true top above the raster, where there is no ink.
+    query.isTouchedFromAbove = ruleTop < static_cast<double>(rule.top);
+    const Rendering::SkipInkRule cutRule { .left = static_cast<float>(rule.left), .top = static_cast<float>(rule.top), .right = static_cast<float>(rule.left + rule.width), .bottom = static_cast<float>(rule.top + rule.height) };
+    Rendering::SkipInkScratch scratch;
+    if (!Rendering::markSkipInkCuts(planes, query, cutRule, scratch.cut, scratch))
+        return;
+    // Each pixel keeps the part of itself the cut leaves.
     for (int row = 0; row < rule.height; ++row) {
+        const std::span<const float> spans = scratch.cut.row(row);
         for (int column = 0; column < rule.width; ++column) {
-            const float centreX = static_cast<float>(rule.left) + static_cast<float>(column) + 0.5f;
-            const float centreY = static_cast<float>(rule.top) + static_cast<float>(row) + 0.5f;
-            float strongest = 0.0f;
-            for (int deltaY = -reach.steps; deltaY <= reach.steps; ++deltaY) {
-                for (int deltaX = -reach.steps; deltaX <= reach.steps; ++deltaX) {
-                    if (deltaX * deltaX + deltaY * deltaY > reach.steps * reach.steps)
-                        continue;
-                    // Only ink in the rule's rows or below them crosses it. A
-                    // block's rule can hang a single row under its baseline,
-                    // where the grid's never does, and the reach upward would
-                    // let every round letter's overshoot cut it.
-                    const double tapY = std::max(static_cast<double>(centreY + static_cast<float>(deltaY) * stepY), ruleTop + 0.5);
-                    if (!std::isfinite(tapY) || tapY < -0.5 || tapY >= static_cast<double>(inkHeight) + 0.5)
-                        continue;
-                    strongest = std::max(strongest, sample(centreX + static_cast<float>(deltaX) * stepX, static_cast<float>(tapY)));
-                }
-            }
+            const float left = static_cast<float>(rule.left + column);
+            const float covered = Rendering::skipInkCutCoverage(spans, left, left + 1.0f);
             ruleAlpha[static_cast<std::size_t>(row) * static_cast<std::size_t>(rule.width) + static_cast<std::size_t>(column)]
-                = static_cast<std::uint8_t>(std::lround(255.0f - std::min(strongest, 255.0f)));
+                = static_cast<std::uint8_t>(std::lround((1.0f - covered) * 255.0f));
         }
     }
 }

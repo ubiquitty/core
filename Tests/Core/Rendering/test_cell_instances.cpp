@@ -827,10 +827,10 @@ struct CellFixture {
     }
 };
 
-// DecorationInstance is the full 160-byte macOS layout; the shaders read the
-// prefix through padInAtlas (@64) at these offsets.
-static_assert(sizeof(DecorationInstance) == 160, "DecorationInstance grew to the macOS 160-byte layout");
-static_assert(offsetof(DecorationInstance, padInAtlas) == 64, "the GPU-read prefix offsets stay put");
+// DecorationInstance is a piece of a rule and the rule's band, and nothing a
+// renderer would sample a glyph for: skip-ink is decided in Core.
+static_assert(sizeof(DecorationInstance) == 64, "DecorationInstance is a piece and its band");
+static_assert(offsetof(DecorationInstance, bandTopLeftInPixels) == 48, "the band follows the rule's geometry");
 
 // The build itself: one instance per cell but for the wide continuation, one
 // solid rule for the single underlined cell, and each cell's colours and glyph
@@ -1261,9 +1261,8 @@ TEST(testDoubleWidthAndDoubleHeightRowGeometry)
     }
 }
 
-// Decoration neighbor fields + OSC 8 link styling. The builder zero-fills
-// the cross-cell skip-ink fields (glyphSlotTopLeftUV/glyphSlotBottomRightUV + left/right Ink/Box)
-// when there is no ink to tap (single-cell correct). A flagged link cell with no SGR underline
+// An uncut rule + OSC 8 link styling. With no ink to test, the builder emits
+// the rule whole: one piece whose band is itself. A flagged link cell with no SGR underline
 // draws its rule in `linkUnderlineStyle`, and takes `linkColor` for both text
 // and rule.
 //
@@ -1321,11 +1320,11 @@ TEST(testDecorationNeighborFieldsAndLinkStyling)
     CHECK(approx(cells[1].foreground.x, 0.2f) && approx(cells[1].foreground.y, 0.4f) && approx(cells[1].foreground.z, 1.0f));
     // Non-link cells keep the default foreground.
     CHECK(approx(cells[0].foreground.x, 0xC0 / 255.0f));
-    // The cross-cell skip-ink fields are zero (absent neighbour), so the rule
-    // renders as a plain rule.
-    CHECK(approx(decos[0].glyphSlotTopLeftUV.x, 0.0f) && approx(decos[0].glyphSlotBottomRightUV.x, 0.0f));
-    CHECK(approx(decos[0].leftInk.x, 0.0f) && approx(decos[0].leftBox.x, 0.0f));
-    CHECK(approx(decos[0].rightInk.x, 0.0f) && approx(decos[0].rightBox.x, 0.0f));
+    // No rule was tested against ink, and the rule is drawn whole: its one
+    // piece is its band.
+    CHECK(counts.skipInkRules == 0);
+    CHECK(approx(decos[0].bandTopLeftInPixels.x, decos[0].topLeftInPixels.x) && approx(decos[0].bandTopLeftInPixels.y, decos[0].topLeftInPixels.y));
+    CHECK(approx(decos[0].bandBottomRightInPixels.x, decos[0].bottomRightInPixels.x) && approx(decos[0].bandBottomRightInPixels.y, decos[0].bottomRightInPixels.y));
 
     // The same link cell under the other setting draws a solid rule. Asserted as
     // a pair, because either kind alone is satisfied by a builder that ignores
@@ -3316,33 +3315,36 @@ TEST(testASkipInkTapOnThePhasedPathFollowsTheSnappedPen)
     std::vector<CellInstance> cells(columns);
     std::vector<DecorationInstance> decorations(columns * 8);
     std::vector<GlyphInstance> glyphs(8);
+    std::vector<SkipInkTrace> traces(4);
     InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
     buffers.glyphs = glyphs.data();
     buffers.glyphCapacity = glyphs.size();
+    buffers.skipInkTraces = traces.data();
+    buffers.skipInkTraceCapacity = traces.size();
     const InstanceCounts counts = buildCellInstances(in, table, buffers);
 
     REQUIRE_MSG(counts.glyphs == 1, "the one glyph draws");
-    REQUIRE_MSG(counts.decorations == 1, "under one rule");
+    REQUIRE_MSG(counts.skipInkRules == 1, "one rule is tested against ink");
     const GlyphInstance& glyph = glyphs[0];
-    const DecorationInstance& rule = decorations[0];
+    const SkipInkSource& own = traces[0].query.own;
     // The quad: the snapped pen less the margin, one slot wide.
     CHECK_MSG(approx(glyph.originInPixels.x, 9.0f), ("the quad stands at the snapped pen less the margin: " + std::to_string(glyph.originInPixels.x)).c_str());
     CHECK_MSG(approx(glyph.sizeInPixels.x, 8.0f), "one slot wide");
-    CHECK_MSG(rule.skipInk > 0.5f, "the rule is cut by ink");
+    REQUIRE_MSG(own.isPresent, "the rule reads the glyph's ink");
     // The slot the quad samples, in atlas pixels; the rule's tap must be the
     // same slot at the same pitch, offset by where the cell's edge falls in
     // it: screen x 10.5 is texel 1.5 of the quad, and the cell's eight pixels
     // reach texel 9.5.
     const float slotLeft = glyph.atlasTopLeft.x;
-    CHECK_MSG(approx(rule.inkTopLeft.x, slotLeft + 1.5f),
-        ("the tap begins where the cell's left edge falls in the slot: " + std::to_string(rule.inkTopLeft.x - slotLeft)).c_str());
-    CHECK_MSG(approx(rule.inkBottomRight.x, slotLeft + 9.5f),
-        ("and spans the cell's pitch at the blit's own: " + std::to_string(rule.inkBottomRight.x - slotLeft)).c_str());
-    CHECK_MSG(approx(rule.glyphSlotTopLeftUV.x, slotLeft) && approx(rule.glyphSlotBottomRightUV.x, slotLeft + 8.0f), "clamped to the slot");
+    CHECK_MSG(approx(own.inkLeft, slotLeft + 1.5f),
+        ("the tap begins where the cell's left edge falls in the slot: " + std::to_string(own.inkLeft - slotLeft)).c_str());
+    CHECK_MSG(approx(own.inkRight, slotLeft + 9.5f),
+        ("and spans the cell's pitch at the blit's own: " + std::to_string(own.inkRight - slotLeft)).c_str());
+    CHECK_MSG(approx(own.slotLeft, slotLeft) && approx(own.slotRight, slotLeft + 8.0f), "clamped to the slot");
 }
 
 // The skip band is the rule's own rect, mapped onto the slot row for row, so
-// a pixel of a curl's crest samples the ink at the crest's height. A band
+// a pixel of a curl's crest is tested against the ink at the crest's height. A band
 // squeezed to the stroke at the line's middle sampled every row of the curl
 // at the middle: the crest stood against a letter it touched, and the trough
 // was cut by ink well above it.
@@ -3380,28 +3382,34 @@ TEST(aPatternedRulesSkipBandIsItsOwnRect)
         GlyphBackend table = backend.backend();
         std::vector<CellInstance> cells(columns);
         std::vector<DecorationInstance> decorations(columns * 8);
+        std::vector<SkipInkTrace> traces(4);
         InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
+        buffers.skipInkTraces = traces.data();
+        buffers.skipInkTraceCapacity = traces.size();
         const InstanceCounts counts = buildCellInstances(in, table, buffers);
-        CHECK_MSG(counts.decorations == 1 && decorations[0].skipInk > 0.5f, "one rule, cut by ink");
-        return decorations[0];
+        CHECK_MSG(counts.skipInkRules == 1 && traces[0].query.own.isPresent, "one rule, tested against the glyph's ink");
+        return traces[0];
     };
     // The single rule's rect is its stroke, so its band is its rect whichever
     // way the band is taken: it fixes the map from the cell's rows to the
     // glyph box's in the slot.
-    const DecorationInstance single = ruleFor(Ubiquitty::VT::underlineSingle);
-    const float singleHeight = single.bottomRightInPixels.y - single.topLeftInPixels.y;
+    const SkipInkTrace single = ruleFor(Ubiquitty::VT::underlineSingle);
+    const float singleHeight = single.rule.bottom - single.rule.top;
     REQUIRE_MSG(singleHeight >= 1.0f, "a whole-pixel stroke");
-    const float scale = (single.inkBottomRight.y - single.inkTopLeft.y) / singleHeight;
-    const float origin = single.inkTopLeft.y - scale * single.topLeftInPixels.y;
+    const float scale = (single.query.own.bandBottom - single.query.own.bandTop) / singleHeight;
+    const float origin = single.query.own.bandTop - scale * single.rule.top;
     for (const std::uint8_t style : { Ubiquitty::VT::underlineCurly, Ubiquitty::VT::underlineDotted }) {
-        const DecorationInstance rule = ruleFor(style);
-        const float top = rule.topLeftInPixels.y;
-        const float bottom = rule.bottomRightInPixels.y;
-        REQUIRE_MSG(bottom - top > singleHeight, "a patterned rule's rect is taller than its stroke");
-        CHECK_MSG(approx(rule.inkTopLeft.y, origin + scale * top),
-            ("style " + std::to_string(style) + ": the band starts at the rect's top: " + std::to_string(rule.inkTopLeft.y) + " for " + std::to_string(origin + scale * top)).c_str());
-        CHECK_MSG(approx(rule.inkBottomRight.y, origin + scale * bottom),
-            ("style " + std::to_string(style) + ": and ends at its bottom: " + std::to_string(rule.inkBottomRight.y) + " for " + std::to_string(origin + scale * bottom)).c_str());
+        const SkipInkTrace rule = ruleFor(style);
+        const float top = rule.rule.top;
+        const float bottom = rule.rule.bottom;
+        // A curl's rect is taller than its stroke, so the band could not pass
+        // for the stroke's by accident; a dot is the stroke's weight across.
+        if (style == Ubiquitty::VT::underlineCurly)
+            REQUIRE_MSG(bottom - top > singleHeight, "a curl's rect is taller than its stroke");
+        CHECK_MSG(approx(rule.query.own.bandTop, origin + scale * top),
+            ("style " + std::to_string(style) + ": the band starts at the rect's top: " + std::to_string(rule.query.own.bandTop) + " for " + std::to_string(origin + scale * top)).c_str());
+        CHECK_MSG(approx(rule.query.own.bandBottom, origin + scale * bottom),
+            ("style " + std::to_string(style) + ": and ends at its bottom: " + std::to_string(rule.query.own.bandBottom) + " for " + std::to_string(origin + scale * bottom)).c_str());
     }
 }
 
@@ -3460,18 +3468,22 @@ TEST(testASkipInkTapOnASaturatedAtlasYieldsNoMask)
 
     std::vector<CellInstance> cells(columns);
     std::vector<DecorationInstance> decorations(columns * 8);
+    std::vector<SkipInkTrace> traces(columns);
     InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
+    buffers.skipInkTraces = traces.data();
+    buffers.skipInkTraceCapacity = traces.size();
     const InstanceCounts counts = buildCellInstances(in, table, buffers);
 
     // Every cell still emits, and every underline still draws: running out of
     // atlas costs a mask, never a rule.
     CHECK(counts.cells == static_cast<std::size_t>(columns));
     CHECK(counts.decorations == static_cast<std::size_t>(columns));
-    // At least one rule past the atlas ceiling carries no neighbour ink box —
-    // an absent mask, not a stale one.
-    bool sawAbsentNeighbourMask = false;
-    for (std::size_t i = 0; i < counts.decorations; ++i)
-        if (approx(decorations[i].rightBox.x, 0.0f) && approx(decorations[i].rightInk.x, 0.0f))
+    // At least one rule past the atlas ceiling reads no neighbour ink — an
+    // absent mask, not a stale one: either it was not tested at all, its own
+    // glyph and both neighbours' absent, or its right neighbour is absent.
+    bool sawAbsentNeighbourMask = counts.skipInkRules < static_cast<std::size_t>(columns);
+    for (std::size_t i = 0; i < counts.skipInkRules; ++i)
+        if (!traces[i].query.right.isPresent)
             sawAbsentNeighbourMask = true;
     CHECK(sawAbsentNeighbourMask);
 }
@@ -6913,47 +6925,48 @@ TEST(testAnUnderlinedPerGlyphRunCutsItsRulePerCellOnTheProportionalSheet)
     std::vector<DecorationInstance> decorations(cells.size() * 8);
     std::vector<GlyphInstance> proportionalGlyphs(16);
     std::vector<GlyphInstance> strips(16);
+    std::vector<SkipInkTrace> traces(cells.size() * 2);
     InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
     buffers.proportionalGlyphs = proportionalGlyphs.data();
     buffers.proportionalGlyphCapacity = proportionalGlyphs.size();
     buffers.proportionalStrips = strips.data();
     buffers.proportionalStripCapacity = strips.size();
+    buffers.skipInkTraces = traces.data();
+    buffers.skipInkTraceCapacity = traces.size();
     const InstanceCounts counts = buildCellInstances(in, b, buffers);
     CHECK_MSG(counts.proportionalGlyphs == 4, "the run draws glyph by glyph");
     CHECK_MSG(counts.proportionalStrips == 0, "and no strip");
 
-    // One rule per cell of the claim, in column order.
-    std::vector<const DecorationInstance*> rules;
-    for (const DecorationInstance& d : std::span(decorations.data(), std::min(counts.decorations, decorations.size())))
-        if (d.topLeftInPixels.x >= 8.0f && d.topLeftInPixels.x < 40.0f)
-            rules.push_back(&d);
+    // One rule per cell of the claim, in column order, each tested against ink.
+    std::vector<const SkipInkTrace*> rules;
+    for (const SkipInkTrace& trace : std::span(traces.data(), std::min(counts.skipInkRules, traces.size())))
+        if (trace.rule.left >= 8.0f && trace.rule.left < 40.0f)
+            rules.push_back(&trace);
     CHECK_MSG(rules.size() == 4, "the claim's rule is emitted one cell at a time");
     if (rules.size() != 4)
         return;
-    constexpr int proportionalSheet = 3;
     // The text is 25 px from the claim's left, so the last segment covers the
     // one pixel of cell 4 the text reaches.
     for (std::size_t c = 0; c < 4; ++c) {
-        CHECK_MSG(approx(rules[c]->topLeftInPixels.x, 8.0f + 8.0f * c), "at its cell's left edge");
-        CHECK_MSG(approx(rules[c]->bottomRightInPixels.x - rules[c]->topLeftInPixels.x, c < 3 ? 8.0f : 1.0f), "as wide as the text in its cell");
-        CHECK_MSG(rules[c]->skipInk > 0.5f, "cut by ink");
+        CHECK_MSG(approx(rules[c]->rule.left, 8.0f + 8.0f * c), "at its cell's left edge");
+        CHECK_MSG(approx(rules[c]->rule.right - rules[c]->rule.left, c < 3 ? 8.0f : 1.0f), "as wide as the text in its cell");
     }
-    const auto selectors = [](const DecorationInstance& d) { return static_cast<int>(d.pad1.y + 0.5f); };
+    const auto onSheet = [](const SkipInkSource& source) { return source.isPresent && source.sheet == SkipInkSheet::Proportional; };
     // Cells 1–3 tap the proportional sheet themselves; cell 4 has no ink of its
     // own and taps only its left neighbour there.
-    CHECK_MSG(selectors(*rules[0]) % 8 == proportionalSheet, "cell 1 taps the proportional sheet");
-    CHECK_MSG(selectors(*rules[1]) % 8 == proportionalSheet, "cell 2 taps the proportional sheet");
-    CHECK_MSG(selectors(*rules[2]) % 8 == proportionalSheet, "cell 3 taps the proportional sheet");
-    CHECK_MSG(selectors(*rules[3]) % 8 == 0 && (selectors(*rules[3]) / 8) % 8 == proportionalSheet, "cell 4 has no glyph beneath it and reads its left neighbour's");
-    CHECK_MSG((selectors(*rules[0]) / 64) % 8 == proportionalSheet, "cell 1's right neighbour is cell 2's glyph");
-    CHECK_MSG((selectors(*rules[1]) / 8) % 8 == proportionalSheet && (selectors(*rules[1]) / 64) % 8 == proportionalSheet, "cell 2's neighbours are both on the sheet");
+    CHECK_MSG(onSheet(rules[0]->query.own), "cell 1 taps the proportional sheet");
+    CHECK_MSG(onSheet(rules[1]->query.own), "cell 2 taps the proportional sheet");
+    CHECK_MSG(onSheet(rules[2]->query.own), "cell 3 taps the proportional sheet");
+    CHECK_MSG(!rules[3]->query.own.isPresent && onSheet(rules[3]->query.left), "cell 4 has no glyph beneath it and reads its left neighbour's");
+    CHECK_MSG(onSheet(rules[0]->query.right), "cell 1's right neighbour is cell 2's glyph");
+    CHECK_MSG(onSheet(rules[1]->query.left) && onSheet(rules[1]->query.right), "cell 2's neighbours are both on the sheet");
     // The tap maps the cell's pitch onto the glyph's slot: slot 0 begins at
     // atlas x 0 and its quad at screen x 7, so cell 1 (screen 8–16) reads
     // atlas 1–9; cell 3 reads the fourth glyph's slot (x 54, quad at 25) at
     // 53–61 — the cell's own pixels, one slot over from the glyph's.
-    CHECK_MSG(approx(rules[0]->inkTopLeft.x, 1.0f) && approx(rules[0]->inkBottomRight.x, 9.0f), "cell 1's tap spans its pitch in the first glyph's slot");
-    CHECK_MSG(approx(rules[2]->inkTopLeft.x, 53.0f) && approx(rules[2]->inkBottomRight.x, 61.0f), "cell 3's tap spans its pitch in the fourth glyph's slot");
-    CHECK_MSG(approx(rules[0]->glyphSlotTopLeftUV.x, 0.0f) && approx(rules[0]->glyphSlotBottomRightUV.x, 18.0f), "clamped to the glyph's own slot");
+    CHECK_MSG(approx(rules[0]->query.own.inkLeft, 1.0f) && approx(rules[0]->query.own.inkRight, 9.0f), "cell 1's tap spans its pitch in the first glyph's slot");
+    CHECK_MSG(approx(rules[2]->query.own.inkLeft, 53.0f) && approx(rules[2]->query.own.inkRight, 61.0f), "cell 3's tap spans its pitch in the fourth glyph's slot");
+    CHECK_MSG(approx(rules[0]->query.own.slotLeft, 0.0f) && approx(rules[0]->query.own.slotRight, 18.0f), "clamped to the glyph's own slot");
 }
 
 namespace {
@@ -6967,7 +6980,7 @@ enum class InkCut : std::uint8_t {
 /// The rules a proportional run of four 6.25 px letters, claiming cells 1–4
 /// of 8 px cells, draws at one alignment with the given decorations.
 std::vector<DecorationInstance> proportionalRunRules(std::uint8_t horizontalAlign,
-    Ubiquitty::VT::AttributeSet attributes, std::uint8_t underlineStyle, InkCut inkCut)
+    Ubiquitty::VT::AttributeSet attributes, std::uint8_t underlineStyle, InkCut inkCut, std::vector<SkipInkTrace>* traces = nullptr)
 {
     const int rows = 1, columns = 8;
     Ubiquitty::TermPalette pal;
@@ -7029,12 +7042,19 @@ std::vector<DecorationInstance> proportionalRunRules(std::uint8_t horizontalAlig
     std::vector<CellInstance> cells(static_cast<std::size_t>(rows) * columns + 8);
     std::vector<DecorationInstance> decorations(cells.size() * 8);
     std::vector<GlyphInstance> proportionalGlyphs(16);
+    std::vector<SkipInkTrace> tested(cells.size() * 2);
     InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
     buffers.proportionalGlyphs = proportionalGlyphs.data();
     buffers.proportionalGlyphCapacity = proportionalGlyphs.size();
+    buffers.skipInkTraces = tested.data();
+    buffers.skipInkTraceCapacity = tested.size();
     const InstanceCounts counts = buildCellInstances(in, b, buffers);
     CHECK_EQ(counts.proportionalGlyphs, 4u);
     decorations.resize(std::min(counts.decorations, decorations.size()));
+    if (traces) {
+        tested.resize(std::min(counts.skipInkRules, tested.size()));
+        *traces = tested;
+    }
     return decorations;
 }
 
@@ -7093,20 +7113,21 @@ TEST(testAProportionalRunsRulesSpanItsTextNotItsClaim)
         // Cut by ink, the rule is emitted a cell at a time over the cells the
         // text crosses, and the segments together span the text with no gap
         // and no overlap.
-        const auto cut = proportionalRunRules(alignment.horizontalAlign, Ubiquitty::VT::Attribute::Underline, Ubiquitty::VT::underlineSingle, InkCut::CutByInk);
-        CHECK_MSG(!cut.empty(), "a rule cut by ink");
-        if (cut.empty())
+        std::vector<SkipInkTrace> tested;
+        const auto cut = proportionalRunRules(alignment.horizontalAlign, Ubiquitty::VT::Attribute::Underline, Ubiquitty::VT::underlineSingle, InkCut::CutByInk, &tested);
+        CHECK_MSG(!tested.empty(), "a rule tested against ink");
+        if (tested.empty())
             continue;
-        float left = cut.front().topLeftInPixels.x;
-        float right = cut.front().bottomRightInPixels.x;
+        float left = tested.front().rule.left;
+        float right = tested.front().rule.right;
         float covered = 0.0f;
-        for (const DecorationInstance& segment : cut) {
-            left = std::min(left, segment.topLeftInPixels.x);
-            right = std::max(right, segment.bottomRightInPixels.x);
-            covered += segment.bottomRightInPixels.x - segment.topLeftInPixels.x;
-            // A segment samples its own part of its cell's tap: as many atlas
+        for (const SkipInkTrace& segment : tested) {
+            left = std::min(left, segment.rule.left);
+            right = std::max(right, segment.rule.right);
+            covered += segment.rule.right - segment.rule.left;
+            // A segment reads its own part of its cell's tap: as many atlas
             // pixels as screen pixels.
-            CHECK_NEAR(segment.inkBottomRight.x - segment.inkTopLeft.x, segment.bottomRightInPixels.x - segment.topLeftInPixels.x, tolerance);
+            CHECK_NEAR(segment.query.own.inkRight - segment.query.own.inkLeft, segment.rule.right - segment.rule.left, tolerance);
         }
         CHECK_NEAR(left, alignment.textLeft, tolerance);
         CHECK_NEAR(right, alignment.textRight, tolerance);
@@ -9925,21 +9946,24 @@ TEST(expandedUnderlineKeepsItsNativeTapWindows)
     std::array<CellInstance, columns> cells {};
     std::array<GlyphInstance, columns> glyphs {};
     std::array<DecorationInstance, columns * 8> decorations {};
+    std::array<SkipInkTrace, columns> traces {};
     InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
     buffers.glyphs = glyphs.data();
     buffers.glyphCapacity = glyphs.size();
+    buffers.skipInkTraces = traces.data();
+    buffers.skipInkTraceCapacity = traces.size();
     MeasuredRuleAtlas atlas;
     const auto counts = buildCellInstances(in, UbiquittyTest::glyphBackendFor(atlas), buffers);
-    REQUIRE(counts.decorations == 1);
-    const auto& rule = decorations[0];
-    REQUIRE(approx(rule.topLeftInPixels.x, 7) && approx(rule.bottomRightInPixels.x, 17));
-    REQUIRE(rule.skipInk > 0.5f);
-    CHECK(approx(rule.inkTopLeft.x - rule.glyphSlotTopLeftUV.x, 2));
-    CHECK(approx(rule.inkBottomRight.x - rule.glyphSlotTopLeftUV.x, 10));
-    CHECK(approx(rule.leftInk.x - rule.leftBox.x, 2));
-    CHECK(approx(rule.leftInk.y - rule.leftBox.x, 10));
-    CHECK(approx(rule.rightInk.x - rule.rightBox.x, 2));
-    CHECK(approx(rule.rightInk.y - rule.rightBox.x, 10));
+    REQUIRE(counts.skipInkRules == 1);
+    const SkipInkTrace& rule = traces[0];
+    REQUIRE(approx(rule.rule.left, 7) && approx(rule.rule.right, 17));
+    REQUIRE(rule.query.own.isPresent && rule.query.left.isPresent && rule.query.right.isPresent);
+    CHECK(approx(rule.query.own.inkLeft - rule.query.own.slotLeft, 2));
+    CHECK(approx(rule.query.own.inkRight - rule.query.own.slotLeft, 10));
+    CHECK(approx(rule.query.left.inkLeft - rule.query.left.slotLeft, 2));
+    CHECK(approx(rule.query.left.inkRight - rule.query.left.slotLeft, 10));
+    CHECK(approx(rule.query.right.inkLeft - rule.query.right.slotLeft, 2));
+    CHECK(approx(rule.query.right.inkRight - rule.query.right.slotLeft, 10));
 }
 
 // A combining cluster keeps the full native slot and cell-bounded rule even

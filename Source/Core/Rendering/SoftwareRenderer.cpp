@@ -736,6 +736,7 @@ GlyphBackend SoftwareRenderer::glyphBackend()
     };
     backend.beginFrame = [](void* context) { static_cast<SoftwareRenderer*>(context)->beginFrame(); };
     backend.bindMonoAtlas = [](void* context) { return static_cast<SoftwareRenderer*>(context)->bindMonoAtlas(); };
+    backend.bindSkipInkPlanes = [](void* context) { return static_cast<const SoftwareRenderer*>(context)->skipInkPlanes(); };
     backend.rasteriseMonoGlyph = [](void* context, std::uint32_t codePoint, FontFace face, std::uint32_t variant, int slot) {
         return static_cast<SoftwareRenderer*>(context)->rasteriseMonoGlyph(codePoint, face, variant, slot);
     };
@@ -1033,6 +1034,22 @@ void SoftwareRenderer::compositeColorGlyph(const GlyphInstance& g, std::vector<s
             }
         }
     });
+}
+
+SkipInkPlanes SoftwareRenderer::skipInkPlanes() const
+{
+    // Only a coverage sheet holds ink a rule is cut by; the colour sheet's
+    // texels are colours.
+    const auto atlasPlane = [](const Atlas& atlas) {
+        return atlas.bytesPerPixel == 1 ? skipInkCoveragePlane(atlas.pixels, atlas.atlasWidth, atlas.atlasHeight) : SkipInkPlane {};
+    };
+    SkipInkPlanes planes;
+    planes.mono = atlasPlane(m_mono);
+    planes.wide = atlasPlane(m_wide);
+    planes.ligatureStrip = skipInkCoveragePlane(m_ligature.coverage(), m_ligature.widthInPixels(), m_ligature.heightInPixels());
+    planes.proportionalStrip = skipInkCoveragePlane(m_proportionalStrip.coverage(), m_proportionalStrip.widthInPixels(), m_proportionalStrip.heightInPixels());
+    planes.proportional = skipInkCoveragePlane(m_proportional.coverage(), m_proportional.widthInPixels(), m_proportional.heightInPixels());
+    return planes;
 }
 
 float SoftwareRenderer::sampleMonoCoverage(float x, float y) const
@@ -1503,20 +1520,18 @@ void SoftwareRenderer::compositeGlyph(const GlyphInstance& g, const Atlas& atlas
 
 // Decoration rule -> pixels: a faithful CPU port of the Metal cell shader's
 // decorationFragment (dotted = round balls, dashed = 65% duty, curly = a
-// sine wave, solid = full), masked by skip-ink, alpha-blended over the cell
-// pass. Blends in sRGB (the CPU path's space — for Unifont's 1-bit glyph
-// coverage there are no partial values, so it matches; the rules' own AA
-// edges feather in sRGB rather than the GPU's linear space).
-void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, std::vector<std::uint8_t>& rgba, IntSize surface) const
+// sine wave, solid = full), alpha-blended over the cell pass. The instance is
+// a piece of its rule: the piece bounds the pixels drawn, and the band, the
+// whole rule, is the frame the pattern is laid out in, so a rule skip-ink cut
+// into pieces keeps its dots where the uncut rule has them. Blends in sRGB
+// (the CPU path's space; the rules' own AA edges feather in sRGB rather than
+// the GPU's linear space).
+void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, float patternOriginX, std::vector<std::uint8_t>& rgba, IntSize surface) const
 {
-    // The bitmap tier nudges nearest taps off texel boundaries. Native taps
-    // retain their exact coordinates for bilinear sampling.
-    constexpr float skipInkTapBias = 1.0f / 128.0f;
-    const float tapBias = m_isBitmapFace ? skipInkTapBias : 0.0f;
-    const float minX = d.topLeftInPixels.x;
-    const float minY = d.topLeftInPixels.y;
-    const float sizeX = d.bottomRightInPixels.x - minX;
-    const float sizeY = d.bottomRightInPixels.y - minY;
+    const float minX = d.bandTopLeftInPixels.x;
+    const float minY = d.bandTopLeftInPixels.y;
+    const float sizeX = d.bandBottomRightInPixels.x - minX;
+    const float sizeY = d.bandBottomRightInPixels.y - minY;
     const float baseAlpha = d.color.w;
     if (sizeX <= 0.0f || sizeY <= 0.0f || baseAlpha <= 0.0f)
         return;
@@ -1524,9 +1539,16 @@ void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, std::vec
     const int foregroundGreen = channelToByte(d.color.y);
     const int foregroundBlue = channelToByte(d.color.z);
 
-    int x0 = static_cast<int>(std::floor(minX));
+    // The piece's pixels, by the same centre rule as the band's: a pixel is
+    // drawn iff its centre lies in the piece, half-open — except at an end ink
+    // cut, which lies wherever the cut does and is drawn in the part of its
+    // pixel it covers, so the gap beside a stroke is the padding exactly.
+    const auto cutEnds = static_cast<std::uint32_t>(d.cutEnds);
+    const bool isLeftCut = (cutEnds & skipInkCutLeftEnd) != 0;
+    const bool isRightCut = (cutEnds & skipInkCutRightEnd) != 0;
+    int x0 = static_cast<int>(std::floor(d.topLeftInPixels.x));
     int x1 = static_cast<int>(std::ceil(d.bottomRightInPixels.x));
-    int y0 = static_cast<int>(std::floor(minY));
+    int y0 = static_cast<int>(std::floor(d.topLeftInPixels.y));
     int y1 = static_cast<int>(std::ceil(d.bottomRightInPixels.y));
     if (x0 < 0)
         x0 = 0;
@@ -1539,11 +1561,20 @@ void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, std::vec
 
     for (int y = y0; y < y1; ++y) {
         for (int x = x0; x < x1; ++x) {
+            const float centreX = x + 0.5f;
+            const float centreY = y + 0.5f;
+            if ((!isLeftCut && centreX < d.topLeftInPixels.x) || (!isRightCut && centreX >= d.bottomRightInPixels.x))
+                continue;
+            const float pieceLeft = isLeftCut ? d.topLeftInPixels.x : static_cast<float>(x);
+            const float pieceRight = isRightCut ? d.bottomRightInPixels.x : static_cast<float>(x + 1);
+            const float acrossCoverage = std::clamp(std::min(static_cast<float>(x + 1), pieceRight) - std::max(static_cast<float>(x), pieceLeft), 0.0f, 1.0f);
+            if (acrossCoverage <= 0.0f)
+                continue;
             // Half-open coverage (the GPU's top-left fill rule): a pixel is
             // in the rule iff its center falls in [min, max), so a 1px-tall
             // rule lights exactly one row rather than smearing across two.
-            const float localX = (x + 0.5f) - minX;
-            const float localY = (y + 0.5f) - minY;
+            const float localX = centreX - minX;
+            const float localY = centreY - minY;
             if (localX < 0.0f || localX >= sizeX)
                 continue;
 
@@ -1569,23 +1600,27 @@ void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, std::vec
                 bandCoverage = rowBottom - rowTop;
                 if (bandCoverage <= 0.0f)
                     continue;
-            } else if (localY < 0.0f || localY >= sizeY)
+                // A piece of a cut rule draws the rows its own extent reaches.
+                if (centreY + 0.5f <= d.topLeftInPixels.y || centreY - 0.5f >= d.bottomRightInPixels.y)
+                    continue;
+            } else if (localY < 0.0f || localY >= sizeY || centreY < d.topLeftInPixels.y || centreY >= d.bottomRightInPixels.y)
                 continue;
 
-            float alpha = baseAlpha;
-            if (isDecorationKind(d.kind, DecorationKind::Dotted)) {
-                const float r = sizeY * 0.5f > 1.0f ? sizeY * 0.5f : 1.0f;
-                const float period = d.dashPeriodInPixels * 0.5f > r * 3.0f ? d.dashPeriodInPixels * 0.5f : r * 3.0f;
-                const float cx = (std::floor(localX / period) + 0.5f) * period;
-                const float dx = localX - cx;
-                const float dy = localY - sizeY * 0.5f;
-                const float dist = std::sqrt(dx * dx + dy * dy);
-                const float c = r + 0.5f - dist;
-                alpha *= c < 0.0f ? 0.0f : (c > 1.0f ? 1.0f : c);
-            } else if (isDashedRule) {
-                const float period = d.dashPeriodInPixels > d.thicknessInPixels * 6.0f ? d.dashPeriodInPixels : d.thicknessInPixels * 6.0f;
-                const float phase = localX / period - std::floor(localX / period);
-                alpha = phase >= 0.65f ? 0.0f : alpha * bandCoverage;
+            float alpha = baseAlpha * acrossCoverage;
+            if (isDecorationKind(d.kind, DecorationKind::Dotted) || isDashedRule) {
+                // Marks anchored to the grid's left edge at the pitch the
+                // builder chose (dottedRuleOnShare): the part of this pixel
+                // the mark it lies in covers, and the one before it.
+                const float period = d.dashPeriodInPixels;
+                const float share = isDashedRule ? dashedRuleOnShare : dottedRuleOnShare;
+                const float pixelLeft = static_cast<float>(x) - patternOriginX;
+                float marks = 0.0f;
+                if (period > 0.0f) {
+                    const float start = std::floor((pixelLeft + 0.5f) / period) * period;
+                    for (const float markStart : { start, start - period })
+                        marks += std::clamp(std::min(pixelLeft + 1.0f, markStart + share * period) - std::max(pixelLeft, markStart), 0.0f, 1.0f);
+                }
+                alpha *= std::min(marks, 1.0f) * bandCoverage;
             } else if (isDecorationKind(d.kind, DecorationKind::Curly)) {
                 const float period = d.dashPeriodInPixels > 2.0f ? d.dashPeriodInPixels : 2.0f;
                 const float halfThick = d.thicknessInPixels * 0.8f;
@@ -1597,74 +1632,6 @@ void SoftwareRenderer::compositeDecoration(const DecorationInstance& d, std::vec
                 const float dist = std::fabs(localY - wave);
                 const float c = halfThick + 0.5f - dist;
                 alpha *= c < 0.0f ? 0.0f : (c > 1.0f ? 1.0f : c);
-            }
-
-            if (alpha > 0.0f && d.skipInk > 0.5f) {
-                const float fractionX = sizeX > 0.0f ? localX / sizeX : 0.0f;
-                const float fractionY = sizeY > 0.0f ? localY / sizeY : 0.0f;
-                const float u = d.inkTopLeft.x + fractionX * (d.inkBottomRight.x - d.inkTopLeft.x);
-                const float v = d.inkTopLeft.y + fractionY * (d.inkBottomRight.y - d.inkTopLeft.y);
-                // Three base-8 digits select the sheet holding the ink each of
-                // this cell, its left and its right neighbour draws: mono,
-                // proportional strip, ligature strip, or the proportional glyph
-                // sheet, or the wide sheet's own coverage plane.
-                const int selectors = static_cast<int>(d.pad1.y + 0.5f);
-                // The cut is the glyph's coverage dilated by a disc of radius
-                // padInAtlas, taken on a grid whose taps stay about a pixel
-                // apart. Nine taps spread to the pad's full radius sample the
-                // halo instead of filling it: once the pad passes a pixel, ink
-                // between two taps leaves the rule standing in stripes inside
-                // the cut, and a thick rule shows those stripes on every row.
-                const int steps = std::max(static_cast<int>(d.pad1.x + 0.5f), 1);
-                const float stepX = d.padInAtlas.x / static_cast<float>(steps);
-                const float stepY = d.padInAtlas.y / static_cast<float>(steps);
-                const auto discCoverage = [&](int sheetSelector, float centreX, float centreY, Vec2 minSlot, Vec2 maxSlot) {
-                    // A slot whose max does not pass its min is an absent glyph.
-                    if (maxSlot.x <= minSlot.x)
-                        return 0.0f;
-                    float strongest = 0.0f;
-                    for (int ddy = -steps; ddy <= steps; ++ddy)
-                        for (int ddx = -steps; ddx <= steps; ++ddx) {
-                            // The disc, not its square: a square over-cuts the
-                            // diagonal by up to the square root of two.
-                            if (ddx * ddx + ddy * ddy > steps * steps)
-                                continue;
-                            // Bitmap taps move off exact texel boundaries,
-                            // where CPU arithmetic and interpolated GPU
-                            // coordinates can choose opposite texels. Native
-                            // taps keep the unmodified bilinear position.
-                            const float tapX = centreX + static_cast<float>(ddx) * stepX + tapBias;
-                            const float tapY = centreY + static_cast<float>(ddy) * stepY + tapBias;
-                            // Only the glyph's own slot answers. The sheet packs
-                            // glyphs side by side, and a tap that walked past
-                            // this slot's edge read the neighbour in the SHEET,
-                            // an unrelated glyph, and cut the rule under a
-                            // letter with no ink anywhere near it.
-                            if (tapX < minSlot.x || tapX > maxSlot.x || tapY < minSlot.y || tapY > maxSlot.y)
-                                continue;
-                            const float tap = sheetSelector == 1 ? sampleProportionalStripCoverage(tapX, tapY)
-                                : sheetSelector == 2             ? sampleStripCoverage(tapX, tapY)
-                                : sheetSelector == 3             ? sampleProportionalCoverage(tapX, tapY)
-                                : sheetSelector == 4             ? sampleWideCoverage(tapX, tapY)
-                                                                 : sampleMonoCoverage(tapX, tapY);
-                            strongest = std::max(strongest, tap);
-                        }
-                    return strongest;
-                };
-                float coverage = discCoverage(selectors % 8, u, v, d.glyphSlotTopLeftUV, d.glyphSlotBottomRightUV);
-                // A rule is per cell, so a descender leaning in from the cell
-                // beside it is cut by this cell's rule too. A point fractionX of
-                // the way across this cell is (fractionX + 1) of the way across
-                // the left cell and (fractionX - 1) across the right one.
-                const auto neighbourCoverage = [&](int sheetSelector, Vec4 ink, Vec4 box, float cellsAcross) {
-                    const float centreX = ink.x + (fractionX + cellsAcross) * (ink.y - ink.x);
-                    const float centreY = ink.z + fractionY * (ink.w - ink.z);
-                    return discCoverage(sheetSelector, centreX, centreY, { box.x, box.y }, { box.z, box.w });
-                };
-                coverage = std::max(coverage, neighbourCoverage((selectors / 8) % 8, d.leftInk, d.leftBox, 1.0f));
-                coverage = std::max(coverage, neighbourCoverage((selectors / 64) % 8, d.rightInk, d.rightBox, -1.0f));
-                const float keep = 1.0f - coverage;
-                alpha *= keep < 0.0f ? 0.0f : (keep > 1.0f ? 1.0f : keep);
             }
 
             if (m_isBitmapFace)
@@ -2722,7 +2689,7 @@ bool SoftwareRenderer::render(const BuildInputs& in, std::vector<std::uint8_t>& 
         for (auto [i, end] = segment(colorGlyphs, tier.colorGlyphs, layer); i < end; ++i)
             compositeColorGlyph(m_colorGlyphs[i], rgbaOut, { width, height });
         for (auto [i, end] = segment(decorations, tier.decorations, layer); i < end; ++i)
-            compositeDecoration(m_decorations[i], rgbaOut, { width, height });
+            compositeDecoration(m_decorations[i], static_cast<float>(gridOriginX), rgbaOut, { width, height });
     };
     compositeStreams(StreamLayer::Grid);
     // Inline images, over-text band (kitty z>=0, placeholder cells, sixel and

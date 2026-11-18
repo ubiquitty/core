@@ -10,7 +10,7 @@
 //   1. Defaults / PreferencesAccessors: the effective-value accessor for an
 //      UNSET key returns the canonical default, and a SET key returns the
 //      stored value. The headline regression guard is
-//      underlineSkipInkPad == 1.75 — one value, read the same by the macOS
+//      underlineSkipInkPad == 1.0 — one value, read the same by the macOS
 //      interop, the ctor and the renderer.
 //   2. Preferences::Schema: rangeFor() reports the documented bounds, and the TOML
 //      parse clamp honors a schema range for every key the table bounds.
@@ -51,10 +51,10 @@ static Values parseString(const std::string& text)
 /// default to state and cannot contradict one.
 TEST(testSkipInkPadIsOneAuthoritativeDefault)
 {
-    CHECK(Defaults::underlineSkipInkPad == 1.75);
+    CHECK(Defaults::underlineSkipInkPad == 1.0);
     Values c; // unset
     CHECK(!c.underlineSkipInkPad.has_value());
-    CHECK(Ubiquitty::Preferences::Effective::underlineSkipInkPad(c) == 1.75);
+    CHECK(Ubiquitty::Preferences::Effective::underlineSkipInkPad(c) == 1.0);
 }
 
 /// Each target's built-in padding, and a stated value outranking it.

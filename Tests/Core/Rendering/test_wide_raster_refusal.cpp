@@ -121,8 +121,10 @@ struct Scene {
     std::vector<CellInstance> cellsOut { static_cast<std::size_t>(rows) * columns };
     std::vector<DecorationInstance> decorationsOut { static_cast<std::size_t>(rows) * columns * 8 };
     std::vector<OverlayInstance> boxFillsOut { static_cast<std::size_t>(rows) * columns * 8 };
+    std::vector<SkipInkTrace> tracesOut { static_cast<std::size_t>(rows) * columns * 2 };
     BuildInputs in;
     InstanceBuffers out;
+    InstanceCounts counts;
     WidePhaseRasterizer rasterizer;
     SoftwareRenderer renderer { 8, 16, rasterizer };
     GlyphSlotCache cache { slotCapacity, slotBuckets, slotColumns };
@@ -150,12 +152,23 @@ struct Scene {
         out.decorationCapacity = decorationsOut.size();
         out.boxFills = boxFillsOut.data();
         out.boxFillCapacity = boxFillsOut.size();
+        out.skipInkTraces = tracesOut.data();
+        out.skipInkTraceCapacity = tracesOut.size();
 
         boundCache = &cache;
         hookLog = {};
     }
 
     ~Scene() { boundCache = nullptr; }
+
+    /// The rules the last build tested against glyph ink, in emission order.
+    [[nodiscard]] std::vector<const SkipInkTrace*> tested() const
+    {
+        std::vector<const SkipInkTrace*> rules;
+        for (std::size_t index = 0; index < counts.skipInkRules && index < tracesOut.size(); ++index)
+            rules.push_back(&tracesOut[index]);
+        return rules;
+    }
 
     Scene(const Scene&) = delete;
     Scene& operator=(const Scene&) = delete;
@@ -171,7 +184,7 @@ struct Scene {
         backend.bindWideAtlas = ::bindWideAtlas;
         backend.rasteriseWideGlyph = ::rasteriseWideGlyph;
         backend.wideGlyphPhaseCount = penGrid;
-        buildCellInstances(in, backend, out);
+        counts = buildCellInstances(in, backend, out);
         return cellsOut[0];
     }
 };
@@ -446,17 +459,13 @@ TEST(aRuleUnderAWideGlyphTapsTheWideSheetColumnByColumn)
     cellSetPen(scene.cells[1], continuation);
 
     scene.build();
-    std::vector<const DecorationInstance*> masked;
-    for (const DecorationInstance& rule : scene.decorationsOut) {
-        if (rule.skipInk > 0.5f)
-            masked.push_back(&rule);
-    }
-    REQUIRE_MSG(masked.size() >= 2, "the wide glyph's rule is cut by its ink, one column at a time");
-    const auto ownSheet = [](const DecorationInstance& rule) { return static_cast<int>(rule.pad1.y + 0.5f) % 8; };
-    CHECK_MSG(ownSheet(*masked[0]) == 4 && ownSheet(*masked[1]) == 4, "both columns tap the two-cell sheet");
-    CHECK_MSG(masked[1]->inkTopLeft.x - masked[0]->inkTopLeft.x == advance,
+    const std::vector<const SkipInkTrace*> masked = scene.tested();
+    REQUIRE_MSG(masked.size() >= 2, "the wide glyph's rule is tested against its ink, one column at a time");
+    const auto onWideSheet = [](const SkipInkTrace& rule) { return rule.query.own.isPresent && rule.query.own.sheet == SkipInkSheet::Wide; };
+    CHECK_MSG(onWideSheet(*masked[0]) && onWideSheet(*masked[1]), "both columns tap the two-cell sheet");
+    CHECK_MSG(masked[1]->query.own.inkLeft - masked[0]->query.own.inkLeft == advance,
         "the second column's tap is the slot one cell along from the first's");
-    CHECK_MSG(masked[0]->bottomRightInPixels.x - masked[0]->topLeftInPixels.x == advance, "each rule is one cell wide");
+    CHECK_MSG(masked[0]->rule.right - masked[0]->rule.left == advance, "each rule is one cell wide");
 }
 
 // The ideographic under-rules (SGR 60 and 61) sit on the SGR 4 rule's line and
@@ -490,14 +499,10 @@ TEST(anIdeographicUnderRuleTapsAWideGlyphColumnByColumn)
     cellSetPen(scene.cells[1], continuation);
 
     scene.build();
-    std::vector<const DecorationInstance*> masked;
-    for (const DecorationInstance& rule : scene.decorationsOut) {
-        if (rule.skipInk > 0.5f)
-            masked.push_back(&rule);
-    }
-    REQUIRE_MSG(masked.size() == 2, "the ideographic rule is cut one column at a time");
-    CHECK_MSG(masked[0]->bottomRightInPixels.x - masked[0]->topLeftInPixels.x == advance, "each rule is one cell wide");
-    CHECK_MSG(masked[1]->inkTopLeft.x - masked[0]->inkTopLeft.x == advance,
+    const std::vector<const SkipInkTrace*> masked = scene.tested();
+    REQUIRE_MSG(masked.size() == 2, "the ideographic rule is tested one column at a time");
+    CHECK_MSG(masked[0]->rule.right - masked[0]->rule.left == advance, "each rule is one cell wide");
+    CHECK_MSG(masked[1]->query.own.inkLeft - masked[0]->query.own.inkLeft == advance,
         "and taps the slot one cell along from the column before it");
 }
 
@@ -534,16 +539,12 @@ TEST(aWideGlyphsColumnTapIsMeasuredInSlotTexelsUnderCharacterSpacing)
     cellSetPen(scene.cells[1], continuation);
 
     scene.build();
-    std::vector<const DecorationInstance*> masked;
-    for (const DecorationInstance& rule : scene.decorationsOut) {
-        if (rule.skipInk > 0.5f)
-            masked.push_back(&rule);
-    }
-    REQUIRE_MSG(masked.size() >= 2, "the rule is cut one column at a time");
-    CHECK_MSG(masked[0]->bottomRightInPixels.x - masked[0]->topLeftInPixels.x == pitch, "each rule is one cell of the pitch wide on screen");
-    CHECK_MSG(masked[0]->inkBottomRight.x - masked[0]->inkTopLeft.x == pitch, "and taps the same span of the unstretched slot");
-    CHECK_MSG(masked[1]->inkTopLeft.x - masked[0]->inkTopLeft.x == pitch, "the second column's tap one pitch along from the first's");
-    CHECK_MSG(masked[0]->inkTopLeft.x - masked[0]->glyphSlotTopLeftUV.x == margin, "the first starting a margin into the slot, where the pen is");
+    const std::vector<const SkipInkTrace*> masked = scene.tested();
+    REQUIRE_MSG(masked.size() >= 2, "the rule is tested one column at a time");
+    CHECK_MSG(masked[0]->rule.right - masked[0]->rule.left == pitch, "each rule is one cell of the pitch wide on screen");
+    CHECK_MSG(masked[0]->query.own.inkRight - masked[0]->query.own.inkLeft == pitch, "and taps the same span of the unstretched slot");
+    CHECK_MSG(masked[1]->query.own.inkLeft - masked[0]->query.own.inkLeft == pitch, "the second column's tap one pitch along from the first's");
+    CHECK_MSG(masked[0]->query.own.inkLeft - masked[0]->query.own.slotLeft == margin, "the first starting a margin into the slot, where the pen is");
 }
 
 UBIQUITTY_TEST_MAIN()

@@ -79,7 +79,7 @@ inline constexpr bool underlineSkipInk = true;
 // the cell box. AppKit and CSS stop at the advance; the ink is what the eye
 // reads as the word's end, and the product's choice.
 inline constexpr bool underlineFollowsInk = true; // bool-ok: mirrors a boolean config key
-inline constexpr double underlineSkipInkPad = 1.75; // skip-ink halo radius, pt
+inline constexpr double underlineSkipInkPad = 1.0; // skip-ink gap beside touching ink, pt
 inline constexpr bool underlineLinks = true;
 inline constexpr int linkUnderlineStyle = 0; // 0 = solid/single
 inline constexpr bool linkColorSystemBlue = false;

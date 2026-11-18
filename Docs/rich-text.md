@@ -828,11 +828,11 @@ offset applied, each weight a whole number of device rows and each top a
 whole device pixel. The frame's rule settings ride on the block's quad and
 move its key. The macOS raster strokes the rows Core places, under the
 glyphs, and sets every grapheme on a whole-pixel baseline as the grid sets
-its own. With skip-ink on, Core's ink test cuts an underline as the grid's
-shader cuts a cell's: each pixel loses the strongest glyph coverage within
-the grid's reach of it, looking no higher than the rule's top row, so a
-descender opens a gap and a letter sitting on the baseline leaves the rule
-whole. On Linux, Pango draws its own run-level decorations, which meet the
+its own. With skip-ink on, Core cuts an underline by the rule it cuts the
+grid's with (`Core/Rendering/SkipInk.h`): a pixel is cut whole where glyph
+ink touches the rule within the skip-ink padding of it, looking no higher
+than the rule's top row, so a descender opens a gap and a letter sitting on
+the baseline leaves the rule whole. On Linux, Pango draws its own run-level decorations, which meet the
 continuity rule.
 Raster backends rasterise the block once per key into a retained layer and
 composite it as they composite an image, over the covered cells; a frame whose

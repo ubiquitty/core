@@ -277,7 +277,7 @@ TEST(testDefaultsWhenEmpty)
     CHECK(c.bellVisual.value_or(Ubiquitty::Preferences::Defaults::bellVisual) == false);
     CHECK_EQ(c.underlineThickness.value_or(Ubiquitty::Preferences::Defaults::underlineThickness), 1.0);
     CHECK(c.underlineSkipInk.value_or(Ubiquitty::Preferences::Defaults::underlineSkipInk) == true);
-    CHECK_EQ(c.underlineSkipInkPad.value_or(Ubiquitty::Preferences::Defaults::underlineSkipInkPad), 1.75);
+    CHECK_EQ(c.underlineSkipInkPad.value_or(Ubiquitty::Preferences::Defaults::underlineSkipInkPad), 1.0);
     CHECK(c.notifications.value_or(Ubiquitty::Preferences::Defaults::notifications) == true); // OS notifications default on
     CHECK(c.notificationSound.value_or(Ubiquitty::Preferences::Defaults::notificationSound) == true); // banner sound default on
     CHECK(c.clipboardRead.value_or("prompt") == "prompt"); // OSC 52 read gate defaults to prompt

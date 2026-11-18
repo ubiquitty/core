@@ -210,6 +210,7 @@ Source/Core/Rendering/ProportionalStrikeData.cpp
 Source/Core/Rendering/ProportionalStripRaster.cpp
 Source/Core/Rendering/RenderPlan.cpp
 Source/Core/Rendering/ShapedCellCache.cpp
+Source/Core/Rendering/SkipInk.cpp
 Source/Core/Rendering/SoftwareRenderer.cpp
 Source/Core/Rendering/StatusRow.cpp
 Source/Core/Rendering/TerminalFrameInputs.cpp

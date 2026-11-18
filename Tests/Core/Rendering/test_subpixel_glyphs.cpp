@@ -957,9 +957,12 @@ TEST(trackingMovesMonoPensWithoutStretchingSlotOrMeasuredInk)
             std::array<CellInstance, columns> cells;
             std::array<DecorationInstance, columns * 8> decorations;
             std::array<GlyphInstance, columns> glyphs;
+            std::array<SkipInkTrace, columns> traces;
             InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
             buffers.glyphs = glyphs.data();
             buffers.glyphCapacity = glyphs.size();
+            buffers.skipInkTraces = traces.data();
+            buffers.skipInkTraceCapacity = traces.size();
 
             for (bool measured : { false, true }) { // bool-ok: exercise both sides of the rendering fixture.
                 if (measured) {
@@ -968,7 +971,7 @@ TEST(trackingMovesMonoPensWithoutStretchingSlotOrMeasuredInk)
                 }
                 const auto counts = buildCellInstances(inputs, UbiquittyTest::glyphBackendFor(atlas), buffers);
                 REQUIRE(counts.glyphs == 2);
-                REQUIRE(counts.decorations == 2);
+                REQUIRE(counts.skipInkRules == 2);
                 for (int index = 0; index < 2; ++index) {
                     const int column = 1 + 2 * index;
                     const auto pen = phaseForPen(inputs.originInPixels.x + column * inputs.metrics.cellWidth, 4, PhaseRounding::Floor);
@@ -977,13 +980,13 @@ TEST(trackingMovesMonoPensWithoutStretchingSlotOrMeasuredInk)
                     CHECK(approx(glyph.originInPixels.x, static_cast<float>(pen.snappedPenX) + offset * deviceScale));
                     CHECK(approx(glyph.sizeInPixels.x, (measured ? 4.0f : 8.0f) * deviceScale));
                     CHECK(approx(glyph.sizeInPixels.x / (glyph.atlasBottomRight.x - glyph.atlasTopLeft.x), deviceScale));
-                    const auto& rule = decorations[static_cast<std::size_t>(index)];
-                    CHECK(rule.skipInk > 0.5f);
+                    const SkipInkSource& rule = traces[static_cast<std::size_t>(index)].query.own;
+                    CHECK(rule.isPresent);
                     const float cellLeft = inputs.originInPixels.x + column * inputs.metrics.cellWidth;
-                    CHECK(approx(rule.inkTopLeft.x - rule.glyphSlotTopLeftUV.x,
+                    CHECK(approx(rule.inkLeft - rule.slotLeft,
                         1.0f + (cellLeft - static_cast<float>(pen.snappedPenX)) / deviceScale));
-                    CHECK(approx(rule.inkBottomRight.x - rule.inkTopLeft.x, 6.0f + tracking));
-                    CHECK(approx(rule.glyphSlotBottomRightUV.x - rule.glyphSlotTopLeftUV.x, 8.0f));
+                    CHECK(approx(rule.inkRight - rule.inkLeft, 6.0f + tracking));
+                    CHECK(approx(rule.slotRight - rule.slotLeft, 8.0f));
                 }
             }
             CHECK(!atlas.monoCalls.empty());
@@ -1100,24 +1103,28 @@ TEST(trackingKeepsWideGlyphAndSkipInkAtTheSameAtlasScale)
     std::array<CellInstance, 4> cells;
     std::array<DecorationInstance, 32> rules;
     std::array<GlyphInstance, 4> glyphs;
+    std::array<SkipInkTrace, 4> traces;
     InstanceBuffers buffers { cells.data(), cells.size(), rules.data(), rules.size() };
     buffers.wideGlyphs = glyphs.data();
     buffers.wideGlyphCapacity = glyphs.size();
+    buffers.skipInkTraces = traces.data();
+    buffers.skipInkTraceCapacity = traces.size();
     for (float scale : { 0.5f, 1.0f, 2.0f }) {
         inputs.metrics.atlasToDevicePixels = scale;
         inputs.metrics.cellWidth = 10.5f * scale;
         const auto counts = buildCellInstances(inputs, backend, buffers);
         REQUIRE(counts.wideGlyphs == 1);
-        REQUIRE(counts.decorations == 2);
+        REQUIRE(counts.skipInkRules == 2);
         CHECK(approx(glyphs[0].sizeInPixels.x, 18.0f * scale));
         CHECK(approx(glyphs[0].originInPixels.x, std::floor(inputs.metrics.cellWidth) - scale));
         for (int index = 0; index < 2; ++index) {
-            CHECK(rules[index].skipInk > 0.5f);
-            CHECK(approx(rules[index].inkBottomRight.x - rules[index].inkTopLeft.x, 10.5f));
+            const SkipInkSource& own = traces[static_cast<std::size_t>(index)].query.own;
+            CHECK(own.isPresent);
+            CHECK(approx(own.inkRight - own.inkLeft, 10.5f));
             const float cellLeft = static_cast<float>(index + 1) * inputs.metrics.cellWidth;
-            CHECK(approx(rules[index].inkTopLeft.x - glyphs[0].atlasTopLeft.x,
+            CHECK(approx(own.inkLeft - glyphs[0].atlasTopLeft.x,
                 (cellLeft - glyphs[0].originInPixels.x) / scale));
-            CHECK(approx(rules[index].glyphSlotBottomRightUV.x - rules[index].glyphSlotTopLeftUV.x, 18.0f));
+            CHECK(approx(own.slotRight - own.slotLeft, 18.0f));
         }
     }
     CHECK(atlas.rasterizations > 0);

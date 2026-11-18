@@ -640,6 +640,13 @@ public:
     /// them across the language seam in cells.
     [[nodiscard]] float cellWidthInPixels() const { return m_frame->metrics().cellWidth; }
 
+    /// The clearance an underline's skip-ink cut keeps beside the glyph ink
+    /// that cuts it, in the captured frame's device pixels: what the build
+    /// decides the cut with, for a probe across the language seam.
+    ///
+    /// - Returns: The style-adjusted padding; zero when skip-ink keeps none.
+    [[nodiscard]] float skipInkPaddingInPixels() const { return m_frame->metrics().skipInkPadding; }
+
     /// The absolute row index of the top visible row.
     [[nodiscard]] int firstAbsoluteRow() const { return m_frame->firstAbsoluteRow(); }
 

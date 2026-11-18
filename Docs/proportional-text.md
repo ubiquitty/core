@@ -525,7 +525,7 @@ unhinted printable-ASCII advances) and every arm follows one rule
   resolve a pixel to the letter under it through the frame
   (`FrameCapture::columnAt`, `xInCellsAt`, `letterExtent`), and the caret the
   ladder rounds to is a letter boundary; the background, an underline, a
-  strikethrough and a skip-ink tap span the letter. The frame keeps every
+  strikethrough and the ink a skip-ink cut reads span the letter. The frame keeps every
   row's letters (`InstanceBuffers::letters`) and no frontend recomputes a
   layout: the Swift surface, the GTK pane and the page each ask the renderer
   that drew the frame.

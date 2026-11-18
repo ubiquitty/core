@@ -86,7 +86,7 @@ std::string defaultFileContents()
            "# offset = 0              # extra points below the baseline (+down)\n"
            "# skip_ink = true         # descenders break the underline rule\n"
            "# follows_ink = true      # a word's outer rule reaches the letter's ink past the cell\n"
-           "# skip_ink_pad = 1.75     # clean-gap halo radius around ink, points\n"
+           "# skip_ink_pad = 1.0      # gap kept beside ink that touches the rule, points\n"
            "# links = true            # OSC 8 link cells get an underline\n"
            "# link_style = 0          # link underline: 0 = solid (default), 1 = dotted\n"
            "# link_color_blue = false # force link text + underline to system blue (web-style)\n"

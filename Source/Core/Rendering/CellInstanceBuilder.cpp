@@ -24,6 +24,7 @@
 #include "Core/Rendering/OverlayGeometry.h"
 #include "Core/Rendering/ProportionalRun.h"
 #include "Core/Rendering/RuleGeometry.h"
+#include "Core/Rendering/SkipInk.h"
 #include "Core/Rendering/SubpixelPhase.h"
 
 #include "Core/RenderCell.h"
@@ -316,6 +317,14 @@ private:
         for (std::size_t index = begin; decorations && index < end; ++index) {
             DecorationInstance& decoration = decorations[index];
             const Span part = kept(decoration.topLeftInPixels.x, decoration.bottomRightInPixels.x);
+            // An end this clip moves is the band's edge now, not the ink's
+            // cut, and is drawn by the centre rule as any rule edge is.
+            std::uint32_t cutEnds = static_cast<std::uint32_t>(decoration.cutEnds);
+            if (part.left > decoration.topLeftInPixels.x)
+                cutEnds &= ~skipInkCutLeftEnd;
+            if (part.right < decoration.bottomRightInPixels.x)
+                cutEnds &= ~skipInkCutRightEnd;
+            decoration.cutEnds = static_cast<float>(cutEnds);
             decoration.topLeftInPixels.x = part.left;
             decoration.bottomRightInPixels.x = std::max(part.left, part.right);
         }
@@ -842,24 +851,11 @@ AtlasGlyph softFontGlyph(const GlyphBackend& atlas, const MonoAtlasBinding& mono
     return { { uv.minU, uv.minV }, { uv.maxU, uv.maxV }, true };
 }
 
-/// One cell's glyph coverage, as the skip-ink cut samples it.
+/// One cell's glyph coverage, as the skip-ink cut reads it.
 ///
-/// `inkMinUV`/`inkMaxUV` are the glyph BOX; `boxMinUV`/`boxMaxUV` the full slot
-/// the dilation taps clamp to. Absent for a cell carrying no maskable ink.
-enum class SkipInkSheet : std::uint8_t {
-    Mono,
-    ProportionalStrip,
-    LigatureStrip,
-    /// The dedicated proportional sheet: a run drawn glyph by glyph has each
-    /// glyph's ink in a slot of its own, so a rule under it taps the slot of
-    /// the glyph beneath each cell rather than one strip over the claim.
-    Proportional,
-    /// The two-cell sheet: each column of a wide glyph taps its own half of
-    /// the glyph's slot, so a rule under CJK is cut by the strokes above it
-    /// as a rule under Latin is by descenders.
-    Wide,
-};
-
+/// `inkMinUV`/`inkMaxUV` are the glyph BOX the rule is mapped onto;
+/// `boxMinUV`/`boxMaxUV` the full slot, past which the sheet holds other
+/// glyphs. Absent for a cell carrying no maskable ink.
 struct SkipInkTap {
     Vec2 inkMinUV { 0.0f, 0.0f };
     Vec2 inkMaxUV { 0.0f, 0.0f };
@@ -1352,6 +1348,9 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
         return counts;
     atlas.beginFrame(atlas.context);
     const MonoAtlasBinding mono = atlas.bindMonoAtlas(atlas.context);
+    // Every sheet's ink, as skip-ink reads it; a backend without the entry
+    // draws its rules uncut.
+    const SkipInkPlanes skipInkPlanes = atlas.bindSkipInkPlanes ? atlas.bindSkipInkPlanes(atlas.context) : SkipInkPlanes {};
     if (mono.phaseCount > 0)
         in.subpixelPhaseCount = std::clamp(mono.phaseCount, 1, subpixelPhaseCount);
     if (!in.cells || !in.palette || in.rows <= 0 || in.columns <= 0)
@@ -1715,96 +1714,130 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
 
     // Push one decoration rule. `top`/`bottom` are device-px y; the rule spans
     // the cell's advance box (cellLeft..cellRight) so a run reads as one
-    // continuous line. A present mask attaches the skip-ink coverage band so
-    // glyph ink crossing it cuts a clean gap (underline rules only).
+    // continuous line. A present mask tests an underline against the ink of
+    // the cell's glyph and its neighbours' (SkipInk.h) and pushes the pieces
+    // the ink leaves standing; every piece carries the whole rule as its band.
     // The cell's own coverage tap and its two neighbours', refreshed per cell.
     // Held out here so the rule emitter reads them without seventeen call sites
     // threading four rects each.
     SkipInkTap selfTap, leftTap, rightTap;
-    // The halo radius in atlas UV, and how many taps the shader spends walking
-    // it. One tap per device pixel of radius keeps the dilation continuous as
-    // the pad grows; a fixed count leaves gaps and stripes the cut.
-    const SkipInkReach skipInkReachInDevicePixels = skipInkReach(metrics.skipInkPadding);
+    // Whether the underline goes on into the cell either side of the one the
+    // walk is at: a stretch of it a cut leaves is judged across that edge.
+    bool isUnderlineContinuedLeft = false;
+    bool isUnderlineContinuedRight = false;
+    // Skip-ink's reach in the atlas texels the taps are in: the padding
+    // across, and the row adjacent to the rule up and down.
     const float atlasToDevice = atlasToDeviceScale(metrics);
-    const Vec2 skipInkPadInAtlasPixels { skipInkReachInDevicePixels.horizontal / atlasToDevice, skipInkReachInDevicePixels.vertical / atlasToDevice };
-    const float skipInkTaps = static_cast<float>(skipInkReachInDevicePixels.steps);
+    const float skipInkPadding = metrics.skipInkPadding > 0.0f && std::isfinite(metrics.skipInkPadding) ? metrics.skipInkPadding : 0.0f;
+    const float skipInkReachAcross = skipInkPadding / atlasToDevice;
+    const float skipInkReachUpDown = skipInkContactInDevicePixels / atlasToDevice;
+    SkipInkScratch skipInkScratch;
     enum class InkMask {
         Absent,
         Present,
     };
+    // The pitch a patterned rule repeats at, in whole device pixels so every
+    // mark sits on the pixel grid: two weights for a dot and its gap, five for
+    // a dash and its (dottedRuleOnShare, dashedRuleOnShare). A curl keeps one
+    // wave a cell, and a solid rule has none.
+    const auto patternPitch = [&](DecorationKind kind, float weight) {
+        if (!(weight > 0.0f) || (kind != DecorationKind::Dotted && kind != DecorationKind::Dashed))
+            return metrics.cellWidth;
+        return snappedRuleWeight(weight) * (kind == DecorationKind::Dotted ? 2.0f : 5.0f);
+    };
     auto emitRule = [&](DecorationSite site, float cellLeft, float cellRight, float cellTop, float cellHeight, float top, float bottom, Vec4 color, DecorationKind kind, float thickness, InkMask mask) {
+        const float pitch = patternPitch(kind, bottom - top);
         // Recorded before the capacity check: the site was REACHED whether or
         // not the instance fitted, and a coverage answer that changed with the
         // caller's buffer size would report a scene as uncovered for running
         // out of room.
         counts.decorationSites |= static_cast<std::uint32_t>(site);
-        const std::size_t index = counts.decorations++;
-        if (index >= out.decorationCapacity || !out.decorations)
+        const auto emitPiece = [&](float left, float pieceTop, float right, float pieceBottom, std::uint32_t cutEnds) {
+            const std::size_t index = counts.decorations++;
+            if (index >= out.decorationCapacity || !out.decorations)
+                return;
+            DecorationInstance& d = out.decorations[index];
+            d.topLeftInPixels = { left, pieceTop };
+            d.bottomRightInPixels = { right, pieceBottom };
+            d.color = color;
+            d.kind = static_cast<float>(kind);
+            d.dashPeriodInPixels = pitch;
+            d.thicknessInPixels = thickness;
+            d.cutEnds = static_cast<float>(cutEnds);
+            d.bandTopLeftInPixels = { cellLeft, top };
+            d.bandBottomRightInPixels = { cellRight, bottom };
+        };
+        if (mask == InkMask::Absent) {
+            emitPiece(cellLeft, top, cellRight, bottom, 0u);
             return;
-        DecorationInstance& d = out.decorations[index];
-        d.topLeftInPixels = { cellLeft, top };
-        d.bottomRightInPixels = { cellRight, bottom };
-        d.color = color;
-        d.kind = static_cast<float>(kind);
-        d.dashPeriodInPixels = metrics.cellWidth;
-        d.thicknessInPixels = thickness;
-        d.skipInk = mask == InkMask::Present ? 1.0f : 0.0f;
-        if (mask == InkMask::Present) {
-            // The band is the rule's own rect, so every pixel of the rule
-            // samples the ink at its own height and the halo is measured from
-            // where the rule is drawn. A curl's crest or a dot's top sits above
-            // the line; a band squeezed to the stroke at the line's middle
-            // mapped those pixels onto ink rows below them, leaving a crest
-            // standing against a letter it touched. A rule under a pixel tall
-            // still samples one whole row of coverage.
-            const float midY = (top + bottom) * 0.5f;
-            const float halfBand = (bottom - top) * 0.5f > 0.5f ? (bottom - top) * 0.5f : 0.5f;
-            const float bandTop = midY - halfBand;
-            const float bandBottom = midY + halfBand;
-            const float fractionTop = cellHeight > 0.0f ? (bandTop - cellTop) / cellHeight : 0.0f;
-            const float fractionBottom = cellHeight > 0.0f ? (bandBottom - cellTop) / cellHeight : 0.0f;
-            // The band's v range, mapped onto whichever cell's slot it samples.
-            // A neighbour's glyph occupies its own slot, so the same fractions
-            // are re-derived against that slot rather than reused.
-            auto bandInSlot = [&](const SkipInkTap& tap) {
-                const float span = tap.inkMaxUV.y - tap.inkMinUV.y;
-                return Vec4 { tap.inkMinUV.x, tap.inkMaxUV.x,
-                    tap.inkMinUV.y + fractionTop * span, tap.inkMinUV.y + fractionBottom * span };
-            };
-            d.inkTopLeft = { selfTap.inkMinUV.x, selfTap.inkMinUV.y + fractionTop * (selfTap.inkMaxUV.y - selfTap.inkMinUV.y) };
-            d.inkBottomRight = { selfTap.inkMaxUV.x, selfTap.inkMinUV.y + fractionBottom * (selfTap.inkMaxUV.y - selfTap.inkMinUV.y) };
-            // Already the atlas pixels the name says; the reach's shape is
-            // skipInkReach's.
-            d.padInAtlas = skipInkPadInAtlasPixels;
-            // Three base-8 digits identify the self, left, and right sheets:
-            // mono 0, proportional strip 1, ligature strip 2, the proportional
-            // glyph sheet 3, the two-cell sheet 4. The complete value is at
-            // most 511, which a float represents exactly.
-            const float sheetSelectors = static_cast<float>(selfTap.sheet)
-                + 8.0f * static_cast<float>(leftTap.sheet)
-                + 64.0f * static_cast<float>(rightTap.sheet);
-            d.pad1 = { skipInkTaps, sheetSelectors };
-            // The own-cell clamp, so a dilation tap reaching past the slot
-            // cannot sample the glyph stored beside it.
-            d.glyphSlotTopLeftUV = selfTap.boxMinUV;
-            d.glyphSlotBottomRightUV = selfTap.boxMaxUV;
-            // A zeroed *Box marks an absent neighbour, which is what a cell at
-            // the grid edge and a blank neighbour both report.
-            d.leftInk = leftTap.present ? bandInSlot(leftTap) : Vec4 { 0.0f, 0.0f, 0.0f, 0.0f };
-            d.leftBox = leftTap.present ? Vec4 { leftTap.boxMinUV.x, leftTap.boxMinUV.y, leftTap.boxMaxUV.x, leftTap.boxMaxUV.y } : Vec4 { 0.0f, 0.0f, 0.0f, 0.0f };
-            d.rightInk = rightTap.present ? bandInSlot(rightTap) : Vec4 { 0.0f, 0.0f, 0.0f, 0.0f };
-            d.rightBox = rightTap.present ? Vec4 { rightTap.boxMinUV.x, rightTap.boxMinUV.y, rightTap.boxMaxUV.x, rightTap.boxMaxUV.y } : Vec4 { 0.0f, 0.0f, 0.0f, 0.0f };
-        } else {
-            d.inkTopLeft = { 0.0f, 0.0f };
-            d.inkBottomRight = { 0.0f, 0.0f };
-            d.padInAtlas = { 0.0f, 0.0f };
-            d.pad1 = { 0.0f, 0.0f };
-            d.glyphSlotTopLeftUV = { 0.0f, 0.0f };
-            d.glyphSlotBottomRightUV = { 0.0f, 0.0f };
-            d.leftInk = { 0.0f, 0.0f, 0.0f, 0.0f };
-            d.leftBox = { 0.0f, 0.0f, 0.0f, 0.0f };
-            d.rightInk = { 0.0f, 0.0f, 0.0f, 0.0f };
-            d.rightBox = { 0.0f, 0.0f, 0.0f, 0.0f };
+        }
+        ++counts.skipInkRules;
+        // The band is the rule's own rect, so every pixel of the rule is
+        // tested against the ink at its own height. A curl's crest or a dot's
+        // top sits above the line; a band squeezed to the stroke at the line's
+        // middle mapped those pixels onto ink rows below them, leaving a crest
+        // standing against a letter it touched. A rule under a pixel tall
+        // still reads one whole row of coverage.
+        const float midY = (top + bottom) * 0.5f;
+        const float halfBand = (bottom - top) * 0.5f > 0.5f ? (bottom - top) * 0.5f : 0.5f;
+        const float fractionTop = cellHeight > 0.0f ? (midY - halfBand - cellTop) / cellHeight : 0.0f;
+        const float fractionBottom = cellHeight > 0.0f ? (midY + halfBand - cellTop) / cellHeight : 0.0f;
+        // A raster mapped onto the rule: the band's rows onto the slot's
+        // cell box, and the rule's width onto the box `boxesBefore` boxes to
+        // its left, so a neighbour's glyph is read where it stands.
+        const auto sourceOf = [&](const SkipInkTap& tap, float boxesBefore) {
+            SkipInkSource source;
+            if (!tap.present)
+                return source;
+            const float down = tap.inkMaxUV.y - tap.inkMinUV.y;
+            source.sheet = tap.sheet;
+            source.inkLeft = tap.inkMinUV.x;
+            source.inkRight = tap.inkMaxUV.x;
+            source.bandTop = tap.inkMinUV.y + fractionTop * down;
+            source.bandBottom = tap.inkMinUV.y + fractionBottom * down;
+            source.boxesBefore = boxesBefore;
+            source.slotLeft = tap.boxMinUV.x;
+            source.slotTop = tap.boxMinUV.y;
+            source.slotRight = tap.boxMaxUV.x;
+            source.slotBottom = tap.boxMaxUV.y;
+            source.isPresent = true;
+            return source;
+        };
+        SkipInkQuery query;
+        query.own = sourceOf(selfTap, 0.0f);
+        query.left = sourceOf(leftTap, 1.0f);
+        query.right = sourceOf(rightTap, -1.0f);
+        query.reachAcross = skipInkReachAcross;
+        query.reachUpDown = skipInkReachUpDown;
+        // A stretch of line shorter than it is thick reads as a speck; an arc
+        // of a curl shorter than half its wavelength reads as a blip. A dotted
+        // rule's dots are kept whole instead, and a dashed rule's dashes never
+        // left shorter than they are thick.
+        const float weight = bottom - top;
+        query.shortestPiece = kind == DecorationKind::Curly ? metrics.cellWidth * 0.5f : (kind == DecorationKind::Dotted ? 0.0f : weight);
+        if (kind == DecorationKind::Dotted)
+            query.pattern = { .pitch = pitch, .origin = in.originInPixels.x, .offset = 0.0f, .length = pitch * dottedRuleOnShare, .shortest = pitch * dottedRuleOnShare };
+        else if (kind == DecorationKind::Dashed)
+            query.pattern = { .pitch = pitch, .origin = in.originInPixels.x, .offset = 0.0f, .length = pitch * dashedRuleOnShare, .shortest = weight };
+        query.continuesLeft = isUnderlineContinuedLeft;
+        query.continuesRight = isUnderlineContinuedRight;
+        const SkipInkRule rule { .left = cellLeft, .top = top, .right = cellRight, .bottom = bottom };
+        const bool isCut = markSkipInkCuts(skipInkPlanes, query, rule, skipInkScratch.cut, skipInkScratch);
+        const std::size_t firstPiece = counts.decorations;
+        if (isCut) {
+            ++counts.skipInkCutRules;
+            forEachKeptPiece(rule, skipInkScratch.cut, skipInkScratch, emitPiece);
+        } else
+            emitPiece(cellLeft, top, cellRight, bottom, 0u);
+        // The trace a harness or a dump asked for, one entry a tested rule.
+        const std::size_t traceIndex = counts.skipInkRules - 1;
+        if (out.skipInkTraces && traceIndex < out.skipInkTraceCapacity) {
+            SkipInkTrace& trace = out.skipInkTraces[traceIndex];
+            trace.rule = rule;
+            trace.query = query;
+            trace.firstPiece = static_cast<std::uint32_t>(firstPiece);
+            trace.pieceCount = static_cast<std::uint32_t>(counts.decorations - firstPiece);
+            trace.isCut = isCut;
         }
     };
 
@@ -5699,10 +5732,10 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     }
                     if (right <= left || bottom <= top)
                         return;
-                    const std::size_t index = counts.decorations;
+                    const std::size_t first = counts.decorations;
                     emitRule(site, left, right, std::round(areaOrigin.y), cellHeight * verticalScale,
                         top, bottom, color, kind, thickness * verticalScale, mask);
-                    if (index < out.decorationCapacity && out.decorations)
+                    for (std::size_t index = first; out.decorations && index < counts.decorations && index < out.decorationCapacity; ++index)
                         out.decorations[index].dashPeriodInPixels *= horizontalScale;
                 };
 
@@ -5773,6 +5806,17 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         return wideSkipInkTap(in, atlas, wide, mono.weight, rowBase, tapColumn, metrics, cellVariantStyle, rowLetters.empty() ? nullptr : rowLetters.data());
                     return resolveSkipInkTap(in, atlas, mono, rowBase, tapColumn, metrics, cellVariantStyle, rowLetters.empty() ? nullptr : rowLetters.data());
                 };
+                {
+                    const auto isUnderlined = [&](int neighbourColumn) {
+                        if (neighbourColumn < 0 || neighbourColumn >= in.columns)
+                            return false;
+                        const Pen& neighbourPen = in.cells[static_cast<std::size_t>(rowBase + neighbourColumn)].pen;
+                        return neighbourPen.attributes.contains(Ubiquitty::VT::Attribute::Underline)
+                            || penUnderlineShape(&neighbourPen) != Ubiquitty::VT::underlineNone;
+                    };
+                    isUnderlineContinuedLeft = isUnderlined(column - 1);
+                    isUnderlineContinuedRight = isUnderlined(column + 1);
+                }
                 if (metrics.skipInk && mono.cache) {
                     // The window rolls along a run of decorated cells: the
                     // predecessor's self tap is this cell's left, its right this
@@ -6076,20 +6120,19 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         break;
                     }
                     case Ubiquitty::VT::underlineDotted: {
-                        // The fragment fills the band with a ball of radius band/2,
-                        // so the band is the dot diameter. It tracks the cell width
-                        // so dots grow with the font, with a stroke-derived floor
-                        // that keeps them visible at small sizes.
-                        const float diameter = std::max(metrics.cellWidth * 0.225f, thick * 2.0f);
-                        const float dotDrop = diameter * 0.2f;
-                        emitMaskedRule(DecorationSite::UnderlineDotted, patternedRuleLeft, ruleRight, uy - diameter * 0.5f + dotDrop, uy + diameter * 0.5f + dotDrop, underlineColor, DecorationKind::Dotted, thick);
+                        // Square dots the single rule's weight, where the single
+                        // rule sits: the band is one dot's height, and the marks
+                        // across it are the pitch's own (dottedRuleOnShare), so a
+                        // dotted line is as dark as a solid one and its dots sit
+                        // on the pixel grid.
+                        const float t = snapped(thick);
+                        const float top = withinCell(singleUnderlineTop(uy, t, metrics.deviceScale));
+                        emitMaskedRule(DecorationSite::UnderlineDotted, patternedRuleLeft, ruleRight, top, top + t, underlineColor, DecorationKind::Dotted, thick);
                         break;
                     }
                     case Ubiquitty::VT::underlineDashed: {
                         // The dash shader fills the band in the "on" phase, so the
-                        // band is each dash's weight — a touch heavier than the
-                        // single rule, or the dashes read as a hairline beside the
-                        // round dots.
+                        // band is each dash's weight, the single rule's.
                         // The top sits on the pixel grid and the height is the
                         // weight itself. A band centred on a fractional position
                         // splits one dash across three rows and none of them
@@ -6099,7 +6142,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         // steps only, and the setting offers finer ones than
                         // that -- `everyUnderlineShapeAnswersASubPixelThicknessStep`
                         // is the claim, and a quarter-step is inside one row.
-                        const float dash = std::max(thick * 1.3f, 1.0f);
+                        const float dash = std::max(thick, 1.0f);
                         const float top = withinCell(std::max(std::round(uy - dash * 0.5f + 0.5f * metrics.deviceScale), std::round(uy)));
                         emitMaskedRule(DecorationSite::UnderlineDashed, patternedRuleLeft, ruleRight, top, top + dash, underlineColor, DecorationKind::Dashed, thick);
                         break;

@@ -168,34 +168,6 @@ struct UBIQUITTY_ESCAPABLE RuleFaceMetrics {
     return std::max(std::round(ruleLine - weight * 0.5f + 0.5f * deviceScale), std::round(ruleLine));
 }
 
-/// How far skip-ink looks for ink about each pixel of an underline, and in
-/// how many steps.
-struct UBIQUITTY_ESCAPABLE SkipInkReach {
-    /// Across, in device pixels: the full padding, which is what opens the
-    /// gap around a descender.
-    float horizontal = 0.0f;
-    /// Up and down, in device pixels: half the padding. The rule is already
-    /// thin and on its line, so ink that crosses it is caught without
-    /// reaching far; a full reach upward lets every letter sitting on the
-    /// baseline nibble the rule.
-    float vertical = 0.0f;
-    /// Taps from the centre to the edge of the reach along each axis.
-    int steps = 1;
-};
-
-/// Returns the reach of skip-ink's ink test for a padding: an ellipse of
-/// taps, one a device pixel of padding, between one and eight.
-/// Nonpositive or nonfinite padding has no reach, as a grid rule does.
-///
-/// - Parameter padding: The skip-ink padding, in device pixels.
-/// - Returns: The reach.
-[[nodiscard]] inline SkipInkReach skipInkReach(float padding)
-{
-    if (!(padding > 0.0f) || !std::isfinite(padding))
-        return {};
-    return { .horizontal = padding, .vertical = padding * 0.5f, .steps = static_cast<int>(std::min(std::max(std::ceil(padding), 1.0f), 8.0f)) };
-}
-
 /// Returns the top row of a strike, which rides the x-height's midpoint.
 ///
 /// - Parameters:

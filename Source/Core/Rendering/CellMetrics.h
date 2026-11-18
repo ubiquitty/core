@@ -48,7 +48,7 @@ struct UBIQUITTY_ESCAPABLE CellMetrics {
     float xHeight = 0.0f; // px; strike rides baseline - xHeight*0.5
     bool skipInk = false; // cut underlines where glyph ink (descenders) crosses
     bool shouldUnderlineFollowInk = false; // a run's outer rule reaches the letter's ink past the cell box
-    float skipInkPadding = 1.0f; // device-pixel dilation around crossing ink
+    float skipInkPadding = 1.0f; // gap kept beside ink that touches a rule, device pixels
     /// Device pixels per atlas pixel, independent of the cell's tracking.
     ///
     /// Glyph ink uses this scale while its pen advances by `cellWidth`. The

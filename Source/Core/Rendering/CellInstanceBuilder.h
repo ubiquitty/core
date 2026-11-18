@@ -20,6 +20,7 @@
 #include "Core/Rendering/OverlayAssembly.h"
 #include "Core/Rendering/OverlayGeometry.h"
 #include "Core/Rendering/ShadeStyle.h"
+#include "Core/Rendering/SkipInk.h"
 #include "Core/Rendering/SubpixelPhase.h"
 #include "Core/TextSizeTable.h"
 #include "Core/VT/Constants.h"
@@ -56,6 +57,17 @@ enum class DecorationKind {
     Dashed = 2,
     Curly = 3,
 };
+
+/// The share of a patterned rule's pitch each mark covers, as every renderer
+/// draws it. A dotted rule's pitch is two weights, a square dot and a dot's
+/// width of gap; a dashed rule's five, three weights of dash and two of gap.
+/// Marks are anchored to the grid's left edge, not to a cell: mark `k` covers
+/// [origin + k * pitch, origin + k * pitch + share * pitch) in device pixels, so
+/// the marks run on across every cell's edge the same, at a whole-pixel pitch
+/// that keeps each mark on the pixel grid, and the grid draws the same marks
+/// wherever the surface places it.
+inline constexpr float dottedRuleOnShare = 0.5f;
+inline constexpr float dashedRuleOnShare = 0.6f;
 
 /// Whether an encoded decoration selector names this kind.
 ///
@@ -798,6 +810,11 @@ struct UBIQUITTY_NONESCAPABLE InstanceBuffers {
     std::size_t letterCapacity = 0;
     std::uint8_t* letterRows = nullptr;
     std::size_t letterRowCapacity = 0;
+    /// One entry a rule tested against glyph ink, for a harness or a dump;
+    /// null in a frontend's ordinary frame, which pays nothing for it. Indexed
+    /// like ``InstanceCounts::skipInkRules``, and written while it has room.
+    SkipInkTrace* skipInkTraces = nullptr;
+    std::size_t skipInkTraceCapacity = 0;
 };
 /// Which of the decoration pass's emit sites a frame reached, one bit each.
 ///
@@ -845,6 +862,13 @@ struct InstanceCounts {
     std::size_t proportionalGlyphs = 0;
     std::size_t proportionalStrips = 0;
     std::size_t decorations = 0;
+    /// Rules tested against glyph ink, and those the ink cut.
+    ///
+    /// Counted here rather than read off the stream: a cut rule is several
+    /// decorations and an uncut one is one, so the stream alone cannot say
+    /// whether skip-ink ran or whether it found anything to cut.
+    std::size_t skipInkRules = 0;
+    std::size_t skipInkCutRules = 0;
     std::size_t overlays = 0;
     std::size_t glyphs = 0;
     std::size_t colorGlyphs = 0;

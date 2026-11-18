@@ -1088,6 +1088,7 @@ CORE_SRCS=(
     "$ROOT/Source/Core/OSC/TextSizing.cpp"
     "$ROOT/Source/Core/RichText/Document.cpp"
     "$ROOT/Source/Core/RichText/Drawing.cpp"
+    "$ROOT/Source/Core/Rendering/SkipInk.cpp"
     "$ROOT/Source/Core/RichText/Layout.cpp"
     "$ROOT/Source/Core/RichText/RTFReader.cpp"
     "$ROOT/Source/Core/RichText/BlockStore.cpp"

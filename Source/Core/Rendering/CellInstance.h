@@ -112,43 +112,34 @@ struct UBIQUITTY_ESCAPABLE OverlayInstance {
     Vec4 background; // The other side of a background transition, including native coverage.
 };
 
-/// Underline / overline / strikethrough / box rule. The first 80 bytes (through
-/// pad1) are the rule geometry + OWN-cell skip-ink mask the current GPU shaders
-/// read; the trailing 80 bytes (OWN-cell slot clamp + cross-cell neighbour
-/// glyphs) are additive and zero-filled by the builder, so a shader reading only
-/// the first 80 bytes renders unchanged. Matches macOS DecorationInstance.
+/// Underline / overline / strikethrough / box rule, or one piece of one.
+///
+/// A rule glyph ink cuts (SkipInk.h) arrives as the pieces left standing, each
+/// its own instance: the piece is what is drawn, and the band is the whole
+/// rule it belongs to, which a dotted, dashed or curly rule's pattern is laid
+/// out across. Every piece of a rule carries the same band, so its dots and
+/// dashes fall where they would on the uncut rule, and a renderer draws a piece
+/// with no knowledge that the rule was cut. An uncut rule is one piece whose
+/// band is itself.
+///
+/// A piece's end where ink cut the rule lies wherever the cut does, inside a
+/// pixel as often as not, and is drawn there in part: the pixel takes the
+/// fraction of itself the piece covers, so the gap beside a stroke is the
+/// padding exactly, at whatever phase the glyph was drawn. An end on the
+/// rule's own edge is drawn by the centre rule, as an uncut rule is, so two
+/// cells' rules meeting at a fractional edge share no pixel.
 ///
 /// Escapable for the same reason as ``CellInstance``.
 struct UBIQUITTY_ESCAPABLE DecorationInstance {
-    Vec2 topLeftInPixels;
+    Vec2 topLeftInPixels; // the piece drawn
     Vec2 bottomRightInPixels;
     Vec4 color;
     float kind; // DECO_* selector (matches the shader)
     float dashPeriodInPixels; // pattern period for dotted / dashed / curly
     float thicknessInPixels; // stroke thickness (curl / box)
-    float skipInk; // 1 = cut the rule where glyph ink crosses it
-    Vec2 inkTopLeft; // glyph cell box in atlas pixels (skip-ink coverage tap)
-    Vec2 inkBottomRight;
-    Vec2 padInAtlas; // skip-ink dilation pad, atlas pixels
-    // .x: the dilation's tap count; .y: three base-8 sheet selectors for self,
-    // left, and right. Each digit is mono 0, proportional strip 1, ligature
-    // strip 2, the proportional glyph sheet 3, or the two-cell sheet 4, so a
-    // shaped run or a wide glyph samples the pixels it actually draws.
-    Vec2 pad1;
-    // OWN-cell full atlas-slot clamp: dilation taps reaching past the slot
-    // would sample a neighbour glyph, so the advanced skip-ink pass clamps to
-    // this rect. .x >= .y (a zeroed pair) marks "unset".
-    Vec2 glyphSlotTopLeftUV;
-    Vec2 glyphSlotBottomRightUV;
-    // Cross-cell skip-ink: an underline rule is per-cell, so the neighbouring
-    // cell's rule must cut a descender's halo leaning in from the adjacent cell.
-    // A zeroed *Box (.x >= .y) marks an absent neighbour.
-    //   *Ink = (cellBoxU min, cellBoxU max, band v top, band v bottom)
-    //   *Box = (slot clamp min.x, min.y, max.x, max.y)
-    Vec4 leftInk;
-    Vec4 leftBox;
-    Vec4 rightInk;
-    Vec4 rightBox;
+    float cutEnds; // which ends ink cut, drawn in part: 1 the left, 2 the right, 3 both
+    Vec2 bandTopLeftInPixels; // the whole rule: the pattern's frame
+    Vec2 bandBottomRightInPixels;
 };
 
 /// Per-frame uniforms shared by every pass.
@@ -277,24 +268,16 @@ static_assert(offsetof(OverlayInstance, plA) == 64);
 static_assert(offsetof(OverlayInstance, plB) == 80);
 static_assert(offsetof(OverlayInstance, background) == 96);
 
-static_assert(sizeof(DecorationInstance) == 160, "DecorationInstance stride must match the shader");
+static_assert(sizeof(DecorationInstance) == 64, "DecorationInstance stride must match the shader");
 static_assert(offsetof(DecorationInstance, topLeftInPixels) == 0);
 static_assert(offsetof(DecorationInstance, bottomRightInPixels) == 8);
 static_assert(offsetof(DecorationInstance, color) == 16);
+static_assert(offsetof(DecorationInstance, kind) == 32);
 static_assert(offsetof(DecorationInstance, dashPeriodInPixels) == 36);
 static_assert(offsetof(DecorationInstance, thicknessInPixels) == 40);
-static_assert(offsetof(DecorationInstance, skipInk) == 44);
-static_assert(offsetof(DecorationInstance, kind) == 32);
-static_assert(offsetof(DecorationInstance, inkTopLeft) == 48);
-static_assert(offsetof(DecorationInstance, inkBottomRight) == 56);
-static_assert(offsetof(DecorationInstance, padInAtlas) == 64);
-static_assert(offsetof(DecorationInstance, pad1) == 72);
-static_assert(offsetof(DecorationInstance, glyphSlotTopLeftUV) == 80);
-static_assert(offsetof(DecorationInstance, glyphSlotBottomRightUV) == 88);
-static_assert(offsetof(DecorationInstance, leftInk) == 96);
-static_assert(offsetof(DecorationInstance, leftBox) == 112);
-static_assert(offsetof(DecorationInstance, rightInk) == 128);
-static_assert(offsetof(DecorationInstance, rightBox) == 144);
+static_assert(offsetof(DecorationInstance, cutEnds) == 44);
+static_assert(offsetof(DecorationInstance, bandTopLeftInPixels) == 48);
+static_assert(offsetof(DecorationInstance, bandBottomRightInPixels) == 56);
 // The same pair that licences the pins above: `offsetof` on a non-standard-layout
 // type is ill-formed, so a member made non-trivial removes the asserts from the
 // language rather than changing what they answer.

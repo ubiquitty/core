@@ -262,12 +262,13 @@ struct UBIQUITTY_ESCAPABLE PixelRect {
 /// - Returns: The visible pixel rectangle, or an empty rectangle.
 [[nodiscard]] PixelRect clippedRuleRect(double left, double top, double right, double bottom, int width, int height);
 
-/// Writes the alpha skip-ink leaves each pixel of an underline: one less the
-/// strongest ink within ``Rendering::skipInkReach`` of it, sampled between
-/// pixels as the grid's shader samples its sheet, and no higher than the
-/// rule's top row. A descender crossing the rule opens a gap the padding wide
-/// each side of it; a letter that sits on the baseline leaves it whole,
-/// however close above the rule its overshoot comes.
+/// Writes the alpha skip-ink leaves each pixel of an underline: the part of
+/// the pixel the grid's cut (``Rendering::markSkipInkCuts``) leaves standing,
+/// 255 where none of it is cut and 0 where all of it is. Ink touching the rule
+/// in its own rows or the row below cuts it, exactly the padding wide each side
+/// of the ink's edge, which falls inside a pixel at the glyph's phase; ink above the rule's top row does not, so a letter
+/// that sits on the baseline leaves it whole however close above the rule its
+/// overshoot comes, and a descender crossing it opens a gap.
 ///
 /// Coverage that does not hold `inkWidth` by `inkHeight` bytes leaves the
 /// rule whole, and an alpha too short for the rule is left untouched.

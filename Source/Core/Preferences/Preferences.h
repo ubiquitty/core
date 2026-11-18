@@ -462,7 +462,7 @@ struct Values {
     std::optional<double> underlineOffset; // extra pt below baseline
     std::optional<bool> underlineSkipInk; // descenders break the rule
     std::optional<bool> underlineFollowsInk;
-    std::optional<double> underlineSkipInkPad; // halo radius, pt
+    std::optional<double> underlineSkipInkPad; // gap beside ink that touches the rule, pt
     std::optional<bool> underlineLinks; // OSC 8 link cells dotted-underlined
     std::optional<int> linkUnderlineStyle; // OSC 8 link underline: 0 = single, 1 = dotted
     std::optional<bool> linkColorSystemBlue; // force OSC 8 link text + underline to system blue

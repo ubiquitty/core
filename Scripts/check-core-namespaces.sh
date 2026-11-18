@@ -120,8 +120,8 @@ ROOT_STRAY_BUDGET=0
 # Declarations Core puts in the TRUE global namespace — outside every namespace
 # block, not merely outside a module's. Zero, and the budget is two-sided, so the
 # next one to arrive fails rather than joining a backlog.
-# Twelve: the retain/release pairs for GlyphSlotCache, FrameCapture,
-# TerminalSession, WorkspaceSession and HostedAppRuntime. HostedAppRuntime is
+# Fourteen: the retain/release pairs for GlyphSlotCache, SkipInkRecord,
+# FrameCapture, TerminalSession, WorkspaceSession and HostedAppRuntime. HostedAppRuntime is
 # header-only, so its pair is declared ahead of the class and defined inline
 # after it, and counts as four declarations. The Swift importer resolves the
 # functions named by SWIFT_SHARED_REFERENCE at global scope and nowhere else —
@@ -129,9 +129,9 @@ ROOT_STRAY_BUDGET=0
 # reads like a missing declaration rather than a scope rule. Moving them into
 # a namespace means dropping the annotation.
 #
-# Two-sided: a thirteenth global declaration fails, and so does removing one
-# of these twelve.
-GLOBAL_SCOPE_BUDGET=12
+# Two-sided: a fifteenth global declaration fails, and so does removing one
+# of these fourteen.
+GLOBAL_SCOPE_BUDGET=14
 
 KNOWN="$KNOWN" DECIDED="$DECIDED" EXEMPT="$EXEMPT" MODEL_ROOT="$MODEL_ROOT" ROOT_STRAY_BUDGET="$ROOT_STRAY_BUDGET" GLOBAL_SCOPE_BUDGET="$GLOBAL_SCOPE_BUDGET" python3 - <<'PY'
 import os

@@ -255,7 +255,7 @@ bool underlineSkipInk(const Values& c);
 /// - Parameter c: The config fold.
 /// - Returns: The setting, or its default.
 bool underlineFollowsInk(const Values& c);
-double underlineSkipInkPad(const Values& c); // authoritative default 1.75
+double underlineSkipInkPad(const Values& c); // authoritative default 1.0
 bool underlineLinks(const Values& c);
 int linkUnderlineStyle(const Values& c);
 

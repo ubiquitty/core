@@ -6,6 +6,7 @@
 #include "Base/SwiftInterop.h"
 #include "Core/Rendering/FontMetrics.h"
 #include "Core/Rendering/GlyphBackendTypes.h"
+#include "Core/Rendering/SkipInk.h"
 #include <algorithm>
 #include <cstdint>
 #include <span>
@@ -247,6 +248,19 @@ struct UBIQUITTY_NONESCAPABLE GlyphBackend {
     /// Read once per frame; the per-cell walk then uses the returned POD
     /// directly, which is why no per-cell call crosses this seam.
     MonoAtlasBinding (*bindMonoAtlas)(void* context) = nullptr;
+
+    /// Returns, once a frame, the ink of every sheet the frame's glyphs are
+    /// drawn from, as skip-ink reads it (SkipInk.h).
+    ///
+    /// Core decides where glyph ink cuts an underline and hands the renderer
+    /// the pieces left, so no renderer samples a glyph for a rule. A backend
+    /// whose sheets are on the CPU returns them as they are; one that uploads
+    /// them keeps a ``SkipInkRecord`` of each, written at the point it
+    /// uploads coverage, so the record holds what the sheet does.
+    /// The planes are read during the build, after any glyph it rasterises.
+    ///
+    /// Null, or a sheet left absent, draws the rules over that ink uncut.
+    SkipInkPlanes (*bindSkipInkPlanes)(void* context) = nullptr;
 
     /// Rasterises a code point into a slot the cache has already assigned.
     ///

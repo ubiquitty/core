@@ -533,8 +533,8 @@ TEST(skipInkCutsAnUnderlineOnlyWhereADescenderCrossesIt)
     std::vector<std::uint8_t> alpha(width * 2, 0);
     skipInkRuleAlpha(ink, width, height, rule, rule.top, 3.0f, alpha);
     const auto keep = [&](int x, int row) { return alpha[static_cast<std::size_t>(row * width + x)]; };
-    // Half the padding upward does not reach the stem's foot: the rule runs
-    // whole under the letter, as the grid's does.
+    // Ink above the rule's top row does not touch it: the rule runs whole
+    // under the letter, its faint foot included.
     for (int x = 0; x < 30; ++x) {
         CHECK_MSG(keep(x, 0) == 255, ("cut under the stem at x=" + std::to_string(x)).c_str());
         CHECK_MSG(keep(x, 1) == 255, ("cut under the stem at x=" + std::to_string(x)).c_str());
@@ -544,12 +544,9 @@ TEST(skipInkCutsAnUnderlineOnlyWhereADescenderCrossesIt)
         CHECK_MSG(keep(x, 0) < 64, ("no cut beside the descender at x=" + std::to_string(x)).c_str());
     CHECK_EQ(keep(35, 0), 255);
     CHECK_EQ(keep(47, 0), 255);
-    // The reach is the grid's: the full padding across, half of it up and
-    // down, one tap a pixel of padding.
-    const Ubiquitty::Rendering::SkipInkReach reach = Ubiquitty::Rendering::skipInkReach(3.0f);
-    CHECK_EQ(reach.horizontal, 3.0f);
-    CHECK_EQ(reach.vertical, 1.5f);
-    CHECK_EQ(reach.steps, 3);
+    // The cut is whole: no pixel of the rule is left half drawn.
+    for (std::uint8_t value : alpha)
+        CHECK(value == 0 || value == 255);
     // A rule a single row under the foot of a round letter: the foot's
     // overshoot comes within the reach upward but never into the rule.
     std::vector<std::uint8_t> round(width * height, 0);
@@ -674,13 +671,18 @@ TEST(skipInkRejectsUnrepresentableTapsBeforeIntegerConversion)
     skipInkRuleAlpha(ink, width, height, rule, rule.top, 0, zero);
     CHECK_EQ(zero[4], 0);
     CHECK_EQ(zero[0], 255);
-    // Nonfinite reaches normalize to zero; enormous finite taps fall
-    // outside the coverage and must not reach a float-to-int conversion.
-    for (const float padding : { -4.0f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::max() }) {
+    // Negative and nonfinite reaches normalize to zero.
+    for (const float padding : { -4.0f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN() }) {
         std::array<std::uint8_t, width> alpha {};
         skipInkRuleAlpha(ink, width, height, rule, rule.top, padding, alpha);
         CHECK(alpha == zero);
     }
+    // An enormous finite reach is what it says, the whole rule, and its
+    // coordinates never reach a float-to-int conversion out of range.
+    std::array<std::uint8_t, width> whole {};
+    whole.fill(255);
+    skipInkRuleAlpha(ink, width, height, rule, rule.top, std::numeric_limits<float>::max(), whole);
+    CHECK(std::ranges::all_of(whole, [](std::uint8_t value) { return value == 0; }));
 }
 
 TEST(coveredCellsTakeNoCellHighlight)

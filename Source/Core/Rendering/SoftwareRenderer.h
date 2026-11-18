@@ -14,6 +14,7 @@
 #include "Core/Rendering/LetterLayout.h"
 #include "Core/Rendering/LigatureSheet.h"
 #include "Core/Rendering/ProportionalGlyphSheet.h"
+#include "Core/Rendering/SkipInk.h"
 #include "Core/Rendering/UnifontRasterizer.h"
 
 #include <array>
@@ -309,6 +310,9 @@ public:
     ///   rasterizer applies no variable weight, so one key keeps key and raster
     ///   in agreement.
     MonoAtlasBinding bindMonoAtlas();
+    /// The sheets the frame's glyphs are drawn from, as skip-ink reads them:
+    /// the coverage planes themselves, which are on the CPU already.
+    [[nodiscard]] SkipInkPlanes skipInkPlanes() const;
 
     /// Binds the dedicated proportional sheet for one frame.
     [[nodiscard]] ProportionalAtlasBinding bindProportionalAtlas();
@@ -691,7 +695,7 @@ private:
     /// - Parameters:
     ///   - rgba: Destination pixels.
     ///   - surface: The destination's extent.
-    void compositeDecoration(const DecorationInstance&, std::vector<std::uint8_t>& rgba, IntSize surface) const;
+    void compositeDecoration(const DecorationInstance&, float patternOriginX, std::vector<std::uint8_t>& rgba, IntSize surface) const;
     /// Alpha-blends one overlay quad (the cursor) over the composited frame.
     ///
     /// A filled rect, or just the border when `strokeWidth > 0`. The blend is in

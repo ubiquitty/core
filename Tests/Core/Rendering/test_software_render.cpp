@@ -2579,11 +2579,17 @@ TEST(skipInkSamplesNativeAndBitmapCoverageAndBothWideColumns)
             input.metrics.skipInk = true;
             std::vector<std::uint8_t> masked;
             REQUIRE(renderer.render(input, masked, width, height));
+            // The stem cuts the rule under it whole, and the half-pixel
+            // padding takes half of each pixel beside it and nothing past
+            // them, on both kinds of face: Core decides the cut, and the
+            // face's sampling does not change it.
             for (int stem : { 3, 11 }) {
                 CHECK_EQ(at(unmasked, width, stem, 14).green, 255);
                 CHECK_EQ(at(masked, width, stem, 14).green, 0);
-                CHECK_EQ(at(masked, width, stem - 1, 14).green, isBitmapFace ? 0 : 128);
-                CHECK_EQ(at(masked, width, stem + 1, 14).green, isBitmapFace ? 255 : 128);
+                CHECK(std::abs(at(masked, width, stem - 1, 14).green - 128) <= 3);
+                CHECK(std::abs(at(masked, width, stem + 1, 14).green - 128) <= 3);
+                CHECK_EQ(at(masked, width, stem - 2, 14).green, 255);
+                CHECK_EQ(at(masked, width, stem + 2, 14).green, 255);
             }
         }
     }

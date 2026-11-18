@@ -3150,6 +3150,9 @@ TEST(testAProportionalRunDrawsOneStripQuadOnABackendThatShapesIt)
     buffers.decorationCapacity = decorations.size();
     buffers.proportionalStrips = strips.data();
     buffers.proportionalStripCapacity = strips.size();
+    std::vector<SkipInkTrace> traces(decorations.size());
+    buffers.skipInkTraces = traces.data();
+    buffers.skipInkTraceCapacity = traces.size();
     const InstanceCounts counts = buildCellInstances(in, UbiquittyTest::glyphBackendFor(atlas), buffers);
 
     const std::vector<std::uint32_t> text { 'C', 'a', 'n', 'c', 'e', 'l' };
@@ -3169,13 +3172,13 @@ TEST(testAProportionalRunDrawsOneStripQuadOnABackendThatShapesIt)
     CHECK(atlas.shapedResidual == 0.0f);
     CHECK(quad.atlasTopLeft.x == 0.5f && quad.atlasBottomRight.x == 0.75f);
     bool hasProportionalStripSkipInk = false;
-    for (const DecorationInstance& decoration : std::span(decorations.data(), std::min(counts.decorations, decorations.size()))) {
-        if (decoration.skipInk > 0.5f && static_cast<int>(decoration.pad1.y + 0.5f) % 8 == 1) {
+    for (const SkipInkTrace& trace : std::span(traces.data(), std::min(counts.skipInkRules, traces.size()))) {
+        if (trace.query.own.isPresent && trace.query.own.sheet == SkipInkSheet::ProportionalStrip) {
             hasProportionalStripSkipInk = true;
             break;
         }
     }
-    CHECK_MSG(hasProportionalStripSkipInk, "an underlined proportional strip samples its own coverage sheet");
+    CHECK_MSG(hasProportionalStripSkipInk, "an underlined proportional strip reads its own coverage sheet");
     // The anchor paints the run's six columns of background, one glyph-less
     // cell instance per column, the way a sized anchor paints its claim.
     int runBackgroundCells = 0;
