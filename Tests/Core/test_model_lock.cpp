@@ -83,7 +83,11 @@ public:
             while (!m_isStopping.load(std::memory_order_relaxed)) {
                 lock.lockForDrain();
                 spinFor(biteHold);
-                if (lock.unlockForDrain().handoff == ModelLockHandoff::Taken)
+                const auto acquisitions = lock.acquisitionCountForTest();
+                const auto release = lock.unlockForDrain();
+                // A waiter can acquire and uncount itself before the release
+                // reads the waiter count. Its completed turn is a handoff too.
+                if (release.handoff == ModelLockHandoff::Taken || lock.acquisitionCountForTest() != acquisitions)
                     m_handoffCount.fetch_add(1, std::memory_order_relaxed);
                 m_biteCount.fetch_add(1, std::memory_order_relaxed);
             }
