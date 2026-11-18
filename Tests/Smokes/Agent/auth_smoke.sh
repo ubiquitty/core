@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 #
-# Tests/Agent/auth_smoke.sh — the ubq capability-token auth path.
+# Tests/Smokes/Agent/auth_smoke.sh — the ubq capability-token auth path.
 #
 # Starts an isolated ubiquitty-host daemon with UBIQUITTY_REQUIRE_TOKEN=1, mints a
 # token via `ubiquitty-host token issue`, and drives the agent CLI with no / valid /
@@ -18,7 +18,7 @@
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 # shellcheck source=Scripts/build-root.sh
 . "$ROOT/Scripts/build-root.sh"
 HOST="${UBIQUITTY_HOST_BIN:-$UBQ_BUILD_ROOT/host/ubiquitty-host}"

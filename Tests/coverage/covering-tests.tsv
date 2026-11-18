@@ -1403,8 +1403,8 @@ Tests/Host/quic_user_identity.cpp	shell_quic_user_identity
 Tests/Host/region_read_text.cpp	shell_region_read_text
 Tests/Host/remote_clear_e2e.cpp	shell_remote_clear_e2e
 Tests/Host/remote_session_quic_resume.cpp	shell_remote_session_quic_resume
-Tests/Host/remote_session_smoke.cpp	shell_remote_session_smoke
-Tests/Host/remote_workspace_smoke.cpp	shell_remote_workspace_smoke
+Tests/Smokes/Host/remote_session_smoke.cpp	shell_remote_session_smoke
+Tests/Smokes/Host/remote_workspace_smoke.cpp	shell_remote_workspace_smoke
 Tests/Host/resize_clamp.cpp	shell_resize_clamp
 Tests/Host/resize_focus_frames.cpp	shell_resize_focus_frames
 Tests/Host/resize_storm.cpp	shell_resize_storm

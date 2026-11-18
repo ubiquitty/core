@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 #
-# Tests/Agent/ubq_smoke_cleanup.sh — a ubq_smoke the runner's limit ends leaves
+# Tests/Smokes/Agent/ubq_smoke_cleanup.sh — a ubq_smoke the runner's limit ends leaves
 # no daemon behind.
 #
 # Each daemon the smoke starts double-forks into a session of its own, so the
@@ -13,12 +13,12 @@
 # shorter than the smoke, so the limit ends it mid-run, then looks for any
 # ubiquitty-host whose home is under that run's temporary directory.
 #
-# Env: as Tests/Agent/ubq_smoke.sh (UBQ_BIN, UBIQUITTY_HOST_BIN,
+# Env: as Tests/Smokes/Agent/ubq_smoke.sh (UBQ_BIN, UBIQUITTY_HOST_BIN,
 # UBQ_CONSENT_PERSON_BIN).
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 # shellcheck source=Scripts/run-bounded.sh
 . "$ROOT/Scripts/run-bounded.sh"
 
@@ -61,7 +61,7 @@ PY
 
 # Long enough that the smoke has started its daemon and is mid-run, far short
 # of the smoke itself.
-UBQ_SMOKE_TMP="$PARENT" ubq_run_bounded "${UBQ_SMOKE_CLEANUP_LIMIT_SECONDS:-30}" bash "${UBQ_SMOKE_SCRIPT:-$ROOT/Tests/Agent/ubq_smoke.sh}" >"$PARENT/smoke.log" 2>&1
+UBQ_SMOKE_TMP="$PARENT" ubq_run_bounded "${UBQ_SMOKE_CLEANUP_LIMIT_SECONDS:-30}" bash "${UBQ_SMOKE_SCRIPT:-$ROOT/Tests/Smokes/Agent/ubq_smoke.sh}" >"$PARENT/smoke.log" 2>&1
 rc=$?
 [ "$rc" -eq 124 ] || fail "the smoke was not ended by the limit (exit $rc): $(tail -3 "$PARENT/smoke.log")"
 grep -q '^ubq-smoke: ok:' "$PARENT/smoke.log" || fail "the smoke started no daemon before the limit: $(tail -3 "$PARENT/smoke.log")"

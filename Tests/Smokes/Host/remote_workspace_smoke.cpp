@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Stanislav Yaglo
 // SPDX-License-Identifier: Apache-2.0
 //
-// Tests/Host/remote_workspace_smoke.cpp — a workspace over Sync, end to end,
+// Tests/Smokes/Host/remote_workspace_smoke.cpp — a workspace over Sync, end to end,
 // with the real client stack: Session::RemoteSessionCore over a real
 // Transport::SubprocessChannel bridged by `ubiquitty-host --attach` to a real
 // forked ubiquitty-host daemon. The stack the macOS app uses, minus ssh.

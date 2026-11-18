@@ -2935,7 +2935,7 @@ class ReachTests(unittest.TestCase):
             (["Source/Platform/macOS/UBRuntimeBridge.h"], (True, True, True, False, True)),
             (["Source/UbiquittyKit/Swift/TerminalSurface.swift"], (True, False, True, False, True)),
             (["Source/Platform/Linux/main.cpp"], (True, True, False, False, True)),
-            (["Tests/Web/page-smoke.mjs"], (True, True, False, False, True)),
+            (["Tests/Smokes/Web/page-smoke.mjs"], (True, True, False, False, True)),
             (["Tests/Snapshots/golden/native/coretext/frame.png"], (True, False, True, False, False)),
             (["Tests/Snapshots/golden/native/freetype/frame.png"], (True, True, False, False, False)),
             (["Tests/Snapshots/golden/portable/frame.png"], (True, True, True, False, False)),

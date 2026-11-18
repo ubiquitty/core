@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //
-// Tests/Host/smoke_client.cpp — a minimal Sync-protocol client that
+// Tests/Smokes/Host/smoke_client.cpp — a minimal Sync-protocol client that
 // drives the ubiquitty-host PERSISTENCE smoke test.
 //
 // It is not the macOS app: it is a tiny headless stand-in that speaks the
 // same wire protocol over the same transport (`ubiquitty-host --attach`'s
 // stdio, which the daemon bridges to the session). It is spawned by
-// Tests/Host/smoke.sh.
+// Tests/Smokes/Host/smoke.sh.
 //
 // Subcommands:
 //
@@ -25,7 +25,7 @@
 //                  command's output reached the screen, and — on reattach
 //                  — that the same session still shows it (persistence).
 //
-// The transport is stdin/stdout. Tests/Host/smoke.sh wires those file
+// The transport is stdin/stdout. Tests/Smokes/Host/smoke.sh wires those file
 // descriptors to `ubiquitty-host --attach`, so the test exercises the full
 // attach bridge exactly as the real macOS client would over ssh.
 //
@@ -39,7 +39,7 @@
 #include "Core/Screen/Addressing.h"
 #include "Core/Session/HostListing.h"
 #include "Core/TerminalOperations.h"
-#include "ScreenClient.h"
+#include "Host/ScreenClient.h"
 #include <memory>
 
 #include <cstdio>

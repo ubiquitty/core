@@ -316,10 +316,10 @@ tells that apart from the codes above. The codes are `ExitCode` in
 ## Test
 
 ```sh
-./Tests/Agent/smoke.sh        # isolated daemon + `ubq selftest`, end to end
-./Tests/Agent/mcp_smoke.sh    # the in-process MCP server over JSON-RPC
-./Tests/Agent/auth_smoke.sh   # token auth: no→exit 7, valid→0, bogus→7 (daemon with enforcement on)
-./Tests/Agent/ubq_smoke.sh    # every verb, events, wait, status, targets and -H against a live daemon
+./Tests/Smokes/Agent/smoke.sh        # isolated daemon + `ubq selftest`, end to end
+./Tests/Smokes/Agent/mcp_smoke.sh    # the in-process MCP server over JSON-RPC
+./Tests/Smokes/Agent/auth_smoke.sh   # token auth: no→exit 7, valid→0, bogus→7 (daemon with enforcement on)
+./Tests/Smokes/Agent/ubq_smoke.sh    # every verb, events, wait, status, targets and -H against a live daemon
 ```
 
 ## See also

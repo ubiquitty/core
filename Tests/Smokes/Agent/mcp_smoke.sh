@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 #
-# Tests/Agent/mcp_smoke.sh — end-to-end check of `ubq mcp`.
+# Tests/Smokes/Agent/mcp_smoke.sh — end-to-end check of `ubq mcp`.
 #
 # Drives the MCP server with real JSON-RPC over stdin and checks the
 # handshake, the tool catalog, a tool call that actually runs a command
@@ -14,7 +14,7 @@
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 # shellcheck source=Scripts/build-root.sh
 . "$ROOT/Scripts/build-root.sh"
 HOST="${UBIQUITTY_HOST_BIN:-$UBQ_BUILD_ROOT/host/ubiquitty-host}"

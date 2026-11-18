@@ -3325,14 +3325,14 @@ if wanted snapshots && [ "${SNAPSHOT:-}" != "skip" ]; then
 fi
 
 # host_smoke — a session outlives its client: the built daemon is attached,
-# typed into, left and attached again through Tests/Host/smoke_client.cpp, and
+# typed into, left and attached again through Tests/Smokes/Host/smoke_client.cpp, and
 # a command's line rides its typed completion. The client is the unit tests'
 # tree's ubq-host-smoke-client, which ctest's build fixture has built, so no
 # stanza builds a Core of its own for it. Skipped where cmake is absent or the
 # host cannot be built.
 if wanted host_smoke && command -v cmake >/dev/null 2>&1; then
     echo "=== host_smoke ==="
-    if [ ! -f "$ROOT/Tests/Host/smoke.sh" ] || [ ! -f "$ROOT/Tests/Host/smoke_client.cpp" ]; then
+    if [ ! -f "$ROOT/Tests/Smokes/Host/smoke.sh" ] || [ ! -f "$ROOT/Tests/Smokes/Host/smoke_client.cpp" ]; then
         build_broken "host_smoke: the smoke or its client is missing from Tests/Host"
     elif ! HOST_BINARY="$(ubq_host_binary "$OUT/host-smoke-host-build.log")"; then
         build_broken "host_smoke Host build failed (see $OUT/host-smoke-host-build.log)"
@@ -3341,7 +3341,7 @@ if wanted host_smoke && command -v cmake >/dev/null 2>&1; then
     else
         RAN=$((RAN + 1))
         ubq_run_bounded 600 env UBIQUITTY_HOST_BIN="$HOST_BINARY" UBIQUITTY_SMOKE_CLIENT="$OUT/ubq-host-smoke-client" \
-            bash "$ROOT/Tests/Host/smoke.sh" || exit 1
+            bash "$ROOT/Tests/Smokes/Host/smoke.sh" || exit 1
     fi
 fi
 
@@ -3351,7 +3351,7 @@ fi
 # Tests/Host/soak.sh says what each bound means for a sanitized daemon.
 if wanted host_soak && command -v cmake >/dev/null 2>&1; then
     echo "=== host_soak ==="
-    if [ ! -f "$ROOT/Tests/Host/soak.sh" ] || [ ! -f "$ROOT/Tests/Host/smoke_client.cpp" ]; then
+    if [ ! -f "$ROOT/Tests/Host/soak.sh" ] || [ ! -f "$ROOT/Tests/Smokes/Host/smoke_client.cpp" ]; then
         build_broken "host_soak: the soak or its client is missing from Tests/Host"
     elif ! HOST_BINARY="$(ubq_host_binary "$OUT/host-soak-host-build.log")"; then
         build_broken "host_soak Host build failed (see $OUT/host-soak-host-build.log)"
@@ -3371,7 +3371,7 @@ if wanted agent_smoke; then
         || build_broken "agent_smoke: ubq did not build (see $OUT/agent_smoke-agent-build.log)"
     AGENT_HOST="$(ubq_agent_host_binary "$OUT/agent_smoke-host-build.log")" \
         || build_broken "agent_smoke: ubiquitty-host did not build (see $OUT/agent_smoke-host-build.log)"
-    ubq_run_private env UBQ_BIN="$AGENT_BINARY" UBIQUITTY_HOST_BIN="$AGENT_HOST" bash "$ROOT/Tests/Agent/smoke.sh" || exit 1
+    ubq_run_private env UBQ_BIN="$AGENT_BINARY" UBIQUITTY_HOST_BIN="$AGENT_HOST" bash "$ROOT/Tests/Smokes/Agent/smoke.sh" || exit 1
 fi
 
 if wanted agent_auth_smoke; then
@@ -3381,7 +3381,7 @@ if wanted agent_auth_smoke; then
         || build_broken "agent_auth_smoke: ubq did not build (see $OUT/agent_auth_smoke-agent-build.log)"
     AGENT_HOST="$(ubq_agent_host_binary "$OUT/agent_auth_smoke-host-build.log")" \
         || build_broken "agent_auth_smoke: ubiquitty-host did not build (see $OUT/agent_auth_smoke-host-build.log)"
-    ubq_run_private env UBQ_BIN="$AGENT_BINARY" UBIQUITTY_HOST_BIN="$AGENT_HOST" bash "$ROOT/Tests/Agent/auth_smoke.sh" || exit 1
+    ubq_run_private env UBQ_BIN="$AGENT_BINARY" UBIQUITTY_HOST_BIN="$AGENT_HOST" bash "$ROOT/Tests/Smokes/Agent/auth_smoke.sh" || exit 1
 fi
 
 if wanted agent_mcp_smoke; then
@@ -3391,7 +3391,7 @@ if wanted agent_mcp_smoke; then
         || build_broken "agent_mcp_smoke: ubq did not build (see $OUT/agent_mcp_smoke-agent-build.log)"
     AGENT_HOST="$(ubq_agent_host_binary "$OUT/agent_mcp_smoke-host-build.log")" \
         || build_broken "agent_mcp_smoke: ubiquitty-host did not build (see $OUT/agent_mcp_smoke-host-build.log)"
-    ubq_run_private env UBQ_BIN="$AGENT_BINARY" UBIQUITTY_HOST_BIN="$AGENT_HOST" bash "$ROOT/Tests/Agent/mcp_smoke.sh" || exit 1
+    ubq_run_private env UBQ_BIN="$AGENT_BINARY" UBIQUITTY_HOST_BIN="$AGENT_HOST" bash "$ROOT/Tests/Smokes/Agent/mcp_smoke.sh" || exit 1
 fi
 
 if wanted agent_completions_smoke; then
@@ -3399,7 +3399,7 @@ if wanted agent_completions_smoke; then
     RAN=$((RAN + 1))
     AGENT_BINARY="$(ubq_agent_binary "$OUT/agent_completions_smoke-agent-build.log")" \
         || build_broken "agent_completions_smoke: ubq did not build (see $OUT/agent_completions_smoke-agent-build.log)"
-    ubq_run_private env UBQ_BIN="$AGENT_BINARY" bash "$ROOT/Tests/Agent/completions_smoke.sh" || exit 1
+    ubq_run_private env UBQ_BIN="$AGENT_BINARY" bash "$ROOT/Tests/Smokes/Agent/completions_smoke.sh" || exit 1
 fi
 
 # ubq_malformed_sweep — discover every current command-line verb and refuse
@@ -3433,7 +3433,7 @@ if wanted ubq_smoke; then
     # 1200), so the smoke's trap stops its daemons before this ever
     # signals it.
     ubq_run_bounded 1500 env UBQ_BIN="$AGENT_BINARY" UBIQUITTY_HOST_BIN="$AGENT_HOST" UBQ_CONSENT_PERSON_BIN="$CONSENT_PERSON" \
-        bash "$ROOT/Tests/Agent/ubq_smoke.sh" || exit 1
+        bash "$ROOT/Tests/Smokes/Agent/ubq_smoke.sh" || exit 1
 fi
 
 # ubq_smoke_cleanup — a smoke ended by the runner's limit leaves no daemon
@@ -3448,7 +3448,7 @@ if wanted ubq_smoke_cleanup; then
         || build_broken "ubq_smoke_cleanup: ubiquitty-host did not build (see $OUT/ubq_smoke_cleanup-host-build.log)"
     ubq_consent_person "$AGENT_HOST" "$ROOT/Tests/Agent/consent_person.cpp"
     UBQ_BIN="$AGENT_BINARY" UBIQUITTY_HOST_BIN="$AGENT_HOST" UBQ_CONSENT_PERSON_BIN="$CONSENT_PERSON" \
-        UBQ_SMOKE_SCRIPT="$ROOT/Tests/Agent/ubq_smoke.sh" bash "$ROOT/Tests/Agent/ubq_smoke_cleanup.sh" || exit 1
+        UBQ_SMOKE_SCRIPT="$ROOT/Tests/Smokes/Agent/ubq_smoke.sh" bash "$ROOT/Tests/Smokes/Agent/ubq_smoke_cleanup.sh" || exit 1
 fi
 
 # agent_screen_diff — computeScreenDiff, the pure projection→projection diff behind

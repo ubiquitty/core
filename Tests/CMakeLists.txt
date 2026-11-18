@@ -991,9 +991,10 @@ endfunction()
 
 # These integration stanzas retain their process setup and assertions in the
 # shell driver, but link the same Core as the rest of this test tree.
-foreach(_shell_test session_directory remote_session_smoke remote_workspace_smoke
-        named_layout_restore remote_clear_e2e tmux_real_e2e ack_rides_input remote_pane_link_e2e)
-    add_executable(ubq-shell-${_shell_test} ${UBIQUITTY_CORE_SOURCE_DIR}/Tests/Host/${_shell_test}.cpp)
+foreach(_shell_source Host/session_directory Smokes/Host/remote_session_smoke Smokes/Host/remote_workspace_smoke
+        Host/named_layout_restore Host/remote_clear_e2e Host/tmux_real_e2e Host/ack_rides_input Host/remote_pane_link_e2e)
+    get_filename_component(_shell_test "${_shell_source}" NAME)
+    add_executable(ubq-shell-${_shell_test} ${UBIQUITTY_CORE_SOURCE_DIR}/Tests/${_shell_source}.cpp)
     ubq_configure_shell_target(ubq-shell-${_shell_test})
     target_link_libraries(ubq-shell-${_shell_test} PRIVATE ubiquitty-core Threads::Threads)
 endforeach()

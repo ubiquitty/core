@@ -232,7 +232,7 @@ A driver that types chained lines (`clear; ./bench; …`) needs the
 allow to survive the indirection downgrade: `default allow` in the rule file
 plus `approve = true` in `[control]`.
 
-`Tests/Control/control_smoke.sh` drives the socket end-to-end (it SKIPs when no
+`Tests/Smokes/Control/control_smoke.sh` drives the socket end-to-end (it SKIPs when no
 socket is present, so it is safe to run unconditionally). Against an app with
 no rule file it asserts the refusals; with `CONTROL_POLICY_ALLOWS=1` it asserts
 the typed marker comes back on screen.

@@ -259,7 +259,7 @@ path kit Source/UbiquittyRenderKit/FrameInstances.swift
 path kit Source/UbiquittyRenderKit/PrimaryRunShaper.swift
 path kit Source/UbiquittyRenderKit/Renderer.swift
 path kit Source/UbiquittyRenderKit/UBShaders.metal
-path app Tests/Control/control_smoke.sh
+path app Tests/Smokes/Control/control_smoke.sh
 path kit Tests/Linux/test_linux_accessibility.cpp
 path kit Tests/Linux/test_linux_bitmap_face.cpp
 path kit Tests/Performance/bench_shaders.swift
@@ -291,7 +291,7 @@ path app Tests/Snapshots/golden/native/freetype/background_opacity.png
 path app Tests/Snapshots/golden/native/freetype/osc66_fraction_alignment.png
 path app Tests/Snapshots/golden/native/freetype/specimen_faces.png
 path kit Tests/Snapshots/known-failing-macos.txt
-path app Tests/Web/page-smoke.mjs
+path app Tests/Smokes/Web/page-smoke.mjs
 path kit Tools/classify-bench/run.sh
 path app Tools/ios-ui-test.py
 path app Tools/readme-screenshots.py

@@ -929,7 +929,7 @@ headless Core needs), `HostPaths`, and `main`; the POSIX PTY stream backend is
 shared in `Source/Platform/POSIX/PTYStream.cpp`. There is
 **no** Cocoa, Metal, GTK, or Vulkan in this target; it builds with clang on
 macOS for local testing and gcc on Linux. `Scripts/build-host.sh` builds it;
-`Tests/Host/smoke.sh` validates detach/reattach persistence.
+`Tests/Smokes/Host/smoke.sh` validates detach/reattach persistence.
 
 **Server-side workspace tree.** The daemon owns `Session::Layout::Workspace`
 and maps each pane to its PTY session. A workspace contains surfaces (native

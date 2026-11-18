@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 #
-# Tests/Agent/smoke.sh — end-to-end check of the ubq Sync client.
+# Tests/Smokes/Agent/smoke.sh — end-to-end check of the ubq Sync client.
 #
 # Starts an isolated ubiquitty-host daemon (private $UBIQUITTY_HOME) and runs
 # `ubq selftest`, which attaches directly to the daemon socket (no
@@ -23,7 +23,7 @@
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 # shellcheck source=Scripts/build-root.sh
 . "$ROOT/Scripts/build-root.sh"
 HOST="${UBIQUITTY_HOST_BIN:-$UBQ_BUILD_ROOT/host/ubiquitty-host}"

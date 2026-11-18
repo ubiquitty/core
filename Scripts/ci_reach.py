@@ -42,7 +42,7 @@ DOCUMENTATION_MARKER = "Documentation-only change; platform coverage deferred"
 DOCUMENTATION = re.compile(r"\.(md|rst)$|^Docs/.*\.(png|svg|jpg|jpeg|gif|webp|avif)$")
 SKIPPABLE = re.compile(r"^Docs/|\.(md|rst)$|^Scripts/check-[a-z0-9-]+\.(py|sh)$|^\.github/ISSUE_TEMPLATE/|^Tests/coverage/covering-tests\.tsv$")
 APPLE_ONLY = re.compile(r"^Source/Platform/(macOS|iOS)/.*\.(mm|m|swift|metal|xib|storyboard|strings|entitlements|sdef|plist\.in)$|^Source/Platform/(macOS|iOS)/.*\.xcassets/|^Source/UbiquittyRenderKit/|^Source/UbiquittyKit/Swift/|^Tests/Snapshots/(known-failing|exempt)-(macos|swift|ios)\.txt$|^Tests/Snapshots/golden/native/coretext/")
-LINUX_ONLY = re.compile(r"^Source/Platform/(Linux|Wscons|Web|Wasm)/|^Tests/Web/|^Tests/Linux/|^Tests/Platform/test_linux_|^Tests/Snapshots/(known-failing|exempt)-(linux|web)\.txt$|^Tests/Snapshots/golden/native/freetype/")
+LINUX_ONLY = re.compile(r"^Source/Platform/(Linux|Wscons|Web|Wasm)/|^Tests/(Smokes/)?Web/|^Tests/Linux/|^Tests/Platform/test_linux_|^Tests/Snapshots/(known-failing|exempt)-(linux|web)\.txt$|^Tests/Snapshots/golden/native/freetype/")
 CMAKE = re.compile(r"(^|/)CMakeLists\.txt$|\.cmake$|^CMake/|^Scripts/generate-xcode-workspace\.sh$|^Ubiquitty(IOS)?\.xcworkspace/")
 
 

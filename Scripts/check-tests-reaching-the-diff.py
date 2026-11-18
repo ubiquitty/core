@@ -575,7 +575,7 @@ def selfTest():
     recipes = stanzaRecipes([
         'if wanted ubq_smoke; then\n',
         '    if [ ! -x "${UBQ_BIN:-$UBQ_BUILD_ROOT/agent/ubq}" ]; then\n',
-        '        bash "$ROOT/Tests/Agent/ubq_smoke.sh" || exit 1\n',
+        '        bash "$ROOT/Tests/Smokes/Agent/ubq_smoke.sh" || exit 1\n',
         'fi\n',
         '# $ROOT/Tests/Agent/commented.sh and $UBQ_BUILD_ROOT/agent/ubq in a comment\n',
         'if [ "$(uname -s)" = "Darwin" ] && wanted host_cli; then\n',
@@ -587,7 +587,7 @@ def selfTest():
     ])
     check("a recipe names the files and the product binary of its own stanza only",
           {name: (sorted(files), sorted(trees)) for name, (files, trees) in recipes.items()},
-          {"ubq_smoke": (["Tests/Agent/ubq_smoke.sh"], ["agent"]), "host_cli": (["Tests/Host/host_cli.cpp"], []),
+          {"ubq_smoke": (["Tests/Smokes/Agent/ubq_smoke.sh"], ["agent"]), "host_cli": (["Tests/Host/host_cli.cpp"], []),
            "ubq_smoke_cleanup": ([], ["agent"])})
     registry = "Source/Core/Protocol/Control/MethodRegistry.cpp"
     libraryOnly = {registry: {"CMakeFiles/ubiquitty-behaviour.dir/Source/Core/Protocol/Control/MethodRegistry.cpp.o"}}
@@ -597,7 +597,7 @@ def selfTest():
           (sorted(selected), nothing), (["shell_ubq_smoke"], []))
     selected, _ = selectTests([registry], libraryOnly, smokeKnown, {}, recipes, {"agent": set()})
     check("and selects none where the agent's build did not read it", sorted(selected), [])
-    selected, nothing = selectTests(["Tests/Agent/ubq_smoke.sh"], {}, smokeKnown, {}, recipes, {})
+    selected, nothing = selectTests(["Tests/Smokes/Agent/ubq_smoke.sh"], {}, smokeKnown, {}, recipes, {})
     check("a script a recipe runs selects its stanza and is not reported as unreached",
           (sorted(selected), nothing), (["shell_ubq_smoke"], []))
     selected, nothing = selectTests(["Tests/Agent/commented.sh"], {}, smokeKnown, {}, recipes, {})

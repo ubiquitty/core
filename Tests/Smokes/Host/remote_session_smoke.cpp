@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //
-// Tests/Host/remote_session_smoke.cpp — the daemon's remote-session path, end to
+// Tests/Smokes/Host/remote_session_smoke.cpp — the daemon's remote-session path, end to
 // end, headless. Drives the REAL portable Session::RemoteSessionCore over a REAL
 // Transport::SubprocessChannel (the live macOS backend) bridged to a REAL
 // ubiquitty-host daemon by `ubiquitty-host --attach` — i.e. the exact client stack

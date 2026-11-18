@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 #
-# Tests/Host/smoke.sh — ubiquitty-host PERSISTENCE smoke test.
+# Tests/Smokes/Host/smoke.sh — ubiquitty-host PERSISTENCE smoke test.
 #
 # Proves the tmux model end to end on the local machine: start a detached
 # daemon, attach over the same transport the real client uses
@@ -13,7 +13,7 @@
 # Core Ubiquitty::Terminal survived the client going away). A second marker typed on the
 # reattached client confirms input still drives the surviving shell.
 #
-# The "client" is Tests/Host/smoke_client — a tiny headless Sync-protocol
+# The "client" is Tests/Smokes/Host/smoke_client — a tiny headless Sync-protocol
 # speaker (not the macOS app) that greets, reads checkpoints into a passive
 # Ubiquitty::Terminal via the real applySnapshot, and scans the visible grid. Its stdio
 # is bridged to the daemon by a child `ubiquitty-host --attach`, wired here
@@ -35,7 +35,7 @@
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 # shellcheck source=Scripts/build-root.sh
 . "$ROOT/Scripts/build-root.sh"
 HOST_BIN="${UBIQUITTY_HOST_BIN:-$UBQ_BUILD_ROOT/host/ubiquitty-host}"

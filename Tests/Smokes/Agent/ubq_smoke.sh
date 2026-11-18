@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 #
-# Tests/Agent/ubq_smoke.sh — `ubq` against a live, isolated daemon.
+# Tests/Smokes/Agent/ubq_smoke.sh — `ubq` against a live, isolated daemon.
 #
 # Pins the command line's contract: every verb is an operation the method
 # registry describes and validates (a bad parameter is refused with the
@@ -32,7 +32,7 @@
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 # shellcheck source=Scripts/build-root.sh
 . "$ROOT/Scripts/build-root.sh"
 HOST="${UBIQUITTY_HOST_BIN:-$UBQ_BUILD_ROOT/host/ubiquitty-host}"

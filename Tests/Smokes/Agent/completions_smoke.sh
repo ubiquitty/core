@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 #
-# Tests/Agent/completions_smoke.sh — validate the shipped shell completions.
+# Tests/Smokes/Agent/completions_smoke.sh — validate the shipped shell completions.
 #
 # No daemon needed: this checks the completion SCRIPTS, not a live session.
 #   1. The static files (Resources/shell-integration/ubq.{bash,zsh})
@@ -22,7 +22,7 @@
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 # shellcheck source=Scripts/build-root.sh
 . "$ROOT/Scripts/build-root.sh"
 AGENT="${UBQ_BIN:-$UBQ_BUILD_ROOT/agent/ubq}"
