@@ -203,7 +203,7 @@ AttachmentRecord& AttachmentTable::createRecord(ID128 clientInstance, ClientKind
     // of each rotated secret is carried separately.
     record->attachmentID = { .low = m_nextAttachment++, .high = m_hostInstanceID.low };
     record->issuer = m_hostInstanceID;
-    record->resumeSecret = m_secrets.nextSecret();
+    issueSecret(*record);
     record->authority = std::move(authority);
     record->kind = kind;
     record->clientInstance = clientInstance;
@@ -212,6 +212,15 @@ AttachmentRecord& AttachmentTable::createRecord(ID128 clientInstance, ClientKind
     record->servingConnection = connection;
     m_records.push_back(std::move(record));
     return *m_records.back();
+}
+
+void AttachmentTable::issueSecret(AttachmentRecord& record)
+{
+    record.resumeSecret = m_secrets.nextSecret();
+    // A source that could not draw answers zero, which any peer can name. The
+    // record then serves its current connection and nothing resumes it.
+    if (record.resumeSecret == ID128 {})
+        record.isResumable = false;
 }
 
 bool AttachmentTable::promotePending(ID128 attachmentID, const ConnectionAuthority& authority, std::uint64_t connection)
@@ -284,7 +293,7 @@ std::expected<AttachmentRecord*, ResumeRefusal> AttachmentTable::resume(const Re
     record->authority = authority;
     record->consumedSecret = record->resumeSecret;
     record->handshakeConnection = connection;
-    record->resumeSecret = m_secrets.nextSecret();
+    issueSecret(*record);
     record->issuer = m_hostInstanceID;
     ++m_revision;
     return record;

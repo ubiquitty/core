@@ -827,8 +827,8 @@ Protocol::Sync::ID128 Daemon::EntropySecrets::nextSecret()
 {
     // A resume proves itself with this secret, so it is drawn from the
     // system's entropy and never derived from what a peer can see. A refused
-    // draw leaves a secret of zero, which the table compares like any other:
-    // no resume presents it unless a Welcome issued it.
+    // draw answers zero, which the table reads as no secret: the attachment
+    // it was drawn for is served but cannot be resumed.
     std::array<std::uint8_t, 16> bytes {};
     if (::getentropy(bytes.data(), bytes.size()) != 0)
         return {};

@@ -87,7 +87,8 @@ public:
 
     /// Draws one secret.
     ///
-    /// - Returns: The secret.
+    /// - Returns: The secret, or zero when none could be drawn. The table
+    ///   never accepts a resume against a zero secret.
     [[nodiscard]] virtual ID128 nextSecret() = 0;
 };
 
@@ -595,6 +596,11 @@ private:
     ///   - admission: Whether the required consent has been granted.
     /// - Returns: The stable new record.
     AttachmentRecord& createRecord(ID128 clientInstance, ClientKind kind, ConnectionAuthority authority, std::uint64_t connection, std::uint64_t now, AttachmentAdmission admission);
+
+    /// Draws the record's next resume secret. A zero draw, which is what a
+    /// source without entropy answers, leaves the record unresumable.
+    /// - Parameter record: The record that receives the secret.
+    void issueSecret(AttachmentRecord& record);
 
     /// Frees older Lost records only after their replacement has been admitted.
     /// - Parameter admitted: The admitted replacement, whose address stays stable.

@@ -659,6 +659,49 @@ TEST(eachRetirementNotifiesItsOwnerOnce)
     CHECK_EQ(retired.size(), 3u);
 }
 
+TEST(aZeroSecretIsNeverResumable)
+{
+    /// A source whose draws fail after the first `m_good`.
+    class FailingSecrets final : public SecretSource {
+    public:
+        explicit FailingSecrets(std::uint64_t good)
+            : m_good(good)
+        {
+        }
+        [[nodiscard]] ID128 nextSecret() override { return m_next < m_good ? ID128 { ++m_next, 91 } : ID128 {}; }
+
+    private:
+        std::uint64_t m_good;
+        std::uint64_t m_next = 0;
+    };
+
+    // A failed first draw: the attachment is served and nothing resumes it,
+    // not even a peer that names the zero it would have been issued.
+    FailingSecrets none(0);
+    AttachmentTable refused({ 41, 42 }, measuredResumePolicy(), none);
+    const AttachmentRecord& unseeded = refused.create({ 1, 1 }, ClientKind::Human, owner, 1, 1);
+    CHECK(!unseeded.isResumable);
+    const auto guessed = refused.resume({ .attachmentID = unseeded.attachmentID, .resumeSecret = ID128 {}, .panes = {} }, owner, 2, 2);
+    REQUIRE(!guessed);
+    CHECK(guessed.error() == ResumeRefusal::NotResumable);
+
+    // A failed rotation: the resume that consumed the good secret stands, and
+    // the zero that replaced it admits no later one.
+    FailingSecrets one(1);
+    AttachmentTable rotated({ 41, 42 }, measuredResumePolicy(), one);
+    const AttachmentRecord& seeded = rotated.create({ 1, 1 }, ClientKind::Human, owner, 1, 1);
+    REQUIRE(seeded.isResumable);
+    const ID128 attachment = seeded.attachmentID;
+    const ID128 issued = seeded.resumeSecret;
+    rotated.noteTransportLost(attachment, 1, 2);
+    const auto first = rotated.resume({ .attachmentID = attachment, .resumeSecret = issued, .panes = {} }, owner, 2, 3);
+    REQUIRE(first.has_value());
+    CHECK(!(*first)->isResumable);
+    const auto second = rotated.resume({ .attachmentID = attachment, .resumeSecret = ID128 {}, .panes = {} }, owner, 3, 4);
+    REQUIRE(!second);
+    CHECK(second.error() == ResumeRefusal::NotResumable);
+}
+
 TEST(handoverRetiresAnOldIssuerThroughTheOwnerOnce)
 {
     SequenceSecrets secrets;
