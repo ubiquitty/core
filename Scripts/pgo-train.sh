@@ -94,6 +94,7 @@ DRIVER_PROFILE_LIST="$BUILD/controller-profile.list"
 cat > "$DRIVER_PROFILE_LIST" <<'PROFILE_LIST'
 [llvm]
 !fun:main
+!fun:_ZZ4main*
 !fun:_ZN12_GLOBAL__N_1*
 !fun:_ZN9Ubiquitty5Bench*
 PROFILE_LIST
@@ -166,6 +167,38 @@ if [ -n "$MISSING" ]; then
     echo "pgo-train: here if it genuinely stopped shipping." >&2
     exit 1
 fi
+
+# The stack's atlas has no coverage planes, so its skip-ink switch cannot
+# train the cuts. These maintained scenes supply real glyph coverage and the
+# dotted-run and curly-mask paths; fixed calls keep their weight independent
+# of the clock calibration ordinary benchmark binaries use.
+echo "pgo-train: building coverage-backed render scenes ..." >&2
+# shellcheck disable=SC2086
+$CXX_LAUNCHED -std=c++23 $INSTRUMENT_FLAGS -fprofile-list="$DRIVER_PROFILE_LIST" -DUBIQUITTY_PGO_TRAINING=1 -fno-exceptions -fno-rtti -pthread \
+    -I"$ROOT/Source" -I"$ROOT/Tests" \
+    -c "$ROOT/Tests/Performance/bench_render_plan.cpp" -o "$BUILD/bench_render_plan_driver.o"
+# shellcheck disable=SC2086
+$CXX_LAUNCHED -std=c++23 $INSTRUMENT_FLAGS -fno-exceptions -fno-rtti -pthread \
+    -I"$ROOT/Source" -I"$ROOT/Tests" \
+    "$BUILD/bench_render_plan_driver.o" "$BUILD/bench_pal_stub.cpp" \
+    "$PORTABLE_CORE_ARCHIVE" -o "$BUILD/bench_render_plan_instrumented"
+for scene in dotted curly; do
+    render_output="$BUILD/training-render-$scene.txt"
+    env -u UBQ_BENCH_STREAM "$BUILD/bench_render_plan_instrumented" \
+        --scene "$scene" --skip-ink --rows 24 --columns 80 --warmup 0 --iters 8 --json \
+        --platform "$(uname -s)-$(uname -m)" --commit "$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
+        > "$render_output"
+    if ! grep -q '"training_mode": "fixed-input-counts"' "$render_output"; then
+        echo "pgo-train: FAILED — $scene render scene did not run with fixed training input counts" >&2
+        exit 1
+    fi
+    for lane in render_build_frame render_composite_frame render_snapshot_frame; do
+        if ! grep -q "\"name\": \"$lane\"" "$render_output"; then
+            echo "pgo-train: FAILED — $scene render scene did not reach $lane" >&2
+            exit 1
+        fi
+    done
+done
 
 echo "pgo-train: merging counters ..." >&2
 "$PROFDATA" merge -output "$PROFILE" "$RAW_DIRECTORY"/*.profraw

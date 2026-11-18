@@ -196,8 +196,16 @@ while [ "$#" -gt 0 ]; do
 done
 cat >"$output" <<'CORPUS'
 #!/bin/sh
-printf 'corpus %s stream=%s\n' "${0##*/}" "${UBQ_BENCH_STREAM-unset}" >>"$UBQ_TEST_TRAIN_LOG"
-[ "${UBQ_TEST_TRAIN_MODE:-fixed}" = fixed ] && printf '%s\n' '"training_mode": "fixed-input-counts"'
+printf 'corpus %s stream=%s arguments=%s\n' "${0##*/}" "${UBQ_BENCH_STREAM-unset}" "$*" >>"$UBQ_TEST_TRAIN_LOG"
+mode="${UBQ_TEST_TRAIN_MODE:-fixed}"
+if [ "${0##*/}" = bench_render_plan_instrumented ]; then
+    mode="${UBQ_TEST_TRAIN_RENDER_MODE:-fixed}"
+    case "$*" in *"--scene ${UBQ_TEST_TRAIN_FAIL_SCENE:-none} "*) exit 37 ;; esac
+    for lane in render_build_frame render_composite_frame render_snapshot_frame; do
+        [ "$lane" = "${UBQ_TEST_TRAIN_MISSING_RENDER_LANE:-none}" ] || printf '"name": "%s"\n' "$lane"
+    done
+fi
+[ "$mode" = fixed ] && printf '%s\n' '"training_mode": "fixed-input-counts"'
 printf '%s\n' '"render_build" "render_build_subpixel" "render_build_full" "render_build_underline" "parse_plain" "parse_plain_syncfeed" "parse_sgr_syncfeed" "parse_wide_syncfeed" "parse_emoji_syncfeed" "parse_charset_syncfeed" "sync_burst_k8" "key_encode" "parse_charset" "ascii" "latin1_multibyte" "cjk_wide" "combining" "sgr_truecolor" "legacy_graphics"'
 touch "$UBQ_TEST_TRAIN_RAW"
 CORPUS
@@ -255,6 +263,7 @@ contains "corpora filters controller counters" "-fprofile-list=$TRAIN_TREE/Build
 contains "stack keeps shared inline Core counters" "-fprofile-generate=" "$(grep 'compile .*bench_stack.cpp' "$TRAIN_LOG")"
 contains "corpora keeps shared inline Core counters" "-fprofile-generate=" "$(grep 'compile .*bench_ingest_corpora.cpp' "$TRAIN_LOG")"
 contains "controller main is unprofiled" "!fun:main" "$(cat "$TRAIN_TREE/BuildPGOTrain/controller-profile.list")"
+contains "controller main-local lambdas are unprofiled" "!fun:_ZZ4main*" "$(cat "$TRAIN_TREE/BuildPGOTrain/controller-profile.list")"
 contains "controller local functions are unprofiled" "!fun:_ZN12_GLOBAL__N_1*" "$(cat "$TRAIN_TREE/BuildPGOTrain/controller-profile.list")"
 contains "controller harness functions are unprofiled" "!fun:_ZN9Ubiquitty5Bench*" "$(cat "$TRAIN_TREE/BuildPGOTrain/controller-profile.list")"
 contains "Core training retains instrumentation" "-fprofile-generate=" "$(grep '^archive ' "$TRAIN_LOG")"
@@ -263,6 +272,29 @@ absent "Core keeps shipping compile flags" "UBIQUITTY_PGO_TRAINING" "$(grep '^ar
 absent "fixed-count corpora needs no harness override" "UBIQUITTY_PGO_TRAINING" "$(grep 'compile .*bench_ingest_corpora.cpp' "$TRAIN_LOG")"
 contains "stack training ignores an inherited corpus" "corpus bench_stack_instrumented stream=unset" "$output"
 contains "corpora training ignores an inherited corpus" "corpus bench_corpora_instrumented stream=unset" "$output"
+contains "render driver uses fixed training calls" "-DUBIQUITTY_PGO_TRAINING=1" "$(grep 'compile .*bench_render_plan.cpp' "$TRAIN_LOG")"
+contains "render driver filters controller counters" "-fprofile-list=$TRAIN_TREE/BuildPGOTrain/controller-profile.list" "$(grep 'compile .*bench_render_plan.cpp' "$TRAIN_LOG")"
+contains "render driver keeps shared inline Core counters" "-fprofile-generate=" "$(grep 'compile .*bench_render_plan.cpp' "$TRAIN_LOG")"
+contains "dotted training uses real coverage with fixed geometry and calls" \
+    "arguments=--scene dotted --skip-ink --rows 24 --columns 80 --warmup 0 --iters 8 --json" "$output"
+contains "curly training uses real coverage with fixed geometry and calls" \
+    "arguments=--scene curly --skip-ink --rows 24 --columns 80 --warmup 0 --iters 8 --json" "$output"
+contains "render training ignores an inherited corpus" "corpus bench_render_plan_instrumented stream=unset" "$output"
+for scene in dotted curly; do
+    contains "$scene raw training output is retained" '"training_mode": "fixed-input-counts"' \
+        "$(cat "$TRAIN_TREE/BuildPGOTrain/training-render-$scene.txt")"
+done
+output="$(UBQ_TEST_TRAIN_RENDER_MODE=adaptive trainOf linux clang)"
+contains "training refuses adaptive render calls" "exit 1" "$output"
+contains "adaptive render refusal names the scene" "dotted render scene did not run with fixed training input counts" "$output"
+absent "adaptive render counters are not merged" "merge -output" "$(cat "$TRAIN_LOG")"
+output="$(UBQ_TEST_TRAIN_MISSING_RENDER_LANE=render_composite_frame trainOf linux clang)"
+contains "training refuses an unexecuted render path" "exit 1" "$output"
+contains "unexecuted render refusal names the path" "dotted render scene did not reach render_composite_frame" "$output"
+absent "incomplete render counters are not merged" "merge -output" "$(cat "$TRAIN_LOG")"
+output="$(UBQ_TEST_TRAIN_FAIL_SCENE=curly trainOf linux clang)"
+contains "training preserves a failed render scene's status" "exit 37" "$output"
+absent "failed render counters are not merged" "merge -output" "$(cat "$TRAIN_LOG")"
 output="$(UBQ_TEST_TRAIN_MODE=adaptive trainOf linux clang)"
 contains "training refuses an adaptive stack driver" "exit 1" "$output"
 contains "training refusal names the fixed-count contract" "did not run with fixed training input counts" "$output"
