@@ -10,6 +10,7 @@
 #   ./Scripts/run-sanitized-tests.sh              build, run every registered entry, then the host pass
 #   ./Scripts/run-sanitized-tests.sh -R <regex>   run the entries ctest matches, and no host pass
 #   ./Scripts/run-sanitized-tests.sh --no-host    every registered entry, and no host pass
+#   ./Scripts/run-sanitized-tests.sh --host-only  only the instrumented daemon and host pass
 #
 # One driver builds the Core and the tests that exercise it with one
 # instrumentation, because a checker sees only the allocations it was compiled
@@ -73,15 +74,22 @@ JOBS="${JOBS:-$(ubq_build_jobs)}"
 CTEST_JOBS="${CTEST_JOBS:-8}"
 
 CTEST_FILTER=()
+SHOULD_RUN_SUITE=1
 SHOULD_RUN_HOST=1
 while [ $# -gt 0 ]; do
     case "$1" in
         -R) shift; CTEST_FILTER=(-R "${1:?run-sanitized-tests.sh: -R needs a regex}"); SHOULD_RUN_HOST=0 ;;
         --no-host) SHOULD_RUN_HOST=0 ;;
+        --host-only) SHOULD_RUN_SUITE=0 ;;
         *) echo "run-sanitized-tests.sh: unknown flag: $1" >&2; exit 2 ;;
     esac
     shift
 done
+
+if [ "$SHOULD_RUN_SUITE" = 0 ] && [ "$SHOULD_RUN_HOST" = 0 ]; then
+    echo "run-sanitized-tests.sh: --host-only cannot be combined with --no-host or -R" >&2
+    exit 2
+fi
 
 CC="${CC:-clang}"
 CXX="${CXX:-clang++}"
@@ -103,36 +111,39 @@ mkdir -p "$OUT"
 sourceOptions=("-DUBIQUITTY_CORE_SOURCE_DIR=$CORE_ROOT")
 [ -z "$KIT_ROOT" ] || sourceOptions+=("-DUBIQUITTY_KIT_SOURCE_DIR=$KIT_ROOT")
 
-# Debug is named for the reason run-coverage.sh names it: an empty build type is
-# FORCEd to Release, which defines NDEBUG and changes what the suite asserts.
-# The timeout is the suite's, multiplied for instrumentation: shadow memory on
-# every access costs several times the plain runtime, and the slowest entries
-# sit close enough to the plain budget that the instrumented run kills them.
-cmake -S "$ROOT" -B "$BUILD" -G Ninja \
-    -DUBIQUITTY_FRONTEND=Core -DCMAKE_BUILD_TYPE=Debug \
-    -DUBIQUITTY_BUILD_TESTS=ON -DUBIQUITTY_SANITIZERS=address,undefined \
-    "${sourceOptions[@]}" \
-    -DUBIQUITTY_TEST_TIMEOUT=300 \
-    >/dev/null
-
-if ! cmake --build "$BUILD" --parallel "$JOBS" > "$OUT/build.log" 2>&1; then
-    grep -E 'error:|FAILED' "$OUT/build.log" | head -20 >&2
-    echo "run-sanitized-tests.sh: the instrumented build failed (full log: $OUT/build.log)." >&2
-    exit 1
-fi
-
-# The build is done above, so ubq_build is excluded rather than run twice; the
-# shell stanzas are excluded because they are not instrumented (see the header).
-#
-# UBSan reports and continues by default, so a test whose body has undefined
-# behaviour would exit zero and pass; halt_on_error makes every report a failure.
-# A stack frame that outlives its function is a class ASan finds only when told
-# to keep frames alive, so detect_stack_use_after_return is on.
 export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_stack_use_after_return=1:strict_string_checks=1}"
 export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
-"$CORE_ROOT/Scripts/run-ctest.sh" "$BUILD" \
-    -j"$CTEST_JOBS" -E '^(ubq_build|shell_)' --output-on-failure \
-    ${CTEST_FILTER[@]+"${CTEST_FILTER[@]}"}
+
+if [ "$SHOULD_RUN_SUITE" = 1 ]; then
+    # Debug is named for the reason run-coverage.sh names it: an empty build type is
+    # FORCEd to Release, which defines NDEBUG and changes what the suite asserts.
+    # The timeout is the suite's, multiplied for instrumentation: shadow memory on
+    # every access costs several times the plain runtime, and the slowest entries
+    # sit close enough to the plain budget that the instrumented run kills them.
+    cmake -S "$ROOT" -B "$BUILD" -G Ninja \
+        -DUBIQUITTY_FRONTEND=Core -DCMAKE_BUILD_TYPE=Debug \
+        -DUBIQUITTY_BUILD_TESTS=ON -DUBIQUITTY_SANITIZERS=address,undefined \
+        "${sourceOptions[@]}" \
+        -DUBIQUITTY_TEST_TIMEOUT=300 \
+        >/dev/null
+
+    if ! cmake --build "$BUILD" --parallel "$JOBS" > "$OUT/build.log" 2>&1; then
+        grep -E 'error:|FAILED' "$OUT/build.log" | head -20 >&2
+        echo "run-sanitized-tests.sh: the instrumented build failed (full log: $OUT/build.log)." >&2
+        exit 1
+    fi
+
+    # The build is done above, so ubq_build is excluded rather than run twice; the
+    # shell stanzas are excluded because they are not instrumented (see the header).
+    #
+    # UBSan reports and continues by default, so a test whose body has undefined
+    # behaviour would exit zero and pass; halt_on_error makes every report a failure.
+    # A stack frame that outlives its function is a class ASan finds only when told
+    # to keep frames alive, so detect_stack_use_after_return is on.
+    "$CORE_ROOT/Scripts/run-ctest.sh" "$BUILD" \
+        -j"$CTEST_JOBS" -E '^(ubq_build|shell_)' --output-on-failure \
+        ${CTEST_FILTER[@]+"${CTEST_FILTER[@]}"}
+fi
 
 [ "$SHOULD_RUN_HOST" = 1 ] || exit 0
 

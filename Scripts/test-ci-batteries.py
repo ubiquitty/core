@@ -72,7 +72,7 @@ def carry_library_resolver(scripts):
 class BatteryTests(unittest.TestCase):
     def test_library_suites_have_one_repository_owner(self):
         core_only = {"fuzz", "pgo", "portable-build", "portable-snapshots",
-                     "host-glibc", "agent-smokes", "host-musl", "sanitizers", "wasm-smoke"}
+                     "host-glibc", "agent-smokes", "host-musl", "sanitizers", "sanitized-host", "wasm-smoke"}
         linux = {stage.key: stage for stage in batteries.stages("linux")}
         self.assertTrue(core_only <= linux.keys())
         for key in core_only:
@@ -129,7 +129,8 @@ class BatteryTests(unittest.TestCase):
                 "portable-snapshots": "python3 Tests/Snapshots/run.py --backend portable --quiet",
                 "host-glibc": "./Scripts/build-host.sh --release",
                 "host-musl": "./Scripts/build-host-linux.sh x86_64",
-                "sanitizers": "./Scripts/run-sanitized-tests.sh",
+                "sanitizers": "./Scripts/run-sanitized-tests.sh --no-host",
+                "sanitized-host": "./Scripts/run-sanitized-tests.sh --host-only",
                 "fuzz": "FUZZ_REQUIRED=1 ./Scripts/run-tests.sh --fuzz-only",
                 "pgo": 'export PATH="${UBQ_PGO_LLVM:+$UBQ_PGO_LLVM:}$PATH"\n'
                        "python3 ./Scripts/check-profile-orphans.py\n"
@@ -152,7 +153,8 @@ class BatteryTests(unittest.TestCase):
                 "snapshots": "./Scripts/run-tests.sh snapshots",
                 "ui-scenarios": "python3 Scripts/check-ui-scenarios.py",
                 "pgo": "python3 ./Scripts/check-profile-orphans.py --profile Support/pgo/portable-core.profdata\n"
-                       "UBIQUITTY_PGO=REQUIRE python3 ./Scripts/check-pgo-applies.py --profile Support/pgo/portable-core.profdata",
+                       "UBIQUITTY_PGO=REQUIRE UBIQUITTY_PREPUSH=families UBQ_PREPUSH_FAMILIES=core_gate_pgo_drift "
+                       "UBQ_PREPUSH_SELECT=all UBQ_PREPUSH_STRICT=1 UBIQUITTY_PREPUSH_CACHE=off ./Scripts/pre-push-gates.sh",
                 "core-frames": "./Scripts/check-core-builder-frames.sh",
                 "metallib": "./Scripts/build-metallib.sh",
                 "swift-renderer": "./Scripts/check-swift-renderer.sh",
@@ -3645,6 +3647,35 @@ def workflow_jobs(text):
             for index, match in enumerate(starts)}
 
 
+class CoreWorkflowSchedulingTests(unittest.TestCase):
+    source_repositories = ("core",)
+
+    def test_fuzz_native_sanitizers_and_host_sanitizers_are_required_independent_groups(self):
+        jobs = workflow_jobs((batteries.ROOT / ".github/workflows/ci.yml").read_text())
+        groups = re.findall(r"(?m)^          - group: (\S+)\n            stages: (.*)$", jobs["linux"])
+        assigned = {name: words.split()[1::2] for name, words in groups}
+        for name, stage in (("fuzz", "fuzz"), ("sanitizers", "sanitizers"), ("sanitized-host", "sanitized-host")):
+            self.assertEqual(assigned[name], ["setup", "quic", stage])
+        for stage in ("fuzz", "sanitizers", "sanitized-host"):
+            self.assertEqual(sum(stage in keys for keys in assigned.values()), 1)
+        self.assertIn("matrix.group == 'fuzz' || matrix.group == 'sanitizers' || matrix.group == 'sanitized-host'", jobs["linux"])
+        self.assertIn("format('ccache-v2-{0}-{1}-linux-clang-', runner.os, runner.arch)", jobs["linux"])
+        self.assertIn("fail-fast: false", jobs["linux"])
+        self.assertIn("matrix.group", jobs["linux"].split("name: Restore the compiler cache", 1)[1])
+
+    def test_apple_bounds_the_profile_once_through_the_unchanged_strict_gate_family(self):
+        stage = next(stage for stage in batteries.stages("apple") if stage.key == "pgo")
+        for argument in ("check-profile-orphans.py --profile Support/pgo/portable-core.profdata",
+                         "UBIQUITTY_PGO=REQUIRE", "UBIQUITTY_PREPUSH=families", "UBQ_PREPUSH_FAMILIES=core_gate_pgo_drift",
+                         "UBQ_PREPUSH_SELECT=all", "UBQ_PREPUSH_STRICT=1", "UBIQUITTY_PREPUSH_CACHE=off"):
+            self.assertIn(argument, stage.command)
+        jobs = workflow_jobs((batteries.ROOT / ".github/workflows/ci.yml").read_text())
+        self.assertNotIn("core_gate_pgo_drift", jobs["apple"])
+        gates = (batteries.ROOT / "Scripts/pre-push-gates-core.sh").read_text()
+        self.assertIn("--changed-from origin/main --max-new-discarded 30000", gates)
+        self.assertIn('"pgo total drift" python3 ./Scripts/check-pgo-applies.py --recorded-budget', gates)
+
+
 class EveryWorkflowTests(unittest.TestCase):
     """What every repository's ci.yml holds to, whichever repository it is."""
 
@@ -4071,7 +4102,7 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         self.assertEqual(source_tests(suite, ("core",)), [core])
         self.assertEqual(source_tests(suite, ("app",)), [core, app])
 
-    def test_sanitizer_configures_app_tests_but_core_host_and_host_filters(self):
+    def sanitizer_fixture(self):
         script = self.install_shared_shell_helper("run-sanitized-tests.sh")
         (self.core / "Scripts/build-root.sh").write_text(': "${UBQ_BUILD_ROOT:?}"\n')
         (self.core / "Scripts/build-jobs.sh").write_text('ubq_build_jobs() { echo 1; }\n')
@@ -4082,6 +4113,10 @@ class SourceCompositionBatteryTests(unittest.TestCase):
             (self.bin / name).chmod(0o755)
         context = source_roots(self.app, environment={})
         environment = dict(self.environment(context), CC="clang", CXX="clang++")
+        return script, environment
+
+    def test_sanitizer_configures_app_tests_but_core_host_and_host_filters(self):
+        script, environment = self.sanitizer_fixture()
         checked = subprocess.run(["bash", str(script), "--source-root", str(self.app)],
                                  env=environment, cwd=self.core, capture_output=True, text=True)
         self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
@@ -4094,6 +4129,56 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         host = [row for row in rows if row["label"] == "core-tests"]
         self.assertEqual([row["arguments"] for row in host], [["host_smoke", "host_cli"], ["host_soak"]])
         self.assertTrue(all(row["subject"] == str(self.core) and row["kit"] == "" for row in host))
+
+    def test_split_sanitizers_preserve_every_configure_build_and_test_invocation(self):
+        script, environment = self.sanitizer_fixture()
+        for path in (self.bin / "cmake", self.core / "Scripts/run-ctest.sh", self.core / "Scripts/run-tests.sh"):
+            path.write_text(path.read_text().replace(
+                "with open(",
+                'row.update(asan=os.environ.get("ASAN_OPTIONS"), ubsan=os.environ.get("UBSAN_OPTIONS"))\nwith open(', 1))
+
+        def run(arguments):
+            self.log.unlink(missing_ok=True)
+            checked = subprocess.run(["bash", str(script), "--source-root", str(self.app), *arguments],
+                                     env=environment, cwd=self.core, capture_output=True, text=True)
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+            return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+        combined = run(())
+        native = run(("--no-host",))
+        host = run(("--host-only",))
+        self.assertEqual(combined, native + host)
+        self.assertEqual([row["label"] for row in native], ["cmake", "cmake", "core-ctest"])
+        self.assertEqual([row["label"] for row in host], ["cmake", "cmake", "core-tests", "core-tests"])
+        for row in combined:
+            self.assertIn("detect_stack_use_after_return=1", row["asan"])
+            self.assertIn("halt_on_error=1", row["ubsan"])
+        self.assertIn("quarantine_size_mb=0", host[-1]["asan"])
+        self.assertNotIn("quarantine_size_mb=0", host[-2]["asan"])
+
+    def test_sanitizer_host_only_refuses_an_empty_or_ambiguous_partition(self):
+        script, environment = self.sanitizer_fixture()
+        for arguments in (("--host-only", "--no-host"), ("--no-host", "--host-only"),
+                          ("--host-only", "-R", "test_.*"), ("-R", "test_.*", "--host-only")):
+            with self.subTest(arguments=arguments):
+                checked = subprocess.run(["bash", str(script), "--source-root", str(self.app), *arguments],
+                                         env=environment, cwd=self.core, capture_output=True, text=True)
+                self.assertEqual(checked.returncode, 2, checked.stdout + checked.stderr)
+                self.assertIn("cannot be combined", checked.stderr)
+                self.assertFalse(self.log.exists())
+
+    def test_sanitizer_native_failure_still_stops_the_combined_run_before_host_work(self):
+        script, environment = self.sanitizer_fixture()
+        with (self.core / "Scripts/run-ctest.sh").open("a") as output:
+            output.write("raise SystemExit(29)\n")
+        for arguments in ((), ("--no-host",)):
+            with self.subTest(arguments=arguments):
+                self.log.unlink(missing_ok=True)
+                checked = subprocess.run(["bash", str(script), "--source-root", str(self.app), *arguments],
+                                         env=environment, cwd=self.core, capture_output=True, text=True)
+                self.assertEqual(checked.returncode, 29, checked.stdout + checked.stderr)
+                rows = [json.loads(line) for line in self.log.read_text().splitlines()]
+                self.assertEqual([row["label"] for row in rows], ["cmake", "cmake", "core-ctest"])
 
     def test_coverage_configures_the_actual_app_or_standalone_core_subject(self):
         script = self.install_shared_shell_helper("run-coverage.sh")

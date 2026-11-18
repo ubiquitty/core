@@ -52,6 +52,34 @@ class Completed:
 
 
 class BuildPrerequisiteTests(unittest.TestCase):
+    def testSanitizedSyncUsesBuildWidthWithoutLosingTimingIsolation(self):
+        if shutil.which("cmake") is None or shutil.which("ninja") is None or shutil.which("ctest") is None:
+            self.skipTest("cmake, ninja and ctest are required")
+        with tempfile.TemporaryDirectory() as directory:
+            build = Path(directory) / "build"
+            reporting = load("ctest_report.py", "Scripts")
+            for jobs in (3, 5):
+                with self.subTest(jobs=jobs):
+                    configured = subprocess.run(
+                        ["cmake", "-S", str(ROOT), "-B", str(build), "-G", "Ninja",
+                         "-DUBIQUITTY_FRONTEND=Core", "-DUBIQUITTY_BUILD_TESTS=ON",
+                         "-DUBIQUITTY_QUIC=OFF", "-DCMAKE_BUILD_TYPE=Debug",
+                         f"-DUBIQUITTY_HOST_FIXTURE_JOBS={jobs}"],
+                        text=True, capture_output=True, timeout=300)
+                    self.assertEqual(configured.returncode, 0, configured.stdout + configured.stderr)
+                    listing = reporting.discovery_payload(subprocess.check_output(
+                        ["ctest", "--test-dir", str(build), "--show-only=json-v1"], text=True))
+                    entries = {entry["name"]: entry for entry in listing["tests"]}
+                    sanitizer = entries["shell_sanitized_sync"]
+                    properties = {item["name"]: item["value"] for item in sanitizer["properties"]}
+                    self.assertIn(f"UBQ_BUILD_JOBS={jobs}", sanitizer["command"])
+                    self.assertEqual(properties["PROCESSORS"], jobs)
+                    self.assertEqual(properties["TIMEOUT"], 1800)
+                    self.assertTrue(properties["RUN_SERIAL"])
+                    self.assertIn("timing", properties["RESOURCE_LOCK"])
+                    ordinary = entries["shell_quic_session_relay"]
+                    self.assertIn("UBQ_BUILD_JOBS=2", ordinary["command"])
+
     def testNativePTYCasesKeepSerialDeadlinesWithoutShellDuplication(self):
         if shutil.which("cmake") is None or shutil.which("ninja") is None or shutil.which("ctest") is None:
             self.skipTest("cmake, ninja and ctest are required")

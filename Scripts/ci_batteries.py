@@ -237,7 +237,8 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
             Stage("agent-smokes", "Agent CLI, authentication, MCP, and completions",
                   './Scripts/build-agent.sh\nUBQ_REQUIRED_TOOLS="${UBQ_REQUIRED_TOOLS:-} ubiquitty-host ubq" ./Scripts/run-tests.sh agent_smoke agent_auth_smoke agent_mcp_smoke agent_completions_smoke ubq_smoke ubq_smoke_cleanup', "code", repositories=("core",)),
             Stage("host-musl", "Linux host static-musl-x86_64", "./Scripts/build-host-linux.sh x86_64", "code", repositories=("core",)),
-            Stage("sanitizers", "Clang ASan and UBSan suite", "./Scripts/run-sanitized-tests.sh", "code", "clang", repositories=("core",)),
+            Stage("sanitizers", "Clang ASan and UBSan suite", "./Scripts/run-sanitized-tests.sh --no-host", "code", "clang", repositories=("core",)),
+            Stage("sanitized-host", "Clang ASan and UBSan host", "./Scripts/run-sanitized-tests.sh --host-only", "code", "clang", repositories=("core",)),
             Stage("kit-build", "Kit Linux libraries and tests", "./Scripts/build-linux.sh --test", repositories=("kit",)),
             Stage("linux-build", "Linux frontend Release", "./Scripts/build-linux-gtk.sh Release", repositories=("app",)),
             Stage("linux-smokes", "Linux headless smoke battery", "xvfb-run -a ./Scripts/run-linux-smokes.sh", "xvfb", repositories=("app",),
@@ -278,7 +279,8 @@ python3 Scripts/test-ci-batteries.py --workflow .github/workflows/ci.yml'''),
                   requires=("macos-build",)),
             Stage("pgo", "Portable PGO profile",
                   "python3 ./Scripts/check-profile-orphans.py --profile Support/pgo/portable-core.profdata\n"
-                  "UBIQUITTY_PGO=REQUIRE python3 ./Scripts/check-pgo-applies.py --profile Support/pgo/portable-core.profdata", repositories=("core",)),
+                  "UBIQUITTY_PGO=REQUIRE UBIQUITTY_PREPUSH=families UBQ_PREPUSH_FAMILIES=core_gate_pgo_drift "
+                  "UBQ_PREPUSH_SELECT=all UBQ_PREPUSH_STRICT=1 UBIQUITTY_PREPUSH_CACHE=off ./Scripts/pre-push-gates.sh", repositories=("core",)),
             Stage("core-frames", "Core builder frames", "./Scripts/check-core-builder-frames.sh", repositories=("app",),
                   requires=("macos-build",)),
             # Swift renderer drivers link the stamped portable Core archive.
@@ -600,7 +602,7 @@ fi'''
         )
     # Core's harnesses, sanitized suite and agent tools, built from Core's tree:
     # a consumer's own top-level project names no Core frontend to configure.
-    if stage.key in ("fuzz", "sanitizers", "agent-smokes") and context.subject != context.core:
+    if stage.key in ("fuzz", "sanitizers", "sanitized-host", "agent-smokes") and context.subject != context.core:
         core_driver = context.core / "Scripts/run-tests.sh"
         command = command.replace("./Scripts/run-tests.sh", shlex.quote(str(core_driver)))
         command = 'export UBQ_TESTS_ROOT="$UBQ_CORE_ROOT"\nunset UBQ_KIT_ROOT UBIQUITTY_KIT_SOURCE_DIR\n' + command

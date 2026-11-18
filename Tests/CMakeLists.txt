@@ -896,6 +896,7 @@ function(ubq_schedule_run_tests_stanzas driver)
     # Frame-count, handoff and live tmux flood deadlines require a quiet
     # scheduler. The sanitizer stanza also runs the ingest loop's timing cases
     # inside its instrumented binary, so it needs that unit test's isolation.
+    set(shell_sanitized_sync_JOBS ${UBIQUITTY_HOST_FIXTURE_JOBS})
     set(shell_sanitized_sync_RUN_SERIAL TRUE)
     list(APPEND shell_sanitized_sync_RESOURCE_LOCK timing)
     set(shell_sync_output_e2e_RUN_SERIAL TRUE)

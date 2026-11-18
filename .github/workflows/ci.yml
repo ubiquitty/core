@@ -124,9 +124,12 @@ jobs:
           UBQ_PREPUSH_STRICT: "1"
           UBIQUITTY_PREPUSH_CACHE: "off"
         run: |
-          ./Scripts/ci-linux-image.sh bash -c '
+          jobCommand=$(cat <<'UBQ_SCRIPT'
             export PATH="${UBQ_PGO_LLVM:+$UBQ_PGO_LLVM:}$PATH"
-            exec ./Scripts/pre-push-gates.sh'
+            exec ./Scripts/pre-push-gates.sh
+          UBQ_SCRIPT
+          )
+          ./Scripts/ci-linux-image.sh bash -c "$jobCommand"
       # Saved whether or not a gate failed: the image was built either way.
       - name: Save the CI image
         if: always() && steps.image.outputs.digest != '' && steps.restore-image.outputs.cache-hit != 'true'
@@ -151,7 +154,7 @@ jobs:
           done
 
   linux:
-    # Four groups of the Linux battery on four runners, so the battery's wall
+    # Independent groups of the Linux battery run on separate runners, so its wall
     # time is its longest group rather than their sum. ci_reach.py reads the
     # battery as complete only when every group is.
     name: Linux battery (${{ matrix.group }})
@@ -168,11 +171,17 @@ jobs:
           - group: gcc
             stages: --only setup --only quic --only host-tests --only portable-build --only portable-snapshots --only host-glibc --only agent-smokes --only host-musl
             families: ""
-          # The Linux pgo stage is not hosted (Stage.hosted): its profile is
-          # stamped with the image it was trained in, which this runner never
-          # has.
-          - group: clang
-            stages: --only setup --only quic --only fuzz --only sanitizers
+          # Fuzzing, the instrumented native suite and the instrumented host
+          # use separate runners and compiler caches. Each still runs in full.
+          # The Linux PGO stage is not hosted (Stage.hosted).
+          - group: fuzz
+            stages: --only setup --only quic --only fuzz
+            families: ""
+          - group: sanitizers
+            stages: --only setup --only quic --only sanitizers
+            families: ""
+          - group: sanitized-host
+            stages: --only setup --only quic --only sanitized-host
             families: ""
           # The host, ubq and the test tree built with Clang, then every tree
           # checked to have compiled with UBIQUITTY_OWNERSHIP_ANALYSIS on; a
@@ -207,8 +216,8 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
           path: |
-            ${{ runner.workspace }}/build-gcc/quic-deps/lib
-            ${{ runner.workspace }}/build-gcc/quic-deps/include
+            ${{ github.workspace }}/../build-gcc/quic-deps/lib
+            ${{ github.workspace }}/../build-gcc/quic-deps/include
           key: quic-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Scripts/fetch-quic-deps.sh') }}
       # One compiler cache per group: the groups compile with different
       # compilers and flags, and a shared one would evict across them. The
@@ -217,10 +226,11 @@ jobs:
         if: runner.environment == 'github-hosted'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
-          path: ${{ runner.workspace }}/ccache
+          path: ${{ github.workspace }}/../ccache
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-linux-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-linux-${{ matrix.group }}-
+            ${{ (matrix.group == 'fuzz' || matrix.group == 'sanitizers' || matrix.group == 'sanitized-host') && format('ccache-v2-{0}-{1}-linux-clang-', runner.os, runner.arch) || '' }}
             ccache-linux-${{ matrix.group }}-
       - name: Compiler cache statistics
         run: echo "CCACHE_STATSLOG=$RUNNER_TEMP/ccache-stats.log" >> "$GITHUB_ENV"
@@ -257,15 +267,18 @@ jobs:
           UBQ_PREPUSH_SELECT: all
           UBQ_PREPUSH_STRICT: "1"
           UBIQUITTY_PREPUSH_CACHE: "off"
-          UBQ_BUILD_ROOT: ${{ runner.workspace }}/build-gates
-          UBIQUITTY_QUIC_PREFIX: ${{ runner.workspace }}/build-gcc/quic-deps
+          UBQ_BUILD_ROOT: ${{ github.workspace }}/../build-gates
+          UBIQUITTY_QUIC_PREFIX: ${{ github.workspace }}/../build-gcc/quic-deps
           CC: clang
           CXX: clang++
         run: |
-          ./Scripts/ci-linux-image.sh bash -c '
+          jobCommand=$(cat <<'UBQ_SCRIPT'
             emsdk="$RUNNER_TOOL_CACHE/emsdk-6.0.9/emsdk_env.sh"
             if [ -f "$emsdk" ]; then . "$emsdk" >/dev/null; fi
-            exec ./Scripts/pre-push-gates.sh'
+            exec ./Scripts/pre-push-gates.sh
+          UBQ_SCRIPT
+          )
+          ./Scripts/ci-linux-image.sh bash -c "$jobCommand"
       - name: Save the CI image
         if: always() && steps.image.outputs.digest != '' && steps.restore-image.outputs.cache-hit != 'true'
         continue-on-error: true
@@ -296,13 +309,18 @@ jobs:
         if: always()
         env:
           UBQ_CI_LINUX_IMAGE: "true"
-        run: ./Scripts/ci-linux-image.sh bash -c 'if [ -s "$CCACHE_STATSLOG" ]; then ccache --show-log-stats; else echo "No compiler invocations recorded in this job"; fi'
+        run: |
+          jobCommand=$(cat <<'UBQ_SCRIPT'
+          if [ -s "$CCACHE_STATSLOG" ]; then ccache --show-log-stats; else echo "No compiler invocations recorded in this job"; fi
+          UBQ_SCRIPT
+          )
+          ./Scripts/ci-linux-image.sh bash -c "$jobCommand"
       - name: Save the compiler cache
         if: always() && runner.environment == 'github-hosted'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
-          path: ${{ runner.workspace }}/ccache
+          path: ${{ github.workspace }}/../ccache
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-linux-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   apple:
@@ -352,7 +370,7 @@ jobs:
       - name: Restore the compiler cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
-          path: ${{ runner.workspace }}/ccache
+          path: ${{ github.workspace }}/../ccache
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-apple-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-apple-
@@ -363,14 +381,14 @@ jobs:
       # What the push hook runs on a Mac and the battery does not: the host
       # and ubq builds, then the proof that every tree this job built (the
       # battery's included) compiled with Apple Clang's ownership analyses on;
-      # the PGO bounds against the portable profile, the symbol-fork check over
-      # what was built, the benchmarks, and the style checks whose self-tests
+      # the symbol-fork check over what was built, the benchmarks, and the style
+      # checks whose self-tests
       # read the built test objects. The whole suite ran above, so the subset
       # the hook selects by diff is not run again.
       - name: Push gates (macOS)
         env:
           UBIQUITTY_PREPUSH: families
-          UBQ_PREPUSH_FAMILIES: core_gate_ownership core_gate_test_hygiene core_gate_forks core_gate_pgo_drift core_gate_style_checks core_gate_bench_compiles
+          UBQ_PREPUSH_FAMILIES: core_gate_ownership core_gate_test_hygiene core_gate_forks core_gate_style_checks core_gate_bench_compiles
           UBQ_PREPUSH_SELECT: all
           UBQ_PREPUSH_STRICT: "1"
           UBIQUITTY_PREPUSH_CACHE: "off"
@@ -408,7 +426,7 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
-          path: ${{ runner.workspace }}/ccache
+          path: ${{ github.workspace }}/../ccache
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-apple-${{ github.run_id }}-${{ github.run_attempt }}
 
   host-linux-arm64:
@@ -435,7 +453,7 @@ jobs:
       - name: Restore the compiler cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
-          path: ${{ runner.workspace }}/ccache
+          path: ${{ github.workspace }}/../ccache
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-gcc-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ccache-v2-${{ runner.os }}-${{ runner.arch }}-gcc-
       - name: Name the CI image
@@ -454,14 +472,22 @@ jobs:
           CC: gcc
           CXX: g++
         run: |
-          ./Scripts/ci-linux-image.sh bash -euc '
+          jobCommand=$(cat <<'UBQ_SCRIPT'
               test "$(uname -m)" = aarch64
-              ./Scripts/build-host.sh --release'
+              ./Scripts/build-host.sh --release
+          UBQ_SCRIPT
+          )
+          ./Scripts/ci-linux-image.sh bash -euc "$jobCommand"
       - name: Compiler cache hit rate
         if: always()
         env:
           UBQ_CI_LINUX_IMAGE: "true"
-        run: ./Scripts/ci-linux-image.sh bash -c 'if [ -s "$CCACHE_STATSLOG" ]; then ccache --show-log-stats; else echo "No compiler invocations recorded in this job"; fi'
+        run: |
+          jobCommand=$(cat <<'UBQ_SCRIPT'
+          if [ -s "$CCACHE_STATSLOG" ]; then ccache --show-log-stats; else echo "No compiler invocations recorded in this job"; fi
+          UBQ_SCRIPT
+          )
+          ./Scripts/ci-linux-image.sh bash -c "$jobCommand"
       - name: Print failed build diagnostics
         if: failure()
         run: |
@@ -478,7 +504,7 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
-          path: ${{ runner.workspace }}/ccache
+          path: ${{ github.workspace }}/../ccache
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-gcc-${{ github.run_id }}-${{ github.run_attempt }}
 
   coverage:
@@ -506,10 +532,17 @@ jobs:
           df -h /
           sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup
           df -h /
+      - name: Cache QUIC dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
+        with:
+          path: |
+            ${{ github.workspace }}/../build-coverage/quic-deps/lib
+            ${{ github.workspace }}/../build-coverage/quic-deps/include
+          key: quic-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Scripts/fetch-quic-deps.sh') }}
       - name: Restore the compiler cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
-          path: ${{ runner.workspace }}/ccache
+          path: ${{ github.workspace }}/../ccache
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-coverage-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ccache-v2-${{ runner.os }}-${{ runner.arch }}-coverage-
       - name: Name the CI image
@@ -528,16 +561,24 @@ jobs:
           CC: clang
           CXX: clang++
         run: |
-          ./Scripts/ci-linux-image.sh bash -euc '
+          jobCommand=$(cat <<'UBQ_SCRIPT'
               export PATH="$UBQ_PGO_LLVM:$PATH"
               ./Scripts/install-hooks.sh
               ./Scripts/ensure-quic-deps.sh
-              ./Scripts/run-coverage.sh --check-file-floors'
+              ./Scripts/run-coverage.sh --check-file-floors
+          UBQ_SCRIPT
+          )
+          ./Scripts/ci-linux-image.sh bash -euc "$jobCommand"
       - name: Compiler cache hit rate
         if: always()
         env:
           UBQ_CI_LINUX_IMAGE: "true"
-        run: ./Scripts/ci-linux-image.sh bash -c 'if [ -s "$CCACHE_STATSLOG" ]; then ccache --show-log-stats; else echo "No compiler invocations recorded in this job"; fi'
+        run: |
+          jobCommand=$(cat <<'UBQ_SCRIPT'
+          if [ -s "$CCACHE_STATSLOG" ]; then ccache --show-log-stats; else echo "No compiler invocations recorded in this job"; fi
+          UBQ_SCRIPT
+          )
+          ./Scripts/ci-linux-image.sh bash -c "$jobCommand"
       - name: Print failed build diagnostics
         if: failure()
         run: |
@@ -554,7 +595,7 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
-          path: ${{ runner.workspace }}/ccache
+          path: ${{ github.workspace }}/../ccache
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-coverage-${{ github.run_id }}-${{ github.run_attempt }}
 
   ci:
