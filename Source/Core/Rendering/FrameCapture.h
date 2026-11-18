@@ -63,6 +63,8 @@ struct UBIQUITTY_ESCAPABLE FrameRecordHeader {
     std::uint32_t captureTicks = 0;
     /// Whether the record replaces or updates its baseline.
     FrameRecordKind kind = FrameRecordKind::Full;
+    /// Whether the opaque letterbox let this capture omit its grid.
+    bool didSkipGridCapture = false;
 };
 
 class FrameCapture;
@@ -694,6 +696,36 @@ public:
     /// somebody meant to register.
     [[nodiscard]] Vec4 linkColor() const { return m_frame->inputs().linkColor; }
 
+    /// Whether this frame captured an active hovered link.
+    ///
+    /// - Returns: Whether the captured hover coordinates name a link.
+    [[nodiscard]] bool isHoverLinkActive() const { return m_frame->isHoverLinkActive(); }
+
+    /// The hovered link's first visible row.
+    ///
+    /// - Returns: The inclusive start row in the captured grid.
+    [[nodiscard]] int hoverLinkRowFirst() const { return m_frame->hoverLinkRowFirst(); }
+
+    /// The hovered link's last visible row.
+    ///
+    /// - Returns: The inclusive end row in the captured grid.
+    [[nodiscard]] int hoverLinkRowLast() const { return m_frame->hoverLinkRowLast(); }
+
+    /// The hovered link's first column on its first row.
+    ///
+    /// - Returns: The inclusive start column in the captured grid.
+    [[nodiscard]] int hoverLinkColumnFirst() const { return m_frame->hoverLinkColumnFirst(); }
+
+    /// The hovered link's last column on its last row.
+    ///
+    /// - Returns: The inclusive end column in the captured grid.
+    [[nodiscard]] int hoverLinkColumnLast() const { return m_frame->hoverLinkColumnLast(); }
+
+    /// The captured hover accent colour.
+    ///
+    /// - Returns: The resolved colour used for the hovered run.
+    [[nodiscard]] Vec4 linkHoverColor() const { return m_frame->inputs().linkHoverColor; }
+
     /// Whether the captured frame draws a status row on its bottom row.
     ///
     /// Exposed for the same reason ``linkColor()`` is: a view that presents
@@ -734,11 +766,23 @@ public:
     /// Whether this record replaces its entire baseline.
     [[nodiscard]] bool isFullFrame() const { return m_header.kind == FrameRecordKind::Full; }
 
+    /// Whether this frame actually omitted its hidden grid capture.
+    ///
+    /// - Returns: Whether the capture copied no grid beneath an opaque letterbox.
+    [[nodiscard]] bool didSkipGridCapture() const { return m_header.didSkipGridCapture; }
+
+    /// Whether this capture read every row from the terminal grid.
+    ///
+    /// - Returns: Whether the refresh retained no row and omitted no grid.
+    [[nodiscard]] bool didReadEveryGridRow() const { return m_frame->didReadEveryGridRow(); }
+
     /// Whether any visible row changed against the baseline: every row for a
     /// full record, any set entry of the owned mask for a delta. A short mask
     /// reads dirty, as isRowDirty does.
     [[nodiscard]] bool hasCapturedDirtyRows() const
     {
+        if (didSkipGridCapture())
+            return false;
         if (m_header.kind == FrameRecordKind::Full)
             return true;
         const std::span<const std::uint8_t> dirtyRows = m_frame->capturedDirtyRows();
@@ -772,6 +816,8 @@ public:
     /// record or a short mask, as hasCapturedDirtyRows reads them.
     [[nodiscard]] int capturedDirtyRowCount() const
     {
+        if (didSkipGridCapture())
+            return 0;
         if (m_header.kind == FrameRecordKind::Full)
             return rows();
         const std::span<const std::uint8_t> dirtyRows = m_frame->capturedDirtyRows();
@@ -805,6 +851,8 @@ public:
     /// - Returns: Whether the row must be rebuilt.
     [[nodiscard]] bool isRowDirty(int row) const
     {
+        if (row >= 0 && row < rows() && didSkipGridCapture())
+            return false;
         if (row < 0 || row >= rows() || m_header.kind == FrameRecordKind::Full) {
             return true;
         }
@@ -815,6 +863,11 @@ public:
 
     /// The frame's measured ownership traffic.
     [[nodiscard]] const FrameCopyStatistics& copyStatistics() const { return m_frame->copyStatistics(); }
+
+    /// Whether any image placement remains, including placements clipped out.
+    ///
+    /// - Returns: Whether the captured model held an image placement.
+    [[nodiscard]] bool hasImagePlacements() const { return m_frame->hasImagePlacements(); }
 
     /// The captured cursor's cross-fade weight, zero when blink has it dark.
     [[nodiscard]] float cursorMixAlpha() const { return m_frame->inputs().cursor.mixA; }
@@ -915,6 +968,7 @@ private:
     void commitRecord(const FrameRecordHeader& header, const FrameDamage& damage)
     {
         m_header = header;
+        m_header.didSkipGridCapture = m_frame->didSkipGridCapture();
         m_damage = damage;
         const std::span<const std::uint8_t> dirtyRows = m_frame->capturedDirtyRows();
 

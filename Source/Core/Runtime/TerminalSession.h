@@ -201,6 +201,8 @@ struct AnimationScheduleVerdict {
 /// holds only what survives frames — the scalar knobs and geometry — and the
 /// capture assembles full options from it at the boundary, span tiers absent.
 struct SyncFrameCaptureGeometry {
+    /// Opts into omitting a grid hidden by DECSET 7402's opaque letterbox.
+    bool isOcclusionSkipEnabled = false;
     /// The frame's scroll position; refresh whenever the view moves other
     /// than by holding its rows under output.
     int viewOffset = 0;
@@ -10334,29 +10336,40 @@ private:
                 m_syncRowDirty.assign(rowCount, 0);
             else
                 std::ranges::fill(m_syncRowDirty, std::uint8_t { 0 });
-            const Rendering::RetainedCapture plan = Rendering::planRetainedCapture(
-                *term->grid, *term, m_retainedBaseline, request, std::span { m_syncRowDirty });
-            damage = plan.damage;
-            refresh = plan.refresh;
-            isDelta = plan.damage.canReuse;
-            includeRetainedHoverDamage(*term, options.viewOffset, damage, m_syncRowDirty);
-            // Owed rows are named where the capture that owed them drew them.
-            // A scroll since has moved those rows, so a capture that scrolls
-            // over a debt cannot say where it now stands, and records Full.
-            if (isDelta && plan.damage.scrollDelta != 0 && hasOwedSyncRows(m_syncRowDirty.size())) {
-                isDelta = false;
-                damage.canReuse = false;
-                refresh.canReuseRows = false;
-            }
-            if (isDelta) {
-                mergeOwedSyncRows(m_syncRowDirty);
-                oweSyncRows(m_syncRowDirty);
-                // The blit is part of what this capture presents: superseded,
-                // nobody performs it, and every row it moved is owed.
-                if (plan.damage.scrollDelta != 0)
-                    oweSyncRowRange(plan.damage.scrollTop, plan.damage.scrollBottom);
+            if (m_syncCaptureGeometry.isOcclusionSkipEnabled
+                && Rendering::canSkipGridCapture(*term, Rendering::OcclusionSkip::Enabled)) {
+                Rendering::RetainedFrameRequest skippedRequest;
+                skippedRequest.rows = request.rows;
+                skippedRequest.columns = request.columns;
+                skippedRequest.viewOffset = request.viewOffset;
+                refresh = Rendering::planSkippedGridFrame(*term, m_retainedBaseline, skippedRequest,
+                    std::span { m_syncRowDirty })
+                              .refresh;
             } else {
-                oweAllSyncRows();
+                const Rendering::RetainedCapture plan = Rendering::planRetainedCapture(
+                    *term->grid, *term, m_retainedBaseline, request, std::span { m_syncRowDirty });
+                damage = plan.damage;
+                refresh = plan.refresh;
+                isDelta = plan.damage.canReuse;
+                includeRetainedHoverDamage(*term, options.viewOffset, damage, m_syncRowDirty);
+                // Owed rows are named where the capture that owed them drew them.
+                // A scroll since has moved those rows, so a capture that scrolls
+                // over a debt cannot say where it now stands, and records Full.
+                if (isDelta && plan.damage.scrollDelta != 0 && hasOwedSyncRows(m_syncRowDirty.size())) {
+                    isDelta = false;
+                    damage.canReuse = false;
+                    refresh.canReuseRows = false;
+                }
+                if (isDelta) {
+                    mergeOwedSyncRows(m_syncRowDirty);
+                    oweSyncRows(m_syncRowDirty);
+                    // The blit is part of what this capture presents: superseded,
+                    // nobody performs it, and every row it moved is owed.
+                    if (plan.damage.scrollDelta != 0)
+                        oweSyncRowRange(plan.damage.scrollTop, plan.damage.scrollBottom);
+                } else {
+                    oweAllSyncRows();
+                }
             }
         } else {
             oweAllSyncRows();

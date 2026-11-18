@@ -227,6 +227,8 @@ struct UBIQUITTY_NONESCAPABLE FrameSource {
     bool isEdgeToEdge = false;
     /// Whether pixel reports use the drawable origin for this captured picture.
     bool isFullscreenContentActive = false;
+    /// Whether any image placement remains, including placements clipped out.
+    bool hasImagePlacements = false;
     /// The letterbox fill, 0x00RRGGBB, read only under `isEdgeToEdge`.
     ///
     /// Travels beside the mode rather than being fetched when the frame is
@@ -384,6 +386,31 @@ public:
     /// successful one.
     [[nodiscard]] const BuildInputs& inputs() const { return m_inputs; }
 
+    /// Whether these inputs captured an active hovered link.
+    ///
+    /// - Returns: Whether the captured hover coordinates name a link.
+    [[nodiscard]] bool isHoverLinkActive() const { return m_lastCaptureHoverLinkActive; }
+
+    /// The hovered link's first visible row.
+    ///
+    /// - Returns: The inclusive start row in the captured grid.
+    [[nodiscard]] int hoverLinkRowFirst() const { return m_lastCaptureHoverLinkRowFirst; }
+
+    /// The hovered link's last visible row.
+    ///
+    /// - Returns: The inclusive end row in the captured grid.
+    [[nodiscard]] int hoverLinkRowLast() const { return m_lastCaptureHoverLinkRowLast; }
+
+    /// The hovered link's first column on its first row.
+    ///
+    /// - Returns: The inclusive start column in the captured grid.
+    [[nodiscard]] int hoverLinkColumnFirst() const { return m_lastCaptureHoverLinkColumnFirst; }
+
+    /// The hovered link's last column on its last row.
+    ///
+    /// - Returns: The inclusive end column in the captured grid.
+    [[nodiscard]] int hoverLinkColumnLast() const { return m_lastCaptureHoverLinkColumnLast; }
+
     /// Where each column's letter stands on the rows the last build laid out
     /// as proportional runs (LetterLayout.h): `rows * columns` extents, and a
     /// byte per row that is nonzero where the row was laid out so.
@@ -494,6 +521,21 @@ public:
 
     /// The ownership traffic used by the most recent successful capture.
     [[nodiscard]] const FrameCopyStatistics& copyStatistics() const { return m_copyStatistics; }
+
+    /// Whether this capture omitted the grid hidden by an opaque letterbox.
+    ///
+    /// - Returns: Whether the successful capture bypassed the grid copy.
+    [[nodiscard]] bool didSkipGridCapture() const { return m_didSkipGridCapture; }
+
+    /// Whether this capture read every row from the terminal grid.
+    ///
+    /// - Returns: Whether the refresh retained no row and omitted no grid.
+    [[nodiscard]] bool didReadEveryGridRow() const { return !m_didKeepCapturedRows && !m_didSkipGridCapture; }
+
+    /// Whether the captured viewport contains an image placement.
+    ///
+    /// - Returns: Whether the captured model held a placement, including clipped ones.
+    [[nodiscard]] bool hasImagePlacements() const { return m_hasImagePlacements; }
 
     /// The `[cursor] motion` policy the captured terminal was configured with.
     ///
@@ -635,6 +677,7 @@ private:
     enum class SourceRowStorage : std::uint8_t {
         Copy,
         CaptureOwned,
+        Occluded,
     };
 
     /// Names the member storage containing the last pristine terminal rows.
@@ -851,6 +894,8 @@ private:
     std::uint64_t m_modelGeneration = 0;
     std::uint64_t m_paletteGeneration = 0;
     FrameCopyStatistics m_copyStatistics;
+    bool m_didSkipGridCapture = false;
+    bool m_hasImagePlacements = false;
     TerminalRowStorage m_terminalRowStorage = TerminalRowStorage::None;
     // Declared in every build and counted only in the hooked one. A member
     // behind a build flag gives the class two layouts: a test binary that

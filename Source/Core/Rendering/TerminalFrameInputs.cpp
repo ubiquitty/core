@@ -5,6 +5,7 @@
 #include "Core/Attributes/LinkRun.h"
 #include "Core/Diagnostics/PerfDiag.h"
 #include "Core/Rendering/CellDecisions.h"
+#include "Core/Rendering/ImageLayerCarry.h"
 #include "Core/Rendering/OverlayAssembly.h"
 #include "Core/Rendering/OverlayGeometry.h"
 #include "Core/Rendering/UnifontRasterizer.h"
@@ -138,6 +139,7 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
 bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapshotOptions& options, const CellMetrics& baseMetrics,
     const GlyphSlotGeometry& glyphSlot, const CapturedRowRefresh& refresh, ChromeLayers chrome)
 {
+    m_didSkipGridCapture = false;
     m_inputs = BuildInputs {};
     m_cursorPresentationFrame = CursorPresentation::Frame {};
     m_imageQuadCount = 0;
@@ -163,6 +165,8 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
     const bool hasStatusRow = options.statusRowCells != nullptr
         && options.statusRowColumns == terminal.columns;
     const bool needsPristineSource = isChromeActive || hasStatusRow;
+    const bool shouldSkipGridCapture = refresh.shouldSkipGridCapture && !needsPristineSource
+        && canSkipGridCapture(terminal, OcclusionSkip::Enabled);
 
     std::vector<Cell>* capturedCells = &m_cells;
     std::vector<std::uint8_t>* capturedLineAttributes = &m_lineAttributes;
@@ -230,7 +234,7 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
     // Hover changes presentation without Core cell damage. Both the row copy
     // and the build must include those rows, even when another capture consumed
     // their model damage before this capture refreshed its cached cells.
-    if (rows.canReuseRows && rows.rowDirty.size() == rowCount) {
+    if (!shouldSkipGridCapture && rows.canReuseRows && rows.rowDirty.size() == rowCount) {
         const SelectionFill selection = selectionFillFor(options, terminal.selectionBackgroundSet,
             terminal.selectionBackgroundRed, terminal.selectionBackgroundGreen, terminal.selectionBackgroundBlue);
         rows.rowDirty = { damageIncludingPresentation(rows.rowDirty.data(), options, terminal.rows,
@@ -244,17 +248,20 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
     // the row's cells changing.
     // The flags below are indexed by row beside the cells, and the cells are
     // about to move: a scrolled band is shifted rather than re-read.
-    shiftLinkFlagsForScroll(rows, terminal.rows, terminal.columns);
+    if (!shouldSkipGridCapture)
+        shiftLinkFlagsForScroll(rows, terminal.rows, terminal.columns);
     m_didKeepCapturedRows = rows.canReuseRows;
+    if (!shouldSkipGridCapture) {
 #if UBIQUITTY_PERF_DIAG
-    const FrameCopyStatistics rowStatistics = refreshCapturedRowsWithStatistics(
-        terminal, rows, *capturedCells, *capturedLineAttributes, *capturedRowMarks);
-    m_copyStatistics.cellBytesCopied += rowStatistics.cellBytesCopied;
-    m_copyStatistics.rowsInspected += rowStatistics.rowsInspected;
-    m_copyStatistics.rowsCopied += rowStatistics.rowsCopied;
+        const FrameCopyStatistics rowStatistics = refreshCapturedRowsWithStatistics(
+            terminal, rows, *capturedCells, *capturedLineAttributes, *capturedRowMarks);
+        m_copyStatistics.cellBytesCopied += rowStatistics.cellBytesCopied;
+        m_copyStatistics.rowsInspected += rowStatistics.rowsInspected;
+        m_copyStatistics.rowsCopied += rowStatistics.rowsCopied;
 #else
-    refreshCapturedRows(terminal, rows, *capturedCells, *capturedLineAttributes, *capturedRowMarks);
+        refreshCapturedRows(terminal, rows, *capturedCells, *capturedLineAttributes, *capturedRowMarks);
 #endif
+    }
 
     // One flag set per visible row, beside the attributes: live rows from
     // their metadata, history rows from their cells. A capture that copies
@@ -325,6 +332,7 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
     // window: fresh geometry then pairs with cells captured under the mode.
     source.isEdgeToEdge = isFrameEdgeToEdge(terminal);
     source.isFullscreenContentActive = terminal.modes.fullscreenContent;
+    source.hasImagePlacements = Rendering::hasImagePlacements(&terminal, viewOffset);
     source.letterboxColor = terminal.fullscreenContentDisplay.letterboxColor;
     source.isCursorVisible = terminal.modes.isCursorVisible;
     source.isPasswordPromptActive = terminal.passwordPromptActive;
@@ -349,7 +357,7 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
     // with the source. A proportional run's anchor is read through the same
     // resolver, from the run-text store, so a terminal holding run text and no
     // pooled cluster needs it too.
-    if (!terminal.clusterPool.empty() || terminal.runTextStore.liveCodePoints() != 0) {
+    if (!shouldSkipGridCapture && (!terminal.clusterPool.empty() || terminal.runTextStore.liveCodePoints() != 0)) {
         source.clusterResolver = [](const Cell* cell, std::span<std::uint32_t> codePoints, void* context) {
             return Ubiquitty::cellClusterCodePoints(static_cast<const Terminal*>(context), cell, codePoints.data(), static_cast<int>(codePoints.size()));
         };
@@ -358,7 +366,9 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
     // Borrowed for the call only — the capture takes its own serial-gated copy,
     // so this pointer does not have to outlive the caller's lock.
     source.softFont = Ubiquitty::softFontOrNull(terminal);
-    const SourceRowStorage sourceStorage = needsPristineSource ? SourceRowStorage::Copy : SourceRowStorage::CaptureOwned;
+    const SourceRowStorage sourceStorage = shouldSkipGridCapture ? SourceRowStorage::Occluded
+        : needsPristineSource                                    ? SourceRowStorage::Copy
+                                                                 : SourceRowStorage::CaptureOwned;
     TerminalSnapshotOptions captureOptions = options;
     captureOptions.viewOffset = viewOffset;
     // Per-kind link styling for a caller that hands in the Terminal and no
@@ -391,6 +401,7 @@ bool TerminalFrameInputs::capture(const Terminal& terminal, const TerminalSnapsh
     // capture, since a source-only capture has no terminal to read.
     m_linkKindTerminal = &terminal;
     const bool didCapture = captureSource(source, captureOptions, baseMetrics, glyphSlot, sourceStorage, chrome);
+    m_didSkipGridCapture = didCapture && shouldSkipGridCapture;
     m_linkKindTerminal = nullptr;
 #if UBIQUITTY_PERF_DIAG
     if (didCapture)
@@ -555,6 +566,7 @@ void TerminalFrameInputs::collectRichTextQuads(const Terminal& terminal, const T
 bool TerminalFrameInputs::capture(const FrameSource& source, const TerminalSnapshotOptions& options, const CellMetrics& baseMetrics,
     const GlyphSlotGeometry& glyphSlot, ChromeLayers chrome)
 {
+    m_didSkipGridCapture = false;
     m_terminalRowStorage = TerminalRowStorage::None;
 #if UBIQUITTY_PERF_DIAG
     m_copyStatistics = FrameCopyStatistics {};
@@ -775,6 +787,7 @@ bool TerminalFrameInputs::captureSource(const FrameSource& source, const Termina
 
     captureViewTiers(options);
     m_modelGeneration = source.modelGeneration;
+    m_hasImagePlacements = source.hasImagePlacements;
     const bool hadPalette = m_hasPalette;
     const bool hadPaletteGeneration = m_hasPaletteGeneration;
     const std::uint64_t previousPaletteGeneration = m_paletteGeneration;
@@ -883,13 +896,14 @@ bool TerminalFrameInputs::captureSource(const FrameSource& source, const Termina
         && source.rows == m_capturedRows && source.columns == m_capturedColumns
         && viewOffset == m_viewOffset;
 
-    const std::uint8_t* buildDamage = damageIncludingPresentation(damage, options, source.rows,
-        hasStatusRow ? StatusRowPresence::Present : StatusRowPresence::Absent, selection, 0);
+    const std::uint8_t* buildDamage = sourceStorage == SourceRowStorage::Occluded ? damage
+                                                                                  : damageIncludingPresentation(damage, options, source.rows,
+                                                                                        hasStatusRow ? StatusRowPresence::Present : StatusRowPresence::Absent, selection, 0);
     // The copy consults the verdict only under this capture's own lineage;
     // without it every row is copied. Read by the copy and nothing after it.
     const std::uint8_t* frameDamage = canPartialCopy ? buildDamage : nullptr;
 
-    if (sourceStorage == SourceRowStorage::CaptureOwned) {
+    if (sourceStorage != SourceRowStorage::Copy) {
         assert(source.cells == m_cells.data());
         assert(source.lineAttributes == m_lineAttributes.data());
         assert(source.rowMarks == nullptr || source.rowMarks == m_rowMarks.data());
@@ -1027,7 +1041,7 @@ bool TerminalFrameInputs::captureSource(const FrameSource& source, const Termina
             });
         isHoverVerified = digest == options.hoverLinkTextDigest;
     }
-    if (options.shouldUnderlineLinks) {
+    if (options.shouldUnderlineLinks && sourceStorage != SourceRowStorage::Occluded) {
         // The scan follows the effective damage gate: clean rows retain their
         // prior flags, while a hover move contributes its old and new rows. A
         // run whose verification flipped rescans whole, so no row keeps the
@@ -1361,7 +1375,7 @@ bool TerminalFrameInputs::captureSource(const FrameSource& source, const Termina
     }
     // Chrome writes rows the damage mask does not name, so a chrome frame
     // leaves no lineage and the next capture copies whole.
-    m_hasFullLineage = !chromeActive;
+    m_hasFullLineage = !chromeActive && sourceStorage != SourceRowStorage::Occluded;
     return true;
 }
 

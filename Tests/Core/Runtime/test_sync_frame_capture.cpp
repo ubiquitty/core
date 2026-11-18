@@ -16,6 +16,7 @@
 #include "StrictAtlas.h"
 #include "TerminalFixture.h"
 
+#include "Core/Diagnostics/PerfDiag.h"
 #include "Core/Modes/SyncOutput.h"
 #include "Core/Rendering/CellInstanceBuilder.h"
 #include "Core/Rendering/FrameCapture.h"
@@ -245,7 +246,8 @@ struct FakeAtlas : UbiquittyTest::StrictAtlas {
 // cell-instance stream: two builds of one frame are byte-identical, so
 // equality of two returns is the self-containment probe, with no dependence
 // on the instance layout.
-std::vector<CellInstance> builtCells(const FrameCapture& capture, const FrameCapture::ViewTierOverrides* view = nullptr)
+std::vector<CellInstance> builtCells(const FrameCapture& capture, const FrameCapture::ViewTierOverrides* view = nullptr,
+    BuildScope scope = BuildScope::Damaged)
 {
     FakeAtlas atlas;
     const std::size_t capacity = static_cast<std::size_t>(capture.rows()) * capture.columns();
@@ -257,7 +259,7 @@ std::vector<CellInstance> builtCells(const FrameCapture& capture, const FrameCap
     buffers.decorations = decorations.data();
     buffers.decorationCapacity = decorations.size();
     const GlyphBackend backend = UbiquittyTest::glyphBackendFor(atlas);
-    const InstanceCounts counts = view ? capture.build(backend, buffers, *view) : capture.build(backend, buffers);
+    const InstanceCounts counts = view ? capture.build(backend, buffers, *view, scope) : capture.build(backend, buffers, scope);
     cells.resize(std::min(counts.cells, cells.size()));
     return cells;
 }
@@ -860,6 +862,7 @@ TEST(aSecondBoundaryRecordsADeltaOfTheRowsItChanged)
     fx.drainSyncFrame("a");
     {
         const TakenFrame first { fx.session->takeSyncFrame() };
+
         REQUIRE(first != nullptr);
         CHECK(first->isFullFrame()); // no baseline yet
     }
@@ -872,6 +875,118 @@ TEST(aSecondBoundaryRecordsADeltaOfTheRowsItChanged)
     CHECK(second->isRowDirty(3));
     CHECK(!second->isRowDirty(10));
     CHECK(!second->isFullFrame());
+}
+
+TEST(opaqueLetterboxCapturesSkipActualCopiesAndRevealEveryHiddenWrite)
+{
+    std::array<std::vector<CellInstance>, 2> opaque;
+    std::array<std::vector<CellInstance>, 2> resizedOpaque;
+    std::array<std::vector<CellInstance>, 2> revealed;
+    for (std::size_t enabled = 0; enabled < 2; ++enabled) {
+        SessionFixture fx(24, 80);
+        REQUIRE(fx.isReady);
+        auto geometry = testGeometry();
+        geometry.isOcclusionSkipEnabled = enabled != 0;
+        geometry.drawCursor = false;
+        fx.session->setSyncFrameCaptureGeometry(geometry);
+        // Start inside the mode: every lane slot is still uninitialised.
+        fx.drainSyncFrame("\x1b]7402;fill=204060\x1b\\\x1b[?7402hfirst");
+        TakenFrame first { fx.session->takeSyncFrame() };
+        REQUIRE(first != nullptr);
+        CHECK(first->didSkipGridCapture() == (enabled != 0));
+        CHECK(first->didReadEveryGridRow() == (enabled == 0));
+        CHECK(first->isFullFrame());
+        CHECK(first->baseSequence() == 0);
+#if UBIQUITTY_PERF_DIAG
+        CHECK(first->copyStatistics().rowsCopied == (enabled ? 0u : 24u));
+        CHECK((first->copyStatistics().cellBytesCopied == 0) == (enabled != 0));
+        CHECK(first->copyStatistics().rowsInspected == (enabled ? 0u : 24u));
+#endif
+        if (enabled) {
+            CHECK(!first->hasCapturedDirtyRows());
+            CHECK(first->capturedDirtyRowCount() == 0);
+            CHECK(!first->hasDirtyRowsInMask());
+            CHECK(!first->isRowDirty(0));
+        }
+        opaque[enabled] = builtCells(*first, nullptr, BuildScope::Whole);
+
+        // Superseded captures must neither drain hidden damage nor turn it
+        // into rows owed by the opaque frame that replaces them.
+        fx.drainSyncFrame("\x1b[2;1Hsecond");
+        fx.drainSyncFrame("\x1b[3;1Hthird");
+        TakenFrame newest { fx.session->takeSyncFrame() };
+        REQUIRE(newest != nullptr);
+        CHECK(newest->didSkipGridCapture() == (enabled != 0));
+        if (enabled) {
+            CHECK(newest->isFullFrame());
+            CHECK(newest->capturedDirtyRowCount() == 0);
+#if UBIQUITTY_PERF_DIAG
+            CHECK(newest->copyStatistics().cellBytesCopied == 0);
+#endif
+        }
+        first.reset();
+        fx.session->resize(25, 82, TerminalSession::ResizeGesture::Settled, Ubiquitty::Modes::AnchorMode::Top);
+        geometry.viewportSizeInPixels = { 656.0f, 400.0f };
+        fx.session->setSyncFrameCaptureGeometry(geometry);
+        fx.drainSyncFrame("\x1b[4;1Hfourth");
+        const TakenFrame resized { fx.session->takeSyncFrame() };
+        REQUIRE(resized != nullptr);
+        CHECK(resized->rows() == 25 && resized->columns() == 82);
+        CHECK(resized->didSkipGridCapture() == (enabled != 0));
+        if (enabled) {
+            CHECK(resized->isFullFrame());
+            CHECK(resized->capturedDirtyRowCount() == 0);
+#if UBIQUITTY_PERF_DIAG
+            CHECK(resized->copyStatistics().rowsCopied == 0);
+            CHECK(resized->copyStatistics().rowsInspected == 0);
+#endif
+        }
+        resizedOpaque[enabled] = builtCells(*resized, nullptr, BuildScope::Whole);
+        newest.reset();
+        fx.drainSyncFrame("\x1b[?7402l");
+        const TakenFrame visible { fx.session->takeSyncFrame() };
+        REQUIRE(visible != nullptr);
+        CHECK(!visible->didSkipGridCapture());
+        if (enabled) {
+            CHECK(visible->isFullFrame());
+            CHECK(visible->didReadEveryGridRow());
+            CHECK(visible->capturedDirtyRowCount() == 25);
+#if UBIQUITTY_PERF_DIAG
+            CHECK(visible->copyStatistics().rowsCopied == 25);
+            CHECK(visible->copyStatistics().cellBytesCopied == 25 * 82 * sizeof(Cell));
+#endif
+        }
+        revealed[enabled] = builtCells(*visible, nullptr, BuildScope::Whole);
+    }
+    // Compare every instance field; the GPU layout includes padding bytes.
+    const auto values = [](const CellInstance& cell) {
+        return std::array { cell.gridPosition.x, cell.gridPosition.y, cell.widthCells,
+            cell.foreground.x, cell.foreground.y, cell.foreground.z, cell.foreground.w,
+            cell.background.x, cell.background.y, cell.background.z, cell.background.w,
+            cell.atlasTopLeft.x, cell.atlasTopLeft.y, cell.atlasBottomRight.x, cell.atlasBottomRight.y };
+    };
+    CHECK(!opaque[0].empty());
+    CHECK(std::ranges::equal(opaque[0], opaque[1], std::ranges::equal_to {}, values, values));
+    CHECK(std::ranges::equal(resizedOpaque[0], resizedOpaque[1], std::ranges::equal_to {}, values, values));
+    CHECK(std::ranges::equal(revealed[0], revealed[1], std::ranges::equal_to {}, values, values));
+}
+
+TEST(occlusionSkipRequiresTheModeAndAnOpaqueLetterbox)
+{
+    SessionFixture fx(24, 80);
+    REQUIRE(fx.isReady);
+    auto geometry = testGeometry();
+    geometry.isOcclusionSkipEnabled = true;
+    fx.session->setSyncFrameCaptureGeometry(geometry);
+    for (const auto body : { "plain", "\x1b]7402;fill=pass\x1b\\\x1b[?7402hpass" }) {
+        fx.drainSyncFrame(body);
+        const TakenFrame frame { fx.session->takeSyncFrame() };
+        REQUIRE(frame != nullptr);
+        CHECK(!frame->didSkipGridCapture());
+#if UBIQUITTY_PERF_DIAG
+        CHECK(frame->copyStatistics().rowsCopied > 0);
+#endif
+    }
 }
 
 TEST(aSupersededBoundaryCarriesItsRowsIntoTheNextCapture)
@@ -1890,15 +2005,23 @@ TEST(boundaryCaptureOwnsImagePixelsAndSquareGeometryAfterDeletion)
         const TakenFrame capture { fx.session->takeSyncFrame() };
         REQUIRE(capture != nullptr);
         REQUIRE(capture->imageQuads().size() == 1);
+        CHECK(capture->hasImagePlacements());
         const auto quad = capture->imageQuads()[0];
         // Natural protocol dimensions are device pixels, not points. The
         // retained frame uses the same units as the live image resolver.
         CHECK(quad.maxXInPixels - quad.minXInPixels == 1.0f);
         CHECK(quad.maxYInPixels - quad.minYInPixels == 1.0f);
+        fx.drainSyncFrame(std::string(40, '\n'));
+        const TakenFrame clipped { fx.session->takeSyncFrame() };
+        REQUIRE(clipped != nullptr);
+        CHECK(clipped->imageQuads().empty());
+        CHECK(clipped->hasImagePlacements());
         fx.drainSyncFrame("\x1b_Ga=d,d=I,i=42,q=2\x1b\\");
         const TakenFrame deleted { fx.session->takeSyncFrame() };
         REQUIRE(deleted != nullptr);
         CHECK(deleted->imageQuads().size() == 0);
+        CHECK(!deleted->hasImagePlacements());
+        CHECK(capture->hasImagePlacements());
         CHECK(capture->imageQuads().size() == 1);
         bool found = false;
         for (const auto& image : capture->images()) {

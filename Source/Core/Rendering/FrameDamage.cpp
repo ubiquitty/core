@@ -432,6 +432,7 @@ RetainedFramePlan planSkippedGridFrame(const Terminal& terminal, RetainedFrameBa
     // about cells the build reads, and this build reads none.
     plan.shouldLoadRetainedTarget = false;
     plan.refresh.canReuseRows = true;
+    plan.refresh.shouldSkipGridCapture = true;
     plan.refresh.viewOffset = Screen::resolvedViewOffset(&terminal, request.viewOffset);
     plan.refresh.firstAbsoluteRow = Screen::scrollbackCount(&terminal) - plan.refresh.viewOffset;
     plan.refresh.rowDirty = rowDirty;

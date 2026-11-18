@@ -313,6 +313,8 @@ struct UBIQUITTY_ESCAPABLE ScrollBlitPlan {
 /// cells.
 struct CapturedRowRefresh {
     bool canReuseRows = false; // the drain's verdict, and only if the buffer kept its size
+    /// Requests an opaque-letterbox capture; the capture validates the mode.
+    bool shouldSkipGridCapture = false;
     int scrollTop = 0;
     int scrollBottom = -1; // inclusive; -1 = no pending scroll
     int scrollDelta = 0; // >0 scrolls up
