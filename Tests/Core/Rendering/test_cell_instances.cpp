@@ -2410,7 +2410,10 @@ TEST(anEnclosingCircleIsDrawnByCoreRoundTheLetter)
         CHECK(circle.plA.y == 0.0f);
         CHECK(circle.cornerRadius == side * 0.5f);
         CHECK(circle.strokeWidth == 1.0f);
-        CHECK(circle.topLeftInPixels.x == circle.plA.x - 0.5f);
+        // The quad stops at the grid's edges, where nothing is drawn: the
+        // first column's circle reaches half a cell past the grid's left.
+        CHECK(circle.topLeftInPixels.x == std::max(circle.plA.x - 0.5f, 0.0f));
+        CHECK(circle.bottomRightInPixels.x == std::min(circle.plA.z + 0.5f, 16.0f));
         CHECK(circle.bottomRightInPixels.y == circle.plA.w + 0.5f);
         const float cellCentre = 8.0f * static_cast<float>(index) + 4.0f;
         CHECK(std::fabs(circle.plA.x + side * 0.5f - cellCentre) <= 0.5f);

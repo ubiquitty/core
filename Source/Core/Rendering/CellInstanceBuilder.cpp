@@ -4265,7 +4265,8 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         const float rowBottom = std::round(in.originInPixels.y + (row + 1) * metrics.cellHeight);
                         const Vec4 ink = mayUseNativeBackground ? nativeSecondaryInk(usesNativeTextVibrancy, foreground, background, in, framePalette8.defaultForeground) : foreground;
                         if (out.boxFills != nullptr && counts.boxFills < out.boxFillCapacity)
-                            out.boxFills[counts.boxFills] = enclosingCircle(cellsLeft, rowTop, cellsRight, rowBottom, metrics.cellWidth, weight, ink);
+                            out.boxFills[counts.boxFills] = enclosingCircle(cellsLeft, rowTop, cellsRight, rowBottom, metrics.cellWidth, in.originInPixels.x,
+                                in.originInPixels.x + static_cast<float>(in.columns) * metrics.cellWidth, weight, ink);
                         ++counts.boxFills;
                     }();
                 }

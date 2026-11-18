@@ -80,6 +80,9 @@ inline constexpr float enclosingCircleShapeKind = -2.0f;
 /// into the rows beside it. The box is whole pixels, so every circle on a
 /// screen is the same raster. It is drawn as Braille's dot is, the circle in
 /// the ink box `plA` and the quad half a pixel wider for the edge's coverage.
+/// The quad stops at the grid's edges: a renderer repainting part of a frame
+/// leaves the margins alone, so ink drawn there would stay, and a circle in
+/// the first or last column is cut at the grid's edge on every renderer.
 ///
 /// - Parameters:
 ///   - cellsLeft: The left edge of the character's first cell, in device pixels.
@@ -87,18 +90,20 @@ inline constexpr float enclosingCircleShapeKind = -2.0f;
 ///   - cellsRight: The right edge of the character's last cell, in device pixels.
 ///   - rowBottom: The bottom of the row, in device pixels.
 ///   - cellWidth: One cell's width, in device pixels.
+///   - gridLeft: The grid's left edge, in device pixels.
+///   - gridRight: The grid's right edge, in device pixels.
 ///   - weight: The stroke, in whole device pixels.
 ///   - color: The circle's colour.
 /// - Returns: The overlay instance that draws the circle.
-[[nodiscard]] inline OverlayInstance enclosingCircle(float cellsLeft, float rowTop, float cellsRight, float rowBottom, float cellWidth, float weight, Vec4 color)
+[[nodiscard]] inline OverlayInstance enclosingCircle(float cellsLeft, float rowTop, float cellsRight, float rowBottom, float cellWidth, float gridLeft, float gridRight, float weight, Vec4 color)
 {
     const float smallest = weight * 2.0f + 1.0f;
     const float side = std::max(std::min(std::round(cellWidth * 2.0f), std::round(rowBottom - rowTop)), smallest);
     const float left = std::round((cellsLeft + cellsRight - side) * 0.5f);
     const float top = std::round((rowTop + rowBottom - side) * 0.5f);
     OverlayInstance circle {};
-    circle.topLeftInPixels = { left - 0.5f, top - 0.5f };
-    circle.bottomRightInPixels = { left + side + 0.5f, top + side + 0.5f };
+    circle.topLeftInPixels = { std::max(left - 0.5f, gridLeft), top - 0.5f };
+    circle.bottomRightInPixels = { std::min(left + side + 0.5f, gridRight), top + side + 0.5f };
     circle.color = color;
     circle.cornerRadius = side * 0.5f;
     circle.cornerStyle = 0.0f;

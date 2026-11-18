@@ -92,7 +92,8 @@ text reads heavier than one under it.
 - **Encircled (SGR 52) and U+20DD** are one circle round each character, two
   cells across whatever the character, centred on its cells and its row, and
   the row's height across rather than cropped on a row shorter than two cells
-  (`enclosingCircle`). One space between two enclosed letters keeps their
+  (`enclosingCircle`). A circle in the first or last column is cut at the
+  grid's edge, which nothing is drawn past. One space between two enclosed letters keeps their
   circles apart. The character inside is drawn at seven eighths of its size,
   its cell box shrunk about the box's centre so an `e` and a `k` keep one
   baseline, by the path an OSC 66 fraction takes (`enclosedTextSize`). A
