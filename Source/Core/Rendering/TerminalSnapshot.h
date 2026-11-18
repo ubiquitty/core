@@ -240,10 +240,10 @@ struct UBIQUITTY_NONESCAPABLE TerminalSnapshotOptions {
     // that built its own would be reimplementing `linkHoverContainsCell`.
     bool shouldUnderlineLinks = false;
     // The underline a link cell carries absent an SGR underline of its own, as a
-    // Ubiquitty::VT::underline* value, and the colour its text and rule take.
-    std::uint8_t linkUnderlineStyle = defaultLinkUnderlineStyle;
-    std::uint8_t linkUnderlineStyleFile = defaultLinkUnderlineStyleFile;
-    std::uint8_t linkUnderlineStyleMailto = defaultLinkUnderlineStyleMailto;
+    // Ubiquitty::VT::UnderlineShape, and the colour its text and rule take.
+    Ubiquitty::VT::UnderlineShape linkUnderlineStyle = defaultLinkUnderlineStyle;
+    Ubiquitty::VT::UnderlineShape linkUnderlineStyleFile = defaultLinkUnderlineStyleFile;
+    Ubiquitty::VT::UnderlineShape linkUnderlineStyleMailto = defaultLinkUnderlineStyleMailto;
     // Unset (alpha zero) takes the palette's own link colour in the capture —
     // the legible blue `CellPalette::linkColor` picks against the background —
     // so a frontend with no system accent of its own needs no colour of its

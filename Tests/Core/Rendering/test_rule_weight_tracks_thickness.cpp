@@ -46,7 +46,7 @@ constexpr int cellHeight = 34;
 // change smaller than one pixel row is still visible in the number. Summed over
 // every channel-A byte: the cell is blank apart from its rule, so this is the
 // rule's weight and nothing else.
-double ruleWeight(std::uint8_t underlineShape, float underlineThickness)
+double ruleWeight(VT::UnderlineShape underlineShape, float underlineThickness)
 {
     TermPalette palette;
     palette.seedDefaults();
@@ -92,18 +92,18 @@ double ruleWeight(std::uint8_t underlineShape, float underlineThickness)
     return weight;
 }
 
-std::string shapeName(std::uint8_t shape)
+std::string shapeName(VT::UnderlineShape shape)
 {
     switch (shape) {
-    case VT::underlineSingle:
+    case VT::UnderlineShape::Single:
         return "single";
-    case VT::underlineDouble:
+    case VT::UnderlineShape::Double:
         return "double";
-    case VT::underlineCurly:
+    case VT::UnderlineShape::Curly:
         return "curly";
-    case VT::underlineDotted:
+    case VT::UnderlineShape::Dotted:
         return "dotted";
-    case VT::underlineDashed:
+    case VT::UnderlineShape::Dashed:
         return "dashed";
     default:
         return "unknown";
@@ -117,10 +117,10 @@ std::string shapeName(std::uint8_t shape)
 // anti-alias vertically.
 TEST(everyUnderlineShapeGrowsHeavierWithTheThicknessSetting)
 {
-    const std::uint8_t shapes[] = { VT::underlineSingle, VT::underlineDouble,
-        VT::underlineCurly, VT::underlineDotted, VT::underlineDashed };
+    const VT::UnderlineShape shapes[] = { VT::UnderlineShape::Single, VT::UnderlineShape::Double,
+        VT::UnderlineShape::Curly, VT::UnderlineShape::Dotted, VT::UnderlineShape::Dashed };
 
-    for (const std::uint8_t shape : shapes) {
+    for (const VT::UnderlineShape shape : shapes) {
         const double thin = ruleWeight(shape, 1.0f);
         const double thick = ruleWeight(shape, 2.0f);
         CHECK_MSG(thin > 0.0, (shapeName(shape) + " draws a rule at all").c_str());
@@ -137,9 +137,9 @@ TEST(everyUnderlineShapeGrowsHeavierWithTheThicknessSetting)
 // step is the one that separates the two rasterizer families.
 TEST(everyUnderlineShapeAnswersASubPixelThicknessStep)
 {
-    const std::uint8_t shapes[] = { VT::underlineCurly, VT::underlineDotted, VT::underlineDashed };
+    const VT::UnderlineShape shapes[] = { VT::UnderlineShape::Curly, VT::UnderlineShape::Dotted, VT::UnderlineShape::Dashed };
 
-    for (const std::uint8_t shape : shapes) {
+    for (const VT::UnderlineShape shape : shapes) {
         const double base = ruleWeight(shape, 1.0f);
         const double stepped = ruleWeight(shape, 1.25f);
         CHECK_MSG(stepped > base,

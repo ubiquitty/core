@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <type_traits>
+#include <utility>
 
 namespace Ubiquitty {
 
@@ -60,11 +61,12 @@ static_assert(sizeof(Pen) == 20, "the cell pen occupies twenty bytes");
 // one costs. These accessors are the only supported way in — a caller reading
 // `underlineStyle` or `font` directly sees a value with more than one field in it.
 
-/// Returns the underline shape (`underlineNone`..`underlineDashed`, SGR 4:n).
+/// Returns the underline shape (SGR 4:n).
 ///
 /// - Parameter p: The pen to read.
-/// - Returns: The shape, within the range `PenUnderlineShapeField` allows.
-static inline uint8_t penUnderlineShape(const Pen* p) { return Ubiquitty::VT::PenUnderlineShapeField::get(p->underlineStyle); }
+/// - Returns: The shape. A pen read off the wire can hold 6 or 7 in the field's
+///   three bits, which no named shape is; painters take those as single.
+static inline Ubiquitty::VT::UnderlineShape penUnderlineShape(const Pen* p) { return static_cast<Ubiquitty::VT::UnderlineShape>(Ubiquitty::VT::PenUnderlineShapeField::get(p->underlineStyle)); }
 
 /// Returns the superscript/subscript selection (`scriptNone`..`scriptSub`, SGR 73-75).
 ///
@@ -76,9 +78,8 @@ static inline uint8_t penScript(const Pen* p) { return Ubiquitty::VT::PenScriptF
 ///
 /// - Parameters:
 ///   - p: The pen to modify.
-///   - shape: One of `underlineNone`..`underlineDashed`. A value too wide for
-///     the field is truncated to it rather than spilling into its neighbours.
-static inline void penSetUnderlineShape(Pen* p, uint8_t shape) { p->underlineStyle = Ubiquitty::VT::PenUnderlineShapeField::set(p->underlineStyle, shape); }
+///   - shape: The shape to hold.
+static inline void penSetUnderlineShape(Pen* p, Ubiquitty::VT::UnderlineShape shape) { p->underlineStyle = Ubiquitty::VT::PenUnderlineShapeField::set(p->underlineStyle, std::to_underlying(shape)); }
 
 /// Sets the script selection, leaving the underline shape and ideogram alone.
 ///

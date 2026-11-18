@@ -1056,7 +1056,7 @@ TEST(sameGlyphWithDifferentPenOrStyleRefutesHiddenAndConfirmedEpochs)
                 break;
             case 5:
                 echoed.pen.attributes.set(VT::Attribute::Underline, true);
-                penSetUnderlineShape(&echoed.pen, VT::underlineDouble);
+                penSetUnderlineShape(&echoed.pen, VT::UnderlineShape::Double);
                 break;
             case 6:
                 penSetFontStyle(&echoed.pen, VT::fontFraktur);
@@ -1088,7 +1088,7 @@ TEST(aMatchingCompleteCellWithANondefaultInputPenCanConfirmWithoutModelMutation)
     fixture.snapshot.inputPen.attributes.set(VT::Attribute::Bold, true);
     fixture.snapshot.inputPen.attributes.set(VT::Attribute::Reverse, true);
     fixture.snapshot.inputPen.attributes.set(VT::Attribute::Underline, true);
-    penSetUnderlineShape(&fixture.snapshot.inputPen, VT::underlineDouble);
+    penSetUnderlineShape(&fixture.snapshot.inputPen, VT::UnderlineShape::Double);
     penSetFontStyle(&fixture.snapshot.inputPen, VT::fontFraktur);
     REQUIRE(fixture.type(1, 'b', 1'000));
     fixture.cells[3].codePoint = 'b';

@@ -1302,7 +1302,7 @@ TEST(aRuleOutsideTheGridRequiresItsOuterRowToRepaintTheWholeTarget)
     PhaseAtlas atlas;
     for (const int row : { 0, rows - 1 }) {
         grid[row].pen.attributes.add(VT::Attribute::Underline);
-        penSetUnderlineShape(&grid[row].pen, VT::underlineCurly);
+        penSetUnderlineShape(&grid[row].pen, VT::UnderlineShape::Curly);
         inputs.metrics.underlineDrop = row == 0 ? -20.0f : 2.0f;
         const InstanceCounts counts = buildCellInstances(inputs, UbiquittyTest::glyphBackendFor(atlas), buffers);
         REQUIRE(counts.decorations > 0);
@@ -1310,7 +1310,7 @@ TEST(aRuleOutsideTheGridRequiresItsOuterRowToRepaintTheWholeTarget)
         CHECK(crossings[boundary] != 0);
         const auto targetWithRule = crossings;
         grid[row].pen.attributes.remove(VT::Attribute::Underline);
-        penSetUnderlineShape(&grid[row].pen, VT::underlineNone);
+        penSetUnderlineShape(&grid[row].pen, VT::UnderlineShape::None);
         const InstanceCounts blank = buildCellInstances(inputs, UbiquittyTest::glyphBackendFor(atlas), buffers);
         REQUIRE(blank.decorations == 0);
         std::array<std::uint8_t, rows> dirty {};

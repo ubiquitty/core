@@ -515,18 +515,18 @@ TEST(testRectangleUnderlineUpdatesTheRenderedShape)
             const auto* here = UbiquittyTest::cell(t, row, 0);
             CHECK(here != nullptr);
             if (here)
-                CHECK(Ubiquitty::penUnderlineShape(&Ubiquitty::cellPen(*here)) == Ubiquitty::VT::underlineSingle);
+                CHECK(Ubiquitty::penUnderlineShape(&Ubiquitty::cellPen(*here)) == Ubiquitty::VT::UnderlineShape::Single);
         }
         feed(t, "\033[1;1;2;2;4$t");
         const auto* here = UbiquittyTest::cell(t, 0, 0);
         CHECK(here != nullptr);
         if (here)
-            CHECK(Ubiquitty::penUnderlineShape(&Ubiquitty::cellPen(*here)) == Ubiquitty::VT::underlineNone);
+            CHECK(Ubiquitty::penUnderlineShape(&Ubiquitty::cellPen(*here)) == Ubiquitty::VT::UnderlineShape::None);
         feed(t, "\033[1;1;2;2;4$t\033[1;1;2;2;24$r");
         here = UbiquittyTest::cell(t, 1, 0);
         CHECK(here != nullptr);
         if (here)
-            CHECK(Ubiquitty::penUnderlineShape(&Ubiquitty::cellPen(*here)) == Ubiquitty::VT::underlineNone);
+            CHECK(Ubiquitty::penUnderlineShape(&Ubiquitty::cellPen(*here)) == Ubiquitty::VT::UnderlineShape::None);
     }
 }
 

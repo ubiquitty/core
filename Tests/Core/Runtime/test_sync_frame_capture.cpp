@@ -1260,7 +1260,7 @@ TEST(registeredCapturesKeepTheLinkKindsAndTheirRules)
         Uniform,
         PerKind
     };
-    const auto rules = [](LinkKindPolicy kindPolicy, std::uint8_t fileStyle, std::uint8_t mailtoStyle) {
+    const auto rules = [](LinkKindPolicy kindPolicy, Ubiquitty::VT::UnderlineShape fileStyle, Ubiquitty::VT::UnderlineShape mailtoStyle) {
         SessionFixture fixture(6, 24);
         if (!fixture.isReady) {
             CHECK_MSG(false, "frame fixture refused its stream");

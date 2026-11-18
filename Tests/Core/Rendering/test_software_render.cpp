@@ -1173,7 +1173,7 @@ TEST(decorationRulesMayReachIntoTheInternalPadding)
     input.isBitmapFace = true;
     const std::array<std::uint8_t, 4> padding { 19, 31, 47, 255 };
     const Pixel untouched { 19, 31, 47, 255 };
-    for (const auto style : { VT::underlineSingle, VT::underlineDouble, VT::underlineCurly, VT::underlineDotted }) {
+    for (const auto style : { VT::UnderlineShape::Single, VT::UnderlineShape::Double, VT::UnderlineShape::Curly, VT::UnderlineShape::Dotted }) {
         for (Cell& cell : std::span(cells).first(columns * rows)) {
             cell.pen.attributes.add(VT::Attribute::Underline);
             penSetUnderlineShape(&cell.pen, style);
@@ -1212,7 +1212,7 @@ TEST(decorationRulesMayReachIntoTheInternalPadding)
             }
         }
         CHECK_EQ(changedPixels, 0);
-        if (style == VT::underlineDouble || style == VT::underlineCurly)
+        if (style == VT::UnderlineShape::Double || style == VT::UnderlineShape::Curly)
             CHECK(rulePixelsBelowGrid > 0);
         input.rows = rows;
         input.originInPixels = {};
@@ -1569,10 +1569,10 @@ TEST(testFractionalTextBoxesSoftFontsAndRulesMatchTheirDrawnSize)
     constexpr int columns = 8;
     struct Picture {
         std::uint32_t codePoint;
-        std::uint8_t underlineStyle = VT::underlineNone;
+        VT::UnderlineShape underlineStyle = VT::UnderlineShape::None;
     };
     const Picture pictures[] = { { 0x54u }, { 0x2588u }, { 0x256Du }, { 0xE0B0u }, { 0x1FB00u }, { VT::drcsCodePointBase },
-        { 0x20u, VT::underlineSingle }, { 0x20u, VT::underlineDotted }, { 0x20u, VT::underlineCurly } };
+        { 0x20u, VT::UnderlineShape::Single }, { 0x20u, VT::UnderlineShape::Dotted }, { 0x20u, VT::UnderlineShape::Curly } };
     for (bool isDoubled : { false, true }) { // bool-ok: exercise both sides of the rendering fixture.
         for (const Picture picture : pictures) {
             const std::uint32_t codePoint = picture.codePoint;
@@ -1580,7 +1580,7 @@ TEST(testFractionalTextBoxesSoftFontsAndRulesMatchTheirDrawnSize)
             // procedural shapes here compare at their ordinary one-cell size.
             if (isDoubled && codePoint != 0x54u && codePoint != VT::drcsCodePointBase && codePoint != 0x20u)
                 continue;
-            if (isDoubled && picture.underlineStyle > VT::underlineSingle)
+            if (isDoubled && picture.underlineStyle > VT::UnderlineShape::Single)
                 continue;
             auto renderScene = [&](bool isFractional) {
                 std::vector<Cell> grid(rows * columns, defaultBlankCell);

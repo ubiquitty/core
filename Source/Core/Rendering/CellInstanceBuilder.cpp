@@ -5665,8 +5665,8 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                 // Underline shape only: penUnderlineShape masks off the super/sub
                 // script bits that share Pen::underlineStyle, so a scripted cell
                 // with no underline doesn't draw a spurious rule.
-                const uint8_t underlineStyle = penUnderlineShape(&pen);
-                const bool hasSGRUnderline = attributes.contains(Ubiquitty::VT::Attribute::Underline) || underlineStyle != Ubiquitty::VT::underlineNone;
+                const Ubiquitty::VT::UnderlineShape underlineStyle = penUnderlineShape(&pen);
+                const bool hasSGRUnderline = attributes.contains(Ubiquitty::VT::Attribute::Underline) || underlineStyle != Ubiquitty::VT::UnderlineShape::None;
                 // A link cell underlines even without an SGR underline (the link affordance).
                 const bool hasUnderline = hasSGRUnderline || isLinkCell;
                 // Ideogram attribute (SGR 60-64): a mark on a cell edge. ideogramNone
@@ -5812,7 +5812,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                             return false;
                         const Pen& neighbourPen = in.cells[static_cast<std::size_t>(rowBase + neighbourColumn)].pen;
                         return neighbourPen.attributes.contains(Ubiquitty::VT::Attribute::Underline)
-                            || penUnderlineShape(&neighbourPen) != Ubiquitty::VT::underlineNone;
+                            || penUnderlineShape(&neighbourPen) != Ubiquitty::VT::UnderlineShape::None;
                     };
                     isUnderlineContinuedLeft = isUnderlined(column - 1);
                     isUnderlineContinuedRight = isUnderlined(column + 1);
@@ -5865,7 +5865,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                             return false;
                         const Pen& neighbourPen = in.cells[static_cast<std::size_t>(row * in.columns + neighbourColumn)].pen;
                         return neighbourPen.attributes.contains(Ubiquitty::VT::Attribute::Underline)
-                            || penUnderlineShape(&neighbourPen) != Ubiquitty::VT::underlineNone;
+                            || penUnderlineShape(&neighbourPen) != Ubiquitty::VT::UnderlineShape::None;
                     };
                     const float leftOverhang = cellLeft - inkScreenLeft;
                     const float rightOverhang = inkScreenRight - cellRight;
@@ -6059,7 +6059,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                 auto withinCell = [&](float top) { return withinCellBand(top, 1.0f); };
 
                 if (hasUnderline) {
-                    uint8_t style = underlineStyle != Ubiquitty::VT::underlineNone ? underlineStyle : Ubiquitty::VT::underlineSingle;
+                    Ubiquitty::VT::UnderlineShape style = underlineStyle != Ubiquitty::VT::UnderlineShape::None ? underlineStyle : Ubiquitty::VT::UnderlineShape::Single;
                     // A link cell with no SGR underline carries the link affordance,
                     // in the style the frontend resolved from the user's setting. An
                     // SGR underline outranks it: the cell asked for that rule itself.
@@ -6073,13 +6073,13 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     // the affordance saying so, and a run whose cells each kept their
                     // own style would not read as one run.
                     if (isHoveredLink) [[unlikely]] {
-                        style = Ubiquitty::VT::underlineSingle;
+                        style = Ubiquitty::VT::UnderlineShape::Single;
                         underlineColor = { in.linkHoverColor.x, in.linkHoverColor.y, in.linkHoverColor.z, foreground.w };
                     }
-                    const float strokeLift = (style == Ubiquitty::VT::underlineDotted || style == Ubiquitty::VT::underlineCurly) ? 0.0f : metrics.underlineStrokeLift;
+                    const float strokeLift = (style == Ubiquitty::VT::UnderlineShape::Dotted || style == Ubiquitty::VT::UnderlineShape::Curly) ? 0.0f : metrics.underlineStrokeLift;
                     const float uy = baselineY + underlineDrop - strokeLift;
                     switch (style) {
-                    case Ubiquitty::VT::underlineDouble: {
+                    case Ubiquitty::VT::UnderlineShape::Double: {
                         // Two rules of EQUAL weight a gap apart, fitting below the
                         // baseline without meeting the next row's overline. The gap
                         // floors at a pixel so the pair never merges into one rule.
@@ -6103,7 +6103,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         emitMaskedRule(DecorationSite::UnderlineDoubleLower, underlineLeft, underlineRight, top + t + gap, top + t + gap + t, underlineColor, DecorationKind::Solid, thick);
                         break;
                     }
-                    case Ubiquitty::VT::underlineCurly: {
+                    case Ubiquitty::VT::UnderlineShape::Curly: {
                         // band = stroke + amplitude room, kept shallow: the
                         // amplitude is band/2 - halfThick, so a tall band swings the
                         // wave down into the descenders it is meant to sit under.
@@ -6119,7 +6119,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         emitMaskedRule(DecorationSite::UnderlineCurly, patternedRuleLeft, ruleRight, uy - band * 0.5f + curlDrop, uy + band * 0.5f + curlDrop, underlineColor, DecorationKind::Curly, thickCurly);
                         break;
                     }
-                    case Ubiquitty::VT::underlineDotted: {
+                    case Ubiquitty::VT::UnderlineShape::Dotted: {
                         // Square dots the single rule's weight, where the single
                         // rule sits: the band is one dot's height, and the marks
                         // across it are the pitch's own (dottedRuleOnShare), so a
@@ -6130,7 +6130,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         emitMaskedRule(DecorationSite::UnderlineDotted, patternedRuleLeft, ruleRight, top, top + t, underlineColor, DecorationKind::Dotted, thick);
                         break;
                     }
-                    case Ubiquitty::VT::underlineDashed: {
+                    case Ubiquitty::VT::UnderlineShape::Dashed: {
                         // The dash shader fills the band in the "on" phase, so the
                         // band is each dash's weight, the single rule's.
                         // The top sits on the pixel grid and the height is the
@@ -6147,7 +6147,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         emitMaskedRule(DecorationSite::UnderlineDashed, patternedRuleLeft, ruleRight, top, top + dash, underlineColor, DecorationKind::Dashed, thick);
                         break;
                     }
-                    case Ubiquitty::VT::underlineSingle:
+                    case Ubiquitty::VT::UnderlineShape::Single:
                     default: {
                         const float t = snapped(thick);
                         // Centred on the underline position, with the same floor the

@@ -73,14 +73,14 @@ TEST(testPenPackedBytes)
     Ubiquitty::Pen p {};
 
     // underlineStyle: shape + script + ideogram share the byte.
-    Ubiquitty::penSetUnderlineShape(&p, Ubiquitty::VT::underlineCurly);
+    Ubiquitty::penSetUnderlineShape(&p, Ubiquitty::VT::UnderlineShape::Curly);
     Ubiquitty::penSetScript(&p, Ubiquitty::VT::scriptSub);
     Ubiquitty::penSetIdeogram(&p, Ubiquitty::VT::ideogramStress);
-    CHECK(Ubiquitty::penUnderlineShape(&p) == Ubiquitty::VT::underlineCurly);
+    CHECK(Ubiquitty::penUnderlineShape(&p) == Ubiquitty::VT::UnderlineShape::Curly);
     CHECK(Ubiquitty::penScript(&p) == Ubiquitty::VT::scriptSub);
     CHECK(Ubiquitty::penIdeogram(&p) == Ubiquitty::VT::ideogramStress);
     Ubiquitty::penSetScript(&p, Ubiquitty::VT::scriptNone);
-    CHECK(Ubiquitty::penUnderlineShape(&p) == Ubiquitty::VT::underlineCurly); // neighbours survive the clear
+    CHECK(Ubiquitty::penUnderlineShape(&p) == Ubiquitty::VT::UnderlineShape::Curly); // neighbours survive the clear
     CHECK(Ubiquitty::penIdeogram(&p) == Ubiquitty::VT::ideogramStress);
 
     // The font byte: font style + proportional share it, and each accessor

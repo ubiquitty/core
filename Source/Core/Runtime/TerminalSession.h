@@ -275,12 +275,12 @@ struct SyncFrameCaptureGeometry {
     bool shouldUnderlineLinks = false;
     /// Whether link kinds are resolved from the captured terminal's links.
     bool shouldResolveLinkKindsFromSource = false;
-    /// The VT underline code link rules draw with, when they draw.
-    std::uint8_t linkUnderlineStyle = Rendering::defaultLinkUnderlineStyle;
-    /// The VT underline code file links draw with.
-    std::uint8_t linkUnderlineStyleFile = Rendering::defaultLinkUnderlineStyleFile;
-    /// The VT underline code mailto links draw with.
-    std::uint8_t linkUnderlineStyleMailto = Rendering::defaultLinkUnderlineStyleMailto;
+    /// The underline shape link rules draw with, when they draw.
+    Ubiquitty::VT::UnderlineShape linkUnderlineStyle = Rendering::defaultLinkUnderlineStyle;
+    /// The underline shape file links draw with.
+    Ubiquitty::VT::UnderlineShape linkUnderlineStyleFile = Rendering::defaultLinkUnderlineStyleFile;
+    /// The underline shape mailto links draw with.
+    Ubiquitty::VT::UnderlineShape linkUnderlineStyleMailto = Rendering::defaultLinkUnderlineStyleMailto;
     /// Link foreground, straight RGBA.
     Rendering::Vec4 linkColor { 0.0f, 0.0f, 0.0f, 1.0f };
     /// Hovered-link foreground, straight RGBA.

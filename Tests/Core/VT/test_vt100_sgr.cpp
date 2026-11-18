@@ -430,7 +430,7 @@ TEST(testSGRAttributeSetAndReset)
     feed(t, "\033[1;2;21mA\033[22mB");
     CHECK(cell(t, 0, 0)->pen.attributes.contains(Ubiquitty::VT::Attribute::Bold));
     CHECK(cell(t, 0, 0)->pen.attributes.contains(Ubiquitty::VT::Attribute::Dim));
-    CHECK(cell(t, 0, 0)->pen.underlineStyle == Ubiquitty::VT::underlineDouble);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 0)->pen) == Ubiquitty::VT::UnderlineShape::Double);
     CHECK(!cell(t, 0, 1)->pen.attributes.containsAny({ Ubiquitty::VT::Attribute::Bold, Ubiquitty::VT::Attribute::Dim }));
 
     /// SGR 5 is slow blink (Attribute::Blink only). SGR 6 is fast blink — same
@@ -453,18 +453,18 @@ TEST(testSGRUnderlineStyles)
 {
     struct Case {
         const char* seq;
-        uint8_t style;
+        Ubiquitty::VT::UnderlineShape style;
     };
     const Case cases[] = {
-        { "\033[4mA", Ubiquitty::VT::underlineSingle },
-        { "\033[4:0mA", Ubiquitty::VT::underlineNone },
-        { "\033[4:1mA", Ubiquitty::VT::underlineSingle },
-        { "\033[4:2mA", Ubiquitty::VT::underlineDouble },
-        { "\033[4:3mA", Ubiquitty::VT::underlineCurly },
-        { "\033[4:4mA", Ubiquitty::VT::underlineDotted },
-        { "\033[4:5mA", Ubiquitty::VT::underlineDashed },
+        { "\033[4mA", Ubiquitty::VT::UnderlineShape::Single },
+        { "\033[4:0mA", Ubiquitty::VT::UnderlineShape::None },
+        { "\033[4:1mA", Ubiquitty::VT::UnderlineShape::Single },
+        { "\033[4:2mA", Ubiquitty::VT::UnderlineShape::Double },
+        { "\033[4:3mA", Ubiquitty::VT::UnderlineShape::Curly },
+        { "\033[4:4mA", Ubiquitty::VT::UnderlineShape::Dotted },
+        { "\033[4:5mA", Ubiquitty::VT::UnderlineShape::Dashed },
         // Unknown style clamps to a drawn (single) underline.
-        { "\033[4:9mA", Ubiquitty::VT::underlineSingle },
+        { "\033[4:9mA", Ubiquitty::VT::UnderlineShape::Single },
     };
     Ubiquitty::Terminal t;
     size_t i;
@@ -473,8 +473,8 @@ TEST(testSGRUnderlineStyles)
         feed(t, cases[i].seq);
         const Ubiquitty::Cell* c = cell(t, 0, 0);
         CHECK(c->codePoint == 'A');
-        CHECK(c->pen.underlineStyle == cases[i].style);
-        if (cases[i].style == Ubiquitty::VT::underlineNone)
+        CHECK(Ubiquitty::penUnderlineShape(&c->pen) == cases[i].style);
+        if (cases[i].style == Ubiquitty::VT::UnderlineShape::None)
             CHECK(!c->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
         else
             CHECK(c->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
@@ -483,14 +483,14 @@ TEST(testSGRUnderlineStyles)
     /// SGR 24 turns a curly underline back off (style and bit both).
     Ubiquitty::hardReset(t);
     feed(t, "\033[4:3mA\033[24mB");
-    CHECK(cell(t, 0, 0)->pen.underlineStyle == Ubiquitty::VT::underlineCurly);
-    CHECK(cell(t, 0, 1)->pen.underlineStyle == Ubiquitty::VT::underlineNone);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 0)->pen) == Ubiquitty::VT::UnderlineShape::Curly);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 1)->pen) == Ubiquitty::VT::UnderlineShape::None);
     CHECK(!cell(t, 0, 1)->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
 
     /// A colon underline group does not swallow a following selector.
     Ubiquitty::hardReset(t);
     feed(t, "\033[4:2;1mX");
-    CHECK(cell(t, 0, 0)->pen.underlineStyle == Ubiquitty::VT::underlineDouble);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 0)->pen) == Ubiquitty::VT::UnderlineShape::Double);
     CHECK(cell(t, 0, 0)->pen.attributes.contains(Ubiquitty::VT::Attribute::Bold));
 }
 
@@ -559,7 +559,7 @@ TEST(testSGROverlineFramedEncircled)
     const Ubiquitty::Cell* c = cell(t, 0, 0);
     CHECK(!c->pen.attributes.containsAny({ Ubiquitty::VT::Attribute::Overline, Ubiquitty::VT::Attribute::Framed, Ubiquitty::VT::Attribute::Encircled }));
     CHECK(!c->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
-    CHECK(c->pen.underlineStyle == Ubiquitty::VT::underlineNone);
+    CHECK(Ubiquitty::penUnderlineShape(&c->pen) == Ubiquitty::VT::UnderlineShape::None);
     CHECK(c->pen.underlineIndex == Ubiquitty::colorDefault);
 }
 

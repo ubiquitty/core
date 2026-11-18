@@ -113,9 +113,9 @@ Screen::ScrollTuning::Policy wheelPolicy(const Values& c, double pointsPerLine)
 }
 int linkUnderlineStyle(const Values& c) { return c.linkUnderlineStyle.value_or(Defaults::linkUnderlineStyle); }
 
-std::uint8_t linkUnderlineVTStyle(int index)
+Ubiquitty::VT::UnderlineShape linkUnderlineVTStyle(int index)
 {
-    return index == 0 ? Ubiquitty::VT::underlineSingle : Ubiquitty::VT::underlineDotted;
+    return index == 0 ? Ubiquitty::VT::UnderlineShape::Single : Ubiquitty::VT::UnderlineShape::Dotted;
 }
 bool linkColorSystemBlue(const Values& c) { return c.linkColorSystemBlue.value_or(Defaults::linkColorSystemBlue); }
 bool linkStylePerKind(const Values& c) { return c.linkStylePerKind.value_or(Defaults::linkStylePerKind); }

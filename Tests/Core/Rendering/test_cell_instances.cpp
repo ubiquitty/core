@@ -1301,7 +1301,7 @@ TEST(testDecorationNeighborFieldsAndLinkStyling)
     link.metrics.strikeThickness = 1.0f;
     link.metrics.xHeight = 10.0f;
     link.linkCells = linkFlags;
-    link.linkUnderlineStyle = Ubiquitty::VT::underlineDotted;
+    link.linkUnderlineStyle = Ubiquitty::VT::UnderlineShape::Dotted;
     link.linkColor = { 0.2f, 0.4f, 1.0f, 1.0f }; // link blue
 
     std::vector<CellInstance> cells(cols);
@@ -1331,7 +1331,7 @@ TEST(testDecorationNeighborFieldsAndLinkStyling)
     // the input and always emits that one.
     {
         BuildInputs solidLink = link;
-        solidLink.linkUnderlineStyle = Ubiquitty::VT::underlineSingle;
+        solidLink.linkUnderlineStyle = Ubiquitty::VT::UnderlineShape::Single;
         std::vector<CellInstance> cellsSolid(cols);
         std::vector<DecorationInstance> decosSolid(cols * 8);
         InstanceBuffers buffersSolid { cellsSolid.data(), cellsSolid.size(), decosSolid.data(), decosSolid.size() };
@@ -1369,7 +1369,7 @@ TEST(testDecorationNeighborFieldsAndLinkStyling)
     // does not overwrite a rule the content asked for.
     {
         std::vector<Ubiquitty::Cell> sgrRow = row;
-        sgrRow[1].pen.underlineStyle = Ubiquitty::VT::underlineCurly;
+        Ubiquitty::penSetUnderlineShape(&sgrRow[1].pen, Ubiquitty::VT::UnderlineShape::Curly);
         sgrRow[1].pen.attributes = Ubiquitty::VT::Attribute::Underline;
         BuildInputs sgrLink = link;
         sgrLink.cells = sgrRow.data();
@@ -2358,7 +2358,7 @@ TEST(testAHoveredLinkOverridesTheRestingStyle)
     in.metrics.baselineFromTop = 13.0f;
     in.metrics.underlineThickness = 1.0f;
     in.linkCells = linkStates;
-    in.linkUnderlineStyle = Ubiquitty::VT::underlineDotted;
+    in.linkUnderlineStyle = Ubiquitty::VT::UnderlineShape::Dotted;
     in.linkColor = { 0.2f, 0.4f, 1.0f, 1.0f };
     in.linkHoverColor = { 1.0f, 0.5f, 0.0f, 1.0f };
 
@@ -2418,7 +2418,7 @@ TEST(testAnActionCellKeepsItsColoursAndLightsItsPlateOnHover)
     in.metrics.baselineFromTop = 13.0f;
     in.metrics.underlineThickness = 1.0f;
     in.linkCells = linkStates;
-    in.linkUnderlineStyle = Ubiquitty::VT::underlineSingle;
+    in.linkUnderlineStyle = Ubiquitty::VT::UnderlineShape::Single;
     in.linkColor = { 0.2f, 0.4f, 1.0f, 1.0f };
     in.linkHoverColor = { 1.0f, 0.5f, 0.0f, 1.0f };
 
@@ -2453,7 +2453,7 @@ TEST(testRuleThicknessFloors)
     row[0].pen.attributes = Ubiquitty::VT::Attribute::Underline;
     row[1].pen.attributes = Ubiquitty::VT::Attribute::Strike;
     row[2].pen.attributes = Ubiquitty::VT::Attribute::Underline;
-    row[2].pen.underlineStyle = Ubiquitty::VT::underlineCurly;
+    Ubiquitty::penSetUnderlineShape(&row[2].pen, Ubiquitty::VT::UnderlineShape::Curly);
 
     BuildInputs in;
     in.cells = row.data();
@@ -3357,11 +3357,11 @@ TEST(aPatternedRulesSkipBandIsItsOwnRect)
     blank.pen.backgroundIndex = colorDefault;
     blank.pen.underlineIndex = colorDefault;
     const int columns = 3;
-    const auto ruleFor = [&](std::uint8_t style) {
+    const auto ruleFor = [&](Ubiquitty::VT::UnderlineShape style) {
         std::vector<Ubiquitty::Cell> row(columns, blank);
         row[1].codePoint = 0x67u; // 'g'
         row[1].pen.attributes = Ubiquitty::VT::Attribute::Underline;
-        row[1].pen.underlineStyle = style;
+        Ubiquitty::penSetUnderlineShape(&row[1].pen, style);
         BuildInputs in;
         in.cells = row.data();
         in.rows = 1;
@@ -3393,23 +3393,23 @@ TEST(aPatternedRulesSkipBandIsItsOwnRect)
     // The single rule's rect is its stroke, so its band is its rect whichever
     // way the band is taken: it fixes the map from the cell's rows to the
     // glyph box's in the slot.
-    const SkipInkTrace single = ruleFor(Ubiquitty::VT::underlineSingle);
+    const SkipInkTrace single = ruleFor(Ubiquitty::VT::UnderlineShape::Single);
     const float singleHeight = single.rule.bottom - single.rule.top;
     REQUIRE_MSG(singleHeight >= 1.0f, "a whole-pixel stroke");
     const float scale = (single.query.own.bandBottom - single.query.own.bandTop) / singleHeight;
     const float origin = single.query.own.bandTop - scale * single.rule.top;
-    for (const std::uint8_t style : { Ubiquitty::VT::underlineCurly, Ubiquitty::VT::underlineDotted }) {
+    for (const Ubiquitty::VT::UnderlineShape style : { Ubiquitty::VT::UnderlineShape::Curly, Ubiquitty::VT::UnderlineShape::Dotted }) {
         const SkipInkTrace rule = ruleFor(style);
         const float top = rule.rule.top;
         const float bottom = rule.rule.bottom;
         // A curl's rect is taller than its stroke, so the band could not pass
         // for the stroke's by accident; a dot is the stroke's weight across.
-        if (style == Ubiquitty::VT::underlineCurly)
+        if (style == Ubiquitty::VT::UnderlineShape::Curly)
             REQUIRE_MSG(bottom - top > singleHeight, "a curl's rect is taller than its stroke");
         CHECK_MSG(approx(rule.query.own.bandTop, origin + scale * top),
-            ("style " + std::to_string(style) + ": the band starts at the rect's top: " + std::to_string(rule.query.own.bandTop) + " for " + std::to_string(origin + scale * top)).c_str());
+            ("style " + std::to_string(std::to_underlying(style)) + ": the band starts at the rect's top: " + std::to_string(rule.query.own.bandTop) + " for " + std::to_string(origin + scale * top)).c_str());
         CHECK_MSG(approx(rule.query.own.bandBottom, origin + scale * bottom),
-            ("style " + std::to_string(style) + ": and ends at its bottom: " + std::to_string(rule.query.own.bandBottom) + " for " + std::to_string(origin + scale * bottom)).c_str());
+            ("style " + std::to_string(std::to_underlying(style)) + ": and ends at its bottom: " + std::to_string(rule.query.own.bandBottom) + " for " + std::to_string(origin + scale * bottom)).c_str());
     }
 }
 
@@ -6980,7 +6980,7 @@ enum class InkCut : std::uint8_t {
 /// The rules a proportional run of four 6.25 px letters, claiming cells 1–4
 /// of 8 px cells, draws at one alignment with the given decorations.
 std::vector<DecorationInstance> proportionalRunRules(std::uint8_t horizontalAlign,
-    Ubiquitty::VT::AttributeSet attributes, std::uint8_t underlineStyle, InkCut inkCut, std::vector<SkipInkTrace>* traces = nullptr)
+    Ubiquitty::VT::AttributeSet attributes, Ubiquitty::VT::UnderlineShape underlineShape, InkCut inkCut, std::vector<SkipInkTrace>* traces = nullptr)
 {
     const int rows = 1, columns = 8;
     Ubiquitty::TermPalette pal;
@@ -6999,7 +6999,7 @@ std::vector<DecorationInstance> proportionalRunRules(std::uint8_t horizontalAlig
         Ubiquitty::Cell& cell = grid[static_cast<std::size_t>(c)];
         Ubiquitty::Pen pen = Ubiquitty::cellPen(cell);
         pen.extendedAttributes.setTextSizeSpecID(id);
-        pen.underlineStyle = underlineStyle;
+        Ubiquitty::penSetUnderlineShape(&pen, underlineShape);
         Ubiquitty::penSetTextBand(&pen, 0);
         Ubiquitty::cellSetPen(cell, pen);
     }
@@ -7084,7 +7084,7 @@ TEST(testAProportionalRunsRulesSpanItsTextNotItsClaim)
     for (const Alignment& alignment : alignments) {
         const auto solid = proportionalRunRules(alignment.horizontalAlign,
             { Ubiquitty::VT::Attribute::Underline, Ubiquitty::VT::Attribute::Strike, Ubiquitty::VT::Attribute::Overline },
-            Ubiquitty::VT::underlineSingle, InkCut::Solid);
+            Ubiquitty::VT::UnderlineShape::Single, InkCut::Solid);
         CHECK_EQ(solid.size(), 3u);
         for (const DecorationInstance& rule : solid) {
             CHECK_NEAR(rule.topLeftInPixels.x, alignment.textLeft, tolerance);
@@ -7092,7 +7092,7 @@ TEST(testAProportionalRunsRulesSpanItsTextNotItsClaim)
         }
 
         const auto doubled = proportionalRunRules(alignment.horizontalAlign,
-            Ubiquitty::VT::Attribute::Underline, Ubiquitty::VT::underlineDouble, InkCut::Solid);
+            Ubiquitty::VT::Attribute::Underline, Ubiquitty::VT::UnderlineShape::Double, InkCut::Solid);
         CHECK_EQ(doubled.size(), 2u);
         for (const DecorationInstance& rule : doubled) {
             CHECK_NEAR(rule.topLeftInPixels.x, alignment.textLeft, tolerance);
@@ -7101,7 +7101,7 @@ TEST(testAProportionalRunsRulesSpanItsTextNotItsClaim)
 
         // A patterned rule starts at the left edge of the cell the pen stands
         // in, the claim's first here, and ends where the text does.
-        for (const std::uint8_t style : { Ubiquitty::VT::underlineCurly, Ubiquitty::VT::underlineDotted, Ubiquitty::VT::underlineDashed }) {
+        for (const Ubiquitty::VT::UnderlineShape style : { Ubiquitty::VT::UnderlineShape::Curly, Ubiquitty::VT::UnderlineShape::Dotted, Ubiquitty::VT::UnderlineShape::Dashed }) {
             const auto patterned = proportionalRunRules(alignment.horizontalAlign, Ubiquitty::VT::Attribute::Underline, style, InkCut::Solid);
             CHECK_EQ(patterned.size(), 1u);
             if (patterned.size() != 1)
@@ -7114,7 +7114,7 @@ TEST(testAProportionalRunsRulesSpanItsTextNotItsClaim)
         // text crosses, and the segments together span the text with no gap
         // and no overlap.
         std::vector<SkipInkTrace> tested;
-        const auto cut = proportionalRunRules(alignment.horizontalAlign, Ubiquitty::VT::Attribute::Underline, Ubiquitty::VT::underlineSingle, InkCut::CutByInk, &tested);
+        const auto cut = proportionalRunRules(alignment.horizontalAlign, Ubiquitty::VT::Attribute::Underline, Ubiquitty::VT::UnderlineShape::Single, InkCut::CutByInk, &tested);
         CHECK_MSG(!tested.empty(), "a rule tested against ink");
         if (tested.empty())
             continue;
@@ -9896,9 +9896,9 @@ TEST(linkUnderlinesKeepTheirNativePerCellOverhang)
     for (int column = 0; column < columns; ++column)
         setCell(grid, columns, 0, column, static_cast<std::uint32_t>('a' + column), {}, colorDefault, colorDefault);
     BuildInputs in = measuredRuleInputs(grid, palette);
-    in.linkUnderlineStyle = VT::underlineSingle;
-    in.linkUnderlineStyleFile = VT::underlineSingle;
-    in.linkUnderlineStyleMailto = VT::underlineSingle;
+    in.linkUnderlineStyle = VT::UnderlineShape::Single;
+    in.linkUnderlineStyleFile = VT::UnderlineShape::Single;
+    in.linkUnderlineStyleMailto = VT::UnderlineShape::Single;
     in.linkColor = { 0.2f, 0.4f, 1, 1 };
     in.linkHoverColor = in.linkColor;
     std::array<std::uint8_t, columns> links {};

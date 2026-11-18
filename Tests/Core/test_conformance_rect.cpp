@@ -426,13 +426,13 @@ static void testRectangleRenditionKeepsUnderlineShapeAndHidden()
     Ubiquitty::hardReset(t);
     Ubiquitty::resize(t, 3, 6);
     feed(t, "abcd\033[2*x\033[1;1;1;1;4$r\033[1;2;1;2;8$r");
-    CHECK(Ubiquitty::penUnderlineShape(&Ubiquitty::cellPen(*cell(t, 0, 0))) == Ubiquitty::VT::underlineSingle);
+    CHECK(Ubiquitty::penUnderlineShape(&Ubiquitty::cellPen(*cell(t, 0, 0))) == Ubiquitty::VT::UnderlineShape::Single);
     CHECK(Ubiquitty::cellPen(*cell(t, 0, 1)).attributes.contains(Ubiquitty::VT::Attribute::Hidden));
     feed(t, "\033[1;1;1;2;24;28$r");
-    CHECK(Ubiquitty::penUnderlineShape(&Ubiquitty::cellPen(*cell(t, 0, 0))) == Ubiquitty::VT::underlineNone);
+    CHECK(Ubiquitty::penUnderlineShape(&Ubiquitty::cellPen(*cell(t, 0, 0))) == Ubiquitty::VT::UnderlineShape::None);
     CHECK(!Ubiquitty::cellPen(*cell(t, 0, 1)).attributes.contains(Ubiquitty::VT::Attribute::Hidden));
     feed(t, "\033[1;3;1;3;4$t");
-    CHECK(Ubiquitty::penUnderlineShape(&Ubiquitty::cellPen(*cell(t, 0, 2))) == Ubiquitty::VT::underlineSingle);
+    CHECK(Ubiquitty::penUnderlineShape(&Ubiquitty::cellPen(*cell(t, 0, 2))) == Ubiquitty::VT::UnderlineShape::Single);
 }
 
 int runRectConformanceTests()

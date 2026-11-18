@@ -37,9 +37,9 @@ TEST(testUnderlineSingleAndReset)
     Ubiquitty::Terminal t;
     Ubiquitty::hardReset(t);
     feed(t, "\033[4mA\033[24mB");
-    CHECK(cell(t, 0, 0)->pen.underlineStyle == Ubiquitty::VT::underlineSingle);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 0)->pen) == Ubiquitty::VT::UnderlineShape::Single);
     CHECK(cell(t, 0, 0)->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
-    CHECK(cell(t, 0, 1)->pen.underlineStyle == Ubiquitty::VT::underlineNone);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 1)->pen) == Ubiquitty::VT::UnderlineShape::None);
     CHECK(!cell(t, 0, 1)->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
 }
 
@@ -50,21 +50,21 @@ TEST(testUnderlineColonStyles)
 {
     struct Case {
         const char* seq;
-        uint8_t style;
+        Ubiquitty::VT::UnderlineShape style;
     };
     const Case cases[] = {
-        { "\033[4:1mA", Ubiquitty::VT::underlineSingle },
-        { "\033[4:2mA", Ubiquitty::VT::underlineDouble },
-        { "\033[4:3mA", Ubiquitty::VT::underlineCurly },
-        { "\033[4:4mA", Ubiquitty::VT::underlineDotted },
-        { "\033[4:5mA", Ubiquitty::VT::underlineDashed },
+        { "\033[4:1mA", Ubiquitty::VT::UnderlineShape::Single },
+        { "\033[4:2mA", Ubiquitty::VT::UnderlineShape::Double },
+        { "\033[4:3mA", Ubiquitty::VT::UnderlineShape::Curly },
+        { "\033[4:4mA", Ubiquitty::VT::UnderlineShape::Dotted },
+        { "\033[4:5mA", Ubiquitty::VT::UnderlineShape::Dashed },
     };
     Ubiquitty::Terminal t;
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         Ubiquitty::hardReset(t);
         feed(t, cases[i].seq);
         const Ubiquitty::Cell* c = cell(t, 0, 0);
-        CHECK(c->pen.underlineStyle == cases[i].style);
+        CHECK(Ubiquitty::penUnderlineShape(&c->pen) == cases[i].style);
         CHECK(c->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
     }
 }
@@ -76,19 +76,19 @@ TEST(testUnderlineColonZeroOff)
     Ubiquitty::Terminal t;
     Ubiquitty::hardReset(t);
     feed(t, "\033[4:3mA\033[4:0mB");
-    CHECK(cell(t, 0, 0)->pen.underlineStyle == Ubiquitty::VT::underlineCurly);
-    CHECK(cell(t, 0, 1)->pen.underlineStyle == Ubiquitty::VT::underlineNone);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 0)->pen) == Ubiquitty::VT::UnderlineShape::Curly);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 1)->pen) == Ubiquitty::VT::UnderlineShape::None);
     CHECK(!cell(t, 0, 1)->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
 }
 
-/// Undercurl (SGR 4:3) specifically resolves to underlineCurly and keeps
+/// Undercurl (SGR 4:3) specifically resolves to UnderlineShape::Curly and keeps
 /// the underline bit set so a non-style-aware painter still draws a line.
 TEST(testUndercurl)
 {
     Ubiquitty::Terminal t;
     Ubiquitty::hardReset(t);
     feed(t, "\033[4:3mA");
-    CHECK(cell(t, 0, 0)->pen.underlineStyle == Ubiquitty::VT::underlineCurly);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 0)->pen) == Ubiquitty::VT::UnderlineShape::Curly);
     CHECK(cell(t, 0, 0)->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
 }
 
@@ -99,7 +99,7 @@ TEST(testUnderlineUnknownStyleClamps)
     Ubiquitty::Terminal t;
     Ubiquitty::hardReset(t);
     feed(t, "\033[4:7mA");
-    CHECK(cell(t, 0, 0)->pen.underlineStyle == Ubiquitty::VT::underlineSingle);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 0)->pen) == Ubiquitty::VT::UnderlineShape::Single);
     CHECK(cell(t, 0, 0)->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
 }
 
@@ -109,8 +109,8 @@ TEST(testUnderline24ResetsAnyStyle)
     Ubiquitty::Terminal t;
     Ubiquitty::hardReset(t);
     feed(t, "\033[4:5mA\033[24mB");
-    CHECK(cell(t, 0, 0)->pen.underlineStyle == Ubiquitty::VT::underlineDashed);
-    CHECK(cell(t, 0, 1)->pen.underlineStyle == Ubiquitty::VT::underlineNone);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 0)->pen) == Ubiquitty::VT::UnderlineShape::Dashed);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 1)->pen) == Ubiquitty::VT::UnderlineShape::None);
     CHECK(!cell(t, 0, 1)->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
 }
 
@@ -125,7 +125,7 @@ TEST(testSGR21DoubleUnderline)
     // control: it leaves bold/dim untouched, and SGR 22 is the bold+dim
     // reset.
     feed(t, "\033[1;2;21mA\033[22mB");
-    CHECK(cell(t, 0, 0)->pen.underlineStyle == Ubiquitty::VT::underlineDouble);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 0)->pen) == Ubiquitty::VT::UnderlineShape::Double);
     CHECK(cell(t, 0, 0)->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
     CHECK(cell(t, 0, 0)->pen.attributes.contains(Ubiquitty::VT::Attribute::Bold));
     CHECK(cell(t, 0, 0)->pen.attributes.contains(Ubiquitty::VT::Attribute::Dim));
@@ -171,14 +171,14 @@ TEST(testScriptOrthogonalToUnderline)
     feed(t, "\033[73;4:3mA\033[24mB\033[75;4mC");
     const Ubiquitty::Cell* a = cell(t, 0, 0);
     CHECK(Ubiquitty::penScript(&a->pen) == Ubiquitty::VT::scriptSuper);
-    CHECK(Ubiquitty::penUnderlineShape(&a->pen) == Ubiquitty::VT::underlineCurly);
+    CHECK(Ubiquitty::penUnderlineShape(&a->pen) == Ubiquitty::VT::UnderlineShape::Curly);
     const Ubiquitty::Cell* b = cell(t, 0, 1);
     CHECK(Ubiquitty::penScript(&b->pen) == Ubiquitty::VT::scriptSuper); // underline gone, script kept
-    CHECK(Ubiquitty::penUnderlineShape(&b->pen) == Ubiquitty::VT::underlineNone);
+    CHECK(Ubiquitty::penUnderlineShape(&b->pen) == Ubiquitty::VT::UnderlineShape::None);
     CHECK(!b->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
     const Ubiquitty::Cell* c = cell(t, 0, 2);
     CHECK(Ubiquitty::penScript(&c->pen) == Ubiquitty::VT::scriptNone); // 75 cleared script
-    CHECK(Ubiquitty::penUnderlineShape(&c->pen) == Ubiquitty::VT::underlineSingle); // underline intact
+    CHECK(Ubiquitty::penUnderlineShape(&c->pen) == Ubiquitty::VT::UnderlineShape::Single); // underline intact
     CHECK(c->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
 }
 
@@ -192,7 +192,7 @@ TEST(testScriptDoesNotImplyUnderline)
     feed(t, "\033[74mA");
     const Ubiquitty::Cell* a = cell(t, 0, 0);
     CHECK(Ubiquitty::penScript(&a->pen) == Ubiquitty::VT::scriptSub);
-    CHECK(Ubiquitty::penUnderlineShape(&a->pen) == Ubiquitty::VT::underlineNone);
+    CHECK(Ubiquitty::penUnderlineShape(&a->pen) == Ubiquitty::VT::UnderlineShape::None);
     CHECK(!a->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
 }
 
@@ -216,7 +216,7 @@ TEST(testUnderlineColorIndexed)
     Ubiquitty::hardReset(t);
     feed(t, "\033[4:3;58:5:33mA\033[59mB");
     CHECK(cell(t, 0, 0)->pen.underlineIndex == 33);
-    CHECK(cell(t, 0, 0)->pen.underlineStyle == Ubiquitty::VT::underlineCurly);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 0)->pen) == Ubiquitty::VT::UnderlineShape::Curly);
     CHECK(cell(t, 0, 1)->pen.underlineIndex == Ubiquitty::colorDefault);
 }
 
@@ -261,7 +261,7 @@ TEST(testUnderlineFullResetViaSGR0)
     Ubiquitty::hardReset(t);
     feed(t, "\033[4:3;58:5:7mA\033[0mB");
     const Ubiquitty::Cell* c = cell(t, 0, 1);
-    CHECK(c->pen.underlineStyle == Ubiquitty::VT::underlineNone);
+    CHECK(Ubiquitty::penUnderlineShape(&c->pen) == Ubiquitty::VT::UnderlineShape::None);
     CHECK(!c->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
     CHECK(c->pen.underlineIndex == Ubiquitty::colorDefault);
 }
@@ -285,9 +285,9 @@ TEST(testStrikeOrthogonalToUnderline)
     Ubiquitty::hardReset(t);
     feed(t, "\033[9;4:3mA\033[29mB");
     CHECK(cell(t, 0, 0)->pen.attributes.contains(Ubiquitty::VT::Attribute::Strike));
-    CHECK(cell(t, 0, 0)->pen.underlineStyle == Ubiquitty::VT::underlineCurly);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 0)->pen) == Ubiquitty::VT::UnderlineShape::Curly);
     CHECK(!cell(t, 0, 1)->pen.attributes.contains(Ubiquitty::VT::Attribute::Strike));
-    CHECK(cell(t, 0, 1)->pen.underlineStyle == Ubiquitty::VT::underlineCurly);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 1)->pen) == Ubiquitty::VT::UnderlineShape::Curly);
     CHECK(cell(t, 0, 1)->pen.attributes.contains(Ubiquitty::VT::Attribute::Underline));
 }
 
@@ -628,7 +628,7 @@ TEST(testIdeogramOrthogonalToUnderlineAndScript)
     feed(t, "\033[4:3m\033[73m\033[62mA");
     const Ubiquitty::Cell* a = cell(t, 0, 0);
     CHECK(Ubiquitty::penIdeogram(&a->pen) == Ubiquitty::VT::ideogramOverline);
-    CHECK(Ubiquitty::penUnderlineShape(&a->pen) == Ubiquitty::VT::underlineCurly); // underline kept
+    CHECK(Ubiquitty::penUnderlineShape(&a->pen) == Ubiquitty::VT::UnderlineShape::Curly); // underline kept
     CHECK(Ubiquitty::penScript(&a->pen) == Ubiquitty::VT::scriptSuper); // script kept
 }
 

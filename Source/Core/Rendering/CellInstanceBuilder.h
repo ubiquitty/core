@@ -93,9 +93,9 @@ inline constexpr float dashedRuleOnShare = 0.6f;
 // options. A literal in each would be two defaults that agree until one is
 // edited, and the capture overwrites the builder's — so the builder's copy would
 // be the one that looks authoritative and never applies.
-inline constexpr std::uint8_t defaultLinkUnderlineStyle = Ubiquitty::VT::underlineSingle;
-inline constexpr std::uint8_t defaultLinkUnderlineStyleFile = Ubiquitty::VT::underlineDotted;
-inline constexpr std::uint8_t defaultLinkUnderlineStyleMailto = Ubiquitty::VT::underlineDashed;
+inline constexpr Ubiquitty::VT::UnderlineShape defaultLinkUnderlineStyle = Ubiquitty::VT::UnderlineShape::Single;
+inline constexpr Ubiquitty::VT::UnderlineShape defaultLinkUnderlineStyleFile = Ubiquitty::VT::UnderlineShape::Dotted;
+inline constexpr Ubiquitty::VT::UnderlineShape defaultLinkUnderlineStyleMailto = Ubiquitty::VT::UnderlineShape::Dashed;
 
 /// How a cell participates in an OSC 8 or regex link.
 ///
@@ -491,26 +491,26 @@ struct UBIQUITTY_NONESCAPABLE BuildInputs {
     Vec4 linkHoverColor { 0.0f, 0.0f, 0.0f, 1.0f };
 
     // The rules a `RestingFile` / `RestingMailto` cell draws, as
-    // Ubiquitty::VT::underline* values. Only consulted for those states, which a
+    // Ubiquitty::VT::UnderlineShape values. Only consulted for those states, which a
     // frontend that did not ask for per-kind styling never produces.
     //
     // Carried per kind rather than mapped in Core for the same reason the base
     // style is: which scheme reads dotted and which reads dashed is presentation,
     // and a builder that picked would impose it on every frontend.
-    std::uint8_t linkUnderlineStyleFile = defaultLinkUnderlineStyleFile;
-    std::uint8_t linkUnderlineStyleMailto = defaultLinkUnderlineStyleMailto;
+    Ubiquitty::VT::UnderlineShape linkUnderlineStyleFile = defaultLinkUnderlineStyleFile;
+    Ubiquitty::VT::UnderlineShape linkUnderlineStyleMailto = defaultLinkUnderlineStyleMailto;
 
     // The underline a link cell carries when it has no SGR underline of its own,
-    // as a Ubiquitty::VT::underline* value. Carried rather than fixed because it
+    // as a Ubiquitty::VT::UnderlineShape. Carried rather than fixed because it
     // is a user setting: a link reads solid or dotted by preference, and a
     // builder that picks one imposes it on every frontend.
     //
-    // Defaulted to a visible rule, not to the zero of the enum. `underlineNone`
+    // Defaulted to a visible rule, not to the zero of the enum. `UnderlineShape::None`
     // is 0, so a zero default would leave a cell flagged as a link drawing no
     // affordance at all — a frontend that filled `linkCells` and stopped there
     // would silently lose every link underline, and the flag it did set is
     // evidence it wanted one.
-    std::uint8_t linkUnderlineStyle = defaultLinkUnderlineStyle;
+    Ubiquitty::VT::UnderlineShape linkUnderlineStyle = defaultLinkUnderlineStyle;
 
     // Opt-in subpixel mono glyph pass. false ⇒ a mono glyph is baked into its
     // CellInstance atlas UV at phase 0 (the cell-baked path). true ⇒ a mono

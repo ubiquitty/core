@@ -4,7 +4,7 @@
 // SGR (Select Graphic Rendition) parameter folder. Public entry: Ubiquitty::SGR::apply (SGR.h).
 //
 // Painter contract for the extended attributes stored here:
-// - Underline shape: Pen::underlineStyle (underlineNone..DASHED). Attribute::Underline stays set for any
+// - Underline shape: Pen::underlineStyle (a VT::UnderlineShape). Attribute::Underline stays set for any
 //   non-zero style, so a bit-only painter still draws a plain underline.
 // - Underline color: Pen::underlineIndex (colorDefault = text color, colorRGB = underlineRed/Green/Blue,
 //   0..255 = palette index; mirrors fg/bg layout).
@@ -97,11 +97,11 @@ static void parseExtendedColor(Ubiquitty::Terminal& t, int* iInOut, uint16_t* ou
 
 // Set the underline style and keep Attribute::Underline in sync, so a bit-only painter still draws some
 // underline while a style-aware one reads Pen::underlineStyle.
-static void setUnderlineStyle(Ubiquitty::Pen* p, uint8_t style)
+static void setUnderlineStyle(Ubiquitty::Pen* p, Ubiquitty::VT::UnderlineShape style)
 {
     // Write only the shape's low 3 bits; the script state shares this byte's high bits and must survive.
     Ubiquitty::penSetUnderlineShape(p, style);
-    if (style == Ubiquitty::VT::underlineNone)
+    if (style == Ubiquitty::VT::UnderlineShape::None)
         p->attributes.remove(Ubiquitty::VT::Attribute::Underline);
     else
         p->attributes.add(Ubiquitty::VT::Attribute::Underline);
@@ -113,14 +113,13 @@ static void applyUnderlineSelector(Ubiquitty::Terminal& t, Ubiquitty::Pen* p, in
 {
     int i = *iInOut;
     if (i + 1 < t.parser.parameterCount && t.parser.parameterSeparatorWasColon[i + 1]) {
-        int style = t.parser.parameters[i + 1];
-        if (style < Ubiquitty::VT::underlineNone || style > Ubiquitty::VT::underlineDashed)
-            style = Ubiquitty::VT::underlineSingle;
-        setUnderlineStyle(p, static_cast<uint8_t>(style));
+        const int parameter = t.parser.parameters[i + 1];
+        const bool isNamedShape = parameter >= std::to_underlying(Ubiquitty::VT::UnderlineShape::None) && parameter <= std::to_underlying(Ubiquitty::VT::UnderlineShape::Dashed);
+        setUnderlineStyle(p, isNamedShape ? static_cast<Ubiquitty::VT::UnderlineShape>(parameter) : Ubiquitty::VT::UnderlineShape::Single);
         *iInOut = i + 1;
         return;
     }
-    setUnderlineStyle(p, Ubiquitty::VT::underlineSingle);
+    setUnderlineStyle(p, Ubiquitty::VT::UnderlineShape::Single);
 }
 
 // SGR 1 selector. Bare `1` = bold. `1:n` (n=1..7) selects a variable-font weight in extendedAttributes
@@ -228,7 +227,7 @@ static inline uint8_t ideogramForCode(int n)
         p->attributes.add(Ubiquitty::VT::Attribute::Italic);
         break;
     case 4:
-        setUnderlineStyle(p, Ubiquitty::VT::underlineSingle);
+        setUnderlineStyle(p, Ubiquitty::VT::UnderlineShape::Single);
         break;
     case 5:
         p->attributes.add(Ubiquitty::VT::Attribute::Blink);
@@ -380,7 +379,7 @@ void apply(Ubiquitty::Terminal& t)
             break;
         case 21:
             // Doubly underlined. SGR 22 (not 21) is the bold+dim reset, so 21 is not an intensity control.
-            setUnderlineStyle(p, Ubiquitty::VT::underlineDouble);
+            setUnderlineStyle(p, Ubiquitty::VT::UnderlineShape::Double);
             break;
         case 22:
             p->attributes.remove({ Ubiquitty::VT::Attribute::Bold, Ubiquitty::VT::Attribute::Dim });
@@ -394,7 +393,7 @@ void apply(Ubiquitty::Terminal& t)
                 penSetFontStyle(p, Ubiquitty::VT::fontPrimary);
             break;
         case 24:
-            setUnderlineStyle(p, Ubiquitty::VT::underlineNone);
+            setUnderlineStyle(p, Ubiquitty::VT::UnderlineShape::None);
             break;
         case 25:
             p->attributes.remove(Ubiquitty::VT::Attribute::Blink);
@@ -562,7 +561,7 @@ void restoreAttribute(Ubiquitty::Pen& pen, const Ubiquitty::Pen& saved, Ubiquitt
 
 // Core holds one underline with a shape; xterm holds single and double as two
 // flags. Ps 4 governs the underline unless it is double, Ps 21 the double one.
-bool isDoubleUnderline(const Ubiquitty::Pen& pen) { return pen.attributes.contains(Ubiquitty::VT::Attribute::Underline) && Ubiquitty::penUnderlineShape(&pen) == Ubiquitty::VT::underlineDouble; }
+bool isDoubleUnderline(const Ubiquitty::Pen& pen) { return pen.attributes.contains(Ubiquitty::VT::Attribute::Underline) && Ubiquitty::penUnderlineShape(&pen) == Ubiquitty::VT::UnderlineShape::Double; }
 bool isSingleUnderline(const Ubiquitty::Pen& pen) { return pen.attributes.contains(Ubiquitty::VT::Attribute::Underline) && !isDoubleUnderline(pen); }
 
 void restoreUnderline(Ubiquitty::Pen& pen, const Ubiquitty::Pen& saved, bool (*kind)(const Ubiquitty::Pen&))
@@ -572,7 +571,7 @@ void restoreUnderline(Ubiquitty::Pen& pen, const Ubiquitty::Pen& saved, bool (*k
         Ubiquitty::penSetUnderlineShape(&pen, Ubiquitty::penUnderlineShape(&saved));
     } else if (kind(pen)) {
         pen.attributes.remove(Ubiquitty::VT::Attribute::Underline);
-        Ubiquitty::penSetUnderlineShape(&pen, Ubiquitty::VT::underlineNone);
+        Ubiquitty::penSetUnderlineShape(&pen, Ubiquitty::VT::UnderlineShape::None);
     }
 }
 } // namespace
@@ -645,14 +644,14 @@ void writeParameters(const Pen& pen, Ubiquitty::ReplyBuilder& output)
     // The underline's shape reports as the parameter that sets it, so the
     // report restores the pen it describes: double as 21, as xterm spells
     // it, and the shapes past it in the colon form only SGR 4 has.
-    const bool isDoublyUnderlined = pen.attributes.contains(Ubiquitty::VT::Attribute::Underline) && penUnderlineShape(&pen) == Ubiquitty::VT::underlineDouble;
+    const bool isDoublyUnderlined = pen.attributes.contains(Ubiquitty::VT::Attribute::Underline) && penUnderlineShape(&pen) == Ubiquitty::VT::UnderlineShape::Double;
     if (pen.attributes.contains(Ubiquitty::VT::Attribute::Underline) && !isDoublyUnderlined) {
         switch (penUnderlineShape(&pen)) {
-        case Ubiquitty::VT::underlineCurly:
-        case Ubiquitty::VT::underlineDotted:
-        case Ubiquitty::VT::underlineDashed:
+        case Ubiquitty::VT::UnderlineShape::Curly:
+        case Ubiquitty::VT::UnderlineShape::Dotted:
+        case Ubiquitty::VT::UnderlineShape::Dashed:
             output.put(";4:");
-            output.putDecimal(static_cast<int>(penUnderlineShape(&pen)));
+            output.putDecimal(std::to_underlying(penUnderlineShape(&pen)));
             break;
         default:
             output.put(";4");

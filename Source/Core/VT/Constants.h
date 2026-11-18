@@ -317,16 +317,23 @@ static_assert((extendedAttributeFlagMask & ExtendedAttributes::TextSizeSpecField
 static_assert((ExtendedAttributes::TextSizeSpecField::mask & ExtendedAttributes::WeightField::mask) == 0,
     "the text-size spec id and the weight subfield overlap — one of the two shift/width pairs is wrong");
 
-// Underline style codes for Pen::underlineStyle (SGR 4 / 4:n / 24).
-// Attribute::Underline mirrors whether the style is non-zero, so paint paths
-// that only test the bit keep working alongside painters that read the shape.
+/// The shape of a cell's underline, held in the low three bits of
+/// Pen::underlineStyle (SGR 4 / 4:n / 24).
+///
+/// Each value is the n of the SGR 4:n that selects it, and is what the pen's
+/// packed byte carries over the wire, so the numbers are fixed.
+/// Attribute::Underline mirrors whether the shape is other than None, so paint
+/// paths that only test the bit keep working alongside painters that read the
+/// shape.
+enum class UnderlineShape : uint8_t {
+    None = 0,
+    Single = 1,
+    Double = 2,
+    Curly = 3,
+    Dotted = 4,
+    Dashed = 5,
+};
 using PenUnderlineShapeField = Ubiquitty::Bits::BitField<uint8_t, 0, 3>;
-constexpr uint8_t underlineNone = 0;
-constexpr uint8_t underlineSingle = 1;
-constexpr uint8_t underlineDouble = 2;
-constexpr uint8_t underlineCurly = 3;
-constexpr uint8_t underlineDotted = 4;
-constexpr uint8_t underlineDashed = 5;
 
 // Superscript / subscript state (SGR 73 / 74 / 75) — mutually exclusive, so
 // one 2-bit field packed into bits 3-4 of Pen::underlineStyle rather than

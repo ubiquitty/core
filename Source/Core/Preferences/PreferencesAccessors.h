@@ -318,17 +318,17 @@ int linkUnderlineStyle(const Values& c);
 /// - Returns: The per-origin defaults with the file's overrides folded in.
 [[nodiscard]] CapabilityDecisionTable capabilityDecisions(const Values& c);
 
-/// The VT underline code a `[underline] link_style` index selects.
+/// The underline shape a `[underline] link_style` index selects.
 ///
 /// The key is an index — 0 solid, anything else dotted — and the renderers
-/// take a VT code, which numbers its styles differently: dotted is 4, and 1
+/// take an UnderlineShape, numbered as SGR 4:n numbers it: dotted is 4, and 1
 /// is the solid rule index 1 asks not to be. A frontend passing the index
 /// through draws a solid rule wherever the setting asked for dots, and
 /// against the portable backend that reads as the two agreeing.
 ///
 /// - Parameter index: The setting, as `linkUnderlineStyle` returns it.
-/// - Returns: The VT underline code to render with.
-std::uint8_t linkUnderlineVTStyle(int index);
+/// - Returns: The underline shape to render with.
+Ubiquitty::VT::UnderlineShape linkUnderlineVTStyle(int index);
 
 /// Builds the wheel and trackpad scroll policy from the [mouse] knobs.
 ///

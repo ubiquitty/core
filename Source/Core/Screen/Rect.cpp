@@ -228,9 +228,9 @@ static void keepUnderlineShapeWithBit(Pen& pen)
 {
     const bool isUnderlined = pen.attributes.contains(Ubiquitty::VT::Attribute::Underline);
     if (!isUnderlined)
-        penSetUnderlineShape(&pen, Ubiquitty::VT::underlineNone);
-    else if (penUnderlineShape(&pen) == Ubiquitty::VT::underlineNone)
-        penSetUnderlineShape(&pen, Ubiquitty::VT::underlineSingle);
+        penSetUnderlineShape(&pen, Ubiquitty::VT::UnderlineShape::None);
+    else if (penUnderlineShape(&pen) == Ubiquitty::VT::UnderlineShape::None)
+        penSetUnderlineShape(&pen, Ubiquitty::VT::UnderlineShape::Single);
 }
 
 // Applies `change` to every cell of the DECSACE extent, blank cells included:

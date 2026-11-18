@@ -387,21 +387,21 @@ TEST(testLinkStyleIndexResolvesToItsVTCode)
 {
     namespace Effective = Ubiquitty::Preferences::Effective;
 
-    CHECK(Effective::linkUnderlineVTStyle(0) == Ubiquitty::VT::underlineSingle);
-    CHECK(Effective::linkUnderlineVTStyle(1) == Ubiquitty::VT::underlineDotted);
+    CHECK(Effective::linkUnderlineVTStyle(0) == Ubiquitty::VT::UnderlineShape::Single);
+    CHECK(Effective::linkUnderlineVTStyle(1) == Ubiquitty::VT::UnderlineShape::Dotted);
 
     // The dotted code is not the dotted index: this is the whole reason the
     // conversion exists, and a mapping that lost it would still pass a test
     // written against index 0 alone.
-    CHECK(Effective::linkUnderlineVTStyle(1) != 1);
-    CHECK(Ubiquitty::VT::underlineDotted == 4);
+    CHECK(std::to_underlying(Effective::linkUnderlineVTStyle(1)) != 1);
+    CHECK(std::to_underlying(Ubiquitty::VT::UnderlineShape::Dotted) == 4);
 
     // Preferences.cpp accepts any integer for the key, so the out-of-range values a
     // file can carry resolve rather than reaching a renderer as a code nothing
     // draws.
-    CHECK(Effective::linkUnderlineVTStyle(2) == Ubiquitty::VT::underlineDotted);
-    CHECK(Effective::linkUnderlineVTStyle(99) == Ubiquitty::VT::underlineDotted);
-    CHECK(Effective::linkUnderlineVTStyle(-1) == Ubiquitty::VT::underlineDotted);
+    CHECK(Effective::linkUnderlineVTStyle(2) == Ubiquitty::VT::UnderlineShape::Dotted);
+    CHECK(Effective::linkUnderlineVTStyle(99) == Ubiquitty::VT::UnderlineShape::Dotted);
+    CHECK(Effective::linkUnderlineVTStyle(-1) == Ubiquitty::VT::UnderlineShape::Dotted);
 }
 
 /// Which pasteboard a remote session's PROGRAMS read.

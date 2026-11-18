@@ -718,7 +718,7 @@ TEST(testSubparametersAreTakenOnlyWhereDefined)
     feed(t, "\033[2:3HX");
     CHECK(cell(t, 0, 0)->codePoint == 'X');
     feed(t, "\033[4:3mY");
-    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 1)->pen) == Ubiquitty::VT::underlineCurly);
+    CHECK(Ubiquitty::penUnderlineShape(&cell(t, 0, 1)->pen) == Ubiquitty::VT::UnderlineShape::Curly);
 }
 
 // An ESC that is neither ST nor a doubled ESC ends an unterminated DCS without
