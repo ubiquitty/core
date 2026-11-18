@@ -784,8 +784,11 @@ sys.exit(23 if invalid else 17 if name=='test_failure' else 0)
             (build / "Tests").mkdir(parents=True)
             marker = root / "child"
             binary = build / "Tests/test_waiting"
+            # Readiness must expose a complete PID, not an opened empty file.
             binary.write_text("#!/usr/bin/env python3\nimport os,time\nfrom pathlib import Path\n"
-                              f"Path({str(marker)!r}).write_text(str(os.getpid()))\ntime.sleep(100)\n")
+                              f"marker=Path({str(marker)!r})\n"
+                              "pending=marker.with_name(marker.name+'.pending')\n"
+                              "pending.write_text(str(os.getpid()))\npending.rename(marker)\ntime.sleep(100)\n")
             binary.chmod(0o755)
             (build / "CTestTestfile.cmake").write_text(f'add_test(test_waiting "{binary}")\n')
             child = subprocess.Popen(
@@ -813,7 +816,11 @@ sys.exit(23 if invalid else 17 if name=='test_failure' else 0)
             finally:
                 if child.poll() is None:
                     child.terminate()
-                    child.wait(timeout=25)
+                try:
+                    child.communicate(timeout=25)
+                finally:
+                    if child.stdout is not None:
+                        child.stdout.close()
 
 
 class RemintFingerprint(unittest.TestCase):
