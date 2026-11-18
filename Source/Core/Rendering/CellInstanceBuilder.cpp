@@ -53,6 +53,17 @@ namespace Ubiquitty::Rendering {
 
 namespace {
 
+/// Returns whether a cell in this link state draws the link's underline: every
+/// link does but a control in the terminal's own scheme, which draws as the
+/// text it is.
+///
+/// - Parameter state: The cell's link state.
+/// - Returns: Whether the cell draws a link underline.
+[[nodiscard]] constexpr bool isUnderlinedLink(LinkState state)
+{
+    return state != LinkState::None && state != LinkState::RestingAction && state != LinkState::HoveredAction;
+}
+
 /// Which frame facts the cell walk is compiled to hold as constants.
 enum class WalkClass : std::uint8_t {
     /// No selection or search in the cells, no native vibrancy, no occluding
@@ -2688,10 +2699,10 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                 // underline and takes the link colour for its text and that
                 // underline.
                 const LinkState linkState = linkRow != nullptr ? static_cast<LinkState>(linkRow[column]) : LinkState::None;
-                // An action cell is not drawn as a link: resting it is plain text
-                // on its plate, hovered its plate lightens below.
-                const bool isActionCell = linkState == LinkState::RestingAction || linkState == LinkState::HoveredAction;
-                const bool isLinkCell = linkState != LinkState::None && !isActionCell;
+                // An action cell is not drawn as a link (isUnderlinedLink):
+                // resting it is plain text on its plate, hovered its plate
+                // lightens below.
+                const bool isLinkCell = isUnderlinedLink(linkState);
                 const bool isHoveredLink = linkState == LinkState::Hovered;
                 if (linkState == LinkState::HoveredAction) [[unlikely]] {
                     // The hover affordance of a control: its plate a step towards
@@ -5827,17 +5838,23 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         return wideSkipInkTap(in, atlas, wide, mono.weight, rowBase, tapColumn, metrics, cellVariantStyle, rowLetters.empty() ? nullptr : rowLetters.data());
                     return resolveSkipInkTap(in, atlas, mono, rowBase, tapColumn, metrics, cellVariantStyle, rowLetters.empty() ? nullptr : rowLetters.data());
                 };
-                {
-                    const auto isUnderlined = [&](int neighbourColumn) {
-                        if (neighbourColumn < 0 || neighbourColumn >= in.columns)
-                            return false;
-                        const Pen& neighbourPen = in.cells[static_cast<std::size_t>(rowBase + neighbourColumn)].pen;
-                        return neighbourPen.attributes.contains(Ubiquitty::VT::Attribute::Underline)
-                            || penUnderlineShape(&neighbourPen) != Ubiquitty::VT::UnderlineShape::None;
-                    };
-                    isUnderlineContinuedLeft = isUnderlined(column - 1);
-                    isUnderlineContinuedRight = isUnderlined(column + 1);
-                }
+                // Whether a neighbour draws an underline of its own: an SGR one,
+                // or a link's. A link's cells carry no SGR underline, so a test
+                // of the pen alone takes every cell of a link for the end of its
+                // run: each cell's rule then reaches out to its glyph's
+                // overhanging ink, over the cut its neighbour made for that ink,
+                // and the cut's short pieces are dropped as the stubs of a line
+                // that ends there.
+                const auto isUnderlinedColumn = [&](int neighbourColumn) {
+                    if (neighbourColumn < 0 || neighbourColumn >= in.columns)
+                        return false;
+                    const Pen& neighbourPen = in.cells[static_cast<std::size_t>(rowBase + neighbourColumn)].pen;
+                    return neighbourPen.attributes.contains(Ubiquitty::VT::Attribute::Underline)
+                        || penUnderlineShape(&neighbourPen) != Ubiquitty::VT::UnderlineShape::None
+                        || (linkRow != nullptr && isUnderlinedLink(static_cast<LinkState>(linkRow[neighbourColumn])));
+                };
+                isUnderlineContinuedLeft = isUnderlinedColumn(column - 1);
+                isUnderlineContinuedRight = isUnderlinedColumn(column + 1);
                 if (metrics.skipInk && mono.cache) {
                     // The window rolls along a run of decorated cells: the
                     // predecessor's self tap is this cell's left, its right this
@@ -5881,18 +5898,11 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                 float underlineLeft = cellLeft;
                 float underlineRight = cellRight;
                 if (metrics.shouldUnderlineFollowInk && hasInkExtent && hasUnderline && !hasFraction) {
-                    auto isUnderlinedNeighbour = [&](int neighbourColumn) {
-                        if (neighbourColumn < 0 || neighbourColumn >= in.columns)
-                            return false;
-                        const Pen& neighbourPen = in.cells[static_cast<std::size_t>(row * in.columns + neighbourColumn)].pen;
-                        return neighbourPen.attributes.contains(Ubiquitty::VT::Attribute::Underline)
-                            || penUnderlineShape(&neighbourPen) != Ubiquitty::VT::UnderlineShape::None;
-                    };
                     const float leftOverhang = cellLeft - inkScreenLeft;
                     const float rightOverhang = inkScreenRight - cellRight;
-                    if (leftOverhang >= 0.5f && !isUnderlinedNeighbour(column - 1))
+                    if (leftOverhang >= 0.5f && !isUnderlineContinuedLeft)
                         underlineLeft = std::floor(inkScreenLeft);
-                    if (rightOverhang >= 0.5f && !isUnderlinedNeighbour(column + 1))
+                    if (rightOverhang >= 0.5f && !isUnderlineContinuedRight)
                         underlineRight = std::ceil(inkScreenRight);
                 }
                 // A proportional run's rules lie under its text, not across the

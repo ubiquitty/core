@@ -3413,6 +3413,82 @@ TEST(aPatternedRulesSkipBandIsItsOwnRect)
     }
 }
 
+// A link underlines its cells without an SGR underline, so the cells beside
+// a link cell are underlined only by being links themselves. The skip-ink pass
+// must see them so: a cell that took its neighbours for the end of the run
+// would stretch its rule out to its glyph's overhanging ink, over the cut the
+// neighbour made for that ink, and drop the short pieces of line a cut leaves
+// as the stubs of a line that ends there. A link is cut as the same text
+// underlined by SGR is.
+TEST(aLinksCellsCarryItsUnderlineOnAcrossEachOther)
+{
+    TermPalette pal;
+    pal.seedDefaults();
+    Ubiquitty::Cell blank {};
+    blank.pen.foregroundIndex = colorDefault;
+    blank.pen.backgroundIndex = colorDefault;
+    blank.pen.underlineIndex = colorDefault;
+    constexpr int columns = 5;
+    enum class Underline {
+        SGR,
+        Link
+    };
+    const auto tracesFor = [&](Underline underline) {
+        std::vector<Ubiquitty::Cell> row(columns, blank);
+        std::array<std::uint8_t, columns> linkStates {};
+        for (int column = 1; column < 4; ++column) {
+            row[static_cast<std::size_t>(column)].codePoint = 0x67u; // 'g'
+            if (underline == Underline::SGR) {
+                row[static_cast<std::size_t>(column)].pen.attributes.add(Ubiquitty::VT::Attribute::Underline);
+                Ubiquitty::penSetUnderlineShape(&row[static_cast<std::size_t>(column)].pen, Ubiquitty::VT::UnderlineShape::Single);
+            } else {
+                linkStates[static_cast<std::size_t>(column)] = static_cast<std::uint8_t>(LinkState::Resting);
+            }
+        }
+        BuildInputs in;
+        in.cells = row.data();
+        in.rows = 1;
+        in.columns = columns;
+        in.palette = &pal;
+        in.metrics.cellWidth = 8.0f;
+        in.metrics.cellHeight = 16.0f;
+        in.metrics.baselineFromTop = 13.0f;
+        in.metrics.underlineThickness = 1.0f;
+        in.metrics.skipInk = true;
+        in.metrics.skipInkPadding = 1.0f;
+        in.metrics.atlasToDevicePixels = 1.0f;
+        in.glyphReferenceAdvanceInPixels = 8.0f;
+        in.glyphReferenceLineHeightInPixels = 16.0f;
+        in.glyphSlotWidthInPixels = 8.0f;
+        in.glyphSlotHeightInPixels = 16.0f;
+        if (underline == Underline::Link) {
+            in.linkCells = linkStates.data();
+            in.linkUnderlineStyle = Ubiquitty::VT::UnderlineShape::Single;
+        }
+        CacheBackend backend;
+        GlyphBackend table = backend.backend();
+        std::vector<CellInstance> cells(columns);
+        std::vector<DecorationInstance> decorations(columns * 8);
+        std::vector<SkipInkTrace> traces(8);
+        InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
+        buffers.skipInkTraces = traces.data();
+        buffers.skipInkTraceCapacity = traces.size();
+        const InstanceCounts counts = buildCellInstances(in, table, buffers);
+        traces.resize(std::min<std::size_t>(counts.skipInkRules, traces.size()));
+        return traces;
+    };
+    const std::vector<SkipInkTrace> sgr = tracesFor(Underline::SGR);
+    const std::vector<SkipInkTrace> link = tracesFor(Underline::Link);
+    REQUIRE_MSG(sgr.size() == 3u && link.size() == 3u, "a rule for each of the three underlined cells");
+    CHECK_MSG(link[1].query.continuesLeft && link[1].query.continuesRight, "the middle cell of a link carries the line on both sides");
+    for (std::size_t i = 0; i < 3u; ++i) {
+        CHECK_MSG(link[i].query.continuesLeft == sgr[i].query.continuesLeft && link[i].query.continuesRight == sgr[i].query.continuesRight,
+            ("cell " + std::to_string(i + 1) + " of the link meets its neighbours as the SGR run's does").c_str());
+        CHECK_MSG(link[i].rule.left == sgr[i].rule.left && link[i].rule.right == sgr[i].rule.right,
+            ("cell " + std::to_string(i + 1) + " of the link draws its rule over the SGR run's span").c_str());
+    }
+}
+
 // The skip-ink pass asks about a cell's neighbours before the column walk
 // reaches them, so it can fault a slot the walk will later be told is
 // resident. On an atlas with no room left the tap gets no slot at all, and
@@ -9885,9 +9961,12 @@ BuildInputs measuredRuleInputs(std::span<const Cell> cells, const TermPalette& p
 }
 } // namespace
 
-// Each link cell follows its own measured overhang. A neighbouring link
-// affordance does not make the two cells part of an SGR underline run.
-TEST(linkUnderlinesKeepTheirNativePerCellOverhang)
+// A link's cells are one run of underline, as an SGR underline's are: the rule
+// follows the ink past the cell box only at the link's outer ends. A cell that
+// followed its own overhang into its neighbour would draw its rule over the cut
+// the neighbour made for that ink. A cell beside the link that draws no link
+// rule, a control in the terminal's own scheme, ends the run.
+TEST(aLinksUnderlineFollowsTheInkOnlyAtTheLinksEnds)
 {
     constexpr int columns = 3;
     TermPalette palette;
@@ -9915,10 +9994,10 @@ TEST(linkUnderlinesKeepTheirNativePerCellOverhang)
         const auto counts = buildCellInstances(in, UbiquittyTest::glyphBackendFor(atlas), buffers);
         REQUIRE(counts.decorations == 3);
         CHECK(approx(decorations[0].topLeftInPixels.x, -1));
-        CHECK(approx(decorations[0].bottomRightInPixels.x, 9));
-        CHECK(approx(decorations[1].topLeftInPixels.x, 7));
-        CHECK(approx(decorations[1].bottomRightInPixels.x, 17));
-        CHECK(approx(decorations[2].topLeftInPixels.x, 15));
+        CHECK(approx(decorations[0].bottomRightInPixels.x, 8));
+        CHECK(approx(decorations[1].topLeftInPixels.x, 8));
+        CHECK(approx(decorations[1].bottomRightInPixels.x, 16));
+        CHECK(approx(decorations[2].topLeftInPixels.x, 16));
         CHECK(approx(decorations[2].bottomRightInPixels.x, 25));
     }
     links = { static_cast<std::uint8_t>(LinkState::Resting), static_cast<std::uint8_t>(LinkState::RestingAction), static_cast<std::uint8_t>(LinkState::Resting) };
