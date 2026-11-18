@@ -25,6 +25,7 @@
 #include "Platform/Host/HostSocketName.h"
 
 #include "HostConnection.h"
+#include "POSIXChildProcess.h"
 #include "quic_test_mint.h"
 
 #include <openssl/ssl.h>
@@ -236,6 +237,11 @@ int main(int argc, char** argv)
     std::snprintf(portArgument, sizeof(portArgument), "%u", port);
 
     // --- spawn the real daemon: ubiquitty-host --daemon --quic-port PORT --------
+    UbiquittyTest::OwnedChildProcess<> daemonOwner;
+    if (!daemonOwner.canOwnChildren()) {
+        std::fprintf(stderr, "cannot retain exclusive daemon reaping ownership\n");
+        return 1;
+    }
     pid_t daemon = ::fork();
     if (daemon < 0) {
         std::fprintf(stderr, "fork failed\n");
@@ -247,6 +253,10 @@ int main(int argc, char** argv)
         ::execv(hostBin, args);
         _exit(127); // exec failed
     }
+    if (!daemonOwner.adoptForkResult(daemon)) {
+        std::fprintf(stderr, "could not retain daemon reaping ownership\n");
+        return 1;
+    }
 
     // Wait for the daemon to bind its unix socket (startQUIC runs right after,
     // so the QUIC port is up by then); then a small margin before the first
@@ -257,8 +267,6 @@ int main(int argc, char** argv)
     const bool up = Ubiquitty::HostTest::waitForDaemonReady(sockPath);
     if (!up) {
         std::fprintf(stderr, "daemon did not accept a connection on host.sock\n");
-        ::kill(daemon, SIGKILL);
-        ::waitpid(daemon, nullptr, 0);
         return 1;
     }
     ::usleep(100 * 1000);
@@ -269,8 +277,6 @@ int main(int argc, char** argv)
     std::uint16_t mintedPort = 0;
     if (!mintQUICTokenViaBootstrap(hostBin, macHome, quicToken, mintedPort, quicCert)) {
         std::fprintf(stderr, "could not mint a QUIC token\n");
-        ::kill(daemon, SIGKILL);
-        ::waitpid(daemon, nullptr, 0);
         return 1;
     }
 
@@ -293,8 +299,6 @@ int main(int argc, char** argv)
     SSL_CTX_set_max_proto_version(client.ctx, TLS1_3_VERSION);
     if (ngtcp2_crypto_boringssl_configure_client_context(client.ctx) != 0) {
         std::fprintf(stderr, "configure_client_context failed\n");
-        ::kill(daemon, SIGKILL);
-        ::waitpid(daemon, nullptr, 0);
         return 1;
     }
     SSL_CTX_set_verify(client.ctx, SSL_VERIFY_NONE, nullptr);
@@ -340,8 +344,6 @@ int main(int argc, char** argv)
     ngtcp2_path path = clientPath(client);
     if (ngtcp2_conn_client_new(&client.connection, &dcid, &scid, &path, NGTCP2_PROTO_VER_V1, &cb, &settings, &parameters, nullptr, &client) != 0) {
         std::fprintf(stderr, "conn_client_new failed\n");
-        ::kill(daemon, SIGKILL);
-        ::waitpid(daemon, nullptr, 0);
         return 1;
     }
     ngtcp2_conn_set_tls_native_handle(client.connection, client.tls);
@@ -433,13 +435,15 @@ int main(int argc, char** argv)
                     "(daemon sends ongoing frames over the QUIC relay)\n");
 
     // --- teardown -------------------------------------------------------------
-    ::kill(daemon, SIGTERM);
+    (void)daemonOwner.signal(SIGTERM);
     for (int i = 0; i < 50; ++i) {
-        if (::waitpid(daemon, nullptr, WNOHANG) == daemon)
+        if (daemonOwner.reap(WNOHANG) != 0)
             break;
         ::usleep(10 * 1000);
     }
-    ::kill(daemon, SIGKILL);
-    ::waitpid(daemon, nullptr, WNOHANG);
+    if (!daemonOwner.stop()) {
+        std::fprintf(stderr, "could not reap the owned relay daemon\n");
+        return 1;
+    }
     return rc;
 }
