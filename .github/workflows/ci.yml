@@ -216,13 +216,17 @@ jobs:
           df -h /
           sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup
           df -h /
+      - name: Compiler and dependency cache roots
+        run: |
+          echo "CCACHE_DIR=$RUNNER_WORKSPACE/ccache" >> "$GITHUB_ENV"
+          echo "UBQ_QUIC_CACHE_PREFIX=$RUNNER_WORKSPACE/build-gcc/quic-deps" >> "$GITHUB_ENV"
       - name: Cache QUIC dependencies
         if: needs.preflight.outputs.code == 'true' && matrix.group != 'wasm'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
           path: |
-            ${{ github.workspace }}/../build-gcc/quic-deps/lib
-            ${{ github.workspace }}/../build-gcc/quic-deps/include
+            ${{ env.UBQ_QUIC_CACHE_PREFIX }}/lib
+            ${{ env.UBQ_QUIC_CACHE_PREFIX }}/include
           key: quic-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Scripts/fetch-quic-deps.sh') }}
       # One compiler cache per group: the groups compile with different
       # compilers and flags, and a shared one would evict across them. The
@@ -231,7 +235,7 @@ jobs:
         if: runner.environment == 'github-hosted'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
-          path: ${{ github.workspace }}/../ccache
+          path: ${{ env.CCACHE_DIR }}
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-linux-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-linux-${{ matrix.group }}-
@@ -327,7 +331,7 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
-          path: ${{ github.workspace }}/../ccache
+          path: ${{ env.CCACHE_DIR }}
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-linux-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   apple:
@@ -377,7 +381,7 @@ jobs:
       - name: Restore the compiler cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
-          path: ${{ github.workspace }}/../ccache
+          path: ${{ env.CCACHE_DIR }}
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-apple-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-apple-
@@ -435,7 +439,7 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
-          path: ${{ github.workspace }}/../ccache
+          path: ${{ env.CCACHE_DIR }}
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-apple-${{ github.run_id }}-${{ github.run_attempt }}
 
   host-linux-arm64:
@@ -451,6 +455,7 @@ jobs:
           fetch-depth: 0
       - name: Build and compiler cache roots
         run: |
+          echo "CCACHE_DIR=$RUNNER_WORKSPACE/ccache" >> "$GITHUB_ENV"
           echo "UBQ_BUILD_ROOT=$RUNNER_WORKSPACE/build-arm64" >> "$GITHUB_ENV"
           echo "CCACHE_STATSLOG=$RUNNER_TEMP/ccache-arm64.log" >> "$GITHUB_ENV"
       - name: Free unused hosted SDK space
@@ -462,7 +467,7 @@ jobs:
       - name: Restore the compiler cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
-          path: ${{ github.workspace }}/../ccache
+          path: ${{ env.CCACHE_DIR }}
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-gcc-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ccache-v2-${{ runner.os }}-${{ runner.arch }}-gcc-
       - name: Name the CI image
@@ -515,7 +520,7 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
-          path: ${{ github.workspace }}/../ccache
+          path: ${{ env.CCACHE_DIR }}
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-gcc-${{ github.run_id }}-${{ github.run_attempt }}
 
   coverage:
@@ -535,6 +540,7 @@ jobs:
           fetch-depth: 0
       - name: Build and compiler cache roots
         run: |
+          echo "CCACHE_DIR=$RUNNER_WORKSPACE/ccache" >> "$GITHUB_ENV"
           echo "UBQ_BUILD_ROOT=$RUNNER_WORKSPACE/build-coverage" >> "$GITHUB_ENV"
           echo "CCACHE_STATSLOG=$RUNNER_TEMP/ccache-coverage.log" >> "$GITHUB_ENV"
       - name: Free unused hosted SDK space
@@ -547,13 +553,13 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
           path: |
-            ${{ github.workspace }}/../build-coverage/quic-deps/lib
-            ${{ github.workspace }}/../build-coverage/quic-deps/include
+            ${{ env.UBQ_BUILD_ROOT }}/quic-deps/lib
+            ${{ env.UBQ_BUILD_ROOT }}/quic-deps/include
           key: quic-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Scripts/fetch-quic-deps.sh') }}
       - name: Restore the compiler cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
-          path: ${{ github.workspace }}/../ccache
+          path: ${{ env.CCACHE_DIR }}
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-coverage-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ccache-v2-${{ runner.os }}-${{ runner.arch }}-coverage-
       - name: Name the CI image
@@ -576,7 +582,7 @@ jobs:
               export PATH="$UBQ_PGO_LLVM:$PATH"
               ./Scripts/install-hooks.sh
               ./Scripts/ensure-quic-deps.sh
-              ./Scripts/run-coverage.sh --check-file-floors
+              ./Scripts/run-coverage.sh --no-index --check-file-floors
           UBQ_SCRIPT
           )
           ./Scripts/ci-linux-image.sh bash -euc "$jobCommand"
@@ -608,7 +614,7 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
-          path: ${{ github.workspace }}/../ccache
+          path: ${{ env.CCACHE_DIR }}
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-coverage-${{ github.run_id }}-${{ github.run_attempt }}
 
   ci:

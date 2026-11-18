@@ -4420,6 +4420,112 @@ class SourceCompositionBatteryTests(unittest.TestCase):
                 self.assertIn(f"-DUBIQUITTY_FRONTEND={frontend}", row["arguments"])
                 self.assertIn(f"-DUBIQUITTY_CORE_SOURCE_DIR={self.core}", row["arguments"])
 
+    def coverage_fixture(self):
+        script = self.install_shared_shell_helper("run-coverage.sh")
+        floor = self.install_shared_shell_helper("check-coverage-floor.sh")
+        floor.chmod(0o755)
+        (self.core / "Scripts/build-root.sh").write_text(': "${UBQ_BUILD_ROOT:?}"\n')
+        (self.core / "Scripts/build-jobs.sh").write_text('ubq_build_jobs() { echo 1; }\n')
+        tools = {
+            "cmake": (
+                'if "-B" in sys.argv:\n'
+                '    tests = Path(sys.argv[sys.argv.index("-B") + 1]) / "Tests"\n'
+                '    tests.mkdir(parents=True, exist_ok=True)\n'
+                '    binary = tests / "test_fixture"\n'
+                '    binary.write_text("#!/bin/sh\\nexit 0\\n")\n'
+                '    binary.chmod(0o755)\n'),
+            "ctest": 'print("  Test #1: test_fixture\\n  Test #2: shell_fixture")\n',
+            "xcrun": 'print(Path(__file__).with_name(sys.argv[-1]))\n',
+            "git": "",
+            "llvm-profdata": (
+                'if "-o" in sys.argv:\n'
+                '    Path(sys.argv[sys.argv.index("-o") + 1]).write_text("merged profiles\\n")\n'
+                'else: print("llvm-profdata fixture")\n'),
+            "llvm-cov": (
+                'if sys.argv[1] == "report": print(os.environ["UBQ_COVERAGE_FIXTURE_SUMMARY"])\n'
+                'elif sys.argv[1] == "export":\n'
+                '    print("TN:fixture\\nSF:Source/Core/Fixture.cpp\\nDA:1,1\\nend_of_record")\n'
+                '    if os.environ.get("UBQ_COVERAGE_FIXTURE_NONDETERMINISTIC") and "merged.verify.profdata" in " ".join(sys.argv):\n'
+                '        print("TN:changed")\n'
+                'else: print("llvm-cov fixture")\n'),
+        }
+        for name, body in tools.items():
+            self.tool(self.bin, name, "coverage-" + name)
+            with (self.bin / name).open("a") as output:
+                output.write(body)
+        self.tool(self.core, "Scripts/run-ctest.sh", "coverage-tests")
+        with (self.core / "Scripts/run-ctest.sh").open("a") as output:
+            output.write(
+                'raw = Path(sys.argv[1]) / "coverage-raw"\n'
+                '(raw / "test_fixture--1.profraw").write_text("native profile\\n")\n'
+                '(raw / "shell_fixture.expects-profile").touch()\n'
+                'if not os.environ.get("UBQ_COVERAGE_FIXTURE_MISSING_PROFILE"):\n'
+                '    (raw / "shell_fixture--2.profraw").write_text("shell profile\\n")\n'
+                'raise SystemExit(int(os.environ.get("UBQ_COVERAGE_FIXTURE_TEST_STATUS", "0")))\n')
+        self.tool(self.core, "Scripts/build-coverage-index.sh", "coverage-index")
+        with (self.core / "Scripts/build-coverage-index.sh").open("a") as output:
+            output.write(
+                'index = Path(__file__).parents[1] / "Tests/coverage/covering-tests.tsv"\n'
+                'index.parent.mkdir(parents=True, exist_ok=True)\n'
+                'index.write_text("measured fixture index\\n")\n')
+        floor_table = floor.read_text().split("FLOORS <<'EOF'", 1)[1].split("\nEOF", 1)[0]
+        rows = [line.split() for line in floor_table.splitlines()[1:] if line.strip()]
+        summary = "\n".join(name + " 1 0 100% 1 0 100% 1 0 100% 1 0 100%" for name, _ in rows)
+        environment = self.environment(source_roots(self.core, environment={}))
+        environment["UBQ_COVERAGE_FIXTURE_SUMMARY"] = summary + "\nTOTAL 1 0 100% 1 0 100% 1 0 100% 1 0 100%"
+        return script, environment, rows
+
+    def run_coverage_fixture(self, script, environment, arguments):
+        self.log.unlink(missing_ok=True)
+        checked = subprocess.run(["bash", str(script), "--source-root", str(self.core), *arguments],
+                                 env=environment, cwd=self.core, capture_output=True, text=True, timeout=20)
+        rows = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
+        return checked, rows
+
+    def test_coverage_no_index_omits_only_the_diagnostic_index(self):
+        script, environment, floors = self.coverage_fixture()
+        default, default_rows = self.run_coverage_fixture(script, environment, ("--check-file-floors",))
+        skipped, skipped_rows = self.run_coverage_fixture(script, environment, ("--no-index", "--check-file-floors"))
+        self.assertEqual(default.returncode, 0, default.stdout + default.stderr)
+        self.assertEqual(skipped.returncode, 0, skipped.stdout + skipped.stderr)
+        self.assertEqual(sum(row["label"] == "coverage-index" for row in default_rows), 1)
+        self.assertNotIn("coverage-index", [row["label"] for row in skipped_rows])
+        expected_rows = [row for row in default_rows if row["label"] != "coverage-index"
+                         and not (row["label"] == "coverage-git" and "diff" in row["arguments"])]
+        self.assertEqual(skipped_rows, expected_rows)
+        exports = [row for row in skipped_rows if row["label"] == "coverage-llvm-cov" and row["arguments"][0] == "export"]
+        merges = [row for row in skipped_rows if row["label"] == "coverage-llvm-profdata" and row["arguments"][0] == "merge"]
+        self.assertEqual(len(exports), 2)
+        self.assertEqual(len(merges), 2)
+        native = next(row for row in skipped_rows if row["label"] == "coverage-tests")
+        self.assertEqual(native["arguments"][1:], ["-j8", "-E", "ubq_build|shell_remainder", "--output-on-failure"])
+        self.assertIn(f"{len(floors) + 1} passed, 0 failed, {len(floors) + 1} floors to judge", skipped.stdout)
+        self.assertNotIn("index :", skipped.stdout)
+
+    def test_coverage_no_index_keeps_real_floor_and_failed_suite_verdicts(self):
+        script, environment, floors = self.coverage_fixture()
+        failed_summary = environment["UBQ_COVERAGE_FIXTURE_SUMMARY"].replace(
+            floors[0][0] + " 1 0 100% 1 0 100% 1 0 100%",
+            floors[0][0] + f" 1 0 100% 1 0 100% 1 0 {int(floors[0][1]) - 1}%", 1)
+        for fault, changes, status, message in (
+                ("floor", {"UBQ_COVERAGE_FIXTURE_SUMMARY": failed_summary}, 1, "Coverage regressed"),
+                ("suite", {"UBQ_COVERAGE_FIXTURE_TEST_STATUS": "29"}, 29, f"{len(floors) + 1} passed, 0 failed")):
+            with self.subTest(fault=fault):
+                checked, rows = self.run_coverage_fixture(script, dict(environment, **changes), ("--no-index", "--check-file-floors"))
+                self.assertEqual(checked.returncode, status, checked.stdout + checked.stderr)
+                self.assertIn(message, checked.stdout + checked.stderr)
+                self.assertNotIn("coverage-index", [row["label"] for row in rows])
+
+    def test_coverage_no_index_still_rejects_bad_instrumentation_and_exports(self):
+        script, environment, _ = self.coverage_fixture()
+        for variable, message in (("UBQ_COVERAGE_FIXTURE_MISSING_PROFILE", "wrote no profile"),
+                                  ("UBQ_COVERAGE_FIXTURE_NONDETERMINISTIC", "NON-DETERMINISTIC")):
+            with self.subTest(fault=variable):
+                checked, rows = self.run_coverage_fixture(script, dict(environment, **{variable: "1"}), ("--no-index", "--check-file-floors"))
+                self.assertEqual(checked.returncode, 1, checked.stdout + checked.stderr)
+                self.assertIn(message, checked.stderr)
+                self.assertNotIn("coverage-index", [row["label"] for row in rows])
+
     def test_coverage_floor_refuses_stale_app_or_core_inputs_without_changing_floors(self):
         script = self.install_shared_shell_helper("check-coverage-floor.sh")
         (self.core / "Scripts/build-root.sh").write_text(': "${UBQ_BUILD_ROOT:?}"\n')

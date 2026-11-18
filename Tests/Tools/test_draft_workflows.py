@@ -23,6 +23,130 @@ ROOT = Path(__file__).resolve().parents[2]
 PR_ACTIONS = {"opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft"}
 
 
+def cache_path_problems(root):
+    """Resolve cache paths after their real preceding environment-export steps."""
+    problems = []
+    shell_values = {"RUNNER_WORKSPACE": "/fixture/work/repository", "RUNNER_TEMP": "/fixture/temp",
+                    "GITHUB_WORKSPACE": "/fixture/work/repository/checkout"}
+
+    def shell_value(value):
+        return re.sub(r"\$(?:\{([A-Z_]+)\}|([A-Z_]+))",
+                      lambda match: shell_values.get(match[1] or match[2], match[0]), value)
+
+    def exported_values(run, destination):
+        target = re.escape('"$' + destination + '"')
+        fragments = re.findall(r"(?ms)^\s*\{\s*\n(.*?)^\s*\}\s*>>\s*" + target, run)
+        fragments += re.findall(r"(?m)^([^\n]*echo [^\n]*)>>\s*" + target, run)
+        return [(name, shell_value(value)) for fragment in fragments
+                for name, value in re.findall(r'echo "([A-Za-z_]+)=([^"\n]*)"', fragment)]
+
+    for path in sorted((root / ".github/workflows").glob("*.y*ml")):
+        for job_name, job in Workflow(path.read_text()).jobs.items():
+            environment, outputs = {}, {}
+            steps = re.finditer(r"(?ms)^      - (.*?)(?=^      - |\Z)", job.get("steps", ""))
+            for matched in steps:
+                fields = mapping("        " + matched[1], 8)
+                uses = scalar(fields.get("uses", ""))
+                run = fields.get("run", "")
+                if uses.startswith("./"):
+                    action = root / uses / "action.yml"
+                    if action.is_file():
+                        run += action.read_text()
+                environment.update(exported_values(run, "GITHUB_ENV"))
+                identifier = scalar(fields.get("id", ""))
+                if identifier:
+                    for name, value in exported_values(run, "GITHUB_OUTPUT"):
+                        # The build-root resolver has its own executable fixture
+                        # coverage; here its preceding output must be present.
+                        if "$(python3 " in value and "build_root.py" in value:
+                            value = "/fixture/build/" + job_name
+                        outputs[identifier + "." + name] = value
+                if not uses.startswith("actions/cache"):
+                    continue
+                inputs = mapping(fields.get("with", ""), 10)
+                paths = inputs.get("path", "").strip()
+                if paths.startswith("|"):
+                    paths = paths[1:].strip()
+                if not paths:
+                    problems.append(path.name + "/" + job_name + ": empty cache path")
+                for cache_path in paths.splitlines():
+                    context = path.name + "/" + job_name
+                    def expression_value(match):
+                        key = match[1].strip()
+                        if key.startswith("env.") and key[4:] in environment:
+                            return environment[key[4:]]
+                        if key.startswith("steps.") and ".outputs." in key:
+                            step, output = key[6:].split(".outputs.", 1)
+                            if step + "." + output in outputs:
+                                return outputs[step + "." + output]
+                        known = {"github.workspace": shell_values["GITHUB_WORKSPACE"],
+                                 "runner.workspace": shell_values["RUNNER_WORKSPACE"],
+                                 "runner.temp": shell_values["RUNNER_TEMP"], "runner.arch": "X64"}
+                        if key in known:
+                            return known[key]
+                        problems.append(context + ": cache root has no preceding canonical export: " + key)
+                        return "UNRESOLVED"
+                    resolved = re.sub(r"\$\{\{(.*?)\}\}", expression_value, cache_path.strip())
+                    if any(part in (".", "..") for part in resolved.lstrip("!").split("/")):
+                        problems.append(context + ": cache path contains a dot component: " + resolved)
+    return problems
+
+
+class CachePathTests(unittest.TestCase):
+    workflow = '''name: fixture
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cache roots
+        run: |
+          echo "CCACHE_DIR=$RUNNER_WORKSPACE/ccache" >> "$GITHUB_ENV"
+      - uses: actions/cache/restore@fixture
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: fixture
+'''
+
+    def examine(self, text, action=None):
+        with tempfile.TemporaryDirectory(prefix="ubiquitty-cache-paths-") as temporary:
+            root = Path(temporary)
+            workflows = root / ".github/workflows"
+            workflows.mkdir(parents=True)
+            (workflows / "ci.yml").write_text(text)
+            if action is not None:
+                directory = root / ".github/actions/bootstrap"
+                directory.mkdir(parents=True)
+                (directory / "action.yml").write_text(action)
+            return cache_path_problems(root)
+
+    def test_actual_workflow_cache_paths_use_preceding_canonical_roots(self):
+        self.assertEqual(cache_path_problems(ROOT), [])
+
+    def test_exported_root_and_composite_bootstrap_are_accepted(self):
+        self.assertEqual(self.examine(self.workflow), [])
+        replacement = "      - uses: ./.github/actions/bootstrap\n"
+        start = self.workflow.index("      - name: Cache roots")
+        end = self.workflow.index("      - uses: actions/cache")
+        action = 'runs:\n  using: composite\n  steps:\n    - run: |\n        echo "CCACHE_DIR=$RUNNER_WORKSPACE/ccache" >> "$GITHUB_ENV"\n'
+        self.assertEqual(self.examine(self.workflow[:start] + replacement + self.workflow[end:], action), [])
+
+    def test_parent_and_current_directory_components_are_rejected(self):
+        for value in ("${{ github.workspace }}/../ccache", "${{ runner.temp }}/./ccache"):
+            with self.subTest(path=value):
+                self.assertTrue(self.examine(self.workflow.replace("${{ env.CCACHE_DIR }}", value)))
+
+    def test_noncanonical_export_missing_export_and_late_export_are_rejected(self):
+        broken = self.workflow.replace("$RUNNER_WORKSPACE/ccache", "$RUNNER_WORKSPACE/../ccache")
+        self.assertTrue(self.examine(broken))
+        root = self.workflow.index("      - name: Cache roots")
+        cache = self.workflow.index("      - uses: actions/cache")
+        self.assertTrue(self.examine(self.workflow[:root] + self.workflow[cache:]))
+        self.assertTrue(self.examine(self.workflow[:root] + self.workflow[cache:] + self.workflow[root:cache]))
+        self.assertTrue(self.examine(self.workflow.replace('$GITHUB_ENV', '$GITHUB_OUTPUT')))
+        self.assertTrue(self.examine(self.workflow.replace('path: ${{ env.CCACHE_DIR }}', 'path:')))
+
+
 def mapping(text, indent):
     matches = list(re.finditer(r"^" + " " * indent + r"([A-Za-z_][A-Za-z0-9_-]*):([^\n]*(?:\n|$))", text, re.M))
     result = {}
