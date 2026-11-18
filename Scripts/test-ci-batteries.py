@@ -4209,6 +4209,8 @@ class SourceCompositionBatteryTests(unittest.TestCase):
                 result, calls = self.ci_image_run(script, configured)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 run = next(row for row in calls if row[0] == "run")
+                self.assertIn("--name", run)
+                self.assertRegex(run[run.index("--label") + 1], r"^org\.ubiquitty\.ci\.owner=[0-9a-f]{32}$")
                 for path in (self.app, self.core, self.kit):
                     self.assertIn(f"{path}:{path}", run)
                 targets = [run[index + 1].split(":")[1] for index, argument in enumerate(run) if argument == "-v"]

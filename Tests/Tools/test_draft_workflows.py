@@ -92,6 +92,80 @@ def cache_path_problems(root):
     return problems
 
 
+def container_cache_problems(root):
+    """Check that cache publication follows successful owned-container cleanup."""
+    problems = []
+    for path in sorted((root / ".github/workflows").glob("*.y*ml")):
+        for job_name, job in Workflow(path.read_text()).jobs.items():
+            steps = [mapping("        " + matched[1], 8)
+                     for matched in re.finditer(r"(?ms)^      - (.*?)(?=^      - |\Z)", job.get("steps", ""))]
+            last_run = last_cleanup = -1
+            for index, fields in enumerate(steps):
+                run = fields.get("run", "")
+                if "ci-linux-image.sh" in run:
+                    if "--cleanup-containers" in run and scalar(fields.get("if", "")) == "always()":
+                        last_cleanup = index
+                    elif "--recipe-digest" not in run:
+                        last_run = index
+                uses = scalar(fields.get("uses", ""))
+                inputs = mapping(fields.get("with", ""), 10)
+                if not (uses.startswith("actions/cache/save@") and "env.CCACHE_DIR" in inputs.get("path", "")):
+                    continue
+                if last_run < 0:
+                    continue
+                previous = steps[index - 1] if index else {}
+                if (last_cleanup != index - 1 or scalar(previous.get("id", "")) != "stop-containers"
+                        or "steps.stop-containers.outcome == 'success'" not in fields.get("if", "")):
+                    problems.append(path.name + "/" + job_name + ": compiler cache is not guarded by completed cleanup")
+            if last_run > last_cleanup:
+                problems.append(path.name + "/" + job_name + ": no always-cleanup follows the final container command")
+    return problems
+
+
+class ContainerCacheTests(unittest.TestCase):
+    workflow = '''name: fixture
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build
+        run: ./Scripts/ci-linux-image.sh build
+      - name: Cleanup
+        id: stop-containers
+        if: always()
+        run: ./Scripts/ci-linux-image.sh --cleanup-containers
+      - name: Save
+        if: always() && steps.stop-containers.outcome == 'success'
+        uses: actions/cache/save@fixture
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: fixture
+'''
+
+    def examine(self, text):
+        with tempfile.TemporaryDirectory(prefix="ubiquitty-container-cache-") as temporary:
+            root = Path(temporary)
+            workflows = root / ".github/workflows"
+            workflows.mkdir(parents=True)
+            (workflows / "ci.yml").write_text(text)
+            return container_cache_problems(root)
+
+    def test_actual_container_jobs_clean_up_before_publishing_caches(self):
+        self.assertEqual(container_cache_problems(ROOT), [])
+
+    def test_successful_cleanup_before_save_is_accepted(self):
+        self.assertEqual(self.examine(self.workflow), [])
+
+    def test_missing_cleanup_guard_or_another_late_writer_is_rejected(self):
+        for broken in (
+                self.workflow.replace(" && steps.stop-containers.outcome == 'success'", ""),
+                self.workflow.replace("run: ./Scripts/ci-linux-image.sh --cleanup-containers", "run: true"),
+                self.workflow + "      - name: Late build\n        run: ./Scripts/ci-linux-image.sh build\n"):
+            with self.subTest(workflow=broken):
+                self.assertTrue(self.examine(broken))
+
+
 class CachePathTests(unittest.TestCase):
     workflow = '''name: fixture
 on: push
@@ -292,7 +366,8 @@ class ImageWrapperTests(unittest.TestCase):
                 'echo "$1" >> "$DOCKER_LOG"\n'
                 'case "$1" in\n'
                 '  info) echo "[]" ;;\n'
-                '  image) [ -f "$DOCKER_STATE" ] ;;\n'
+                '  image) [ -f "$DOCKER_STATE" ] || exit 1; case "$*" in *--format*) printf "sha256:%064d\\n" 0 ;; esac ;;\n'
+                '  container) echo "Error: No such container: fixture" >&2; exit 1 ;;\n'
                 '  load|build) touch "$DOCKER_STATE" ;;\n'
                 '  save) echo image > "$3" ;;\n'
                 "esac\n")

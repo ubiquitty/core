@@ -152,6 +152,10 @@ jobs:
             cat "$log"
             echo "::endgroup::"
           done
+      - name: Stop remaining owned CI containers
+        if: always()
+        run: ./Scripts/ci-linux-image.sh --source-root "$GITHUB_WORKSPACE" --cleanup-containers
+
 
   linux:
     # Independent groups of the Linux battery run on separate runners, so its wall
@@ -326,8 +330,12 @@ jobs:
           UBQ_SCRIPT
           )
           ./Scripts/ci-linux-image.sh bash -c "$jobCommand"
+      - name: Stop owned CI containers before caching
+        id: stop-containers
+        if: always()
+        run: ./Scripts/ci-linux-image.sh --source-root "$GITHUB_WORKSPACE" --cleanup-containers
       - name: Save the compiler cache
-        if: always() && runner.environment == 'github-hosted'
+        if: always() && runner.environment == 'github-hosted' && steps.stop-containers.outcome == 'success'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
@@ -515,8 +523,12 @@ jobs:
         with:
           path: ${{ runner.temp }}/ubq-ci-linux-image.tar
           key: ci-linux-image-${{ runner.arch }}-${{ steps.image.outputs.digest }}
-      - name: Save the compiler cache
+      - name: Stop owned CI containers before caching
+        id: stop-containers
         if: always()
+        run: ./Scripts/ci-linux-image.sh --source-root "$GITHUB_WORKSPACE" --cleanup-containers
+      - name: Save the compiler cache
+        if: always() && steps.stop-containers.outcome == 'success'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:
@@ -609,8 +621,12 @@ jobs:
         with:
           path: ${{ runner.temp }}/ubq-ci-linux-image.tar
           key: ci-linux-image-${{ runner.arch }}-${{ steps.image.outputs.digest }}
-      - name: Save the compiler cache
+      - name: Stop owned CI containers before caching
+        id: stop-containers
         if: always()
+        run: ./Scripts/ci-linux-image.sh --source-root "$GITHUB_WORKSPACE" --cleanup-containers
+      - name: Save the compiler cache
+        if: always() && steps.stop-containers.outcome == 'success'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.2.3
         with:

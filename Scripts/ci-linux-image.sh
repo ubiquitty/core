@@ -62,6 +62,9 @@ sourceContext="$(python3 "$SCRIPTS/ubq_roots.py" shell-context ${sourceArguments
 # The shared resolver emits only fixed variable names with shlex-quoted values.
 eval "$sourceContext"
 cd "$ROOT"
+if [ "${1:-}" = --cleanup-containers ]; then
+    exec python3 "$SCRIPTS/ci_linux_containers.py" --source-root "$ROOT" cleanup
+fi
 if [ "${1:-}" != --recipe-digest ] && [ "${UBQ_CI_LINUX_IMAGE:-}" != true ]; then
     exec "$@"
 fi
@@ -303,7 +306,7 @@ exec "$@"'
 # --init puts an init process at pid 1 to reap orphans. Without one the command
 # is pid 1 and never reaps, so a killed descendant lingers as a zombie and
 # test-gate-framework's check that it is gone fails.
-docker run --rm --init \
+python3 "$SCRIPTS/ci_linux_containers.py" --source-root "$ROOT" --image "$image_id" run -- docker run --rm --init \
     ${extra_mounts[@]+"${extra_mounts[@]}"} \
     ${passed[@]+"${passed[@]}"} \
     -e LANG=C.UTF-8 \
