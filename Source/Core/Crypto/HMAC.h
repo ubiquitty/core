@@ -49,6 +49,24 @@ namespace Ubiquitty::Crypto {
     return mac;
 }
 
+/// Whether two byte runs are equal, in time that depends on their lengths and
+/// not on where they differ. Every secret a peer presents as bytes is compared
+/// through this one loop.
+///
+/// - Parameters:
+///   - left: One run.
+///   - right: The other.
+/// - Returns: Whether they have the same length and bytes.
+[[nodiscard]] inline bool constantTimeEqual(std::span<const std::byte> left, std::span<const std::byte> right)
+{
+    std::size_t difference = left.size() ^ right.size();
+    const std::size_t shared = std::min(left.size(), right.size());
+    for (std::size_t index = 0; index < shared; ++index)
+        difference |= std::to_integer<std::size_t>(left[index] ^ right[index]);
+    volatile std::size_t sink = difference;
+    return sink == 0;
+}
+
 /// Whether two MACs are equal, in time that does not depend on where they
 /// differ.
 ///
@@ -58,11 +76,7 @@ namespace Ubiquitty::Crypto {
 /// - Returns: Whether they are equal.
 [[nodiscard]] inline bool constantTimeEqual(std::span<const std::uint8_t, 32> left, std::span<const std::uint8_t, 32> right)
 {
-    std::uint8_t difference = 0;
-    for (std::size_t index = 0; index < 32; ++index)
-        difference = static_cast<std::uint8_t>(difference | (left[index] ^ right[index]));
-    volatile std::uint8_t sink = difference;
-    return sink == 0;
+    return constantTimeEqual(std::as_bytes(left), std::as_bytes(right));
 }
 
 } // namespace Ubiquitty::Crypto

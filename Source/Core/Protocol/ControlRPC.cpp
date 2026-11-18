@@ -7,10 +7,12 @@
 
 #include "Core/Protocol/ControlRPC.h"
 #include "Core/Accessibility/TextProjection.h"
+#include "Core/Crypto/HMAC.h"
 #include "Core/Terminal.h"
 #include "Core/Unicode/UTF8Encoder.h"
 
 #include <algorithm>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -175,11 +177,7 @@ bool isBlankRequestLine(std::string_view line)
 
 bool constantTimeEquals(std::string_view a, std::string_view b)
 {
-    unsigned difference = static_cast<unsigned>(a.size() ^ b.size());
-    const std::size_t span = a.size() < b.size() ? a.size() : b.size();
-    for (std::size_t i = 0; i < span; ++i)
-        difference |= static_cast<unsigned>(static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]));
-    return difference == 0;
+    return Crypto::constantTimeEqual(std::as_bytes(std::span(a)), std::as_bytes(std::span(b)));
 }
 
 Value rpcResult(const Value* id, Value result)

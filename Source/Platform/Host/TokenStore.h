@@ -8,6 +8,7 @@
 // The daemon verifies a presented token by hashing it and matching the digest;
 // the issuance CLI is the only place a plaintext token exists (printed once).
 
+#include "Core/Crypto/HMAC.h"
 #include "Core/Crypto/SHA256.h"
 #include "Core/Protocol/Sync/NativeAttachment.h"
 #include "Core/Protocol/Sync/TokenRecord.h"
@@ -22,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -354,12 +356,7 @@ template<typename WriteContents>
 // timing.
 inline bool digestsEqual(const std::string& a, const std::string& b)
 {
-    if (a.size() != b.size())
-        return false;
-    unsigned diff = 0;
-    for (std::size_t i = 0; i < a.size(); ++i)
-        diff |= static_cast<unsigned>(a[i] ^ b[i]);
-    return diff == 0;
+    return Crypto::constantTimeEqual(std::as_bytes(std::span(a)), std::as_bytes(std::span(b)));
 }
 
 // Verify `token` against the store. A missing token is reported distinctly so
