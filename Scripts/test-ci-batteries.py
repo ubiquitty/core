@@ -4162,10 +4162,13 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         path = self.core / "Scripts" / name
         shutil.copyfile(batteries.ROOT / "Scripts" / name, path)
         shutil.copyfile(batteries.ROOT / "Scripts/ubq_roots.py", self.core / "Scripts/ubq_roots.py")
+        if name == "ci-linux-image.sh":
+            shutil.copyfile(batteries.ROOT / "Scripts/ci_linux_containers.py", self.core / "Scripts/ci_linux_containers.py")
         return path
 
     def ci_image_fixture(self):
         script = self.install_shared_shell_helper("ci-linux-image.sh")
+        self.install_shared_shell_helper("ci_linux_containers.py")
         # A container installs the pinned clang-format, read from the Core's pin file.
         shutil.copyfile(batteries.ROOT / "Scripts/clang-format-pin", self.core / "Scripts/clang-format-pin")
         recipe = self.core / "Scripts/run-linux.sh"
@@ -4175,7 +4178,8 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         docker.write_text('#!/usr/bin/env python3\nimport json, os, sys\n'
                           'with open(os.environ["UBQ_ROUTING_LOG"], "a") as log: log.write(json.dumps(sys.argv[1:])+"\\n")\n'
                           'if sys.argv[1:2] == ["info"]: print(os.environ.get("UBQ_DOCKER_SECURITY_OPTIONS", "[]"))\n'
-                          'elif "--format" in sys.argv: print("sha256:fixture")\n')
+                          'elif sys.argv[1:3] == ["container", "inspect"]: print("Error: No such container: fixture", file=sys.stderr); sys.exit(1)\n'
+                          'elif "--format" in sys.argv: print("sha256:" + "a" * 64)\n')
         docker.chmod(0o755)
         base = {key: value for key, value in os.environ.items() if not key.startswith(("UBQ_", "UBIQUITTY_", "CCACHE_"))}
         environment = dict(base, PATH=str(self.bin) + os.pathsep + os.environ.get("PATH", ""),
@@ -4643,6 +4647,142 @@ class SourceCompositionBatteryTests(unittest.TestCase):
         self.assertEqual((context.core, context.kit), (self.app, self.app))
         self.assertEqual({stage.key for stage in batteries.source_stages("linux", context)},
                          {stage.key for stage in batteries.stages("linux")})
+
+
+class OwnedCIContainerTests(unittest.TestCase):
+    source_repositories = ("core",)
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="ubq-ci-containers-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.state = self.root / "container.json"
+        self.log = self.root / "docker.jsonl"
+        self.helper = batteries.ROOT / "Scripts/ci_linux_containers.py"
+        self.image = "sha256:" + "a" * 64
+        self.environment = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
+                                RUNNER_TEMP=str(self.root), GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="1",
+                                GITHUB_JOB="coverage", UBQ_TEST_CONTAINER_STATE=str(self.state),
+                                UBQ_TEST_DOCKER_LOG=str(self.log))
+        fake = self.bin / "docker"
+        fake.write_text('''#!/usr/bin/env python3
+import json, os, pathlib, sys, time
+args = sys.argv[1:]
+state = pathlib.Path(os.environ["UBQ_TEST_CONTAINER_STATE"])
+with open(os.environ["UBQ_TEST_DOCKER_LOG"], "a") as log:
+    log.write(json.dumps(args) + "\\n")
+if args[:1] == ["run"]:
+    name = args[args.index("--name") + 1]
+    nonce = args[args.index("--label") + 1].split("=", 1)[1]
+    value = {"Id": "b" * 64, "Name": "/" + name, "Image": "sha256:" + "a" * 64,
+             "Config": {"Labels": {"org.ubiquitty.ci.owner": nonce}}}  # preferences-vocabulary-ok: Docker's inspection schema.
+    if os.environ.get("UBQ_TEST_CONTAINER_FAULT") == "label":
+        value["Config"]["Labels"]["org.ubiquitty.ci.owner"] = "foreign"  # preferences-vocabulary-ok: Docker's inspection schema.
+    if os.environ.get("UBQ_TEST_CONTAINER_FAULT") == "image":
+        value["Image"] = "sha256:" + "c" * 64
+    with state.open("w") as output:
+        json.dump(value, output)
+    if os.environ.get("UBQ_TEST_CONTAINER_WAIT"):
+        cache = pathlib.Path(os.environ["RUNNER_TEMP"]) / "cache"
+        cache.mkdir()
+        while state.exists():
+            (cache / "writing").write_text(str(time.monotonic_ns()))
+            time.sleep(0.01)
+    sys.exit(int(os.environ.get("UBQ_TEST_CONTAINER_EXIT", "0")))
+elif args[:2] == ["container", "inspect"]:
+    if os.environ.get("UBQ_TEST_DOCKER_UNAVAILABLE"):
+        sys.exit("Cannot connect to the Docker daemon")
+    if not state.exists():
+        sys.exit("Error: No such container: " + args[-1])
+    print(json.dumps([json.loads(state.read_text())]))
+elif args[:3] == ["container", "rm", "--force"]:
+    state.unlink()
+else:
+    sys.exit("unexpected Docker operation")
+''')
+        fake.chmod(0o755)
+
+    def command(self, operation):
+        command = [sys.executable, str(self.helper), "--source-root", str(self.root)]
+        if operation == "run":
+            command += ["--image", self.image, "run", "--", "docker", "run", "--rm", "fixture"]
+        else:
+            command += ["cleanup"]
+        return command
+
+    def invoke(self, operation="run", **environment):
+        return subprocess.run(self.command(operation), env=dict(self.environment, **environment),
+                              capture_output=True, text=True, timeout=15)
+
+    def test_normal_completion_and_failed_command_both_remove_the_owned_container(self):
+        for status in (0, 37):
+            with self.subTest(status=status):
+                result = self.invoke(UBQ_TEST_CONTAINER_EXIT=str(status))
+                self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+                self.assertFalse(self.state.exists())
+                self.assertEqual(list((self.root / "ubiquitty-ci-containers").glob("*.json")), [])
+
+    def test_interrupt_and_forced_runner_exit_stop_cache_writers_before_archiving(self):
+        for signum in (signal.SIGTERM, signal.SIGKILL):
+            with self.subTest(signum=signum):
+                process = subprocess.Popen(self.command("run"), env=dict(self.environment, UBQ_TEST_CONTAINER_WAIT="1"),
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    end = time.monotonic() + 10
+                    while not (self.root / "cache/writing").exists() and time.monotonic() < end:
+                        time.sleep(0.01)
+                    self.assertTrue((self.root / "cache/writing").exists())
+                    process.send_signal(signum)
+                    process.wait(timeout=10)
+                    if signum == signal.SIGTERM:
+                        self.assertEqual(process.returncode, 143)
+                    result = self.invoke("cleanup")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertFalse(self.state.exists())
+                    time.sleep(0.1)
+                    before = (self.root / "cache/writing").read_bytes()
+                    result = subprocess.run(["tar", "-cf", str(self.root / "cache.tar"), "-C", str(self.root), "cache"],
+                                            capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    time.sleep(0.05)
+                    self.assertEqual((self.root / "cache/writing").read_bytes(), before)
+                finally:
+                    self.state.unlink(missing_ok=True)
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=10)
+                    shutil.rmtree(self.root / "cache", ignore_errors=True)
+
+    def test_foreign_label_or_image_prevents_removal_and_retains_the_ownership_record(self):
+        for fault in ("label", "image"):
+            with self.subTest(fault=fault):
+                result = self.invoke(UBQ_TEST_CONTAINER_FAULT=fault)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("refusing removal", result.stderr)
+                calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+                self.assertFalse(any(row[:2] == ["container", "rm"] for row in calls))
+                self.assertTrue(self.state.exists())
+                self.assertEqual(len(list((self.root / "ubiquitty-ci-containers").glob("*.json"))), 1)
+                self.state.unlink()
+                for path in (self.root / "ubiquitty-ci-containers").glob("*.json"):
+                    path.unlink()
+                self.log.unlink()
+
+    def test_another_job_or_unavailable_daemon_cannot_be_treated_as_clean(self):
+        result = self.invoke(UBQ_TEST_DOCKER_UNAVAILABLE="1")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertTrue(self.state.exists())
+        self.log.unlink()
+        result = self.invoke("cleanup", GITHUB_JOB="another-job")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("another CI job", result.stderr)
+        self.assertFalse(self.log.exists())
+        self.assertTrue(self.state.exists())
+        result = self.invoke("cleanup")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.state.exists())
 
 
 class SuiteRootTests(unittest.TestCase):

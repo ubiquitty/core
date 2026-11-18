@@ -182,6 +182,8 @@ elif args[0] == "build":
 elif args[0] == "run":
     assert "UBQ_CI_LINUX_IMAGE_ID=sha256:" + "1" * 64 in args
     assert args[args.index("--user") + 1] == "1234:5678"
+elif args[:2] == ["container", "inspect"]:
+    sys.exit("Error: No such container: fixture")
 else:
     sys.exit("unexpected Docker command: " + repr(args))
 ''')
