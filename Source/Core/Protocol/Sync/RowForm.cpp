@@ -103,17 +103,15 @@ std::optional<LinkDefinition> linkDefinition(const Ubiquitty::Terminal& terminal
     const Ubiquitty::Attributes::Hyperlinks::LinkTable* table = Ubiquitty::Attributes::Hyperlinks::table(&terminal);
     if (!table || id == 0)
         return std::nullopt;
-    for (int index = 0; index < terminal.linkCount; ++index) {
-        const auto slot = static_cast<std::size_t>((terminal.linkHead + index) % Ubiquitty::VT::linkTableCapacity);
-        if (table->ids[slot] != id)
-            continue;
-        LinkDefinition definition;
-        definition.id = id;
-        definition.key.assign(table->keys[slot].data(), ::strnlen(table->keys[slot].data(), table->keys[slot].size()));
-        definition.uri.assign(table->uris[slot].data(), ::strnlen(table->uris[slot].data(), table->uris[slot].size()));
-        return definition;
-    }
-    return std::nullopt;
+    const std::size_t index = table->indexOf(id);
+    if (index == Ubiquitty::Attributes::Hyperlinks::LinkTable::notFound)
+        return std::nullopt;
+    const Ubiquitty::Attributes::Hyperlinks::LinkEntryView entry = table->entry(index);
+    LinkDefinition definition;
+    definition.id = id;
+    definition.key.assign(entry.key);
+    definition.uri.assign(entry.uri);
+    return definition;
 }
 
 std::size_t PaneDictionaries::PenKeyHash::operator()(const PenKey& key) const

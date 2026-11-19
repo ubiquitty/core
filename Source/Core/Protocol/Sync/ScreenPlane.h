@@ -578,8 +578,12 @@ struct CheckpointStoragePlan {
     std::size_t replicaStorageBytes = 0;
     std::size_t penCount = 0;
     std::size_t linkCount = 0;
+    /// The links' stored text, each key and URI with its terminator.
     std::size_t linkTextBytes = 0;
-    /// The complete private hyperlink ring moved into the Terminal at commit.
+    /// The largest link id, which sizes the table's id index.
+    std::uint16_t largestLinkID = 0;
+    /// The complete private hyperlink table moved into the Terminal at commit:
+    /// the object and every array it holds.
     std::size_t linkTableBytes = 0;
     std::size_t clusterCount = 0;
     /// The complete cluster pool's entry, index and bucket array capacities.

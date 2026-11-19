@@ -521,8 +521,6 @@ inline constexpr auto terminalLedger = std::to_array<LedgerEntry>({
     MEMBER(lineIdentity, HostOnly),
 
     // Recomputed by the client from what it applied.
-    MEMBER(linkCount, Derived),
-    MEMBER(linkHead, Derived),
     MEMBER(scrollbackCount, Derived),
     MEMBER(richTextLayouts, Derived),
     MEMBER(scrollbackCapacity, Derived),

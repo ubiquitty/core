@@ -184,12 +184,16 @@ TEST(aClientLinkTableWithTheWrongURIIsReported)
     const std::vector<PTYRead> reads = readsEvery(chunks, 40'000);
     LoopbackPaneLink link(LoopbackOptions { .rows = 6, .columns = 40 });
     link.afterClientApply = [](Ubiquitty::Terminal& client) {
-        Ubiquitty::Attributes::Hyperlinks::LinkTable* table = Ubiquitty::Attributes::Hyperlinks::table(&client);
+        const Ubiquitty::Attributes::Hyperlinks::LinkTable* table = Ubiquitty::Attributes::Hyperlinks::table(&client);
         if (!table)
             return;
-        for (auto& uri : table->uris) {
-            if (std::string_view(uri.data()) == "https://example.com/right")
-                std::snprintf(uri.data(), uri.size(), "%s", "https://example.com/wrong");
+        for (std::size_t index = 0; index < table->count(); ++index) {
+            const auto entry = table->entry(index);
+            if (entry.uri == "https://example.com/right") {
+                const std::string key(entry.key);
+                (void)Ubiquitty::Attributes::Hyperlinks::install(client, entry.id, key, "https://example.com/wrong");
+                return;
+            }
         }
     };
     link.replay(reads);

@@ -863,42 +863,14 @@ Digest128 takeDigest(WireReader& reader)
     return digest;
 }
 
-template<typename Definition>
-void writeLinkSlot(Ubiquitty::Attributes::Hyperlinks::LinkTable& table, std::size_t slot, const Definition& definition)
-{
-    table.ids[slot] = definition.id;
-    table.keys[slot] = {};
-    table.uris[slot] = {};
-    std::memcpy(table.keys[slot].data(), definition.key.data(), definition.key.size());
-    std::memcpy(table.uris[slot].data(), definition.uri.data(), definition.uri.size());
-    table.hashes[slot] = Ubiquitty::Attributes::Hyperlinks::dedupHash(definition.key.empty() ? definition.uri : definition.key);
-    table.mruID = 0;
-}
-
-// Writes a link into the ring a client keeps, under the host's id: over the
-// slot that holds the id, else into the next slot, evicting the oldest when
-// the ring is full, as the host's own ring would.
+// Writes a link into the table a client keeps, under the host's id: over the
+// entry that holds the id, else as the newest entry, as the host's own table
+// would hold it.
 void installLink(Terminal& terminal, const LinkDefinition& definition)
 {
-    Ubiquitty::Attributes::Hyperlinks::LinkTable& table = Ubiquitty::Attributes::Hyperlinks::ensureTable(terminal);
-    int slot = -1;
-    for (int index = 0; index < terminal.linkCount; ++index) {
-        const int candidate = (terminal.linkHead + index) % Ubiquitty::VT::linkTableCapacity;
-        if (table.ids[static_cast<std::size_t>(candidate)] == definition.id) {
-            slot = candidate;
-            break;
-        }
-    }
-    if (slot < 0) {
-        if (terminal.linkCount < Ubiquitty::VT::linkTableCapacity) {
-            slot = (terminal.linkHead + terminal.linkCount) % Ubiquitty::VT::linkTableCapacity;
-            ++terminal.linkCount;
-        } else {
-            slot = terminal.linkHead;
-            terminal.linkHead = (terminal.linkHead + 1) % Ubiquitty::VT::linkTableCapacity;
-        }
-    }
-    writeLinkSlot(table, static_cast<std::size_t>(slot), definition);
+    // A refused install leaves the client's cells naming an id with no entry,
+    // drawn as plain text until the host defines it again.
+    (void)Ubiquitty::Attributes::Hyperlinks::install(terminal, definition.id, definition.key, definition.uri);
     if (definition.id >= terminal.linkNextID && terminal.linkNextID != 0)
         terminal.linkNextID = definition.id == 0xFFFF ? 0 : static_cast<std::uint16_t>(definition.id + 1);
 }
@@ -920,15 +892,15 @@ std::optional<LinkDefinitionView> readLinkDefinitionView(WireReader& reader)
 {
     LinkDefinitionView definition;
     definition.id = reader.u16();
-    // One byte of each field is its terminator in the ring.
+    // The table stores the fields at the lengths a terminal's intern clips them to.
     const std::span<const std::uint8_t> key = reader.bytes(Ubiquitty::VT::maxLinkKeyLength - 1);
     const std::span<const std::uint8_t> uri = reader.bytes(Ubiquitty::VT::maxLinkURILength - 1);
     if (!reader.ok() || definition.id == 0)
         return std::nullopt;
     definition.key = { reinterpret_cast<const char*>(key.data()), key.size() };
     definition.uri = { reinterpret_cast<const char*>(uri.data()), uri.size() };
-    // A NUL inside would end the stored string early, and the ring would hold
-    // a different link than the one defined.
+    // A NUL inside would end the stored string early, and the table would
+    // hold a different link than the one defined.
     if (definition.key.find('\0') != std::string::npos || definition.uri.find('\0') != std::string::npos) {
         reader.fail();
         return std::nullopt;
@@ -1074,7 +1046,6 @@ struct CheckpointImage {
     std::array<std::span<const std::uint8_t>, stateBlockCount> blocks;
     ReplicaStorage storage;
     std::unique_ptr<Ubiquitty::Attributes::Hyperlinks::LinkTable> links;
-    std::size_t linkCount = 0;
     std::uint16_t nextLinkID = 1;
     Ubiquitty::ClusterPool clusters;
     Ubiquitty::RunTextStore runTexts;
@@ -1583,21 +1554,20 @@ RowReferences heldReferences(const Terminal& terminal)
     return references;
 }
 
-// The live links of a terminal's ring, oldest first.
+// The live links of a terminal's table, oldest first.
 std::vector<LinkDefinition> liveLinks(const Terminal& terminal)
 {
     std::vector<LinkDefinition> links;
-    if (!terminal.linkTable)
+    const Ubiquitty::Attributes::Hyperlinks::LinkTable* table = Ubiquitty::Attributes::Hyperlinks::table(&terminal);
+    if (!table)
         return links;
-    const Ubiquitty::Attributes::Hyperlinks::LinkTable& table = *terminal.linkTable;
-    for (int index = 0; index < terminal.linkCount; ++index) {
-        const auto slot = static_cast<std::size_t>((terminal.linkHead + index) % Ubiquitty::VT::linkTableCapacity);
-        if (table.ids[slot] == 0)
-            continue;
+    links.reserve(table->count());
+    for (std::size_t index = 0; index < table->count(); ++index) {
+        const Ubiquitty::Attributes::Hyperlinks::LinkEntryView entry = table->entry(index);
         LinkDefinition definition;
-        definition.id = table.ids[slot];
-        definition.key = table.keys[slot].data();
-        definition.uri = table.uris[slot].data();
+        definition.id = entry.id;
+        definition.key = entry.key;
+        definition.uri = entry.uri;
         links.push_back(std::move(definition));
     }
     return links;
@@ -2363,7 +2333,7 @@ std::expected<DecodedCheckpoint, ApplyOutcome> readCheckpoint(std::span<const st
     for (std::size_t index = 0; index < penCount && reader.ok(); ++index)
         (void)readPen(reader);
     const EncodedPens pens { reader.consumed(penBegin, reader.offset()) };
-    const std::size_t linkCount = reader.count(Ubiquitty::VT::linkTableCapacity, 4);
+    const std::size_t linkCount = reader.count(Ubiquitty::Attributes::Hyperlinks::LinkTable::maxEntries, 4);
     std::array<bool, static_cast<std::size_t>(RunTextStore::maxEntries) + 1> references {};
     std::array<std::uint64_t, 1024> definedLinks {};
     const auto resolves = [&](std::uint64_t cluster) { return cluster < references.size() && references[static_cast<std::size_t>(cluster)]; };
@@ -2374,12 +2344,14 @@ std::expected<DecodedCheckpoint, ApplyOutcome> readCheckpoint(std::span<const st
             return std::unexpected(ApplyOutcome::AllocationRefused);
         plan->replicaStorageBytes = *bytes;
         plan->linkCount = linkCount;
-        plan->linkTableBytes = linkCount ? sizeof(Ubiquitty::Attributes::Hyperlinks::LinkTable) : 0;
     } else if (linkCount) {
+        // The plan pass measured the table's text and largest id, so the whole
+        // table is admitted here, before the destination changes, and the
+        // appends below allocate nothing.
+        assert(capacities);
         image.links.reset(new (std::nothrow) Ubiquitty::Attributes::Hyperlinks::LinkTable);
-        if (!image.links)
+        if (!image.links || !image.links->reserve(linkCount, capacities->linkTextBytes, capacities->largestLinkID))
             return std::unexpected(ApplyOutcome::AllocationRefused);
-        image.linkCount = linkCount;
     }
     for (std::size_t index = 0; index < linkCount && reader.ok(); ++index) {
         const auto link = readLinkDefinitionView(reader);
@@ -2389,13 +2361,20 @@ std::expected<DecodedCheckpoint, ApplyOutcome> readCheckpoint(std::span<const st
         }
         definedLinks[link->id >> 6] |= std::uint64_t { 1 } << (link->id & 63);
         if (plan) {
-            if (!addStorageCount(plan->linkTextBytes, link->key.size()) || !addStorageCount(plan->linkTextBytes, link->uri.size()))
+            if (!addStorageCount(plan->linkTextBytes, Ubiquitty::Attributes::Hyperlinks::LinkTable::textBytesFor(link->key, link->uri)))
                 return std::unexpected(ApplyOutcome::AllocationRefused);
+            plan->largestLinkID = std::max(plan->largestLinkID, link->id);
         } else {
-            writeLinkSlot(*image.links, index, *link);
+            const std::string_view target = link->key.empty() ? link->uri : link->key;
+            if (!Ubiquitty::Attributes::Hyperlinks::appendCarried(*image.links, { Ubiquitty::Attributes::Hyperlinks::dedupHash(target), link->id, link->key, link->uri }))
+                return std::unexpected(ApplyOutcome::AllocationRefused);
             if (image.nextLinkID && link->id >= image.nextLinkID)
                 image.nextLinkID = link->id == 0xFFFF ? 0 : static_cast<std::uint16_t>(link->id + 1);
         }
+    }
+    if (plan && linkCount) {
+        plan->linkTableBytes = sizeof(Ubiquitty::Attributes::Hyperlinks::LinkTable)
+            + Ubiquitty::Attributes::Hyperlinks::LinkTable::storageBytesFor(linkCount, plan->linkTextBytes, plan->largestLinkID);
     }
     const auto clusterCount = reader.count(ClusterPool::maxEntries, 2);
     if (plan) {
@@ -2739,11 +2718,9 @@ ApplyOutcome commitCheckpoint(Ubiquitty::Terminal& terminal, PreparedCheckpoint 
     terminal.grid->setAlternateActive(image.active);
     terminal.screens.activate(image.active == ScreenMode::Alternate ? Ubiquitty::Modes::ScreenBuffer::Alternate : Ubiquitty::Modes::ScreenBuffer::Primary);
 
-    // All carried link bytes already live in the private fixed ring. Moving it
+    // All carried link bytes already live in the private table. Moving it
     // cannot allocate after the destination's cells/history have been changed.
     terminal.linkTable = std::move(image.links);
-    terminal.linkHead = 0;
-    terminal.linkCount = static_cast<int>(image.linkCount);
     terminal.currentLinkID = 0;
     terminal.linkNextID = image.nextLinkID;
     terminal.linkFreeIDs.clear();

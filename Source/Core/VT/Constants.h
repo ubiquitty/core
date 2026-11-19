@@ -95,9 +95,8 @@ constexpr int maxExtendedClipboardWriteItems = 8;
 // inside, which no build and no test reports.
 constexpr int fallbackScrollbackLines = 800;
 
-// OSC 8 hyperlink table — bounded ring of (id → URI). A single id must fit
-// a Cell's two link-id bytes (uint16_t). Ring full → oldest slot recycled.
-constexpr int linkTableCapacity = 64;
+// OSC 8 hyperlink table: see Core/Attributes/Hyperlinks.h. A single id must
+// fit a Cell's two link-id bytes (uint16_t).
 // 2048 is the interoperable ceiling, not a guess: RFC 3986 sets no limit, IE's
 // historical 2083 is the lowest any shipping client imposed, and every current
 // browser and server accepts at least this much (nginx and Apache default to
@@ -105,9 +104,8 @@ constexpr int linkTableCapacity = 64;
 // was cut at byte 255, mid-percent-escape, and the truncated result still
 // looked like a URL and still opened.
 //
-// It is not free: linkURIs is linkTableCapacity slots of this size, so the
-// table goes from 16 KB to 128 KB per terminal, paid per pane whether or not
-// any link is long. That is the price of a link that opens what it shows.
+// The table stores each URI at its own length, so the ceiling costs only the
+// links that are long.
 constexpr int maxLinkURILength = 2048;
 constexpr int maxLinkKeyLength = 32;
 constexpr int xtermKeyModifierCategoryCount = 8;

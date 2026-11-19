@@ -54,7 +54,7 @@ constexpr Sync::HandoverTerminalLimits terminalLimits {
     .maxCheckpointBytes = 64 * mebibyte,
     .maxScreenCellBytes = 64 * mebibyte,
     .maxHostStateBytes = 8 * mebibyte,
-    .maxLinkBytes = mebibyte,
+    .maxLinkBytes = 8 * mebibyte, // the table's text budget, its entries and the free ids
     .maxParserBytes = 4096,
     .images = { .maxSectionBytes = 64 * mebibyte, .maxPixelBytes = Image::terminalImageBytesBudgetDefault },
     .history = { .maxSectionBytes = 64 * mebibyte, .maxCapacity = 1'000'000, .maxRows = 1'000'000, .maxCells = 16 * mebibyte },

@@ -541,12 +541,18 @@ std::vector<std::uint8_t> screenCheckpoint(const Ubiquitty::Terminal& terminal)
 void spentLinkFixture(Ubiquitty::Terminal& terminal)
 {
     // Stand in for the already spent sequential prefix, then use the real
-    // parser, census and ring eviction for the boundary that matters.
+    // parser and census for the boundary that matters.
     terminal.linkNextID = 65535;
     UbiquittyTest::feed(terminal, "\033]8;;https://example.test/original\033\\kept\033]8;;\033\\");
     for (int index = 0; index < 65; ++index)
         (void)Ubiquitty::Attributes::Hyperlinks::intern(&terminal, {}, "https://example.test/retired-" + std::to_string(index));
     terminal.currentLinkID = 0;
+    // Stand in for the text budget's trim, the one way an entry leaves while
+    // cells still name it: the oldest goes, and the printed cells keep an id
+    // with no entry behind it.
+    auto& links = *Ubiquitty::Attributes::Hyperlinks::table(&terminal);
+    const auto oldest = links.entry(0);
+    links.dropOldestUntil(links.textBytes() - Ubiquitty::Attributes::Hyperlinks::LinkTable::textBytesFor(oldest.key, oldest.uri));
 }
 
 } // namespace
@@ -631,9 +637,13 @@ TEST(linkHandoverPreservesKeyedDedupAndRefusesMalformedSections)
     refreshImageDigest(changed);
     CHECK(restoreHandoverLinks(changed, successor, 4096).error() == HandoverBodyError::Malformed);
     changed.assign(bytes->view().begin(), bytes->view().end());
-    writeLittle(changed, 7, Ubiquitty::VT::linkTableCapacity, 2);
+    writeLittle(changed, 9, 0xFFFF, 2); // A count the section has no bytes for.
     refreshImageDigest(changed);
     CHECK(restoreHandoverLinks(changed, successor, 4096).error() == HandoverBodyError::Malformed);
+    changed.assign(bytes->view().begin(), bytes->view().end());
+    writeLittle(changed, 7, 63, 2); // A fixed ring's head names no slot in a table, and is ignored.
+    refreshImageDigest(changed);
+    CHECK(restoreHandoverLinks(changed, successor, 4096));
     changed.assign(bytes->view().begin(), bytes->view().end());
     changed[15] ^= 0x80; // A short target's dedup hash is fully verifiable.
     refreshImageDigest(changed);

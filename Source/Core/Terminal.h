@@ -131,7 +131,7 @@ class Engine;
 // Carried by pointer; Core/Attributes/Hyperlinks.h owns it.
 
 namespace Ubiquitty::Attributes::Hyperlinks {
-struct LinkTable;
+class LinkTable;
 }
 
 // Carried by pointer; Core/Rendering/StatusRow.h owns it.
@@ -1476,26 +1476,23 @@ struct Terminal {
     // Stored verbatim as the file:// URL; an empty OSC 6 payload clears it.
     FallibleString currentFileURL;
 
-    // OSC 8 hyperlinks: bounded ring of (id → URI). OSC 8 interns the URI (deduped by id= key then exact
-    // URI) and sets currentLinkID, which emitCharacter stamps per cell; empty URI closes the link. Full ⇒ the
-    // oldest slot recycles (its id retires; referencing cells resolve empty). Ids 1-based, monotonic, so a
-    // recycled slot never collides with a live cell's id within the ring's lifetime window.
+    // OSC 8 hyperlinks: the table of (id → URI) cells name links by. OSC 8 interns the URI (deduped by
+    // id= key then exact URI) and sets currentLinkID, which emitCharacter stamps per cell; empty URI
+    // closes the link. An entry stays while a cell names it; a census drops the rest (Hyperlinks.h).
     uint16_t linkNextID {}; // next sequential id to mint; 0 = that space is spent (reclaim serves linkFreeIDs)
-    int linkCount {}; // live entries, ≤ linkTableCapacity
-    int linkHead {}; // ring index of the oldest entry
     // Ids the census reclaimed for re-minting: each one referenced by no cell
-    // on either screen, no scrollback line, no ring entry and no open link.
-    // Reuse under that census keeps the id invariant — an id never resolves
-    // differently for a cell that still exists — while lifting the hard stop
-    // at 65535 mints, which left every later link in the session drawing as
-    // plain text.
+    // on either screen, no scrollback line and no open link, with its entry
+    // dropped. Reuse under that census keeps the id invariant — an id never
+    // resolves differently for a cell that still exists — while lifting the
+    // hard stop at 65535 mints, which left every later link in the session
+    // drawing as plain text.
     std::vector<uint16_t> linkFreeIDs;
     // Mint attempts to skip after a census reclaimed nothing, so a stream of
     // unmintable links costs one failed walk per batch rather than one per
     // link.
     int linkReclaimBackoffMints {};
-    // 132 KB of per-slot storage. Null until the first intern; linkCount above
-    // stays the gate, so a zero count needs no dereference.
+    // Null until the first intern, so a terminal that never sees OSC 8 holds
+    // no link storage at all.
     std::unique_ptr<Attributes::Hyperlinks::LinkTable> linkTable;
 
     // Grapheme-cluster overflow pool: full codePoint sequences for clusters that don't fit a Cell's inline

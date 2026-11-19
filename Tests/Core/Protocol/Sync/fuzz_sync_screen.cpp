@@ -111,10 +111,10 @@ std::vector<std::uint8_t> clientFingerprint(const Ubiquitty::Terminal& client)
 {
     std::vector<std::uint8_t> fingerprint = clientCheckpoint(client);
     WireWriter writer(fingerprint);
-    writer.varint(static_cast<std::uint64_t>(client.linkCount));
-    for (int index = 0; index < client.linkCount; ++index) {
-        const auto slot = static_cast<std::uint16_t>((client.linkHead + index) % Ubiquitty::VT::linkTableCapacity);
-        if (const std::optional<LinkDefinition> link = linkDefinition(client, Ubiquitty::Attributes::Hyperlinks::table(&client)->ids[slot])) {
+    const std::size_t linkCount = Ubiquitty::Attributes::Hyperlinks::count(client);
+    writer.varint(static_cast<std::uint64_t>(linkCount));
+    for (std::size_t index = 0; index < linkCount; ++index) {
+        if (const std::optional<LinkDefinition> link = linkDefinition(client, Ubiquitty::Attributes::Hyperlinks::table(&client)->entry(index).id)) {
             writer.u16(link->id);
             writer.utf8(link->uri);
         }

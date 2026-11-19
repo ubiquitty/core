@@ -46,10 +46,9 @@ TEST(testHyperlinksInternDedups)
 // a second copy of both the walk and the opinion about which scheme is which.
 // An id never resolves differently for a cell that still exists.
 //
-// A cell carries a 16-bit id in place of a URI, and cells outlive the table: the
-// ring holds 64 entries, the scrollback holds up to a million rows. So a cell
-// drawn long ago still names an id that `uri()` resolves when the user clicks it,
-// against whichever entry holds that number now.
+// A cell carries a 16-bit id in place of a URI, and a cell drawn long ago still
+// names an id that `uri()` resolves when the user clicks it, against whichever
+// entry holds that number now.
 //
 // A counter that recycled at 0xFFFF blindly would break that. Interning is what
 // OSC 8 does and it prints nothing, so a program can open 65535 links with
@@ -58,14 +57,13 @@ TEST(testHyperlinksInternDedups)
 // names one destination and the click goes to another.
 //
 // So reuse is gated on a census: an id returns to the mintable pool only when
-// no cell on either screen, no scrollback line, no ring entry and no open link
-// carries it. This drives ~200000 mints — three generations of the id space —
+// no cell on either screen, no scrollback line and no open link carries it. This drives ~200000 mints — three generations of the id space —
 // past one cell the user is looking at, and checks per mint that the cell's id
 // is never handed out again while the cell exists.
 //
 // Fails-without-it: a census that misses a population (a screen, the
-// scrollback, the ring) reclaims the visible cell's id, a later mint returns
-// it, and the CHECK inside the loop names the collision.
+// scrollback) reclaims the visible cell's id, a later mint returns it, and the
+// CHECK inside the loop names the collision.
 TEST(testALiveCellsLinkIDIsNeverReminted)
 {
     Ubiquitty::Terminal t;
@@ -103,11 +101,11 @@ TEST(testALiveCellsLinkIDIsNeverReminted)
         minted, minted / 0xFFFF);
     CHECK_MSG(minted > 0x10000, "reclaim kept minting past the sequential space");
 
-    // The visible cell's ring entry was recycled long ago, so its id resolves
-    // to nothing — dead, never elsewhere.
+    // Every census dropped the fillers no cell names and kept the one a cell
+    // does, so the link the user sees still opens what it says.
     const char* resolved = uri(&t, visible);
-    CHECK_MSG(resolved == nullptr || std::strcmp(resolved, "https://example.com/the-one-they-see") == 0,
-        "a resolvable id resolves to its own URI and no other");
+    CHECK_MSG(resolved != nullptr && std::strcmp(resolved, "https://example.com/the-one-they-see") == 0,
+        "a cell's link resolves to its own URI across three generations of the id space");
 }
 
 // The rendering half of the same design: with the sequential space spent and
@@ -144,7 +142,7 @@ TEST(testLinksKeepMintingPastTheSequentialSpace)
     CHECK(t.grid->cellAt(Ubiquitty::Row(0), Ubiquitty::Column(0))->linkID() == witness);
 }
 
-TEST(testKindForLinkIDReadsTheRing)
+TEST(testKindForLinkIDReadsTheTable)
 {
     Ubiquitty::Terminal t;
     Ubiquitty::hardReset(t);
@@ -160,13 +158,14 @@ TEST(testKindForLinkIDReadsTheRing)
     CHECK(kindForLinkID(&t, file) == Kind::File);
     CHECK(kindForLinkID(&t, mail) == Kind::Mailto);
 
-    // An id the ring does not hold is Other rather than a failure: a cell can
-    // outlive its entry, and a caller styling the link cannot act on the
-    // difference between that and a scheme it does not recognise.
+    // An id the table does not hold is Other rather than a failure: a cell
+    // can outlive its entry past the text budget, and a caller styling the
+    // link cannot act on the difference between that and a scheme it does not
+    // recognise.
     CHECK(kindForLinkID(&t, 0xFFFF) == Kind::Other);
     CHECK(kindForLinkID(nullptr, web) == Kind::Other);
 
-    // Id 0 means "no link" and the ring cannot hold it: intern skips zero when it
+    // Id 0 means "no link" and the table cannot hold it: intern skips zero when it
     // mints (`mintID` in Hyperlinks.cpp), so the early return is unreachable for
     // a well-formed table and no injection into it can be observed here. Asserted
     // as the contract a caller reads rather than as covered behaviour — a cell
@@ -335,7 +334,7 @@ TEST(testHyperlinksTableIsAbsentUntilInterned)
     Ubiquitty::hardReset(t);
 
     CHECK_MSG(table(&t) == nullptr, "a terminal that has seen no OSC 8 carries no ring");
-    CHECK(t.linkCount == 0);
+    CHECK(count(t) == 0);
 
     CHECK(intern(&t, "", "") == 0);
     CHECK_MSG(table(&t) == nullptr, "an empty target allocates nothing");
@@ -363,7 +362,7 @@ TEST(testHyperlinksInternCacheCannotOutliveTheRing)
 
     reset(t);
     CHECK_MSG(table(&t) == nullptr, "reset releases the ring");
-    CHECK(t.linkCount == 0);
+    CHECK(count(t) == 0);
     CHECK(uri(&t, b) == nullptr);
 
     const uint16_t again = intern(&t, "", "https://example.com/b");
@@ -425,6 +424,127 @@ TEST(testLinksSharingALongPrefixAreStillToldApart)
 
     const std::string overlong(static_cast<std::size_t>(Ubiquitty::VT::maxLinkURILength), 'u');
     CHECK(intern(&t, "", overlong) != intern(&t, "", overlong));
+}
+
+// The bug a directory listing showed: a screen of file links, a dozen to a
+// line, drawn dotted (file) only on its last few lines and solid on the rest.
+// A fixed ring of 64 entries had recycled the earlier lines' entries while
+// they were still on screen, so their cells named ids that resolved to
+// nothing: no kind to style by, and nothing for a click to open.
+//
+// Every link a visible cell names has to resolve, to its own target.
+//
+// Fails-without-it: with a recycling ring, every row above the last five
+// resolves to nullptr and the CHECK names the first such row.
+TEST(testEveryLinkOnScreenResolves)
+{
+    using namespace Ubiquitty::Attributes::Hyperlinks;
+    using Ubiquitty::Attributes::LinkRun::Kind;
+    using Ubiquitty::Attributes::LinkRun::kindForLinkID;
+    Ubiquitty::Terminal t;
+    Ubiquitty::resize(t, 52, 196);
+
+    // The shape of `bench -s hyperlinks`: twelve links a line, 200 lines, so
+    // the screen holds 600 links and the scrollback the rest.
+    std::string stream;
+    for (int line = 0; line < 200; ++line) {
+        for (int item = 0; item < 12; ++item) {
+            const int n = line * 12 + item;
+            char part[96];
+            std::snprintf(part, sizeof(part), "\x1b]8;;file:///home/user/%d\x1b\\item_%04d \x1b]8;;\x1b\\", n, n);
+            stream += part;
+        }
+        stream += "\r\n";
+    }
+    Ubiquitty::processBytes(&t, stream);
+
+    int linkedCells = 0;
+    for (int row = 0; row < 51; ++row) {
+        for (int column = 0; column < 196; ++column) {
+            const Ubiquitty::Cell* cell = t.grid->cellAt(Ubiquitty::Row(row), Ubiquitty::Column(column));
+            if (!cell || cell->linkID() == 0)
+                continue;
+            ++linkedCells;
+            const char* target = uri(&t, cell->linkID());
+            if (!target) {
+                CHECK_MSG(false, ("a visible link resolves (row " + std::to_string(row) + ")").c_str());
+                return;
+            }
+            CHECK(std::strncmp(target, "file:///home/user/", 18) == 0);
+            CHECK(kindForLinkID(&t, cell->linkID()) == Kind::File);
+        }
+    }
+    CHECK_MSG(linkedCells > 51 * 12 * 9, "the fixture filled the screen with links");
+}
+
+// A census drops the entries no cell names, so a table that grew while a
+// program opened links it never printed comes back down to what is on screen
+// once the id space is spent.
+TEST(testTheCensusDropsLinksNoCellNames)
+{
+    using namespace Ubiquitty::Attributes::Hyperlinks;
+    Ubiquitty::Terminal t;
+    Ubiquitty::resize(t, 6, 20);
+    const uint16_t printed = intern(&t, "", "https://example.com/printed");
+    Ubiquitty::processBytes(&t, "P");
+    intern(&t, "", "");
+
+    for (int i = 0; i < 0x10000; ++i) {
+        char scratch[64];
+        std::snprintf(scratch, sizeof(scratch), "https://unprinted.example/%d", i);
+        intern(&t, "", scratch);
+    }
+    // The census ran when the sequential space ran out, and kept the printed
+    // link and the one the loop's last intern left open.
+    CHECK_MSG(count(t) < 16, ("the census dropped the unprinted links, " + std::to_string(count(t)) + " left").c_str());
+    const char* resolved = uri(&t, printed);
+    CHECK(resolved != nullptr && std::strcmp(resolved, "https://example.com/printed") == 0);
+}
+
+// Long distinct targets are what could make a growing table large: 65535 of
+// them at 2 KB each. Past its text budget the table drops what no cell names,
+// and a printed link survives that.
+TEST(testTheTableStaysWithinItsTextBudget)
+{
+    using namespace Ubiquitty::Attributes::Hyperlinks;
+    Ubiquitty::Terminal t;
+    Ubiquitty::resize(t, 6, 20);
+    const uint16_t printed = intern(&t, "", "file:///etc/hosts");
+    Ubiquitty::processBytes(&t, "P");
+    intern(&t, "", "");
+
+    std::string target(2000, 'x');
+    for (int i = 0; i < 4000; ++i) {
+        const std::string number = std::to_string(i);
+        target.replace(0, number.size(), number);
+        CHECK(intern(&t, "", "https://long.example/" + target) != 0);
+        CHECK(table(&t)->textBytes() <= textBudgetBytes);
+    }
+    const char* resolved = uri(&t, printed);
+    CHECK(resolved != nullptr && std::strcmp(resolved, "file:///etc/hosts") == 0);
+}
+
+// A replica installs links under the ids its host minted, and a host that
+// reclaimed an id gives it a new target. The entry is rewritten in place: the
+// id resolves to the new target, the old target no longer dedups to it, and
+// the new one does.
+TEST(testAnInstallOverAnIDReplacesItsTarget)
+{
+    using namespace Ubiquitty::Attributes::Hyperlinks;
+    Ubiquitty::Terminal t;
+    Ubiquitty::resize(t, 6, 20);
+    CHECK(install(t, 7, "", "https://example.com/first"));
+    CHECK(install(t, 9, "", "https://example.com/other"));
+    CHECK(std::strcmp(uri(&t, 7), "https://example.com/first") == 0);
+    CHECK(install(t, 7, "", "https://example.com/second"));
+    CHECK(count(t) == 2);
+    CHECK(std::strcmp(uri(&t, 7), "https://example.com/second") == 0);
+    CHECK(std::strcmp(uri(&t, 9), "https://example.com/other") == 0);
+    const LinkTable* links = table(&t);
+    const std::string_view second = "https://example.com/second";
+    const std::string_view first = "https://example.com/first";
+    CHECK(links->find(second, TargetField::URI, dedupHash(second)) == links->indexOf(7));
+    CHECK(links->find(first, TargetField::URI, dedupHash(first)) == LinkTable::notFound);
 }
 
 UBIQUITTY_TEST_MAIN()

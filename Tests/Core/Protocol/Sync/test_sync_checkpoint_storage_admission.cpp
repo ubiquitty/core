@@ -662,7 +662,9 @@ TEST(checkpointMetadataOwnerRefusalKeepsTerminalReplicaHistoryAndStatus)
     const auto body = checkpointOf(*host);
     const auto plan = checkpointStoragePlan(body);
     REQUIRE(plan);
-    CHECK(plan->linkTableBytes == sizeof(Ubiquitty::Attributes::Hyperlinks::LinkTable));
+    CHECK(plan->linkTableBytes
+        == sizeof(Ubiquitty::Attributes::Hyperlinks::LinkTable)
+            + Ubiquitty::Attributes::Hyperlinks::LinkTable::storageBytesFor(plan->linkCount, plan->linkTextBytes, plan->largestLinkID));
     CHECK(plan->userDefinedKeysBytes == sizeof(Ubiquitty::VT::UserDefinedKeys));
     auto client = makeTerminal(3, 11);
     UbiquittyTest::feed(*client, "\x1b]8;id=old;https://example.test/old\x1b\\old\x1b]8;;\x1b\\");
@@ -711,19 +713,19 @@ TEST(checkpointMetadataOwnerRefusalKeepsTerminalReplicaHistoryAndStatus)
     CHECK(std::memcmp(client->udk->entries[0].value, "new", 3) == 0);
 }
 
-TEST(checkpointHyperlinkRingMovesAfterWireReleaseAndContinuesIDs)
+TEST(checkpointHyperlinkTableMovesAfterWireReleaseAndContinuesIDs)
 {
     namespace Links = Ubiquitty::Attributes::Hyperlinks;
     for (const bool exhaustsIDs : { false, true }) {
         auto host = makeTerminal();
-        for (int index = 0; index < Ubiquitty::VT::linkTableCapacity + 3; ++index)
+        // More links than the fixed ring this table replaced ever held.
+        for (int index = 0; index < 67; ++index)
             REQUIRE(Links::intern(host.get(), {}, "https://example.test/" + std::to_string(index)) != 0);
         if (exhaustsIDs) {
             host->linkNextID = 0xFFFF;
             REQUIRE(Links::intern(host.get(), "last", "https://example.test/last") == 0xFFFF);
             REQUIRE(host->linkNextID == 0);
         }
-        REQUIRE(host->linkHead != 0);
         auto body = checkpointOf(*host);
         AllocationObservation preparation;
         auto prepared = [&] {
@@ -748,20 +750,21 @@ TEST(checkpointHyperlinkRingMovesAfterWireReleaseAndContinuesIDs)
         REQUIRE(outcome == ApplyOutcome::Applied);
         CHECK(commit.linkTableOwners.load() == 0);
         CHECK(client->linkTable.get() == staged);
-        CHECK(client->linkHead == 0 && client->linkCount == host->linkCount);
+        CHECK(Links::count(*client) == Links::count(*host));
+        CHECK(Links::count(*host) == (exhaustsIDs ? 68u : 67u));
         CHECK(client->linkNextID == host->linkNextID);
-        for (int index = 0; index < host->linkCount; ++index) {
-            const auto oldSlot = static_cast<std::size_t>((host->linkHead + index) % Ubiquitty::VT::linkTableCapacity);
-            const auto slot = static_cast<std::size_t>(index);
-            CHECK(client->linkTable->ids[slot] == host->linkTable->ids[oldSlot]);
-            CHECK(client->linkTable->hashes[slot] == host->linkTable->hashes[oldSlot]);
-            CHECK(client->linkTable->keys[slot] == host->linkTable->keys[oldSlot]);
-            CHECK(client->linkTable->uris[slot] == host->linkTable->uris[oldSlot]);
+        for (std::size_t index = 0; index < Links::count(*host); ++index) {
+            const auto held = host->linkTable->entry(index);
+            const auto carried = client->linkTable->entry(index);
+            CHECK(carried.id == held.id);
+            CHECK(carried.hash == held.hash);
+            CHECK(carried.key == held.key);
+            CHECK(carried.uri == held.uri);
         }
         CHECK(Links::intern(client.get(), {}, "https://example.test/next") == Links::intern(host.get(), {}, "https://example.test/next"));
         Links::reset(*host);
         REQUIRE(applyCheckpoint(*client, checkpointOf(*host), replica) == ApplyOutcome::Applied);
-        CHECK(!client->linkTable && client->linkCount == 0 && client->linkNextID == 1);
+        CHECK(!client->linkTable && Links::count(*client) == 0 && client->linkNextID == 1);
     }
 }
 

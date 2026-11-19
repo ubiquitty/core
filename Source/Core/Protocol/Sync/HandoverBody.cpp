@@ -27,6 +27,7 @@
 #include <new>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace Ubiquitty::Protocol::Sync {
 
@@ -408,14 +409,16 @@ struct LinkSection {
     std::uint16_t count = 0;
     std::uint32_t freeCount = 0;
     std::uint16_t reclaimBackoff = 0;
-    std::array<LinkView, VT::linkTableCapacity> links;
+    // Oldest first. `head` is what a fixed ring wrote for its oldest slot,
+    // carried for the wire's sake: a table has no slots to restore it to.
+    std::vector<LinkView> links;
     std::span<const std::uint8_t> freeBytes;
 };
 
 template<typename FreeID>
 bool validateLinks(const LinkSection& section, const Terminal& terminal, FreeID&& freeID)
 {
-    if (section.count > VT::linkTableCapacity || section.head >= VT::linkTableCapacity
+    if (section.count > Attributes::Hyperlinks::LinkTable::maxEntries || section.links.size() != section.count
         || (!section.hasTable && section.count) || section.freeCount > 65535 || (section.next && section.freeCount)
         || section.reclaimBackoff > 4096)
         return false;
@@ -523,9 +526,13 @@ std::expected<LinkSection, HandoverBodyError> readLinks(std::span<const std::uin
     section.head = reader.u16();
     section.count = reader.u16();
     section.freeCount = reader.u32();
-    if (!reader.ok() || section.count > section.links.size() || section.freeCount > 65535)
+    // Ten bytes is the least a carried link takes (hash, id, two lengths), so
+    // a count the section cannot hold is refused before anything is sized by it.
+    if (!reader.ok() || section.count > Attributes::Hyperlinks::LinkTable::maxEntries || section.freeCount > 65535
+        || static_cast<std::size_t>(section.count) * 10 > reader.remaining())
         return std::unexpected(HandoverBodyError::Malformed);
     section.freeBytes = reader.take(static_cast<std::size_t>(section.freeCount) * 2);
+    section.links.resize(section.count);
     for (std::size_t index = 0; index < section.count && reader.ok(); ++index) {
         auto& link = section.links[index];
         link.hash = reader.u32();
@@ -1380,23 +1387,20 @@ std::expected<HandoverBytes, HandoverBodyError> encodeHandoverLinks(const Termin
     section.hasTable = terminal.linkTable != nullptr;
     section.current = terminal.currentLinkID;
     section.next = terminal.linkNextID;
-    if (terminal.linkHead < 0 || terminal.linkHead >= VT::linkTableCapacity
-        || terminal.linkCount < 0 || terminal.linkCount > VT::linkTableCapacity || terminal.linkFreeIDs.size() > 65535
+    const std::size_t linkCount = Attributes::Hyperlinks::count(terminal);
+    if (linkCount > Attributes::Hyperlinks::LinkTable::maxEntries || terminal.linkFreeIDs.size() > 65535
         || terminal.linkReclaimBackoffMints < 0 || terminal.linkReclaimBackoffMints > 4096)
         return std::unexpected(HandoverBodyError::Malformed);
-    section.head = static_cast<std::uint16_t>(terminal.linkHead);
-    section.count = static_cast<std::uint16_t>(terminal.linkCount);
+    section.head = 0;
+    section.count = static_cast<std::uint16_t>(linkCount);
     section.freeCount = static_cast<std::uint32_t>(terminal.linkFreeIDs.size());
     section.reclaimBackoff = static_cast<std::uint16_t>(terminal.linkReclaimBackoffMints);
     if (!section.hasTable && section.count)
         return std::unexpected(HandoverBodyError::Malformed);
+    section.links.reserve(section.count);
     for (std::size_t index = 0; index < section.count; ++index) {
-        const auto slot = (section.head + index) % VT::linkTableCapacity;
-        const auto& table = *terminal.linkTable;
-        const auto stringIn = [](const auto& value) {
-            return std::string_view(value.data(), static_cast<std::size_t>(std::find(value.begin(), value.end(), '\0') - value.begin()));
-        };
-        section.links[index] = { table.hashes[slot], table.ids[slot], stringIn(table.keys[slot]), stringIn(table.uris[slot]) };
+        const auto entry = terminal.linkTable->entry(index);
+        section.links.push_back({ entry.hash, entry.id, entry.key, entry.uri });
     }
     const auto freeID = [&](std::uint32_t index) { return terminal.linkFreeIDs[index]; };
     if (!validateLinks(section, terminal, freeID))
@@ -1419,17 +1423,21 @@ std::expected<void, HandoverBodyError> restoreHandoverLinks(std::span<const std:
         return std::unexpected(HandoverBodyError::Malformed);
     std::unique_ptr<Attributes::Hyperlinks::LinkTable> table;
     if (section->hasTable) {
+        // The whole table is admitted before any entry goes in, and before the
+        // terminal changes. A section from a fixed ring restores the same way:
+        // it carried its links oldest first.
+        std::size_t textBytes = 0;
+        std::uint16_t largestID = 0;
+        for (const auto& link : section->links) {
+            textBytes += Attributes::Hyperlinks::LinkTable::textBytesFor(link.key, link.uri);
+            largestID = std::max(largestID, link.id);
+        }
         table.reset(new (std::nothrow) Attributes::Hyperlinks::LinkTable);
-        if (!table)
+        if (!table || !table->reserve(section->count, textBytes, largestID))
             return std::unexpected(HandoverBodyError::AllocationRefused);
-        for (std::size_t index = 0; index < section->count; ++index) {
-            const auto slot = (section->head + index) % VT::linkTableCapacity;
-            const auto& link = section->links[index];
-            table->ids[slot] = link.id;
-            table->hashes[slot] = link.hash;
-            if (!link.key.empty())
-                std::memcpy(table->keys[slot].data(), link.key.data(), link.key.size());
-            std::memcpy(table->uris[slot].data(), link.uri.data(), link.uri.size());
+        for (const auto& link : section->links) {
+            if (!Attributes::Hyperlinks::appendCarried(*table, { link.hash, link.id, link.key, link.uri }))
+                return std::unexpected(HandoverBodyError::Malformed);
         }
     }
     std::vector<std::uint16_t> freeIDs;
@@ -1437,8 +1445,6 @@ std::expected<void, HandoverBodyError> restoreHandoverLinks(std::span<const std:
     for (std::uint32_t index = 0; index < section->freeCount; ++index)
         freeIDs.push_back(freeID(index));
     terminal.linkTable = std::move(table);
-    terminal.linkHead = section->head;
-    terminal.linkCount = section->count;
     terminal.currentLinkID = section->current;
     terminal.linkNextID = section->next;
     terminal.linkFreeIDs = std::move(freeIDs);
@@ -1936,7 +1942,7 @@ constexpr auto handoverTerminalCoverage = std::to_array<std::string_view>({
     "badgeText", "unseenNotificationTitle", "unseenNotificationBody", "currentFileURL", "userVariables",
     "outputBuffer", "outputLength", "bulkOutput", "sequenceGate", "typography", "triggersEngine", "triggerHighlights",
     "triggerHighlightCount", "triggerHighlightHead", "fontRequests", "integration", "extendedClipboardServedAliases",
-    "lineStore", "historyEpochBase", "scrollbackLimit", "images", "linkTable", "linkCount", "linkHead", "linkNextID",
+    "lineStore", "historyEpochBase", "scrollbackLimit", "images", "linkTable", "linkNextID",
     "linkFreeIDs", "linkReclaimBackoffMints", "clusterPool", "runTextStore", "runTextReclaimBackoffInterns", "textSizeReclaimBackoffInterns",
     "softFont", "tek", "sampleBank", "pendingSound", "shellCommands", "shellCommandCount" });
 
@@ -3026,7 +3032,7 @@ bool checkpointStoresMatch(const Terminal& terminal, const TextStoreSection& tex
 {
     const auto& entries = terminal.clusterPool.entries();
     if (entries.size() != text.clusters || terminal.runTextStore.slots().size() > text.runSlots
-        || terminal.linkCount != links.count || terminal.currentLinkID != links.current)
+        || Attributes::Hyperlinks::count(terminal) != links.count || terminal.currentLinkID != links.current)
         return false;
     WireReader clusters(text.clusterBytes);
     for (const auto& entry : entries) {
@@ -3051,10 +3057,8 @@ bool checkpointStoresMatch(const Terminal& terminal, const TextStoreSection& tex
     for (std::size_t index = 0; index < links.count; ++index) {
         if (!terminal.linkTable)
             return false;
-        const auto slot = (terminal.linkHead + index) % VT::linkTableCapacity;
-        if (terminal.linkTable->ids[slot] != links.links[index].id
-            || std::string_view(terminal.linkTable->keys[slot].data()) != links.links[index].key
-            || std::string_view(terminal.linkTable->uris[slot].data()) != links.links[index].uri)
+        const auto entry = terminal.linkTable->entry(index);
+        if (entry.id != links.links[index].id || entry.key != links.links[index].key || entry.uri != links.links[index].uri)
             return false;
     }
     return clusters.ok() && clusters.isAtEnd() && runs.ok() && runs.isAtEnd();

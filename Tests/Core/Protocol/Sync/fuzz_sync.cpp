@@ -34,6 +34,7 @@
 
 #include "ConsentFuzz.h"
 
+#include "Core/Attributes/Hyperlinks.h"
 #include "Core/CellGrid.h"
 #include "Core/Crypto/SHA256.h"
 #include "Core/GridBounds.h"
@@ -108,7 +109,7 @@ static void checkTermSanity(const Ubiquitty::Terminal& t)
     assert(t.screens.active == &t.screens.primary || t.screens.active == &t.screens.alternate);
     assert(t.screens.active->cursorX >= 0 && t.screens.active->cursorX < t.columns);
     assert(t.screens.active->cursorY >= 0 && t.screens.active->cursorY < t.rows);
-    assert(t.linkCount >= 0 && t.linkCount <= Ubiquitty::VT::linkTableCapacity);
+    assert(Ubiquitty::Attributes::Hyperlinks::count(t) <= Ubiquitty::Attributes::Hyperlinks::LinkTable::maxEntries);
     assert(t.clusterPool.size() >= 0 && t.clusterPool.size() <= Ubiquitty::ClusterPool::maxEntries);
     // Every visible cell must resolve (no OOB on the grid the renderer scans).
     for (int r = 0; r < t.rows; ++r)

@@ -852,19 +852,12 @@ Kind kindForLinkID(const Ubiquitty::Terminal* t, std::uint16_t linkID)
 {
     if (!t || linkID == 0)
         return Kind::Other;
-    // The ring is walked from its oldest entry rather than indexed: ids are
-    // minted monotonically and slots recycle, so a slot's position says nothing
-    // about which id lives in it.
-    const Ubiquitty::Attributes::Hyperlinks::LinkTable* links = Ubiquitty::Attributes::Hyperlinks::table(t);
-    for (int i = 0; links && i < t->linkCount; ++i) {
-        const int slot = (t->linkHead + i) % Ubiquitty::VT::linkTableCapacity;
-        if (links->ids[slot] == linkID)
-            return kindForURI(links->uris[slot].data());
-    }
-    // An id whose entry has been recycled out of the ring. The cell carrying it
-    // outlived the table, and a caller styling a link has nothing to do with the
-    // difference between that and a link whose scheme it does not recognise.
-    return Kind::Other;
+    // An id with no entry is one whose cells outlived it, which the table
+    // allows only past its text budget. A caller styling a link has nothing to
+    // do with the difference between that and a scheme it does not recognise.
+    const Ubiquitty::Attributes::Hyperlinks::LinkTable* const links = Ubiquitty::Attributes::Hyperlinks::table(t);
+    const std::size_t index = links ? links->indexOf(linkID) : Ubiquitty::Attributes::Hyperlinks::LinkTable::notFound;
+    return index == Ubiquitty::Attributes::Hyperlinks::LinkTable::notFound ? Kind::Other : kindForURI(links->entry(index).uri);
 }
 
 std::string schemeOfURI(std::string_view uri)
