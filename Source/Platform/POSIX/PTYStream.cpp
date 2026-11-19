@@ -329,6 +329,17 @@ public:
 #endif
     }
 
+    [[nodiscard]] int burstHandOverBytes() const override
+    {
+#if defined(__linux__)
+        // One read here returns tens of kilobytes, so two reads' worth
+        // arriving without a pause is already a flood.
+        return 128 * 1024;
+#else
+        return PollableByteStream::burstHandOverBytes();
+#endif
+    }
+
     [[nodiscard]] std::unique_ptr<PollableByteStream> duplicateAsPollableStream() override
     {
         // The duplicate of a duplicate keeps the guard: a caller that got here

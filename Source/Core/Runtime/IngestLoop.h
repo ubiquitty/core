@@ -11,8 +11,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -52,6 +54,28 @@ inline constexpr int ingestFallbackTickMilliseconds = 25;
 // thread parses from it, so reads go on while the parser runs; the sequential
 // loop stalls the WRITER whenever it parses. Power of two for index masking.
 inline constexpr std::size_t floodRingCapacity = 4 * 1024 * 1024;
+
+// The ring is a hand-off between two cores: the reader's core writes every
+// byte and the parser's reads it a ring's length later. While the parser is
+// the slower side the ring stays full, so that distance is the whole
+// capacity, and a ring larger than the cache a core keeps to itself is read
+// back from wherever the machine's other work has left it. On a core with a
+// small private cache the capacity follows that cache; one with more than the
+// ceiling above keeps the ceiling. The floor keeps several bites of slack in
+// hand whatever the cache says.
+inline constexpr std::size_t floodRingMinimumCapacity = 256 * 1024;
+
+/// The flood ring's capacity on a core with this much private cache.
+///
+/// - Parameter privateCacheBytes: What ``PAL::privateCacheBytes`` reports;
+///   zero where the platform does not say.
+/// - Returns: A power of two, for index masking.
+[[nodiscard]] constexpr std::size_t floodRingCapacityFor(std::size_t privateCacheBytes)
+{
+    if (privateCacheBytes == 0)
+        return floodRingCapacity;
+    return std::clamp(std::bit_floor(privateCacheBytes), floodRingMinimumCapacity, floodRingCapacity);
+}
 
 // Refill/handoff discipline is ASYMMETRIC. The consumer POLLS on a timed nap
 // when the ring runs empty (rationale at floodConsumerNapMicros). The reader
@@ -259,6 +283,9 @@ public:
     void adoptFloodEndpoint(std::unique_ptr<PAL::PollableByteStream> endpoint)
     {
         m_floodEndpoint = std::move(endpoint);
+        // Without an endpoint there is no reader to hand a burst to.
+        m_runtime.setDrainPassHandOver(m_floodEndpoint ? m_floodEndpoint->burstHandOverBytes() : std::numeric_limits<int>::max(),
+            m_floodEndpoint ? &m_floodReaderStarts : nullptr);
     }
 
     /// Asks a running loop to exit at its next top-of-loop check.
@@ -329,7 +356,9 @@ public:
         // this loop serves keep coming while it does; the parse waits behind
         // it, and the worker's wake ends the wait.
         m_runtime.runDecodesOnWorker(m_host, wakeLoop, this);
+        startFloodReader();
         runPasses(transportHandle);
+        stopFloodReader();
         m_runtime.runDecodesInline(m_host);
         // Nothing asks the rule again once the loop is gone, so a frame it
         // still holds would never reach the screen.
@@ -416,7 +445,11 @@ private:
                 }
                 const bool isWriterAhead = out.end == DrainPassEnd::ByteBudget || out.end == DrainPassEnd::TimeBudget
                     || acrossPassesBytes >= TerminalRuntime::drainPassCapacityBytes;
-                if (isWriterAhead && m_floodEndpoint && m_runtime.drainRidesBurst()) {
+                // A pass that handed over has already woken the reader, which
+                // is lifting bytes into the ring: the burst is the pipeline's
+                // whatever the pane has become since.
+                const bool didPassWakeReader = m_floodReaderStarts.load(std::memory_order_acquire) != m_floodReaderStartsPumped;
+                if (didPassWakeReader || (isWriterAhead && m_floodEndpoint && m_runtime.drainRidesBurst())) {
                     acrossPassesBytes = 0;
                     acrossPassesWaitMicros = 0;
                     // A pass that ended with the writer still ahead: a flood.
@@ -877,8 +910,8 @@ private:
         const std::uint64_t producer = m_floodRingControl->producer.load(std::memory_order_acquire) & floodRingPositionMask;
         std::uint64_t position = consumer;
         while (position < producer) {
-            const std::size_t readIndex = static_cast<std::size_t>(position) & (floodRingCapacity - 1);
-            const std::size_t contiguous = std::min(static_cast<std::size_t>(producer - position), floodRingCapacity - readIndex);
+            const std::size_t readIndex = static_cast<std::size_t>(position) & (m_floodRingCapacity - 1);
+            const std::size_t contiguous = std::min(static_cast<std::size_t>(producer - position), m_floodRingCapacity - readIndex);
             m_runtime.carryFencedBytes({ m_floodRing.get() + readIndex, contiguous });
             position += contiguous;
         }
@@ -894,12 +927,6 @@ private:
     /// classifies and latches the end state.
     void floodReaderLoop()
     {
-        // In the ingest thread's band: every refill the writer makes waits on
-        // this thread to read it, so a reader ranked with a loaded machine's
-        // busy work holds the writer back by its own scheduling delay. A new
-        // thread does not take its creator's band everywhere; a Darwin pthread
-        // starts in the default class whatever its creator's is.
-        PAL::raiseCurrentThreadToInteractivePriority();
         char* ring = m_floodRing.get();
         // Hoisted: the transport's cadence is a property of the endpoint, not
         // of any one gap. A wait-first endpoint parks on the first empty read
@@ -922,7 +949,7 @@ private:
             const std::uint64_t consumerRaw = m_floodRingControl->consumer.load(std::memory_order_acquire);
             if (consumerRaw & floodRingDoneBit)
                 break; // consumer stopped mid-burst; nobody will drain the ring
-            const std::size_t freeBytes = floodRingCapacity - static_cast<std::size_t>(producer - (consumerRaw & floodRingPositionMask));
+            const std::size_t freeBytes = m_floodRingCapacity - static_cast<std::size_t>(producer - (consumerRaw & floodRingPositionMask));
             if (freeBytes == 0) {
                 // Parser is behind with a full ring queued — multi-millisecond
                 // territory, so park on the consumer counter instead of
@@ -933,8 +960,8 @@ private:
                 m_floodRingControl->consumer.wait(consumerRaw, std::memory_order_acquire);
                 continue;
             }
-            const std::size_t writeIndex = static_cast<std::size_t>(producer) & (floodRingCapacity - 1);
-            const std::size_t contiguous = std::min(freeBytes, floodRingCapacity - writeIndex);
+            const std::size_t writeIndex = static_cast<std::size_t>(producer) & (m_floodRingCapacity - 1);
+            const std::size_t contiguous = std::min(freeBytes, m_floodRingCapacity - writeIndex);
             const int bytesRead = m_floodEndpoint->read({ ring + writeIndex, contiguous });
             if (bytesRead > 0) {
                 // No notify: the consumer polls this counter on a timed nap
@@ -1008,18 +1035,19 @@ private:
         std::uint32_t& pendingIngestMicros, std::uint32_t& lastDeliverMicros)
     {
         m_floodBurstCount.fetch_add(1, std::memory_order_relaxed);
-        if (!m_floodRing)
-            m_floodRing = std::make_unique<char[]>(floodRingCapacity);
-        if (!m_floodRingControl)
-            m_floodRingControl = std::make_unique<FloodRingControl>();
-        m_floodRingControl->producer.store(0, std::memory_order_relaxed);
-        m_floodRingControl->consumer.store(0, std::memory_order_relaxed); // also clears both done bits from the previous burst
+        startFloodReader();
         // Burst is live: hold the render on the last complete frame while
         // the pipeline pumps, exactly as drainAvailable does for a
         // sequential pass. Cleared at burst end, after the settled-frame
         // publish.
         m_runtime.setDrainPassActive(true);
-        std::jthread reader([this] { floodReaderLoop(); });
+        // The pass that handed the burst over woke the reader as it ended; a
+        // burst elected any other way wakes it here.
+        if (m_floodReaderStarts.load(std::memory_order_acquire) == m_floodReaderStartsPumped) {
+            m_floodReaderStarts.fetch_add(1, std::memory_order_release);
+            m_floodReaderStarts.notify_one();
+        }
+        m_floodReaderStartsPumped = m_floodReaderStarts.load(std::memory_order_acquire);
 
         constexpr int passCapacity = TerminalRuntime::drainPassCapacityBytes;
         long passBytes = 0;
@@ -1140,8 +1168,8 @@ private:
             }
             didNapOnEmptyRing = false;
             heldFrameWaitMicros = 0;
-            const std::size_t readIndex = static_cast<std::size_t>(consumer) & (floodRingCapacity - 1);
-            std::size_t bite = std::min<std::size_t>(static_cast<std::size_t>(available), floodRingCapacity - readIndex);
+            const std::size_t readIndex = static_cast<std::size_t>(consumer) & (m_floodRingCapacity - 1);
+            std::size_t bite = std::min<std::size_t>(static_cast<std::size_t>(available), m_floodRingCapacity - readIndex);
             bite = std::min({ bite, floodBiteCapacityBytes, static_cast<std::size_t>(passCapacity - passBytes) });
             const int biteBytes = static_cast<int>(bite);
             int parsedBytes = 0;
@@ -1174,7 +1202,7 @@ private:
             m_floodRingControl->consumer.fetch_or(floodRingDoneBit, std::memory_order_release);
             m_floodRingControl->consumer.notify_all();
         }
-        reader.join();
+        awaitFloodReader();
         if (isDecodeFenced)
             carryRingResidue();
         // Drain the residue the reader published after the last look. On
@@ -1195,8 +1223,8 @@ private:
                 const std::uint64_t available = producer - consumer;
                 if (available == 0)
                     break;
-                const std::size_t readIndex = static_cast<std::size_t>(consumer) & (floodRingCapacity - 1);
-                const int biteBytes = static_cast<int>(std::min({ floodBiteCapacityBytes, static_cast<std::size_t>(available), floodRingCapacity - readIndex,
+                const std::size_t readIndex = static_cast<std::size_t>(consumer) & (m_floodRingCapacity - 1);
+                const int biteBytes = static_cast<int>(std::min({ floodBiteCapacityBytes, static_cast<std::size_t>(available), m_floodRingCapacity - readIndex,
                     static_cast<std::size_t>(passCapacity - passBytes) }));
                 int parsedBytes = 0;
                 if (parseFloodBite(readIndex, biteBytes, parsedBytes, noteParsed)) {
@@ -1237,6 +1265,79 @@ private:
             m_host.unlockModel();
         }
         m_runtime.setDrainPassActive(false);
+        // Left as the next burst's reader finds them: it may be woken by a
+        // pass, with this loop nowhere near. Also clears both done bits.
+        m_floodRingControl->producer.store(0, std::memory_order_relaxed);
+        m_floodRingControl->consumer.store(0, std::memory_order_release);
+    }
+
+    /// Starts the thread that reads every burst of this run, parked until its
+    /// first.
+    ///
+    /// One thread for the run, not one a burst: a burst is over in
+    /// milliseconds, and a thread created for it spends a fraction of one
+    /// reaching its first read.
+    void startFloodReader()
+    {
+        if (!m_floodEndpoint || m_floodReader.joinable())
+            return;
+        if (!m_floodRing)
+            m_floodRing = std::make_unique<char[]>(m_floodRingCapacity);
+        if (!m_floodRingControl)
+            m_floodRingControl = std::make_unique<FloodRingControl>();
+        m_floodRingControl->producer.store(0, std::memory_order_relaxed);
+        m_floodRingControl->consumer.store(0, std::memory_order_relaxed);
+        m_shouldFloodReaderExit.store(false, std::memory_order_relaxed);
+        m_floodReaderStartsPumped = m_floodReaderStarts.load(std::memory_order_relaxed);
+        m_floodReaderFinishes.store(m_floodReaderStartsPumped, std::memory_order_relaxed);
+        m_floodReader = std::jthread([this, served = m_floodReaderStartsPumped]() mutable {
+            // In the ingest thread's band: every refill the writer makes waits
+            // on this thread to read it, so a reader ranked with a loaded
+            // machine's busy work holds the writer back by its own scheduling
+            // delay. A new thread does not take its creator's band everywhere;
+            // a Darwin pthread starts in the default class whatever its
+            // creator's is.
+            PAL::raiseCurrentThreadToInteractivePriority();
+            for (;;) {
+                m_floodReaderStarts.wait(served, std::memory_order_acquire);
+                if (m_shouldFloodReaderExit.load(std::memory_order_acquire))
+                    return;
+                const std::uint32_t starts = m_floodReaderStarts.load(std::memory_order_acquire);
+                if (starts == served)
+                    continue;
+                served = starts;
+                floodReaderLoop();
+                m_floodReaderFinishes.store(served, std::memory_order_release);
+                m_floodReaderFinishes.notify_all();
+            }
+        });
+    }
+
+    /// Waits until the reader has finished the burst this loop is pumping.
+    ///
+    /// The reader's last act in a burst is its finish count, after its done
+    /// bit, so past this wait it touches neither the ring nor the endpoint.
+    void awaitFloodReader()
+    {
+        for (std::uint32_t finishes = m_floodReaderFinishes.load(std::memory_order_acquire); finishes != m_floodReaderStartsPumped;
+            finishes = m_floodReaderFinishes.load(std::memory_order_acquire))
+            m_floodReaderFinishes.wait(finishes, std::memory_order_acquire);
+    }
+
+    /// Ends the reader thread with the run.
+    ///
+    /// A burst a pass handed over as the loop stopped is still the reader's:
+    /// it ends on the stop flag it reads between reads, and its bytes are
+    /// abandoned with the transport's, as a stop leaves them.
+    void stopFloodReader()
+    {
+        if (!m_floodReader.joinable())
+            return;
+        m_shouldFloodReaderExit.store(true, std::memory_order_release);
+        m_floodReaderStarts.fetch_add(1, std::memory_order_release);
+        m_floodReaderStarts.notify_one();
+        m_floodReader.join();
+        m_floodReaderStartsPumped = m_floodReaderStarts.load(std::memory_order_relaxed);
     }
 
     TerminalRuntime& m_runtime;
@@ -1259,7 +1360,16 @@ private:
     /// Short-read accumulate waits, cumulatively; see ``floodAccumulateWaitCount()``.
     std::atomic<std::uint64_t> m_floodAccumulateWaitCount { 0 };
     /// The burst ring, allocated on the first flood and kept.
+    // The reader's start counter, bumped once a burst by whichever elects it:
+    // the pass that hands over, through the runtime, or this loop. The reader
+    // answers each with its finish count.
+    std::atomic<std::uint32_t> m_floodReaderStarts { 0 };
+    std::atomic<std::uint32_t> m_floodReaderFinishes { 0 };
+    std::atomic<bool> m_shouldFloodReaderExit { false };
+    std::uint32_t m_floodReaderStartsPumped = 0; // the loop thread's: the start whose burst it last pumped
+    std::jthread m_floodReader;
     std::unique_ptr<char[]> m_floodRing;
+    const std::size_t m_floodRingCapacity = floodRingCapacityFor(PAL::privateCacheBytes());
     /// The ring's SPSC counters, heap-held for their cache-line isolation.
     std::unique_ptr<FloodRingControl> m_floodRingControl;
 };

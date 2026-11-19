@@ -18,6 +18,7 @@
 #include <cerrno>
 #include <climits>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -236,6 +237,41 @@ void raiseCurrentThreadToInteractivePriority()
     // already inherits a band at least this high. What it buys is that the
     // band stops depending on which thread happened to start ingest.
     ::pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+#endif
+}
+
+std::size_t privateCacheBytes()
+{
+#if defined(__linux__)
+#if defined(_SC_LEVEL2_CACHE_SIZE)
+    const long reported = ::sysconf(_SC_LEVEL2_CACHE_SIZE);
+    if (reported > 0)
+        return static_cast<std::size_t>(reported);
+#endif
+    // A C library that does not answer the query leaves the kernel's own
+    // description: a count with a K or M suffix.
+    const UnixFileDescriptor description(::open("/sys/devices/system/cpu/cpu0/cache/index2/size", O_RDONLY | O_CLOEXEC));
+    if (!description.isValid())
+        return 0;
+    std::array<char, 32> text {};
+    const ssize_t length = ::read(description.get(), text.data(), text.size() - 1);
+    if (length <= 0)
+        return 0;
+    std::size_t bytes = 0;
+    ssize_t index = 0;
+    for (; index < length && text[static_cast<std::size_t>(index)] >= '0' && text[static_cast<std::size_t>(index)] <= '9'; ++index) {
+        if (bytes > (std::size_t { 1 } << 40))
+            return 0;
+        bytes = bytes * 10 + static_cast<std::size_t>(text[static_cast<std::size_t>(index)] - '0');
+    }
+    if (index < length && text[static_cast<std::size_t>(index)] == 'K')
+        bytes *= 1024;
+    else if (index < length && text[static_cast<std::size_t>(index)] == 'M')
+        bytes *= 1024 * 1024;
+    return bytes;
+#else
+    // The Darwin arms' capacity is their own measured ceiling.
+    return 0;
 #endif
 }
 

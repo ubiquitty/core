@@ -1606,6 +1606,27 @@ public:
         recomputeDrainRidesBurst();
     }
     [[nodiscard]] bool drainRidesBurst() const { return m_drainRidesBurst.load(std::memory_order_relaxed); }
+    /// Sets how much a pass that rides its burst drains before it ends on
+    /// its byte budget, which is what hands a flood to the pipelined reader,
+    /// and the counter that wakes that reader.
+    ///
+    /// A pass that ends there bumps the counter before it closes, so the
+    /// reader is already lifting bytes off the transport while this thread
+    /// does the pass's bookkeeping. The pass ended on its budget and not at a
+    /// fence or a hold, so nothing asks for those bytes to stay where they are.
+    ///
+    /// Called before ingest starts and never while a pass runs.
+    ///
+    /// - Parameters:
+    ///   - bytes: The budget; the largest `int` leaves the pass its ordinary
+    ///     capacity and wakes nothing.
+    ///   - readerWake: The reader's start counter, or null for none. It must
+    ///     outlive every pass.
+    void setDrainPassHandOver(int bytes, std::atomic<std::uint32_t>* readerWake)
+    {
+        m_drainPassHandOverBytes.store(bytes, std::memory_order_relaxed);
+        m_drainPassReaderWake = readerWake;
+    }
     /// Why the drain arrived at a publish, which decides how it is paced.
     enum class SettleContext : std::uint8_t {
         /// A pass that closed short: the writer is keeping up.
@@ -2369,6 +2390,8 @@ private:
     std::atomic<bool> m_isDecodeFenceRaised { false };
     std::atomic<bool> m_isDrainSaturated { false }; // the last pass filled; render reads the published frame
     std::atomic<bool> m_drainRidesBurst { true }; // false => collapse mid-burst backoff to 0
+    std::atomic<int> m_drainPassHandOverBytes { std::numeric_limits<int>::max() }; // a riding pass ends here for the flood reader
+    std::atomic<std::uint32_t>* m_drainPassReaderWake = nullptr; // bumped by the pass that hands over; the ingest loop's
     std::atomic<bool> m_isPresented { true }; // presume presented until the frontend pushes an edge
     std::atomic<bool> m_isThrottled { false };
     int m_lastFocusApplied = -1; // SetFocus edge-gate: -1 unset, else last 0/1 applied

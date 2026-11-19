@@ -525,8 +525,18 @@ DrainOutcome TerminalRuntime::drainAvailable(DrainHost& host)
     // first gap so the poll() loop parks the ingest thread at 0 CPU).
     // Lent, not read: the pass takes the model lock for each bite it parses.
     Ubiquitty::Terminal& terminal = *lendModelTerminal();
+    const bool doesRideBurst = m_drainRidesBurst.load(std::memory_order_relaxed);
+    const int handOverBytes = doesRideBurst ? m_drainPassHandOverBytes.load(std::memory_order_relaxed) : std::numeric_limits<int>::max();
     const DrainPassResult pass = runDrainPass(terminal, *m_stream, host, owner,
-        { .doesRideBurst = m_drainRidesBurst.load(std::memory_order_relaxed), .modelLockBiteBytes = effectiveModelLockBite(), .maxMicroseconds = presentationInterval });
+        // A pass that does not ride its burst is never handed over, so it
+        // keeps its whole capacity rather than paying a teardown per budget.
+        { .doesRideBurst = doesRideBurst, .modelLockBiteBytes = effectiveModelLockBite(), .maxBytes = handOverBytes, .maxMicroseconds = presentationInterval });
+    // Handed over: the reader starts on the transport now, beside the close
+    // below, rather than after it.
+    if (m_drainPassReaderWake && pass.end == DrainPassEnd::ByteBudget && pass.bytesDrained >= handOverBytes) {
+        m_drainPassReaderWake->fetch_add(1, std::memory_order_release);
+        m_drainPassReaderWake->notify_one();
+    }
     outcome.bytesDrained = pass.bytesDrained;
     outcome.end = pass.end;
     outcome.caughtUp = pass.didCatchUp;

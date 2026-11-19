@@ -293,6 +293,17 @@ public:
     /// Returns whether short reads can benefit from a bounded accumulation wait.
     [[nodiscard]] virtual ShortReadWaitStrategy shortReadWaitStrategy() const { return ShortReadWaitStrategy::Accumulate; }
 
+    /// How much one sequential pass drains before a burst is a flood.
+    ///
+    /// A single thread that reads and parses does both in series, so a burst
+    /// it carries runs at less than either rate. A transport whose reads are
+    /// large shows a flood within its first few, and a pass that ends there
+    /// hands the rest to a dedicated reader.
+    ///
+    /// - Returns: The byte count, or the largest `int` for a transport that
+    ///   leaves the hand-over to the pass's own budget, which is the default.
+    [[nodiscard]] virtual int burstHandOverBytes() const { return std::numeric_limits<int>::max(); }
+
 protected:
     PollableByteStream() = default;
 };
