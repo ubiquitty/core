@@ -169,7 +169,7 @@ fi
 
 LINUX_FRONTEND_TOOLS = r'''
 missing=0
-for module in gtk4 vulkan freetype2 fontconfig harfbuzz; do
+for module in gtk4 libadwaita-1 vulkan freetype2 fontconfig harfbuzz; do
     pkg-config --exists "$module" || { echo "missing pkg-config module: $module" >&2; missing=1; }
 done
 for tool in cmake ninja c++ python3 glslc; do

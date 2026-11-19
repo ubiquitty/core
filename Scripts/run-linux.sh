@@ -5,11 +5,11 @@
 #
 # run-linux.sh — run a repo command on Linux from macOS, natively.
 #
-# The Linux frontend needs GTK 4 and Vulkan development files, which do not
-# exist on macOS, so the Linux build and its tests are unrunnable here without a
-# machine. This gives one: a native Ubuntu container with the prerequisites
-# the Linux build's prerequisite check names, the working tree bind-mounted
-# rather than copied, and the compiler cache kept on the host.
+# The Linux frontend needs GTK 4, libadwaita and Vulkan development files,
+# which do not exist on macOS, so the Linux build and its tests are unrunnable
+# here without a machine. This gives one: a native Ubuntu container with the
+# prerequisites the Linux build's prerequisite check names, the working tree
+# bind-mounted rather than copied, and the compiler cache kept on the host.
 #
 # The host's own architecture, because a foreign image runs under emulation and
 # a full build takes long enough that nobody runs it twice. Native is the whole
@@ -95,7 +95,8 @@ GTK_IMAGE="${UBIQUITTY_LINUX_GTK_IMAGE:-"$(sed -n 's/^gtk=//p' "$SCRIPTS/linux-i
 DOCKERFILE_TEXT="FROM ${GTK_IMAGE}
 "'ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -qq && apt-get install -y -qq \
-      cmake ninja-build g++ pkg-config libgtk-4-dev libvulkan-dev git ccache \
+      cmake ninja-build g++ pkg-config libgtk-4-dev libadwaita-1-dev \
+      libvulkan-dev git ccache \
       golang-go perl libwebp-dev llvm \
       fonts-noto-cjk=1:20240730+repack1-1build1 \
       fonts-noto-core fonts-noto-color-emoji \
