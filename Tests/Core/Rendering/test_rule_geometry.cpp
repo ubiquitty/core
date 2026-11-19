@@ -402,3 +402,22 @@ TEST(theFontRuleIsTheDeclaredRuleSnappedOutward)
     CHECK(close(exact.top, 2.0f));
     CHECK(close(exact.weight, 1.0f));
 }
+
+// The declared position is measured from the baseline the glyphs stand on.
+// The atlas rounds every glyph's pen to a whole row, so measuring from a
+// layout baseline 0.4 of a row below the glyphs' would set JetBrains Mono's
+// 3.72-pixel rule a row under TextEdit's.
+TEST(theDeclaredUnderlineIsMeasuredFromTheGlyphsBaseline)
+{
+    using Ubiquitty::Rendering::RuleMetricsSource;
+    for (const auto source : { RuleMetricsSource::Ubiquitty, RuleMetricsSource::Font }) {
+        const auto metrics = twelvePointMetrics(3.72f, 1.2f, source);
+        for (const float layoutBaseline : { 29.6f, 30.0f, 30.4f }) {
+            const float ruleLine = layoutBaseline + metrics.underlineDrop - metrics.underlineStrokeLift;
+            const auto rows = Ubiquitty::Rendering::singleUnderlineRows(metrics, layoutBaseline, ruleLine, metrics.underlineThickness);
+            // The glyphs stand on row boundary 30 in every case; three clear
+            // rows (30, 31, 32) and the rule from row 33.
+            CHECK_MSG(rows.top == 33.0f, source == RuleMetricsSource::Font ? "font" : "ubiquitty");
+        }
+    }
+}

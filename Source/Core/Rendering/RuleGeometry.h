@@ -269,8 +269,22 @@ struct UBIQUITTY_ESCAPABLE RuleRows {
     float weight = 1.0f;
 };
 
+/// Returns the baseline the glyphs stand on: the cell's baseline on the
+/// nearest device row.
+///
+/// The atlas draws every glyph from a pen rounded to a whole row, so a face
+/// whose layout puts the baseline 0.4 of a row lower than its glyphs stand
+/// would set a rule declared 3.72 rows down from the layout baseline a row
+/// lower than AppKit sets it from the glyphs' (JetBrains Mono at 12 points on
+/// a 2x display).
+///
+/// - Parameter baselineY: The cell's layout baseline, in device pixels down
+///   the drawable.
+/// - Returns: The row boundary the glyphs' baseline lands on.
+[[nodiscard]] inline float glyphBaseline(float baselineY) { return std::round(baselineY); }
+
 /// Returns the top row of the face's declared underline, snapped down to the
-/// row it starts in.
+/// row it starts in, measured from the baseline the glyphs stand on.
 ///
 /// `underline_offset` moves it as it moves the drop, so the offset reads the
 /// same whichever rule ends up lower.
@@ -282,7 +296,7 @@ struct UBIQUITTY_ESCAPABLE RuleRows {
 /// - Returns: The row; meaningful only where the face declares a position.
 [[nodiscard]] inline float declaredUnderlineTop(const CellMetrics& metrics, float baselineY)
 {
-    return std::floor(baselineY + metrics.fontUnderlineTop + metrics.underlineOffset + declaredRuleEdgeTolerance);
+    return std::floor(glyphBaseline(baselineY) + metrics.fontUnderlineTop + metrics.underlineOffset + declaredRuleEdgeTolerance);
 }
 
 /// Returns an underline top moved down to the face's declared one where that
@@ -335,7 +349,7 @@ struct UBIQUITTY_ESCAPABLE RuleRows {
 /// - Returns: The rule's top row and its weight in whole rows, at least one.
 [[nodiscard]] inline RuleRows declaredUnderlineRows(const CellMetrics& metrics, float baselineY)
 {
-    const float top = baselineY + metrics.fontUnderlineTop + metrics.underlineOffset;
+    const float top = glyphBaseline(baselineY) + metrics.fontUnderlineTop + metrics.underlineOffset;
     const float upper = std::floor(top + declaredRuleEdgeTolerance);
     const float lower = std::ceil(top + metrics.fontUnderlineThickness - declaredRuleEdgeTolerance);
     return { .top = upper, .weight = std::max(1.0f, lower - upper) };
