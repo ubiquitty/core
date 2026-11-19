@@ -13,10 +13,13 @@ rule cannot read one way on the Mac and another in a browser.
 
 ## Geometry
 
-- **Weight.** The font's own underscore, as rendered: every engine rasterises
-  `_` and Core measures it (`measuredUnderscoreWeight`, `RuleGeometry.h`), so a
-  face with a hairline underscore gets a hairline rule and a heavy face a
-  heavy one. The weight is drawn exactly — whole rows and a partial last row —
+- **Weight.** The font's own underscore: every engine rasterises `_` and Core
+  measures it (`measuredUnderscoreWeight`, `RuleGeometry.h`), so a face with a
+  hairline underscore gets a hairline rule and a heavy face a heavy one. The Mac
+  rasterises it with font smoothing off, as iOS and FreeType do: smoothing's
+  stem darkening adds about 0.6 of a pixel of coverage that the glyph pass,
+  mixing as CoreGraphics mixes text, never shows as weight, so a rule measured
+  with it read a third heavier than the underscore beside it. The weight is drawn exactly — whole rows and a partial last row —
   not snapped to the pixel grid. `[underline] thickness` scales it: 1.0 is the
   font's own weight.
 - **Offset.** The rule sits a clear gap below the baseline: 0.85 of its weight,
