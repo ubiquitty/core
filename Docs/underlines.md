@@ -19,9 +19,10 @@ rule cannot read one way on the Mac and another in a browser.
   rasterises it with font smoothing off, as iOS and FreeType do: smoothing's
   stem darkening adds about 0.6 of a pixel of coverage that the glyph pass,
   mixing as CoreGraphics mixes text, never shows as weight, so a rule measured
-  with it read a third heavier than the underscore beside it. The weight is drawn exactly — whole rows and a partial last row —
-  not snapped to the pixel grid. `[underline] thickness` scales it: 1.0 is the
-  font's own weight.
+  with it read a third heavier than the underscore beside it. The weight is
+  drawn in whole device pixels, at least one (`ruleWeight`), as AppKit draws
+  an underline: a partial last row reads as blur, not weight. `[underline]
+  thickness` scales it before the rounding: 1.0 is the font's own weight.
 - **Offset.** The rule sits a clear gap below the baseline: 0.85 of its weight,
   in whole rows, never under one (`underlineGapInWeights`). `[underline]
   offset` moves it, in points, down for positive; 0 leaves it automatic.

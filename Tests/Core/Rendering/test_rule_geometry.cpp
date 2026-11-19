@@ -170,9 +170,23 @@ TEST(theUnderscoreOutranksTheDeclaredUnderline)
     face.underlineThickness = 1.4f;
     face.underscoreWeight = 2.7f;
     face.descent = 8.0f;
-    CHECK(std::fabs(ruleGeometry(28.0f, 2.0f, face).underlineThickness - 2.7f) < 1e-4f);
+    CHECK(std::fabs(ruleGeometry(28.0f, 2.0f, face).underlineThickness - 3.0f) < 1e-4f);
     face.underscoreWeight = 0.0f;
-    CHECK(std::fabs(ruleGeometry(28.0f, 2.0f, face).underlineThickness - 1.4f) < 1e-4f);
+    CHECK(std::fabs(ruleGeometry(28.0f, 2.0f, face).underlineThickness - 1.0f) < 1e-4f);
+}
+
+// A rule is drawn in whole device rows. SF Mono's underscore at 12 points on a
+// 2x display is 1.72 pixels, which drew as a solid row and a faint one where
+// TextEdit draws two solid rows; a weight under one row still draws one.
+TEST(aRuleIsDrawnInWholeRows)
+{
+    using Ubiquitty::Rendering::ruleWeight;
+    CHECK(ruleWeight(1.72f) == 2.0f);
+    CHECK(ruleWeight(1.80f) == 2.0f);
+    CHECK(ruleWeight(2.32f) == 2.0f);
+    CHECK(ruleWeight(2.5f) == 3.0f);
+    CHECK(ruleWeight(1.29f) == 1.0f);
+    CHECK(ruleWeight(0.4f) == 1.0f);
 }
 
 } // namespace
@@ -184,7 +198,7 @@ UBIQUITTY_TEST_MAIN()
 // face declares — Monaspace Neon declares one that all but touches its letters
 // and JetBrains Mono one a stroke and a half lower, so following them would
 // set the same rule at a different height in every face. The weight is the
-// face's own, drawn exactly. Faces as measured on macOS 26.4 at 2x.
+// face's own in whole rows. Faces as measured on macOS 26.4 at 2x.
 TEST(faceRuleSitsAGapBelowTheBaseline)
 {
     using Ubiquitty::Rendering::RuleFaceMetrics;
@@ -198,14 +212,15 @@ TEST(faceRuleSitsAGapBelowTheBaseline)
         int top;
     };
     // em, thickness, descent, leading in device pixels (2x); the top row below
-    // the baseline, round(0.85 * thickness) floored at one.
+    // the baseline, round(0.85 * weight) floored at one, where the weight is
+    // the thickness in whole rows.
     const Case cases[] = {
         { "Menlo 24pt", 48.0f, 2.109f, 11.32f, 0.0f, 2 },
         { "Menlo 12pt", 24.0f, 1.055f, 5.66f, 0.0f, 1 },
-        { "System UI 24pt", 48.0f, 2.812f, 10.12f, 0.0f, 2 },
+        { "System UI 24pt", 48.0f, 2.812f, 10.12f, 0.0f, 3 },
         { "JetBrains Mono 24pt", 48.0f, 2.40f, 14.40f, 0.0f, 2 },
         { "JetBrains Mono 12pt", 24.0f, 1.20f, 7.20f, 0.0f, 1 },
-        { "Monaspace Neon 24pt", 48.0f, 1.728f, 9.60f, 4.80f, 1 },
+        { "Monaspace Neon 24pt", 48.0f, 1.728f, 9.60f, 4.80f, 2 },
         { "Monaspace Neon 12pt", 24.0f, 0.864f, 4.80f, 2.40f, 1 },
         { "System UI 12pt", 24.0f, 1.406f, 5.06f, 0.0f, 1 },
     };
@@ -215,8 +230,8 @@ TEST(faceRuleSitsAGapBelowTheBaseline)
         face.descent = c.descent;
         face.leading = c.leading;
         const RuleGeometry g = ruleGeometry(c.em, 2.0f, face);
-        // The face's own weight, floored at a pixel and otherwise exact.
-        CHECK_MSG(close(g.underlineThickness, std::max(1.0f, c.thickness)), c.face);
+        // The face's own weight in whole rows, at least one.
+        CHECK_MSG(close(g.underlineThickness, std::max(1.0f, std::round(c.thickness))), c.face);
         // The top row: the drop with the builder's lift taken back off.
         const int top = static_cast<int>(std::round(g.underlineDrop - underlineStrokeLiftForEm(c.em)));
         CHECK_MSG(top == c.top, c.face);

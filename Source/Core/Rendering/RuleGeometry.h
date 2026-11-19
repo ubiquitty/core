@@ -166,12 +166,30 @@ struct UBIQUITTY_ESCAPABLE RuleFaceMetrics {
 /// the text it underlines.
 inline constexpr float underlineGapInWeights = 0.85f;
 
+/// Returns a rule's weight as drawn: the nearest whole number of device rows,
+/// never under one.
+///
+/// A rule's top sits on the pixel grid, and a weight that leaves part of a row
+/// draws that row faint. Beside the solid rows it reads as blur rather than
+/// weight, and the rule looks heavier and softer than the letters it sits
+/// under. AppKit draws an underline in whole device pixels for the same reason:
+/// TextEdit sets SF Mono at 12 points on a 2x display with a crisp 2-pixel
+/// rule, where the exact underscore weight, 1.72, drew as a solid row and a
+/// 72% one.
+///
+/// - Parameter thickness: The weight, in device pixels.
+/// - Returns: The weight to draw.
+[[nodiscard]] inline float ruleWeight(float thickness)
+{
+    return std::max(1.0f, std::round(thickness));
+}
+
 /// Computes where the rules sit for a face.
 ///
 /// The stroke is the face's own rule: its underscore as the engine draws it,
 /// or the declared underline weight where the engine could not measure one,
-/// floored at one device pixel. The builder draws it at that weight exactly
-/// (ruleWeight).
+/// in whole device pixels and at least one (ruleWeight), so the gap below is
+/// measured from the weight the builder draws.
 /// The drop is the offset the builder anchors a straight rule's top at
 /// (`baseline + drop − strokeLift`), chosen so that top lands a clear gap below
 /// the baseline (underlineGapInWeights): the lift the builder subtracts is
@@ -189,7 +207,7 @@ inline constexpr float underlineGapInWeights = 0.85f;
     RuleGeometry geometry = ruleGeometry(fontSizeInDevicePixels, deviceScale);
     const float faceWeight = face.underscoreWeight > 0.0f ? face.underscoreWeight : face.underlineThickness;
     if (faceWeight > 0.0f) {
-        geometry.underlineThickness = std::max(1.0f, faceWeight);
+        geometry.underlineThickness = ruleWeight(faceWeight);
         geometry.curlyThickness = geometry.underlineThickness;
         geometry.strikeThickness = geometry.underlineThickness;
     }
@@ -201,21 +219,6 @@ inline constexpr float underlineGapInWeights = 0.85f;
         geometry.underlineDrop = std::max(1.0f, top + underlineStrokeLiftForEm(fontSizeInDevicePixels));
     }
     return geometry;
-}
-
-/// Returns a rule's weight as drawn: the weight itself, never under one device
-/// row.
-///
-/// A rule's top sits on the pixel grid and the part of a row its weight leaves
-/// is drawn in part, as the face's own glyphs draw an edge: rounding to whole
-/// rows would make a face whose underscore is 2.4 pixels draw its underline at
-/// 2, lighter than its letters, or at 3, heavier than its stems.
-///
-/// - Parameter thickness: The weight, in device pixels.
-/// - Returns: The weight to draw.
-[[nodiscard]] inline float ruleWeight(float thickness)
-{
-    return thickness < 1.0f ? 1.0f : thickness;
 }
 
 /// Returns the top of the second rule of a pair: the whole row nearest the gap
