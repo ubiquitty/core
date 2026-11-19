@@ -208,8 +208,11 @@ inline constexpr float underlineGapInWeights = 0.85f;
 ///
 /// The stroke is the face's own rule: its underscore as the engine draws it,
 /// or the declared underline weight where the engine could not measure one,
-/// in whole device pixels and at least one (ruleWeight), so the gap below is
-/// measured from the weight the builder draws.
+/// in whole device pixels (ruleWeight) and never thinner than a point, so the
+/// gap below is measured from the weight the builder draws. A face with a
+/// hairline underscore, Hack's or Inconsolata's at 12 points on a 2x display,
+/// would otherwise draw a one-pixel rule that reads lighter than its letters,
+/// where TextEdit draws two.
 /// The drop is the offset the builder anchors a straight rule's top at
 /// (`baseline + drop − strokeLift`), chosen so that top lands a clear gap below
 /// the baseline (underlineGapInWeights): the lift the builder subtracts is
@@ -227,13 +230,13 @@ inline constexpr float underlineGapInWeights = 0.85f;
 ///   - deviceScale: The display scale.
 ///   - face: The face's measurements; a zero field keeps the size-only answer
 ///     for that part.
-/// - Returns: The geometry, every stroke at least one device pixel.
+/// - Returns: The geometry, a measured face's stroke at least a point.
 [[nodiscard]] inline RuleGeometry ruleGeometry(float fontSizeInDevicePixels, float deviceScale, const RuleFaceMetrics& face)
 {
     RuleGeometry geometry = ruleGeometry(fontSizeInDevicePixels, deviceScale);
     const float faceWeight = face.underscoreWeight > 0.0f ? face.underscoreWeight : face.underlineThickness;
     if (faceWeight > 0.0f) {
-        geometry.underlineThickness = ruleWeight(faceWeight);
+        geometry.underlineThickness = std::max(ruleWeight(faceWeight), ruleWeight(deviceScale > 0.0f ? deviceScale : 1.0f));
         geometry.curlyThickness = geometry.underlineThickness;
         geometry.strikeThickness = geometry.underlineThickness;
     }
