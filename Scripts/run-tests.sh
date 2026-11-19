@@ -3783,9 +3783,9 @@ fi
 # workspace their connection is attached to (Docs/sync.md §7.3): two people
 # dial a spawned host over real loopback QUIC, each for a workspace of their
 # own; the first is refused workspace.split, addTab, addWindow, closePane and
-# window.close on the second's workspace, which keeps its revision, and is
-# served all five on its own. Links the daemon objects for the Sync client and
-# QUICClient.cpp.
+# window.close on the second's workspace, which keeps its panes and layout,
+# and is served all five on its own. Links the daemon objects for the Sync
+# client and QUICClient.cpp.
 if wanted quic_workspace_isolation && quic_deps_present && command -v cmake >/dev/null 2>&1; then
     echo "=== quic_workspace_isolation ==="
     RAN=$((RAN + 1))

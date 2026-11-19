@@ -12,7 +12,7 @@
 // `workspace.closePane` and `window.close`, each call otherwise well formed
 // and at the workspace's current revision: every one is refused as forbidden,
 // naming the workspace the connection is attached to, the connection stays
-// up, and the second person's structure keeps its revision and its tree. The
+// up, and the second person's structure keeps its panes and its layout. The
 // same five calls on the first person's own workspace are served, and the
 // structure it is sent says what each did.
 //
@@ -68,6 +68,14 @@ struct Leaf {
 struct Shape {
     std::uint64_t revision = 0;
     std::vector<Leaf> leaves;
+    /// Each tab's split, its leaves' frame generations cleared: the layout a
+    /// call can change. A leaf carries the generation of its pane's latest
+    /// Structural frame, so a pane's first frame moves the workspace's
+    /// revision whenever it lands, with nobody calling anything.
+    std::vector<Sync::TopologyNode> splits;
+
+    /// Whether `other` has the same panes, in the same places, as this.
+    [[nodiscard]] bool isLaidOutAs(const Shape& other) const { return leaves == other.leaves && splits == other.splits; }
 
     [[nodiscard]] std::vector<std::uint32_t> windows() const
     {
@@ -90,6 +98,15 @@ struct Shape {
     }
 };
 
+/// `node` with every leaf's frame generation cleared.
+Sync::TopologyNode withoutFrameGenerations(Sync::TopologyNode node)
+{
+    node.structuralGeneration = 0;
+    for (Sync::TopologyNode& child : node.children)
+        child = withoutFrameGenerations(std::move(child));
+    return node;
+}
+
 /// The structure of `workspaceID` the client holds, decoded; nothing before
 /// one has arrived.
 std::optional<Shape> shapeOf(const UbiquittyTest::ScreenClient& client, std::uint32_t workspaceID)
@@ -104,6 +121,7 @@ std::optional<Shape> shapeOf(const UbiquittyTest::ScreenClient& client, std::uin
     Shape shape { .revision = found->second.revision, .leaves = {} };
     for (const Tree::TreeWindow& window : workspace->windows) {
         for (const Tree::TreeTab& tab : window.tabs) {
+            shape.splits.push_back(withoutFrameGenerations(tab.split));
             for (const Tree::TreePane& pane : tab.panes)
                 shape.leaves.push_back({ std::to_underlying(window.id), std::to_underlying(tab.id), std::to_underlying(pane.id), pane.sessionID });
         }
@@ -286,10 +304,12 @@ int main(int argc, char** argv)
     }
 
     // Nothing the refused calls named was changed: the second person, who is
-    // sent every revision of their workspace, still holds the one they had.
+    // sent every revision of their workspace, still holds the panes and the
+    // layout they had. The revision itself may have moved meanwhile, when
+    // their pane's shell published its first frame.
     (void)theirs.pumpUntil(500, [](const UbiquittyTest::ScreenClient&) { return false; });
     const std::optional<Shape> theirsAfterRefusals = heldShape(theirs, theirsWorkspace);
-    CHECK_MSG(theirsAfterRefusals && theirsAfterRefusals->revision == theirsBefore->revision && theirsAfterRefusals->leaves == theirsBefore->leaves, "a refused call changed the other person's workspace");
+    CHECK_MSG(theirsAfterRefusals && theirsAfterRefusals->isLaidOutAs(*theirsBefore), "a refused call changed the other person's workspace");
     CHECK_MSG(!theirs.hasClosed.load(), "a refused call against the other person's workspace closed their connection");
 
     // The same verbs on the first person's own workspace are served.
@@ -337,13 +357,13 @@ int main(int argc, char** argv)
     // And the other person's workspace is still as it was.
     (void)theirs.pumpUntil(500, [](const UbiquittyTest::ScreenClient&) { return false; });
     const std::optional<Shape> theirsAtEnd = heldShape(theirs, theirsWorkspace);
-    CHECK_MSG(theirsAtEnd && theirsAtEnd->revision == theirsBefore->revision && theirsAtEnd->leaves == theirsBefore->leaves, "the remote person's own changes reached the other person's workspace");
+    CHECK_MSG(theirsAtEnd && theirsAtEnd->isLaidOutAs(*theirsBefore), "the remote person's own changes reached the other person's workspace");
 
     mine.carrier.stop();
     theirs.carrier.stop();
     stopDaemon();
     CHECK_MSG(refusals == static_cast<int>(foreignCalls.size()) && served == 5, "not every verb was refused abroad and served at home");
     if (failures == 0)
-        std::printf("quic_workspace_isolation: a person over QUIC was refused all %d layout verbs on another person's workspace, which kept its revision, and was served all %d on their own\n", refusals, served);
+        std::printf("quic_workspace_isolation: a person over QUIC was refused all %d layout verbs on another person's workspace, which kept its panes and layout, and was served all %d on their own\n", refusals, served);
     return failures == 0 ? 0 : 1;
 }
