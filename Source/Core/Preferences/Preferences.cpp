@@ -644,6 +644,15 @@ AssignmentResult assignSpecial(Values& c, const std::string& section, const std:
         }
         return AssignmentResult::InvalidValue;
     }
+    if (section == "underline" && key == "metrics") {
+        if (v.kind == Value::Kind::String) {
+            if (auto metrics = underlineMetricsFromString(v.str)) {
+                c.underlineMetrics = *metrics;
+                return AssignmentResult::Assigned;
+            }
+        }
+        return AssignmentResult::InvalidValue;
+    }
     if (section == "cursor" && key == "motion") {
         // "off" | "short" | "long" | "always" (case-insensitive), the
         // distance-based glide modes. Anything else leaves the compiled default
@@ -1107,6 +1116,27 @@ const char* curlyUnderlineShapeToString(CurlyUnderlineShape shape)
         return "wide";
     }
     return "medium";
+}
+
+std::optional<UnderlineMetrics> underlineMetricsFromString(const std::string& token)
+{
+    const std::string trimmed = trim(token);
+    if (iequals(trimmed, "ubiquitty"))
+        return UnderlineMetrics::Ubiquitty;
+    if (iequals(trimmed, "font"))
+        return UnderlineMetrics::Font;
+    return std::nullopt;
+}
+
+const char* underlineMetricsToString(UnderlineMetrics metrics)
+{
+    switch (metrics) {
+    case UnderlineMetrics::Ubiquitty:
+        return "ubiquitty";
+    case UnderlineMetrics::Font:
+        return "font";
+    }
+    return "ubiquitty";
 }
 
 std::optional<CursorMotionMode> cursorMotionFromString(const std::string& s)

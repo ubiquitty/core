@@ -163,6 +163,7 @@ is Preferences' work.
 | `shouldUnderlineFollowInk` | `[underline] follows_ink` |
 | `underlineSkipInkPaddingPoints` | `[underline] skip_ink_pad` |
 | `curlyRuleShape` | `[underline] curly` |
+| `underlineMetrics` | `[underline] metrics` |
 | `shouldUnderlineLinks` | `[underline] links` |
 | `linkUnderlineStyle` | `[underline] link_style` |
 | `shouldStyleLinksPerKind` | `[underline] link_style_per_kind` |

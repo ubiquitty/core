@@ -180,6 +180,8 @@ struct RenderConfiguration {
     double underlineSkipInkPaddingPoints = 0;
     /// The shape a curly underline draws at.
     CurlyRuleShape curlyRuleShape = CurlyRuleShape::Medium;
+    /// Where the single underline's top and weight come from.
+    RuleMetricsSource underlineMetrics = RuleMetricsSource::Ubiquitty;
     /// Whether link cells draw an underline of their own.
     bool shouldUnderlineLinks = false;
     /// The `link_style` index; zero is solid.

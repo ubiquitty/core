@@ -279,6 +279,21 @@ enum class CurlyUnderlineShape : std::uint8_t {
     Wide = 2,
 };
 
+/// Where the single underline's position and weight come from, as
+/// `[underline] metrics` names it.
+///
+/// Mirrors `Rendering::RuleMetricsSource` value for value and crosses to it
+/// at the configuration fold. Persisted as "ubiquitty" | "font".
+enum class UnderlineMetrics : std::uint8_t {
+    /// The weight of the face's own underscore in whole device pixels, its top
+    /// the larger of a clear gap below the baseline and the face's declared
+    /// position; the default.
+    Ubiquitty = 0,
+    /// The position and thickness the face declares (`post`), snapped outward
+    /// to whole device pixels, as AppKit draws them.
+    Font = 1,
+};
+
 // Cursor motion smoothing policy, DISTANCE-based. Off never glides; Short glides
 // short moves / snaps long jumps; Long is the inverse; Always glides every move.
 // Persisted under [cursor] motion as "off" | "short" | "long" | "always".
@@ -479,6 +494,7 @@ struct Values {
     std::optional<bool> underlineFollowsInk;
     std::optional<double> underlineSkipInkPad; // clearance beside crossing ink, pt; unset = the rule's own weight
     std::optional<CurlyUnderlineShape> curlyUnderlineShape; // compact | medium (default) | wide
+    std::optional<UnderlineMetrics> underlineMetrics; // ubiquitty (default) | font: where the rule's position and weight come from
     std::optional<bool> underlineLinks; // OSC 8 link cells dotted-underlined
     std::optional<int> linkUnderlineStyle; // OSC 8 link underline: 0 = single, 1 = dotted
     std::optional<bool> linkColorSystemBlue; // force OSC 8 link text + underline to system blue
@@ -1047,6 +1063,24 @@ bool parseHexColor(const std::string& s, ColorEntry& out);
 /// - Parameter shape: The shape to spell.
 /// - Returns: Its lowercase token.
 [[nodiscard]] const char* curlyUnderlineShapeToString(CurlyUnderlineShape shape);
+
+/// Maps a `[underline] metrics` token to its source.
+///
+/// Matches "ubiquitty" or "font", ignoring case and surrounding whitespace,
+/// so an unrecognized token leaves the key unset rather than resolving to the
+/// other source.
+///
+/// - Parameter token: The value as the file spells it.
+/// - Returns: The source, or `std::nullopt` for any other token.
+[[nodiscard]] std::optional<UnderlineMetrics> underlineMetricsFromString(const std::string& token);
+
+/// Returns the canonical token for an underline metrics source.
+///
+/// The inverse of ``underlineMetricsFromString``, for writing the file.
+///
+/// - Parameter metrics: The source to spell.
+/// - Returns: Its lowercase token.
+[[nodiscard]] const char* underlineMetricsToString(UnderlineMetrics metrics);
 
 // Map a cursor-motion string ("off" | "short" | "long" | "always", case-
 // insensitive) to a CursorMotionMode, or std::nullopt for unrecognized input.

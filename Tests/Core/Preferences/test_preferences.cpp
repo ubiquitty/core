@@ -60,6 +60,9 @@ using Ubiquitty::Preferences::tabShortcutHintsFromInt;
 using Ubiquitty::Preferences::tabShortcutHintsToInt;
 using Ubiquitty::Preferences::TitlebarStyle;
 using Ubiquitty::Preferences::titlebarStyleFromString;
+using Ubiquitty::Preferences::UnderlineMetrics;
+using Ubiquitty::Preferences::underlineMetricsFromString;
+using Ubiquitty::Preferences::underlineMetricsToString;
 using Ubiquitty::Preferences::Values;
 
 static Values parseString(const std::string& text)
@@ -283,6 +286,7 @@ TEST(testDefaultsWhenEmpty)
     CHECK(!c.underlineSkipInkPad.has_value());
     CHECK(c.underlineSkipInkPad.value_or(Ubiquitty::Preferences::Defaults::underlineSkipInkPad) < 0.0); // automatic: the rule's own weight
     CHECK(c.curlyUnderlineShape.value_or(Ubiquitty::Preferences::Defaults::curlyUnderlineShape) == CurlyUnderlineShape::Medium);
+    CHECK(c.underlineMetrics.value_or(Ubiquitty::Preferences::Defaults::underlineMetrics) == UnderlineMetrics::Ubiquitty);
     CHECK(c.notifications.value_or(Ubiquitty::Preferences::Defaults::notifications) == true); // OS notifications default on
     CHECK(c.notificationSound.value_or(Ubiquitty::Preferences::Defaults::notificationSound) == true); // banner sound default on
     CHECK(c.clipboardRead.value_or("prompt") == "prompt"); // OSC 52 read gate defaults to prompt
@@ -315,6 +319,10 @@ TEST(testStrictParseRejectsFixtureMistakes)
     CHECK(!parseStrict("[underline]\ncurly = \"squiggly\"\n", badCurl));
     CHECK(!badCurl.curlyUnderlineShape.has_value());
 
+    Values badMetrics;
+    CHECK(!parseStrict("[underline]\nmetrics = \"appkit\"\n", badMetrics));
+    CHECK(!badMetrics.underlineMetrics.has_value());
+
     Values permissive;
     std::istringstream input("[font]\nfuture_key = true\n");
     CHECK(parse(input, permissive));
@@ -327,12 +335,14 @@ TEST(testUnderlineSection)
                            "offset = 2\n"
                            "skip_ink = false\n"
                            "skip_ink_pad = 2.5\n"
-                           "curly = \"compact\"\n");
+                           "curly = \"compact\"\n"
+                           "metrics = \"font\"\n");
     CHECK(c.underlineThickness == 1.5);
     CHECK(c.underlineOffset == 2.0);
     CHECK(c.underlineSkipInk == false);
     CHECK(c.underlineSkipInkPad == 2.5);
     CHECK(c.curlyUnderlineShape == CurlyUnderlineShape::Compact);
+    CHECK(c.underlineMetrics == UnderlineMetrics::Font);
 
     // An unset or unrecognized curl leaves the field empty, and the accessor
     // answers the medium default over it.
@@ -342,6 +352,25 @@ TEST(testUnderlineSection)
     CHECK(Ubiquitty::Preferences::Effective::curlyUnderlineShape(unknownCurl) == CurlyUnderlineShape::Medium);
     const Values numericCurl = parseString("[underline]\ncurly = 2\n");
     CHECK_MSG(!numericCurl.curlyUnderlineShape.has_value(), "the curl is a token, not the enumerator's number");
+
+    // The same for the metrics source, whose default is ours.
+    CHECK(!parseString("").underlineMetrics.has_value());
+    const Values unknownMetrics = parseString("[underline]\nmetrics = \"appkit\"\n");
+    CHECK(!unknownMetrics.underlineMetrics.has_value());
+    CHECK(Ubiquitty::Preferences::Effective::underlineMetrics(unknownMetrics) == UnderlineMetrics::Ubiquitty);
+    const Values numericMetrics = parseString("[underline]\nmetrics = 1\n");
+    CHECK_MSG(!numericMetrics.underlineMetrics.has_value(), "the source is a token, not the enumerator's number");
+}
+
+TEST(testUnderlineMetricsStrings)
+{
+    CHECK(underlineMetricsFromString("ubiquitty") == UnderlineMetrics::Ubiquitty);
+    CHECK(underlineMetricsFromString("FONT") == UnderlineMetrics::Font);
+    CHECK(underlineMetricsFromString(" font ") == UnderlineMetrics::Font);
+    CHECK(underlineMetricsFromString("appkit") == std::nullopt);
+    CHECK(underlineMetricsFromString("") == std::nullopt);
+    for (const UnderlineMetrics metrics : { UnderlineMetrics::Ubiquitty, UnderlineMetrics::Font })
+        CHECK(underlineMetricsFromString(underlineMetricsToString(metrics)) == metrics);
 }
 
 TEST(testCurlyUnderlineShapeStrings)

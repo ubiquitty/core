@@ -31,6 +31,7 @@ using Ubiquitty::Preferences::CursorShape;
 using Ubiquitty::Preferences::parse;
 using Ubiquitty::Preferences::TabShortcutHints;
 using Ubiquitty::Preferences::TitlebarStyle;
+using Ubiquitty::Preferences::UnderlineMetrics;
 using Ubiquitty::Preferences::Values;
 namespace Defaults = Ubiquitty::Preferences::Defaults;
 
@@ -129,6 +130,8 @@ TEST(testAccessorsReturnDefaultsWhenUnset)
     CHECK(Ubiquitty::Preferences::Effective::underlineSkipInk(c) == true);
     CHECK(Ubiquitty::Preferences::Effective::curlyUnderlineShape(c) == Defaults::curlyUnderlineShape);
     CHECK(Ubiquitty::Preferences::Effective::curlyUnderlineShape(c) == CurlyUnderlineShape::Medium);
+    CHECK(Ubiquitty::Preferences::Effective::underlineMetrics(c) == Defaults::underlineMetrics);
+    CHECK(Ubiquitty::Preferences::Effective::underlineMetrics(c) == UnderlineMetrics::Ubiquitty);
     CHECK(Ubiquitty::Preferences::Effective::underlineLinks(c) == true);
     CHECK(Ubiquitty::Preferences::Effective::linkUnderlineStyle(c) == 0);
     CHECK(Ubiquitty::Preferences::Effective::backgroundOpacity(c) == 1.0);
@@ -171,7 +174,8 @@ TEST(testTheRenderConfigurationResolvesOnceForEveryFrontend)
 {
     Values c = parseString("[font]\nfamily = \"JetBrains Mono\"\nsize = 14\nline_spacing = 8\n"
                            "[appearance]\npadding_left = 2\npadding_right = 4\npadding_top = 6\npadding_bottom = 8\n"
-                           "[underline]\nthickness = 2.5\noffset = -1\nskip_ink = false\nskip_ink_pad = 3\ncurly = \"wide\"\n");
+                           "[underline]\nthickness = 2.5\noffset = -1\nskip_ink = false\nskip_ink_pad = 3\ncurly = \"wide\"\n"
+                           "metrics = \"font\"\n");
     const Ubiquitty::Rendering::RenderConfiguration settings = Ubiquitty::Preferences::Effective::renderConfiguration(c);
     CHECK(settings.fontFamily.view() == "JetBrains Mono");
     CHECK(settings.fontSizePoints == 14.0);
@@ -185,6 +189,7 @@ TEST(testTheRenderConfigurationResolvesOnceForEveryFrontend)
     CHECK(!settings.shouldUnderlineSkipInk);
     CHECK(settings.underlineSkipInkPaddingPoints == 3.0);
     CHECK(settings.curlyRuleShape == Ubiquitty::Rendering::CurlyRuleShape::Wide);
+    CHECK(settings.underlineMetrics == Ubiquitty::Rendering::RuleMetricsSource::Font);
 
     const Ubiquitty::Rendering::RenderConfiguration defaults = Ubiquitty::Preferences::Effective::renderConfiguration(Values {});
     CHECK(defaults.fontFamily.view().empty());
@@ -192,6 +197,7 @@ TEST(testTheRenderConfigurationResolvesOnceForEveryFrontend)
     CHECK(defaults.lineSpacingPoints == Defaults::lineSpacing);
     CHECK(defaults.underlineThicknessScale == Defaults::underlineThickness);
     CHECK(defaults.curlyRuleShape == Ubiquitty::Rendering::CurlyRuleShape::Medium);
+    CHECK(defaults.underlineMetrics == Ubiquitty::Rendering::RuleMetricsSource::Ubiquitty);
     CHECK_MSG(defaults.underlineSkipInkPaddingPoints < 0.0, "an unset skip-ink clearance folds as automatic");
 }
 

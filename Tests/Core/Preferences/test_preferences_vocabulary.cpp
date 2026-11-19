@@ -102,7 +102,7 @@ TEST(testEveryVocabularyIsWellFormed)
         }
     }
     // The table is not vacuously well-formed: it really does cover keys.
-    CHECK(withVocabulary == 16);
+    CHECK(withVocabulary == 17);
 }
 
 TEST(testBrailleVocabularyRoundTripsInEnumOrder)
@@ -165,6 +165,7 @@ TEST(testEnumVocabulariesRoundTripThroughTheirConverters)
     using namespace Ubiquitty::Preferences;
     checkEnumVocabulary<CursorShape>(Key::CursorShape, cursorShapeFromString, cursorShapeToString);
     checkEnumVocabulary<CurlyUnderlineShape>(Key::UnderlineCurly, curlyUnderlineShapeFromString, curlyUnderlineShapeToString);
+    checkEnumVocabulary<UnderlineMetrics>(Key::UnderlineMetrics, underlineMetricsFromString, underlineMetricsToString);
     checkEnumVocabulary<CursorMotionMode>(Key::CursorMotion, cursorMotionFromString, cursorMotionToString);
     checkEnumVocabulary<TabShortcutHints>(Key::TabsShowShortcuts, tabShortcutHintsFromString, tabShortcutHintsToString);
     checkEnumVocabulary<TitlebarStyle>(Key::AppearanceTitlebarStyle, titlebarStyleFromString, titlebarStyleToString);
@@ -214,6 +215,11 @@ TEST(testLabelsMatchTheShippedPickers)
     CHECK(sameString(curl[0].label, "Compact"));
     CHECK(sameString(curl[1].label, "Medium"));
     CHECK(sameString(curl[2].label, "Wide"));
+
+    const std::span<const VocabularyTerm> metrics = vocabularyFor(Key::UnderlineMetrics);
+    CHECK(metrics.size() == 2);
+    CHECK(sameString(metrics[0].label, "Ubiquitty"));
+    CHECK(sameString(metrics[1].label, "Font"));
 
     // The two a title-cased token would have got wrong.
     const std::span<const VocabularyTerm> space = vocabularyFor(Key::AppearanceColorSpace);

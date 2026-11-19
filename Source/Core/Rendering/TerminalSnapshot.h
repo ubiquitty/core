@@ -58,6 +58,9 @@ struct TerminalSnapshotStyle {
     float underlineSkipInkPaddingInPixels = -1.0f;
     /// The shape a curly underline draws at (`[underline] curly`).
     CurlyRuleShape curlyRuleShape = CurlyRuleShape::Medium;
+    /// Where the single underline's top and weight come from
+    /// (`[underline] metrics`).
+    RuleMetricsSource underlineMetrics = RuleMetricsSource::Ubiquitty;
     bool shouldBrightenBold = false;
     /// Whether braille draws as the renderer's 2x4 dot lattice rather
     /// than as glyphs from the face.
@@ -132,13 +135,17 @@ inline void applyRuleStyle(CellMetrics& metrics, const TerminalSnapshotStyle& st
     metrics.underlineThickness *= thicknessScale;
     metrics.underlineThicknessBold *= thicknessScale;
     metrics.underlineCurlyThickness *= thicknessScale;
+    metrics.fontUnderlineThickness *= thicknessScale;
     metrics.strikeThickness *= thicknessScale;
     metrics.strikeThicknessBold *= thicknessScale;
     // Folded into the drop rather than carried separately: the rule line is the
     // only thing either one moves.
     metrics.underlineDrop += style.underlineOffsetInPixels;
     metrics.underlineDropBold += style.underlineOffsetInPixels;
+    // The face's declared top stays the face's: the builder adds the offset
+    // to it where it reads it, since zero there means the face declared none.
     metrics.underlineOffset = style.underlineOffsetInPixels;
+    metrics.underlineMetrics = style.underlineMetrics;
     metrics.skipInk = style.shouldUnderlineSkipInk;
     metrics.shouldUnderlineFollowInk = style.shouldUnderlineFollowInk;
     // Negative, or not a number, is automatic: the rule's own weight

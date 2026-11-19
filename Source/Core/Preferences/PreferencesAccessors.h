@@ -257,8 +257,9 @@ double underlineThickness(const Values& c);
 /// Returns the points the underline moves from its automatic position:
 /// `[underline] offset`.
 ///
-/// Positive moves it down. 0 is automatic: the rule's top sits a clear gap of
-/// 0.85 of its weight below the baseline, in whole device pixels.
+/// Positive moves it down. 0 is automatic: the rule's top sits the larger of
+/// a clear gap of 0.85 of its weight and the face's declared position below
+/// the baseline, in whole device pixels.
 ///
 /// - Parameter c: The configuration to read.
 /// - Returns: The offset in points, or its default.
@@ -297,6 +298,12 @@ float underlineSkipInkPaddingInPixels(double points, double deviceScale);
 /// - Parameter c: The configuration to read.
 /// - Returns: The shape, or the medium default.
 CurlyUnderlineShape curlyUnderlineShape(const Values& c);
+/// Returns where the single underline's position and weight come from:
+/// `[underline] metrics`.
+///
+/// - Parameter c: The configuration to read.
+/// - Returns: The source, or the ubiquitty default.
+UnderlineMetrics underlineMetrics(const Values& c);
 bool underlineLinks(const Values& c);
 int linkUnderlineStyle(const Values& c);
 

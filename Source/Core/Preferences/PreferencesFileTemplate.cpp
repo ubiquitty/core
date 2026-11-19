@@ -89,6 +89,8 @@ std::string defaultFileContents()
            "# follows_ink = true      # a word's outer rule reaches the letter's ink past the cell\n"
            "# skip_ink_pad = 1.0      # clearance beside ink, points; unset = the underline's own weight\n"
            "# curly = \"medium\"        # curly underline: compact | medium | wide\n"
+           "# metrics = \"ubiquitty\"   # rule position and weight: ubiquitty (the underscore's weight, a clear gap "
+           "below the baseline) | font (the face's declared underline)\n"
            "# links = true            # OSC 8 link cells get an underline\n"
            "# link_style = 0          # link underline: 0 = solid (default), 1 = dotted\n"
            "# link_color_blue = false # force link text + underline to system blue (web-style)\n"

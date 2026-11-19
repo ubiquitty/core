@@ -96,6 +96,12 @@ inline constexpr VocabularyTerm curlyUnderlineShapeTerms[] = {
     { "wide", "Wide" },
 };
 
+// [underline] metrics — UnderlineMetrics
+inline constexpr VocabularyTerm underlineMetricsTerms[] = {
+    { "ubiquitty", "Ubiquitty" },
+    { "font", "Font" },
+};
+
 // [tabs] show_shortcuts — TabShortcutHints
 inline constexpr VocabularyTerm tabShortcutHintsTerms[] = {
     { "off", "Off" },
@@ -200,6 +206,8 @@ inline constexpr VocabularyTerm terminalEncodingTerms[] = {
         return Internal::cursorMotionTerms;
     case Key::UnderlineCurly:
         return Internal::curlyUnderlineShapeTerms;
+    case Key::UnderlineMetrics:
+        return Internal::underlineMetricsTerms;
     case Key::TabsShowShortcuts:
         return Internal::tabShortcutHintsTerms;
     case Key::FontBrailleStyle:
@@ -284,6 +292,9 @@ static_assert(vocabularyIndexOf(Key::CursorShape, "diamond") == -1, "a token out
 static_assert(vocabularyFor(Key::UnderlineCurly).size() == 3, "curly underline offers compact / medium / wide");
 static_assert(vocabularyIndexOf(Key::UnderlineCurly, "wide") == 2, "a curly term's index is its enum value");
 static_assert(vocabularyFor("underline", "curly").size() == 3, "the strings overload resolves the curly row");
+static_assert(vocabularyFor(Key::UnderlineMetrics).size() == 2, "underline metrics offers ubiquitty / font");
+static_assert(vocabularyIndexOf(Key::UnderlineMetrics, "font") == 1, "a metrics term's index is its enum value");
+static_assert(vocabularyFor("underline", "metrics").size() == 2, "the strings overload resolves the metrics row");
 static_assert(!hasVocabulary(Key::FontFamily), "a free-text key admits no closed vocabulary");
 static_assert(!hasVocabulary(Key::WindowDragModifier), "a modifier chord is not a closed list");
 static_assert(vocabularyFor("cursor", "shape").size() == 3, "the strings overload resolves the same row");

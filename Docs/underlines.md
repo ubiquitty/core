@@ -23,9 +23,28 @@ rule cannot read one way on the Mac and another in a browser.
   drawn in whole device pixels, at least one (`ruleWeight`), as AppKit draws
   an underline: a partial last row reads as blur, not weight. `[underline]
   thickness` scales it before the rounding: 1.0 is the font's own weight.
-- **Offset.** The rule sits a clear gap below the baseline: 0.85 of its weight,
-  in whole rows, never under one (`underlineGapInWeights`). `[underline]
-  offset` moves it, in points, down for positive; 0 leaves it automatic.
+- **Offset.** The rule's top sits the larger of 0.85 of its weight, in whole
+  rows and never under one (`underlineGapInWeights`), and the face's declared
+  underline position (`post.underlinePosition`, floored to its row) below the
+  baseline (`underlineTopNoHigherThanDeclared`), so a face that asks for more
+  room gets it and one that crowds its letters does not. At 12 points on a 2x
+  display JetBrains Mono, declaring 3.72 pixels, gets three clear rows under
+  its stems, as TextEdit draws it; SF Mono (2.34) and Monaspace Neon (0.84)
+  keep the gap's two. `[underline] offset` moves the rule, in points, down for
+  positive, and moves the declared position with it; 0 leaves it automatic.
+- **Metrics.** `[underline] metrics` picks where the single rule's top and
+  weight come from, and every shape below follows them. `ubiquitty`, the
+  default, is the rule above: the underscore's weight and the larger gap.
+  `font` draws the face's own declared underline as AppKit does: the rectangle
+  from the declared position below the baseline (`post.underlinePosition`) down
+  by the declared thickness (`post.underlineThickness`), snapped outward to
+  whole device rows (`declaredUnderlineRows`), so SF Mono
+  at 12 points on 2x sits on rows 2 and 3 below the baseline and JetBrains
+  Mono on rows 3 and 4, two rows thick, as in TextEdit. `[underline]
+  thickness` scales the declared thickness and `[underline] offset` moves the
+  declared position. A face whose engine reports no declared position (the
+  web arm, a bitmap face) keeps the `ubiquitty` rule. The skip-ink clearance
+  left automatic stays the underscore's weight in either.
 - **Double.** Two rules at the single's weight, 0.85 of a weight apart and
   never less than a point (`doubledRuleGap`, `pairedRuleTop`).
 - **Dotted.** Round dots 1.15 times the single's weight, grid-fitted, two dot

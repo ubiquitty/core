@@ -2621,6 +2621,97 @@ TEST(testRuleThicknessFloors)
         CHECK(decorations[i].thicknessInPixels >= 0.75f);
 }
 
+// `[underline] metrics` moves every underline shape with the single rule. At
+// 12 points on a 2x display, a baseline on row 36 of a cell: ours sits two
+// clear rows under the stems at the underscore's two-row weight, or lower where
+// the face declares a lower rule (JetBrains Mono's 3.72 pixels, three rows);
+// the font's own is the declared rectangle snapped outward, SF Mono's on rows
+// 2 and 3 below the baseline, JetBrains Mono's on 3 and 4, and Monaspace
+// Neon's, declared 0.84 down, on 0 and 1. Double, curly, dotted and dashed
+// all start on the single's top row, at its weight.
+TEST(everyUnderlineShapeFollowsTheChosenRuleMetrics)
+{
+    TermPalette pal;
+    pal.seedDefaults();
+    struct Declared {
+        const char* face;
+        float position;
+        float thickness;
+    };
+    constexpr Declared none { "none declared", 0.0f, 0.0f };
+    constexpr Declared sfMono { "SF Mono", 2.34f, 1.17f };
+    constexpr Declared jetBrainsMono { "JetBrains Mono", 3.72f, 1.20f };
+    constexpr Declared monaspaceNeon { "Monaspace Neon", 0.84f, 0.864f };
+    constexpr float baseline = 36.0f;
+    const auto rulesFor = [&](const Declared& declared, RuleMetricsSource source, Ubiquitty::VT::UnderlineShape shape) {
+        Ubiquitty::Cell cell {};
+        cell.codePoint = 0x41u;
+        cell.pen.foregroundIndex = colorDefault;
+        cell.pen.backgroundIndex = colorDefault;
+        cell.pen.underlineIndex = colorDefault;
+        cell.pen.attributes = Ubiquitty::VT::Attribute::Underline;
+        Ubiquitty::penSetUnderlineShape(&cell.pen, shape);
+        BuildInputs in;
+        in.cells = &cell;
+        in.rows = 1;
+        in.columns = 1;
+        in.palette = &pal;
+        in.metrics.cellWidth = 14.0f;
+        in.metrics.cellHeight = 48.0f;
+        in.metrics.baselineFromTop = baseline;
+        in.metrics.deviceScale = 2.0f;
+        // The face policy at 12 points on 2x for an underscore of 1.78
+        // pixels: a two-row rule two rows down, and the em's lift.
+        in.metrics.underlineThickness = 2.0f;
+        in.metrics.underlineCurlyThickness = 2.0f;
+        in.metrics.underlineDrop = 3.0f;
+        in.metrics.underlineStrokeLift = underlineStrokeLiftForEm(24.0f);
+        in.metrics.strikeThickness = 2.0f;
+        in.metrics.xHeight = 10.0f;
+        in.metrics.fontUnderlineTop = declared.position;
+        in.metrics.fontUnderlineThickness = declared.position > 0.0f ? declared.thickness : 0.0f;
+        in.metrics.underlineMetrics = source;
+        FakeAtlas atlas;
+        std::vector<CellInstance> cells(1);
+        std::vector<DecorationInstance> decorations(8);
+        InstanceBuffers buffers { cells.data(), cells.size(), decorations.data(), decorations.size() };
+        const InstanceCounts counts = buildCellInstances(in, UbiquittyTest::glyphBackendFor(atlas), buffers);
+        decorations.resize(std::min<std::size_t>(counts.decorations, decorations.size()));
+        return decorations;
+    };
+    const auto check = [&](const Declared& declared, RuleMetricsSource source, float rowsDown, float weight) {
+        const std::string name = std::string(declared.face) + (source == RuleMetricsSource::Font ? ", font" : ", ubiquitty");
+        const float top = baseline + rowsDown;
+        const auto single = rulesFor(declared, source, Ubiquitty::VT::UnderlineShape::Single);
+        REQUIRE_MSG(single.size() == 1, name.c_str());
+        CHECK_MSG(approx(single[0].topLeftInPixels.y, top), (name + ": the single's top").c_str());
+        CHECK_MSG(approx(single[0].bottomRightInPixels.y - single[0].topLeftInPixels.y, weight), (name + ": the single's weight").c_str());
+        const auto pair = rulesFor(declared, source, Ubiquitty::VT::UnderlineShape::Double);
+        REQUIRE_MSG(pair.size() == 2, name.c_str());
+        CHECK_MSG(approx(pair[0].topLeftInPixels.y, top), (name + ": the pair's upper rule is the single").c_str());
+        CHECK_MSG(approx(pair[0].bottomRightInPixels.y - pair[0].topLeftInPixels.y, weight), (name + ": at its weight").c_str());
+        CHECK_MSG(approx(pair[1].topLeftInPixels.y, pairedRuleTop(top, weight, doubledRuleGap(weight, 2.0f))), (name + ": the lower hangs a gap below").c_str());
+        const auto curl = rulesFor(declared, source, Ubiquitty::VT::UnderlineShape::Curly);
+        REQUIRE_MSG(curl.size() == 1, name.c_str());
+        CHECK_MSG(approx(curl[0].topLeftInPixels.y, top), (name + ": the curl starts on the single's top").c_str());
+        CHECK_MSG(approx(curl[0].thicknessInPixels, weight), (name + ": at its weight").c_str());
+        for (const auto shape : { Ubiquitty::VT::UnderlineShape::Dotted, Ubiquitty::VT::UnderlineShape::Dashed }) {
+            const auto marks = rulesFor(declared, source, shape);
+            REQUIRE_MSG(marks.size() == 1, name.c_str());
+            CHECK_MSG(approx(marks[0].topLeftInPixels.y, top), (name + ": a patterned rule starts on the single's top").c_str());
+        }
+    };
+    check(none, RuleMetricsSource::Ubiquitty, 2.0f, 2.0f);
+    check(sfMono, RuleMetricsSource::Ubiquitty, 2.0f, 2.0f);
+    check(jetBrainsMono, RuleMetricsSource::Ubiquitty, 3.0f, 2.0f);
+    check(monaspaceNeon, RuleMetricsSource::Ubiquitty, 2.0f, 2.0f);
+    check(sfMono, RuleMetricsSource::Font, 2.0f, 2.0f);
+    check(jetBrainsMono, RuleMetricsSource::Font, 3.0f, 2.0f);
+    check(monaspaceNeon, RuleMetricsSource::Font, 0.0f, 2.0f);
+    // A face that declares nothing has no font rule to draw, and keeps ours.
+    check(none, RuleMetricsSource::Font, 2.0f, 2.0f);
+}
+
 // A double-height row on a backend with no 2x master falls back to halving
 // the 1x glyph: the top half for the top row, the bottom half for the bottom,
 // and never the same range twice.

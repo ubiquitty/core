@@ -59,6 +59,8 @@ std::optional<Value> specialValue(Key key, const Values& values)
             colorblindModeToString(Effective::colorblindMode(values)));
     case Key::UnderlineCurly:
         return token(SerializeKind::EnumToken, curlyUnderlineShapeToString(Effective::curlyUnderlineShape(values)));
+    case Key::UnderlineMetrics:
+        return token(SerializeKind::EnumToken, underlineMetricsToString(Effective::underlineMetrics(values)));
     case Key::CursorShape:
         return token(SerializeKind::EnumToken, cursorShapeToString(Effective::cursorShape(values)));
     case Key::CursorMotion:
@@ -218,6 +220,8 @@ std::optional<Value> effectiveValue(Key key, const Values& values)
         return Value::ofNumber(SerializeKind::Double, static_cast<double>(Effective::underlineSkipInkPad(values)));
     case Key::UnderlineCurly:
         return specialValue(Key::UnderlineCurly, values);
+    case Key::UnderlineMetrics:
+        return specialValue(Key::UnderlineMetrics, values);
     case Key::TextBrightenBold:
         return Value::ofBool(SerializeKind::Bool, Effective::brightenBold(values));
     case Key::AppearanceBeamTerminalFont:

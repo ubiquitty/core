@@ -16,8 +16,10 @@
 // device rows (every sample; round fails a third of them), and places the
 // rule so its top row is floor(0.48·(descent + leading) − t/2) below the
 // baseline (98 of 132 samples exact, the rest one row off) — the rule splits
-// the descender space, and `post.underlinePosition` is not consulted (Monaco's
-// 0.9pt metric and Courier's 5.6pt land within a row of each other).
+// the descender space. Ubiquitty's own rule sits a clear gap below the
+// baseline instead (underlineGapInWeights), or lower where the face declares
+// a lower one (`post.underlinePosition`); `[underline] metrics = "font"` draws
+// the declared rule itself, as TextEdit does (declaredUnderlineRows).
 //
 // The face is the PRIMARY face, measured once: a fallback glyph on the row
 // never changes the rule's weight, which is the objection a per-glyph reading
@@ -49,6 +51,12 @@ struct UBIQUITTY_ESCAPABLE RuleGeometry {
     /// Strike stroke. Tracks the underline, so a heavier rule reads heavier
     /// struck through.
     float strikeThickness = 1.0f;
+    /// The top of the face's declared underline, below the baseline; zero
+    /// when the face declares none (RuleFaceMetrics::underlinePosition).
+    float fontUnderlineTop = 0.0f;
+    /// The face's declared underline thickness; zero when the face declares
+    /// no position, so a font rule with no place to stand falls back to ours.
+    float fontUnderlineThickness = 0.0f;
 };
 
 /// Computes where the rules sit for a type size.
@@ -97,6 +105,14 @@ struct UBIQUITTY_ESCAPABLE RuleFaceMetrics {
     /// The face's underline weight (`post.underlineThickness`, or the engine's
     /// synthesis for a face without one), scaled to device pixels.
     float underlineThickness = 0.0f;
+    /// The face's declared underline position: the distance from the baseline
+    /// down to the TOP of the rule, positive down, as `post.underlinePosition`
+    /// states it negated, in device pixels. Zero when the engine cannot read
+    /// one; a rule declared at or above the baseline counts as none.
+    ///
+    /// FreeType reports the centre of the stem rather than its top, so its
+    /// engine adds half the thickness back before it fills this.
+    float underlinePosition = 0.0f;
     /// The weight the face's own underscore draws at, as the engine's glyph
     /// raster draws it: the coverage down a column through its middle.
     ///
@@ -157,13 +173,17 @@ struct UBIQUITTY_ESCAPABLE RuleFaceMetrics {
     return static_cast<float>(total) / (255.0f * static_cast<float>(to - from));
 }
 
-/// How far below the baseline a rule's top sits, in the rule's own weights.
+/// How far below the baseline a rule's top sits at least, in the rule's own
+/// weights.
 ///
 /// Faces declare an underline position, and the declarations disagree: one
 /// face's rule all but touches its letters and another's floats a stroke and a
 /// half below them. A gap a little under the rule's weight reads as one rhythm
 /// in every face, letter, space, rule, and keeps a heavier rule from crowding
-/// the text it underlines.
+/// the text it underlines. The rule sits the larger of this gap and the face's
+/// declared position below the baseline (underlineTopNoHigherThanDeclared), so a
+/// face that asks for more room gets it and one that crowds its letters does
+/// not.
 inline constexpr float underlineGapInWeights = 0.85f;
 
 /// Returns a rule's weight as drawn: the nearest whole number of device rows,
@@ -193,7 +213,13 @@ inline constexpr float underlineGapInWeights = 0.85f;
 /// The drop is the offset the builder anchors a straight rule's top at
 /// (`baseline + drop − strokeLift`), chosen so that top lands a clear gap below
 /// the baseline (underlineGapInWeights): the lift the builder subtracts is
-/// added back here.
+/// added back here. The builder then takes the larger of that top and the
+/// face's declared one (underlineTopNoHigherThanDeclared), which needs the cell's
+/// baseline and so is not folded into the drop: the rule sits the larger of
+/// 0.85 of its weight and the face's declared position below the baseline.
+/// The declared position and thickness are passed through for that and for
+/// `[underline] metrics = "font"`, both zero when the face declares no
+/// position.
 ///
 /// - Parameters:
 ///   - fontSizeInDevicePixels: The em size, already multiplied by the display
@@ -218,7 +244,101 @@ inline constexpr float underlineGapInWeights = 0.85f;
         const float top = std::max(1.0f, std::round(underlineGapInWeights * geometry.underlineThickness));
         geometry.underlineDrop = std::max(1.0f, top + underlineStrokeLiftForEm(fontSizeInDevicePixels));
     }
+    if (face.underlinePosition > 0.0f && std::isfinite(face.underlinePosition)) {
+        geometry.fontUnderlineTop = face.underlinePosition;
+        geometry.fontUnderlineThickness = face.underlineThickness > 0.0f && std::isfinite(face.underlineThickness) ? face.underlineThickness : 0.0f;
+    }
     return geometry;
+}
+
+/// How far inside a whole device row a declared edge may fall and still count
+/// as on it, in device pixels.
+///
+/// A face's declared underline lands on the grid exactly at some sizes, two
+/// points at 1x for a face declaring a tenth of an em, and the float sum of the
+/// baseline and the position can miss that row by a rounding error. The rule
+/// would then gain a whole row of weight, or drop a row, for a difference no
+/// one could see.
+inline constexpr float declaredRuleEdgeTolerance = 1.0f / 64.0f;
+
+/// A rule's place on the device grid.
+struct UBIQUITTY_ESCAPABLE RuleRows {
+    /// The rule's top, a whole device row down the drawable.
+    float top = 0.0f;
+    /// The rule's weight, a whole number of rows, at least one.
+    float weight = 1.0f;
+};
+
+/// Returns the top row of the face's declared underline, snapped down to the
+/// row it starts in.
+///
+/// `underline_offset` moves it as it moves the drop, so the offset reads the
+/// same whichever rule ends up lower.
+///
+/// - Parameters:
+///   - metrics: The frame's cell metrics, carrying the declared top and the
+///     offset.
+///   - baselineY: The cell's baseline, in device pixels down the drawable.
+/// - Returns: The row; meaningful only where the face declares a position.
+[[nodiscard]] inline float declaredUnderlineTop(const CellMetrics& metrics, float baselineY)
+{
+    return std::floor(baselineY + metrics.fontUnderlineTop + metrics.underlineOffset + declaredRuleEdgeTolerance);
+}
+
+/// Returns an underline top moved down to the face's declared one where that
+/// is lower: the rule sits the larger of its own clear gap and the face's
+/// declared position below the baseline.
+///
+/// A face that declares a roomy underline, JetBrains Mono's 3.72 pixels at 12
+/// points on a 2x display, gets its three clear rows under the stems as
+/// TextEdit draws them; one that declares a rule crowding its letters,
+/// Monaspace Neon's 0.84, keeps the gap. The weight is not the face's: it stays
+/// the underscore's (ruleWeight).
+///
+/// - Parameters:
+///   - top: The rule's own top row (singleUnderlineTop, or a pair's upper rule).
+///   - metrics: The frame's cell metrics, carrying the declared top and the
+///     offset.
+///   - baselineY: The cell's baseline, in device pixels down the drawable.
+/// - Returns: The lower of the two rows, the one further from the text, or
+///   `top` for a face that declares no position.
+[[nodiscard]] inline float underlineTopNoHigherThanDeclared(float top, const CellMetrics& metrics, float baselineY)
+{
+    return metrics.fontUnderlineTop > 0.0f ? std::max(top, declaredUnderlineTop(metrics, baselineY)) : top;
+}
+
+/// Whether a cell's underlines take the face's declared rule
+/// (`[underline] metrics = "font"`), which needs both its position and its
+/// thickness; a face missing either keeps the ubiquitty rule.
+///
+/// - Parameter metrics: The frame's cell metrics.
+/// - Returns: Whether the declared rule stands in for ours.
+[[nodiscard]] inline bool usesDeclaredUnderline(const CellMetrics& metrics)
+{
+    return metrics.underlineMetrics == RuleMetricsSource::Font && metrics.fontUnderlineTop > 0.0f && metrics.fontUnderlineThickness > 0.0f;
+}
+
+/// Returns the face's declared underline on the device grid, as AppKit draws
+/// it: the rectangle from `baseline + position` down by the thickness, snapped
+/// outward to whole rows.
+///
+/// TextEdit draws SF Mono at 12 points on a 2x display, declaring 2.34 pixels
+/// down and 1.17 thick, on rows 2 and 3 below the baseline; JetBrains Mono,
+/// declaring 3.72 and 1.20, on rows 3 and 4. `underline_offset` moves the
+/// rectangle and `[underline] thickness` has already scaled its thickness
+/// (applyRuleStyle).
+///
+/// - Parameters:
+///   - metrics: The frame's cell metrics, carrying the declared rule and the
+///     offset.
+///   - baselineY: The cell's baseline, in device pixels down the drawable.
+/// - Returns: The rule's top row and its weight in whole rows, at least one.
+[[nodiscard]] inline RuleRows declaredUnderlineRows(const CellMetrics& metrics, float baselineY)
+{
+    const float top = baselineY + metrics.fontUnderlineTop + metrics.underlineOffset;
+    const float upper = std::floor(top + declaredRuleEdgeTolerance);
+    const float lower = std::ceil(top + metrics.fontUnderlineThickness - declaredRuleEdgeTolerance);
+    return { .top = upper, .weight = std::max(1.0f, lower - upper) };
 }
 
 /// Returns the top of the second rule of a pair: the whole row nearest the gap
@@ -252,6 +372,32 @@ inline constexpr float underlineGapInWeights = 0.85f;
 [[nodiscard]] inline float singleUnderlineTop(float ruleLine, float weight, float deviceScale)
 {
     return std::max(std::round(ruleLine - weight * 0.5f + 0.5f * deviceScale), std::round(ruleLine));
+}
+
+/// Returns the single straight underline's top row and weight for a cell,
+/// from whichever source `[underline] metrics` names.
+///
+/// Every underline shape is laid from these two, so they move together. The
+/// ubiquitty rule is the underscore's weight in whole rows (ruleWeight), its
+/// top the lower of singleUnderlineTop and the face's declared top
+/// (underlineTopNoHigherThanDeclared); the font rule is the face's declared one
+/// (declaredUnderlineRows), where the face declares one.
+///
+/// - Parameters:
+///   - metrics: The frame's cell metrics.
+///   - baselineY: The cell's baseline, in device pixels down the drawable.
+///   - ruleLine: The ubiquitty rule line, baseline plus drop less the stroke
+///     lift, in device pixels down the drawable.
+///   - thickness: The ubiquitty weight before it is snapped: the bold or the
+///     regular rule's.
+/// - Returns: The rule's top row and weight; the top not yet held inside the
+///   cell.
+[[nodiscard]] inline RuleRows singleUnderlineRows(const CellMetrics& metrics, float baselineY, float ruleLine, float thickness)
+{
+    if (usesDeclaredUnderline(metrics))
+        return declaredUnderlineRows(metrics, baselineY);
+    const float weight = ruleWeight(thickness);
+    return { .top = underlineTopNoHigherThanDeclared(singleUnderlineTop(ruleLine, weight, metrics.deviceScale), metrics, baselineY), .weight = weight };
 }
 
 /// Returns the top row of a strike, which rides the x-height's midpoint.

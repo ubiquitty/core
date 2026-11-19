@@ -193,12 +193,12 @@ TEST(aRuleIsDrawnInWholeRows)
 
 UBIQUITTY_TEST_MAIN()
 
-// The face policy: a rule's top sits a clear gap below the baseline, 0.85 of
-// the rule's weight in whole rows and never under one, whatever position the
-// face declares — Monaspace Neon declares one that all but touches its letters
-// and JetBrains Mono one a stroke and a half lower, so following them would
-// set the same rule at a different height in every face. The weight is the
-// face's own in whole rows. Faces as measured on macOS 26.4 at 2x.
+// The face policy's drop: a rule's top sits a clear gap below the baseline,
+// 0.85 of the rule's weight in whole rows and never under one. The face's
+// declared position is not folded into the drop, which knows no baseline; the
+// builder lowers the rule to it where it is lower
+// (underlineTopNoHigherThanDeclared, tested below). The weight is the face's own
+// in whole rows. Faces as measured on macOS 26.4 at 2x.
 TEST(faceRuleSitsAGapBelowTheBaseline)
 {
     using Ubiquitty::Rendering::RuleFaceMetrics;
@@ -261,4 +261,144 @@ TEST(faceRuleFallsBackFieldByField)
     RuleFaceMetrics hairline;
     hairline.underlineThickness = 0.3f;
     CHECK(ruleGeometry(12.0f, 1.0f, hairline).underlineThickness >= 1.0f);
+}
+
+// The face's declared underline passes through the face policy untouched, for
+// the builder to read: its top below the baseline and its thickness. A face
+// that declares no position, or one at or above the baseline, declares none,
+// and the thickness then goes too, so a font rule with nowhere to stand falls
+// back to ours.
+TEST(theDeclaredUnderlinePassesThroughTheFacePolicy)
+{
+    using Ubiquitty::Rendering::RuleFaceMetrics;
+    RuleFaceMetrics face;
+    face.underscoreWeight = 1.78f;
+    face.descent = 7.2f;
+    face.underlineThickness = 1.2f;
+    face.underlinePosition = 3.72f;
+    const RuleGeometry declared = ruleGeometry(24.0f, 2.0f, face);
+    CHECK(close(declared.fontUnderlineTop, 3.72f));
+    CHECK(close(declared.fontUnderlineThickness, 1.2f));
+    CHECK_MSG(close(declared.underlineThickness, 2.0f), "the weight stays the underscore's");
+
+    face.underlinePosition = 0.0f;
+    const RuleGeometry undeclared = ruleGeometry(24.0f, 2.0f, face);
+    CHECK(undeclared.fontUnderlineTop == 0.0f);
+    CHECK_MSG(undeclared.fontUnderlineThickness == 0.0f, "a thickness with no position to hang from is not passed on");
+    CHECK_MSG(close(undeclared.underlineDrop, declared.underlineDrop), "the declaration never moves the drop");
+
+    face.underlinePosition = -1.5f;
+    CHECK_MSG(ruleGeometry(24.0f, 2.0f, face).fontUnderlineTop == 0.0f, "a rule declared above the baseline counts as none");
+}
+
+namespace {
+
+/// Returns the cell metrics an engine reports for a face at 12 points on a 2x
+/// display whose underscore draws 1.78 pixels, declaring the given underline.
+///
+/// - Parameters:
+///   - position: The declared top below the baseline, in device pixels; zero
+///     for none.
+///   - thickness: The declared thickness, in device pixels.
+///   - source: The `[underline] metrics` choice.
+/// - Returns: The metrics, as an engine copies them from the face policy.
+Ubiquitty::Rendering::CellMetrics twelvePointMetrics(float position, float thickness, Ubiquitty::Rendering::RuleMetricsSource source)
+{
+    Ubiquitty::Rendering::RuleFaceMetrics face;
+    face.underscoreWeight = 1.78f;
+    face.descent = 7.2f;
+    face.underlineThickness = thickness;
+    face.underlinePosition = position;
+    const RuleGeometry rules = ruleGeometry(24.0f, 2.0f, face);
+    Ubiquitty::Rendering::CellMetrics metrics;
+    metrics.deviceScale = 2.0f;
+    metrics.underlineThickness = rules.underlineThickness;
+    metrics.underlineDrop = rules.underlineDrop;
+    metrics.underlineStrokeLift = Ubiquitty::Rendering::underlineStrokeLiftForEm(24.0f);
+    metrics.fontUnderlineTop = rules.fontUnderlineTop;
+    metrics.fontUnderlineThickness = rules.fontUnderlineThickness;
+    metrics.underlineMetrics = source;
+    return metrics;
+}
+
+/// Returns the single underline's rows below a baseline on row 30.
+///
+/// - Parameter metrics: The cell metrics to place the rule by.
+/// - Returns: The rule's top as rows below the baseline, and its weight.
+Ubiquitty::Rendering::RuleRows rowsBelowTheBaseline(const Ubiquitty::Rendering::CellMetrics& metrics)
+{
+    constexpr float baseline = 30.0f;
+    const float ruleLine = baseline + metrics.underlineDrop - metrics.underlineStrokeLift;
+    Ubiquitty::Rendering::RuleRows rows = Ubiquitty::Rendering::singleUnderlineRows(metrics, baseline, ruleLine, metrics.underlineThickness);
+    rows.top -= baseline;
+    return rows;
+}
+
+} // namespace
+
+// The ubiquitty rule sits the larger of its own clear gap and the face's
+// declared position below the baseline, at its own weight. At 12 points on a
+// 2x display: JetBrains Mono declares 3.72 pixels, and gets TextEdit's three
+// clear rows under the stems where the gap alone leaves two; SF Mono declares
+// 2.34, which the gap already reaches; Monaspace Neon declares 0.84, a rule
+// crowding its letters, and keeps the gap. A face that declares nothing keeps
+// the gap.
+TEST(theUbiquittyRuleSitsNoHigherThanTheFaceDeclares)
+{
+    using Ubiquitty::Rendering::RuleMetricsSource;
+    struct Case {
+        const char* face;
+        float position;
+        float thickness;
+        float top;
+    };
+    const Case cases[] = {
+        { "none declared", 0.0f, 0.0f, 2.0f },
+        { "SF Mono", 2.34f, 1.17f, 2.0f },
+        { "JetBrains Mono", 3.72f, 1.20f, 3.0f },
+        { "Monaspace Neon", 0.84f, 0.864f, 2.0f },
+    };
+    for (const Case& c : cases) {
+        const auto rows = rowsBelowTheBaseline(twelvePointMetrics(c.position, c.thickness, RuleMetricsSource::Ubiquitty));
+        CHECK_MSG(close(rows.top, c.top), c.face);
+        CHECK_MSG(close(rows.weight, 2.0f), c.face);
+    }
+
+    // The offset moves the declared top as it moves ours: three rows down from
+    // a face whose declared top already wins puts the rule six rows down.
+    auto offset = twelvePointMetrics(3.72f, 1.20f, RuleMetricsSource::Ubiquitty);
+    offset.underlineOffset = 3.0f;
+    offset.underlineDrop += 3.0f;
+    CHECK(close(rowsBelowTheBaseline(offset).top, 6.0f));
+}
+
+// The font rule is the face's declared rectangle snapped outward to whole rows,
+// as TextEdit draws it: SF Mono's 2.34 down and 1.17 thick at 12 points on a
+// 2x display covers rows 2 and 3 below the baseline, JetBrains Mono's 3.72 and
+// 1.20 rows 3 and 4. A face that declares no position keeps ours.
+TEST(theFontRuleIsTheDeclaredRuleSnappedOutward)
+{
+    using Ubiquitty::Rendering::RuleMetricsSource;
+    const auto sfMono = rowsBelowTheBaseline(twelvePointMetrics(2.34f, 1.17f, RuleMetricsSource::Font));
+    CHECK(close(sfMono.top, 2.0f));
+    CHECK(close(sfMono.weight, 2.0f));
+    const auto jetBrains = rowsBelowTheBaseline(twelvePointMetrics(3.72f, 1.20f, RuleMetricsSource::Font));
+    CHECK(close(jetBrains.top, 3.0f));
+    CHECK(close(jetBrains.weight, 2.0f));
+    const auto monaspace = rowsBelowTheBaseline(twelvePointMetrics(0.84f, 0.864f, RuleMetricsSource::Font));
+    CHECK_MSG(close(monaspace.top, 0.0f), "the font rule follows the face even where it crowds the letters");
+    CHECK(close(monaspace.weight, 2.0f));
+
+    const auto undeclared = rowsBelowTheBaseline(twelvePointMetrics(0.0f, 1.2f, RuleMetricsSource::Font));
+    const auto ours = rowsBelowTheBaseline(twelvePointMetrics(0.0f, 1.2f, RuleMetricsSource::Ubiquitty));
+    CHECK_MSG(close(undeclared.top, ours.top) && close(undeclared.weight, ours.weight), "a face declaring no position keeps ours");
+
+    // A thin declaration still draws a row, and an edge a rounding error past
+    // a row's boundary does not take another row.
+    const auto hairline = rowsBelowTheBaseline(twelvePointMetrics(2.0f, 0.1f, RuleMetricsSource::Font));
+    CHECK(close(hairline.top, 2.0f));
+    CHECK(close(hairline.weight, 1.0f));
+    const auto exact = rowsBelowTheBaseline(twelvePointMetrics(2.0f + 1e-5f, 1.0f, RuleMetricsSource::Font));
+    CHECK(close(exact.top, 2.0f));
+    CHECK(close(exact.weight, 1.0f));
 }

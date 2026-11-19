@@ -105,6 +105,7 @@ float underlineSkipInkPaddingInPixels(double points, double deviceScale)
     return points < 0.0 ? -1.0f : static_cast<float>(points * deviceScale);
 }
 CurlyUnderlineShape curlyUnderlineShape(const Values& c) { return c.curlyUnderlineShape.value_or(Defaults::curlyUnderlineShape); }
+UnderlineMetrics underlineMetrics(const Values& c) { return c.underlineMetrics.value_or(Defaults::underlineMetrics); }
 bool underlineLinks(const Values& c) { return c.underlineLinks.value_or(Defaults::underlineLinks); }
 
 Screen::ScrollTuning::Policy wheelPolicy(const Values& c, double pointsPerLine)

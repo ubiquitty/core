@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 // Portable per-cell pixel metrics driving the decoration pass and cell
 // geometry. Platform backends fill these from their font engines or fallback
@@ -14,6 +15,22 @@
 // no platform/GPU/font-library types (enforced by Scripts/check-boundaries.py).
 
 namespace Ubiquitty::Rendering {
+
+/// Where the single underline's top row and weight come from
+/// (`[underline] metrics`).
+///
+/// Every underline shape is laid from the single rule's top and weight, so
+/// the choice moves them all.
+enum class RuleMetricsSource : std::uint8_t {
+    /// The weight the face's underscore draws at, in whole device rows, its
+    /// top the lower of a clear gap below the baseline
+    /// (underlineGapInWeights) and the face's declared position.
+    Ubiquitty = 0,
+    /// The position and thickness the face declares (`post`), the rectangle
+    /// snapped outward to whole device rows, as AppKit draws an underline. A
+    /// face that declares none keeps the ubiquitty rule.
+    Font = 1,
+};
 
 /// Per-cell pixel metrics the decoration pass lays a frame out with.
 ///
@@ -41,6 +58,19 @@ struct UBIQUITTY_ESCAPABLE CellMetrics {
     /// a rule pushed out by ROUNDING — which it corrects — from one moved down by
     /// the configured `underline_offset`, which it must leave alone.
     float underlineOffset = 0.0f;
+    /// The top of the face's declared underline (`post.underlinePosition`),
+    /// device pixels below the baseline; zero when the engine could not read
+    /// one.
+    ///
+    /// The face's own placement, before `underline_offset`, which the builder
+    /// adds as it adds it to the drop.
+    float fontUnderlineTop = 0.0f;
+    /// The face's declared underline thickness (`post.underlineThickness`),
+    /// in device pixels; zero when the engine could not read the declared
+    /// position, so the font rule falls back to ours.
+    float fontUnderlineThickness = 0.0f;
+    /// Where the single underline's top and weight come from.
+    RuleMetricsSource underlineMetrics = RuleMetricsSource::Ubiquitty;
     float underlineCurlyThickness = 0.0f; // unrounded curl weight; <=0 ⇒ underlineThickness
     float strikeThickness = 1.0f;
     /// The strike stroke for a BOLD cell. At or below zero means the face
@@ -104,6 +134,8 @@ struct UBIQUITTY_ESCAPABLE CellMetrics {
     metrics.underlineThicknessBold *= scale;
     metrics.underlineDropBold *= scale;
     metrics.underlineOffset *= scale;
+    metrics.fontUnderlineTop *= scale;
+    metrics.fontUnderlineThickness *= scale;
     metrics.underlineCurlyThickness *= scale;
     metrics.strikeThickness *= scale;
     metrics.strikeThicknessBold *= scale;

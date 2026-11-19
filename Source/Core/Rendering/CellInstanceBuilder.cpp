@@ -6444,9 +6444,14 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     const float uy = baselineY + underlineDrop - metrics.underlineStrokeLift;
                     // Every shape starts on the single rule's top row: the one
                     // place under the text a rule meets it no sooner than the
-                    // straight one does.
-                    const float t = ruleWeight(thick);
-                    const float singleTop = withinCell(singleUnderlineTop(uy, t, metrics.deviceScale));
+                    // straight one does. Its top and weight are ours, its top
+                    // no higher than the face's declared one, or the face's
+                    // declared rule itself (`[underline] metrics`), and every
+                    // shape below follows them.
+                    const bool isDeclaredRule = usesDeclaredUnderline(metrics);
+                    const RuleRows single = singleUnderlineRows(metrics, baselineY, uy, thick);
+                    const float t = single.weight;
+                    const float singleTop = withinCell(single.top);
                     switch (style) {
                     case Ubiquitty::VT::UnderlineShape::Double: {
                         // Two rules of EQUAL weight a gap apart, fitting below the
@@ -6466,7 +6471,11 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         // fragments over a solid lower one is the merged look this
                         // geometry exists to avoid. The floor binds only where the
                         // stroke is thick enough to climb.
-                        const float top = std::max(std::round(uy - t + metrics.deviceScale), std::round(uy));
+                        // The face's declared rule is the pair's upper rule as it
+                        // is the single, and ours sits no higher than the face's
+                        // declared top, as the single does.
+                        const float top = isDeclaredRule ? single.top
+                                                         : underlineTopNoHigherThanDeclared(std::max(std::round(uy - t + metrics.deviceScale), std::round(uy)), metrics, baselineY);
                         emitMaskedRule(DecorationSite::UnderlineDoubleUpper, underlineLeft, underlineRight, top, top + t, underlineColor, DecorationKind::Solid, thick);
                         const float lowerTop = pairedRuleTop(top, t, gap);
                         emitMaskedRule(DecorationSite::UnderlineDoubleLower, underlineLeft, underlineRight, lowerTop, lowerTop + t, underlineColor, DecorationKind::Solid, thick);
@@ -6478,7 +6487,9 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         // side of the centre, the stroke, and the half pixel
                         // below; the renderers take the swing back out of the
                         // band's height (curlyRuleProportions).
-                        const float curlWeight = ruleWeight(thickCurly);
+                        // The face's declared rule sets the curl's stroke as it
+                        // sets the single's.
+                        const float curlWeight = isDeclaredRule ? t : ruleWeight(thickCurly);
                         // A wave the floor lengthened swings as much further,
                         // keeping its arcs' proportions.
                         const float lengthening = metrics.cellWidth > 0.0f ? curlWavelength / (metrics.cellWidth * curl.wavelengthInCells) : 1.0f;
@@ -6619,14 +6630,19 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         // skip-ink cuts it at every stem; the lower hangs past
                         // the floor by at most a gap and a stroke, into the row
                         // below's leading, as the SGR 4:2 lower does.
-                        const float top = withinCellBand(std::max(std::round(uy - t * 0.5f + 0.5f * metrics.deviceScale), std::round(uy)), t);
+                        // The SGR 4 rule's own top and weight, from whichever
+                        // source `[underline] metrics` names (singleUnderlineRows).
+                        const RuleRows under = singleUnderlineRows(metrics, baselineY, uy, thick);
+                        const float underWeight = under.weight;
+                        const float underGap = doubledRuleGap(underWeight, metrics.deviceScale);
+                        const float top = withinCellBand(under.top, underWeight);
                         // Cut like the SGR 4 rule, a column at a time under a
                         // glyph drawn glyph by glyph: one tap stretched over a
                         // two-cell rule would place each cut half a glyph away
                         // from the stroke that made it.
-                        emitMaskedRule(DecorationSite::IdeogramUnderLeft, cellLeft, cellRight, top, top + t, underlineColor, DecorationKind::Solid, t);
+                        emitMaskedRule(DecorationSite::IdeogramUnderLeft, cellLeft, cellRight, top, top + underWeight, underlineColor, DecorationKind::Solid, underWeight);
                         if (ideogram == Ubiquitty::VT::ideogramDoubleUnderline)
-                            emitMaskedRule(DecorationSite::IdeogramUnderRight, cellLeft, cellRight, pairedRuleTop(top, t, gap), pairedRuleTop(top, t, gap) + t, underlineColor, DecorationKind::Solid, t);
+                            emitMaskedRule(DecorationSite::IdeogramUnderRight, cellLeft, cellRight, pairedRuleTop(top, underWeight, underGap), pairedRuleTop(top, underWeight, underGap) + underWeight, underlineColor, DecorationKind::Solid, underWeight);
                     } else if (ideogram == Ubiquitty::VT::ideogramOverline || ideogram == Ubiquitty::VT::ideogramDoubleOverline) {
                         // The pair hangs INWARD from the top edge, as the double
                         // underline hangs down from the rule line: above the cell top

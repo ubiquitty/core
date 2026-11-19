@@ -76,8 +76,8 @@ inline constexpr double wideGlyphScale = 1.2;
 // from the face as the engine renders it.
 inline constexpr double underlineThickness = 1.0;
 // Points added to the automatic position, positive down: 0 is automatic, the
-// rule's top a clear gap of 0.85 of its weight below the baseline, in whole
-// device pixels.
+// rule's top the larger of a clear gap of 0.85 of its weight and the face's
+// declared position below the baseline, in whole device pixels.
 inline constexpr double underlineOffset = 0.0;
 inline constexpr bool underlineSkipInk = true;
 // [underline] follows_ink — a run's outer rule reaches the letter's ink past
@@ -91,6 +91,10 @@ inline constexpr double underlineSkipInkPad = -1.0;
 // [underline] curly — one wave per letter, so the curl's rhythm follows the
 // text it marks.
 inline constexpr CurlyUnderlineShape curlyUnderlineShape = CurlyUnderlineShape::Medium;
+// [underline] metrics — the rule's weight is the face's underscore in whole
+// device pixels, and its top the larger of a clear gap below the baseline and
+// the face's declared position.
+inline constexpr UnderlineMetrics underlineMetrics = UnderlineMetrics::Ubiquitty;
 inline constexpr bool underlineLinks = true;
 inline constexpr int linkUnderlineStyle = 0; // 0 = solid/single
 inline constexpr bool linkColorSystemBlue = false;

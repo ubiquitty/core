@@ -153,6 +153,7 @@ const std::vector<Field>& fields()
         UBIQUITTY_FIELD(shouldUnderlineFollowInk),
         UBIQUITTY_FIELD(underlineSkipInkPaddingPoints),
         UBIQUITTY_FIELD(curlyRuleShape),
+        UBIQUITTY_FIELD(underlineMetrics),
         UBIQUITTY_FIELD(shouldUnderlineLinks),
         UBIQUITTY_FIELD(linkUnderlineStyle),
         UBIQUITTY_FIELD(shouldStyleLinksPerKind),
@@ -393,6 +394,49 @@ TEST(testEveryCurlyChoiceReachesTheRuleShapeOfItsName)
     CHECK_MSG(static_cast<unsigned>(CurlyRuleShape::Compact) == 0u, "UbiquittyKit declares `case compact = 0`");
     CHECK_MSG(static_cast<unsigned>(CurlyRuleShape::Medium) == 1u, "UbiquittyKit declares `case medium = 1`");
     CHECK_MSG(static_cast<unsigned>(CurlyRuleShape::Wide) == 2u, "UbiquittyKit declares `case wide = 2`");
+}
+
+// Each `[underline] metrics` choice reaches the frame style as the rule source
+// of the same name, and the style lays it on the cell metrics the builder
+// reads. The thickness setting scales the face's declared thickness as it
+// scales ours; the declared top stays the face's, zero meaning none, and the
+// offset rides beside it as it rides beside the drop.
+TEST(testEveryMetricsChoiceReachesTheRuleSourceOfItsName)
+{
+    using Ubiquitty::Rendering::RuleMetricsSource;
+    struct Expectation {
+        const char* token;
+        RuleMetricsSource source;
+    };
+    constexpr Expectation expectations[] = {
+        { "ubiquitty", RuleMetricsSource::Ubiquitty },
+        { "font", RuleMetricsSource::Font },
+    };
+    for (const Expectation& expectation : expectations) {
+        const RenderConfiguration configured = Effective::renderConfiguration(
+            parseDocument(std::string("[underline]\nmetrics = \"") + expectation.token + "\"\nthickness = 2\noffset = 1\n"));
+        CHECK_MSG(configured.underlineMetrics == expectation.source, expectation.token);
+        Ubiquitty::Rendering::TerminalSnapshotStyle style;
+        style.underlineMetrics = expectation.source == RuleMetricsSource::Font ? RuleMetricsSource::Ubiquitty : RuleMetricsSource::Font;
+        Effective::applyRuleSettings(style, configured, 2.0);
+        CHECK_MSG(style.underlineMetrics == expectation.source, expectation.token);
+
+        Ubiquitty::Rendering::CellMetrics metrics;
+        metrics.fontUnderlineTop = 3.72f;
+        metrics.fontUnderlineThickness = 1.2f;
+        Ubiquitty::Rendering::applyRuleStyle(metrics, style);
+        CHECK_MSG(metrics.underlineMetrics == expectation.source, expectation.token);
+        CHECK_MSG(std::abs(metrics.fontUnderlineThickness - 2.4f) < 1e-5f, "the thickness setting scales the declared thickness");
+        CHECK_MSG(metrics.fontUnderlineTop == 3.72f, "the declared top stays the face's");
+        CHECK_MSG(metrics.underlineOffset == 2.0f, "the offset rides beside it, in device pixels");
+    }
+    CHECK(Effective::renderConfiguration(Values {}).underlineMetrics == RuleMetricsSource::Ubiquitty);
+    CHECK(Ubiquitty::Rendering::TerminalSnapshotStyle {}.underlineMetrics == RuleMetricsSource::Ubiquitty);
+
+    // UbiquittyKit's `public enum UnderlineMetrics` publishes these raw values;
+    // a reorder or an added case here must move it as well.
+    CHECK_MSG(static_cast<unsigned>(RuleMetricsSource::Ubiquitty) == 0u, "UbiquittyKit declares `case ubiquitty = 0`");
+    CHECK_MSG(static_cast<unsigned>(RuleMetricsSource::Font) == 1u, "UbiquittyKit declares `case font = 1`");
 }
 
 TEST(fallbackSizingChangesRoutesAndTypography)

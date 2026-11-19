@@ -314,8 +314,14 @@ TEST(everyTruncationCorruptionAndExtraByteIsRefused)
     CHECK(decodeHandoverValues(*bytes, limits).error() == HandoverValuesError::NewerVersion);
 }
 
-// Current fields mislabeled as any earlier version remain malformed. An actual
+// Current fields mislabeled as any earlier version are refused. An actual
 // published record has the frozen layout exercised separately below.
+//
+// A version before the published one is malformed outright. Labeled as the
+// published version, the record is read in the frozen layout, and is refused
+// wherever that misreading lands: as malformed, or as over capacity where it
+// takes a field's bytes for a length. Which of the two depends on where the
+// current layout's added fields fall, not on the codec.
 TEST(aRecordOfAnEarlierVersionIsRefused)
 {
     Values source;
@@ -329,7 +335,10 @@ TEST(aRecordOfAnEarlierVersionIsRefused)
     for (std::uint16_t earlier = 0; earlier < 8; ++earlier) {
         const auto refused = decodeHandoverValues(independentRecord(source, earlier), limits);
         REQUIRE(!refused);
-        CHECK(refused.error() == HandoverValuesError::Malformed);
+        if (earlier < 7)
+            CHECK(refused.error() == HandoverValuesError::Malformed);
+        else
+            CHECK(refused.error() == HandoverValuesError::Malformed || refused.error() == HandoverValuesError::OverCapacity);
     }
 }
 
@@ -340,14 +349,17 @@ TEST(thePublishedConfigurationKeepsEveryOldFieldAndLeavesNewSettingsAbsent)
     fill(source, serial);
     source.cursorOutlineThickness = 3.25;
     source.curlyUnderlineShape = CurlyUnderlineShape::Wide;
+    source.underlineMetrics = UnderlineMetrics::Font;
     const auto bytes = independentRecord<true>(source, 7);
     const auto restored = decodeHandoverValues(bytes, limits);
     REQUIRE(restored);
     source.cursorOutlineThickness.reset();
     source.curlyUnderlineShape.reset();
+    source.underlineMetrics.reset();
     CHECK(exact(source, *restored));
     CHECK(!restored->cursorOutlineThickness);
     CHECK(!restored->curlyUnderlineShape);
+    CHECK(!restored->underlineMetrics);
     CHECK(restored->cursorInvertText == source.cursorInvertText);
     CHECK(restored->profiles.size() == source.profiles.size());
 

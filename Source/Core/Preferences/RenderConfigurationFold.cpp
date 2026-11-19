@@ -57,6 +57,25 @@ Rendering::CurlyRuleShape ruleShapeFrom(CurlyUnderlineShape shape)
     return Rendering::CurlyRuleShape::Compact;
 }
 
+/// Returns the rule source the renderer draws an underline from for a
+/// metrics choice.
+///
+/// Spelled case by case rather than cast, for the reason ``ruleShapeFrom``
+/// is.
+///
+/// - Parameter metrics: The `[underline] metrics` choice.
+/// - Returns: The renderer's source of the same name.
+Rendering::RuleMetricsSource ruleMetricsFrom(UnderlineMetrics metrics)
+{
+    switch (metrics) {
+    case UnderlineMetrics::Ubiquitty:
+        return Rendering::RuleMetricsSource::Ubiquitty;
+    case UnderlineMetrics::Font:
+        return Rendering::RuleMetricsSource::Font;
+    }
+    return Rendering::RuleMetricsSource::Ubiquitty;
+}
+
 } // namespace
 
 Rendering::RenderConfiguration renderConfiguration(const Values& values)
@@ -105,6 +124,7 @@ Rendering::RenderConfiguration renderConfiguration(const Values& values)
     configuration.shouldUnderlineFollowInk = underlineFollowsInk(values);
     configuration.underlineSkipInkPaddingPoints = underlineSkipInkPad(values);
     configuration.curlyRuleShape = ruleShapeFrom(curlyUnderlineShape(values));
+    configuration.underlineMetrics = ruleMetricsFrom(underlineMetrics(values));
     configuration.shouldUnderlineLinks = underlineLinks(values);
     configuration.linkUnderlineStyle = linkUnderlineStyle(values);
     configuration.shouldStyleLinksPerKind = linkStylePerKind(values);
@@ -205,6 +225,7 @@ KeyReach reachOf(Key key)
     case Key::UnderlineFollowsInk:
     case Key::UnderlineSkipInkPad:
     case Key::UnderlineCurly:
+    case Key::UnderlineMetrics:
     case Key::TextBrightenBold:
     case Key::TekBrightPen:
     case Key::TekGlowVectors:
