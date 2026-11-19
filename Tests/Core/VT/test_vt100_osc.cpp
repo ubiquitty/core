@@ -527,9 +527,9 @@ struct AsyncClipboard : Ubiquitty::ClipboardClient {
 /// table entry (one id), letting a wrapped link span rows cheaply. A
 /// different id mints a fresh entry. Absent an id, an exact-URI match
 /// also dedups.
-/// The link table is a fixed-cap ring: interning more than linkTableCapacity
-/// distinct URIs recycles the oldest entry. After overflow, the oldest
-/// id no longer resolves while the newest still does.
+/// The link table keeps every link a cell still names: interning many more
+/// distinct URIs than a screen shows never retires the entry of a link that
+/// is still on it.
 // ---- OSC 8 linkIntern MRU edges (the one-slot repeat-open cache) ----------
 
 /// A repeat-open of the same target returns the same id (the MRU hit path),
@@ -537,10 +537,10 @@ struct AsyncClipboard : Ubiquitty::ClipboardClient {
 /// An over-long target (key >= maxLinkKeyLength, URI >= maxLinkURILength)
 /// never matches its truncated ring copy, so every open mints a FRESH id —
 /// the MRU must not change that (its fit check bypasses the cache).
-/// RING RECYCLE invalidation — the MRU edge that matters: after the ring
-/// evicts the slot the MRU pointed at, a re-open of that target must mint a
-/// fresh, correctly-resolving id, never the stale recycled one (a stale hit
-/// would stamp cells with an id whose slot now holds a DIFFERENT URL).
+/// Census invalidation, the cache edge that matters: after the census drops
+/// the entry the repeat-open cache pointed at and moves the rest, a re-open of
+/// that target must resolve to its own URL, never to whatever entry now sits
+/// at the cached position (a stale hit would stamp cells with a DIFFERENT URL).
 /// A key and a URI with byte-identical values are DIFFERENT dedup targets:
 /// the MRU (and the ring) must never cross-match them.
 /// ---- OSC 17 / 117 / 19 / 119 — selection background / foreground color -----------
@@ -3984,7 +3984,7 @@ TEST(testOSC8DedupByIDAndURI)
     CHECK(!Ubiquitty::Attributes::Hyperlinks::isExplicitlyKeyed(&t, 0));
 }
 
-TEST(testOSC8TableOverflowRecycle)
+TEST(testOSC8TableKeepsALinkACellNames)
 {
     Ubiquitty::Terminal t;
     Ubiquitty::hardReset(t);
@@ -3998,16 +3998,18 @@ TEST(testOSC8TableOverflowRecycle)
     CHECK(firstID != 0);
     CHECK(Ubiquitty::Attributes::Hyperlinks::uri(&t, firstID) != nullptr);
 
-    // Intern linkTableCapacity more distinct URIs to push the first out.
+    // Intern more distinct URIs than the fixed ring this table replaced held
+    // (64), each printed, so the first link's entry would be the oldest.
     char seq[64];
-    for (int i = 1; i <= Ubiquitty::VT::linkTableCapacity; i++) {
+    for (int i = 1; i <= 68; i++) {
         snprintf(seq, sizeof(seq), "\033]8;;https://link%d\033\\X\033]8;;\033\\", i);
         feed(t, seq);
     }
 
-    // The first id has been recycled; it no longer resolves.
-    CHECK(Ubiquitty::Attributes::Hyperlinks::uri(&t, firstID) == nullptr);
-    // The most-recently interned URI still resolves. Re-home so the
+    // Its cell still names it, so it still resolves, to its own URI.
+    const char* first = Ubiquitty::Attributes::Hyperlinks::uri(&t, firstID);
+    CHECK(first && strcmp(first, "https://link0") == 0);
+    // The most-recently interned URI resolves too. Re-home so the
     // stamped cell lands at a known position.
     feed(t, "\033[H");
     feed(t, "\033]8;;https://latest\033\\");
@@ -4088,24 +4090,27 @@ TEST(testOSC8MRURecycleInvalidation)
     uint16_t staleID = cell(t, 0, 0)->linkID();
     CHECK(staleID != 0);
 
-    // Force the target's slot out of the ring (and recycle repeatedly so
-    // the MRU drop path runs many times).
+    // Overwrite the only cell naming the target, then spend the sequential
+    // ids so the next mint takes the census: it drops every entry no cell
+    // names, the target's among them, and moves the entries the repeat-open
+    // cache points into. Fillers then mint from the reclaimed ids.
+    feed(t, "\033[Hb");
+    t.linkNextID = 0;
     char seq[96];
-    for (int i = 1; i <= Ubiquitty::VT::linkTableCapacity + 4; i++) {
+    for (int i = 1; i <= 68; i++) {
         snprintf(seq, sizeof(seq), "\033]8;;https://filler%d\033\\X\033]8;;\033\\", i);
         feed(t, seq);
     }
     CHECK(Ubiquitty::Attributes::Hyperlinks::uri(&t, staleID) == nullptr);
 
-    // Re-open the original target: a fresh id that resolves to the right
-    // URL, not the stale one.
+    // Re-open the original target: an id that resolves to the right URL,
+    // never a cached position the census moved.
     feed(t, "\033[H");
     feed(t, "\033]8;;https://mru.target\033\\");
     feed(t, "z");
     feed(t, "\033]8;;\033\\");
     uint16_t freshID = cell(t, 0, 0)->linkID();
     CHECK(freshID != 0);
-    CHECK(freshID != staleID);
     const char* uri = Ubiquitty::Attributes::Hyperlinks::uri(&t, freshID);
     CHECK(uri && strcmp(uri, "https://mru.target") == 0);
 }
