@@ -66,6 +66,7 @@
 #include "Core/Session/SessionShare.h"
 #include "Core/Transport/SSHHost.h"
 #include "PAL/UnixFileDescriptor.h"
+#include "Platform/Host/PeerProcessInstance.h"
 #include "Platform/Host/SignaturePolicy.h"
 #include "Platform/Host/TrustedLocalBinaries.h"
 #include "Platform/POSIX/LocalHostInstall.h"
@@ -654,6 +655,22 @@ void upgradesAHostStartedFromAnEarlierBundle(const std::string& built, InstallWa
             && Install::copy(built, staged + "/Contents/Helpers/ubiquitty-host", "\nthe updated bundle's host\n")
             && ::rename(machine.bundleRoot.c_str(), retired.c_str()) == 0 && ::rename(staged.c_str(), machine.bundleRoot.c_str()) == 0,
         "premise: the update puts a new bundle in the earlier one's place");
+    std::filesystem::remove_all(retired, error);
+    CHECK_MSG(!error, "the updater removes the retired bundle");
+#if defined(__APPLE__)
+    Ubiquitty::PAL::UnixFileDescriptor peer(Ubiquitty::HostTest::connectDaemon(machine.home + "/" + holderLeaf));
+    audit_token_t token {};
+    socklen_t length = sizeof(token);
+    CHECK_MSG(peer && ::getsockopt(peer.get(), SOL_LOCAL, LOCAL_PEERTOKEN, &token, &length) == 0 && length == sizeof(token),
+        "the old host still listens and the kernel identifies it");
+    std::array<char, PROC_PIDPATHINFO_MAXSIZE> oldPath {};
+    CHECK_MSG(::proc_pidpath_audittoken(&token, oldPath.data(), oldPath.size()) <= 0, "the retired host's executable path is gone");
+    CHECK_MSG(Ubiquitty::Host::auditTokenMatchesLiveProcess(holderProcess, token), "the live holder still matches the socket's audit token");
+    constexpr std::size_t processVersionWord = 7;
+    token.val[processVersionWord] ^= 1;
+    CHECK_MSG(!Ubiquitty::Host::auditTokenMatchesLiveProcess(holderProcess, token), "a token for another process incarnation does not match");
+    peer.reset();
+#endif
     const std::string successorLeaf = Ubiquitty::Host::socketLeafForBinary(machine.bundledHost.c_str());
     CHECK_MSG(successorLeaf != holderLeaf, "premise: the update bundles another build");
     if (way == InstallWay::Copied)

@@ -9,6 +9,7 @@
 #include "Platform/Host/Daemon.h"
 #include "Platform/Host/HostHandover.h"
 #include "Platform/Host/HostPaths.h"
+#include "Platform/Host/PeerProcessInstance.h"
 #include "Platform/POSIX/HandoverTransport.h"
 
 #include <algorithm>
@@ -26,9 +27,7 @@
 #include <unistd.h>
 #include <vector>
 
-#if defined(__APPLE__)
-#include <libproc.h>
-#elif defined(__linux__)
+#if defined(__linux__)
 #include <asm/socket.h>
 #endif
 
@@ -98,11 +97,10 @@ std::optional<PredecessorChannel> connectPredecessor(const std::string& path, Cl
     socklen_t length = sizeof(processID);
     audit_token_t token {};
     socklen_t tokenLength = sizeof(token);
-    std::array<char, PROC_PIDPATHINFO_MAXSIZE> executable {};
     if (::getsockopt(peer.channel.get(), SOL_LOCAL, LOCAL_PEERPID, &processID, &length) != 0
         || length != sizeof(processID) || processID <= 0 || processID == ::getpid()
         || ::getsockopt(peer.channel.get(), SOL_LOCAL, LOCAL_PEERTOKEN, &token, &tokenLength) != 0
-        || tokenLength != sizeof(token) || ::proc_pidpath_audittoken(&token, executable.data(), executable.size()) <= 0)
+        || tokenLength != sizeof(token) || !auditTokenMatchesLiveProcess(processID, token))
         return std::nullopt;
     peer.processID = static_cast<std::uint32_t>(processID);
 #elif defined(__linux__)

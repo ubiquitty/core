@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -16,6 +17,36 @@
 
 namespace Ubiquitty {
 namespace Host {
+
+#if defined(__APPLE__)
+/// Verifies the process and exec incarnation named by a socket's audit token.
+///
+/// The running image may have no path after an updater unlinks it.
+///
+/// - Parameters:
+///   - processID: The peer PID reported by the socket.
+///   - token: The peer's audit token reported by the same socket.
+/// - Returns: Whether both name the same live process and exec incarnation.
+[[nodiscard]] inline bool auditTokenMatchesLiveProcess(pid_t processID, const audit_token_t& token)
+{
+    constexpr std::size_t processIDWord = 5;
+    constexpr std::size_t processVersionWord = 7;
+    if (processID <= 0 || token.val[processIDWord] != static_cast<std::uint32_t>(processID))
+        return false;
+
+    // XNU's PROC_PIDUNIQIDENTIFIERINFO ABI is absent from the public SDK.
+    // The PID version occupies bytes 32 to 35 of its 56-byte record.
+    constexpr int processIdentityFlavor = 17;
+    struct ProcessIdentity {
+        std::array<std::byte, 32> prefix;
+        std::uint32_t processVersion;
+        std::array<std::byte, 20> suffix;
+    } identity {};
+    static_assert(sizeof(ProcessIdentity) == 56 && offsetof(ProcessIdentity, processVersion) == 32);
+    return ::proc_pidinfo(processID, processIdentityFlavor, 0, &identity, sizeof(identity)) == sizeof(identity)
+        && token.val[processVersionWord] == identity.processVersion;
+}
+#endif
 
 /// Returns the start time out of the contents of a Linux `/proc/<pid>/stat`.
 ///
