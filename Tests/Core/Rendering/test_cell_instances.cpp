@@ -170,8 +170,9 @@ TEST(explicitWidthTextRendersTheWholePayloadInsideItsBands)
         in.clusterResolverContext = &atlas;
         in.clusterResolver = [](const Cell*, std::span<std::uint32_t> out, void* context) {
             const auto& text = static_cast<TextAtlas*>(context)->text;
-            std::copy(text.begin(), text.end(), out.begin());
-            return static_cast<int>(text.size());
+            const std::size_t count = std::min(text.size(), out.size());
+            std::copy_n(text.begin(), count, out.begin());
+            return static_cast<int>(count);
         };
         in.metrics.cellWidth = 8;
         in.metrics.cellHeight = 16;
