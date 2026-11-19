@@ -794,9 +794,10 @@ GlyphBackend SoftwareRenderer::glyphBackend()
         return static_cast<SoftwareRenderer*>(context)->stageMonoCoverage(slot, coverage);
     };
     // A stack of marks past the slot draws through windows (ClusterWindows.h)
-    // where the rasterizer says where its slot's baseline is; a bitmap face
-    // tiles its cells and keeps them.
-    if (!m_isBitmapFace && m_rasterizer.drawsClusterWindows()) {
+    // where the rasterizer says where its slot's baseline is: an outline face
+    // that places its marks, and the bitmap face, which stacks them by whole
+    // texels of its own grid.
+    if (m_rasterizer.drawsClusterWindows()) {
         backend.measureClusterInk = [](void* context, ClusterSpan codePoints, FontFace face, std::uint32_t weight, std::uint32_t variant, int reachInPixels) {
             return static_cast<SoftwareRenderer*>(context)->measureClusterInk(codePoints, face, weight, variant, reachInPixels);
         };

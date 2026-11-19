@@ -67,12 +67,21 @@ TEST(aVariationSelectorAddsNoCoverageToItsBase)
 
 // The control the assertion above needs: the skip must be the selector's, not
 // the cluster path's. A real combining mark still composites, so a filter that
-// swallowed every trailing code point would fail here.
+// swallowed every trailing code point would fail here. The sign stands a row
+// under the top of the em, so the acute stacks clear above it, past the slot's
+// top: the cluster is read through a window that starts half a slot higher.
 TEST(aCombiningMarkStillCompositesOntoItsBase)
 {
     Ubiquitty::Rendering::UnifontRasterizer font;
-    const Coverage bare = rasteriseOne(font, warningSign);
-    const Coverage marked = rasteriseCluster(font, { warningSign, combiningAcute });
+    const auto throughWindow = [&](std::initializer_list<std::uint32_t> codePoints) {
+        Coverage out(static_cast<std::size_t>(slotWidth) * slotHeight);
+        const std::vector<std::uint32_t> points(codePoints);
+        CHECK(font.rasterizeClusterWindow(points.data(), static_cast<int>(points.size()), Ubiquitty::Rendering::FontFace::Regular, 0, 0.0, {},
+            slotWidth, slotHeight, -slotHeight / 2, slotHeight, out.data()));
+        return out;
+    };
+    const Coverage bare = throughWindow({ warningSign });
+    const Coverage marked = throughWindow({ warningSign, combiningAcute });
     CHECK_MSG(marked != bare, "the combining mark reached the raster");
     CHECK_MSG(inkOf(marked) > inkOf(bare), "and it added coverage rather than replacing it");
 }

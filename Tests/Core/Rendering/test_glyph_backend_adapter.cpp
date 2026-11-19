@@ -512,4 +512,76 @@ TEST(theSoftwareRendererDrawsAStackPastItsCellThroughWindows)
     }
 }
 
+// The bitmap face draws its stacks whole on the CPU renderer too: Unifont
+// stacks six marks over a Z in its own grid, and the five that stand past the
+// cell's top land in the rows above it, through windows, as five separate
+// marks, with no ink table bound for the bitmap face. An e with an acute, which
+// sits clear of its letter, puts nothing above its cell.
+TEST(theBitmapFaceDrawsItsStackedMarksPastTheCellThroughWindows)
+{
+    constexpr int rows = 4;
+    constexpr int columns = 2;
+    TermPalette palette;
+    palette.seedDefaults();
+    std::vector<Cell> grid(static_cast<std::size_t>(rows) * columns, defaultBlankCell);
+    Cell& stacked = grid[static_cast<std::size_t>(rows - 1) * columns];
+    stacked.codePoint = 'Z';
+    stacked.setClusterID(1);
+    Cell& accented = grid[static_cast<std::size_t>(rows - 1) * columns + 1];
+    accented.codePoint = 'e';
+    accented.setClusterID(2);
+    UnifontRasterizer unifont(1);
+    SoftwareRenderer renderer(unifont);
+    const GlyphBackend backend = renderer.glyphBackend();
+    CHECK_MSG(backend.measureClusterInk != nullptr && backend.rasteriseClusterWindow != nullptr, "the bitmap face offers windows");
+    BuildInputs in;
+    in.cells = grid.data();
+    in.rows = rows;
+    in.columns = columns;
+    in.palette = &palette;
+    in.isBitmapFace = true;
+    in.clusterResolver = [](const Cell* cell, std::span<std::uint32_t> output, void*) {
+        if (cell->codePoint == 'e') {
+            output[0] = 'e';
+            output[1] = 0x301u;
+            return 2;
+        }
+        constexpr std::array<std::uint32_t, 7> stack { 'Z', 0x301u, 0x302u, 0x303u, 0x304u, 0x306u, 0x309u };
+        std::ranges::copy(stack, output.begin());
+        return static_cast<int>(stack.size());
+    };
+    std::vector<std::uint8_t> rgba;
+    int width = 0;
+    int height = 0;
+    REQUIRE(renderer.render(in, rgba, width, height));
+    REQUIRE(width == columns * 8 && height == rows * 16);
+    CHECK_MSG(renderer.bindMonoAtlas().inkBoxForSlot == nullptr, "the bitmap face still binds no ink table");
+    const auto pixel = [&](int x, int y) {
+        const std::size_t at = (static_cast<std::size_t>(y) * columns * 8 + static_cast<std::size_t>(x)) * 4;
+        return std::array<std::uint8_t, 3> { rgba[at], rgba[at + 1], rgba[at + 2] };
+    };
+    const auto background = pixel(15, 0);
+    // The runs of inked rows over a cell's columns, above the bottom row.
+    const auto bandsAbove = [&](int left) {
+        int bands = 0;
+        int topmost = -1;
+        bool wasInked = false;
+        for (int y = 0; y < (rows - 1) * 16; ++y) {
+            bool isInked = false;
+            for (int x = left; x < left + 8; ++x)
+                isInked = isInked || pixel(x, y) != background;
+            if (isInked && !wasInked) {
+                ++bands;
+                topmost = topmost < 0 ? y : topmost;
+            }
+            wasInked = isInked;
+        }
+        return std::array<int, 2> { bands, topmost };
+    };
+    const std::array<int, 2> overZ = bandsAbove(0);
+    CHECK_MSG(overZ[0] == 5, "five marks stand past the cell's top, each apart from the next");
+    CHECK_MSG(overZ[1] == (rows - 1) * 16 - 18, "the hook on top stands eighteen rows over the cell, at its full height");
+    CHECK_MSG(bandsAbove(8)[0] == 0, "an e with an acute keeps its marks in its cell");
+}
+
 UBIQUITTY_TEST_MAIN()

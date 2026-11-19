@@ -41,4 +41,16 @@ enum class NormalizationForm : std::uint8_t {
 // rewritten with the normalized scalar sequence. form == None is a no-op.
 void normalizeCodePoints(std::vector<std::uint32_t>& codePoints, NormalizationForm form);
 
+/// The canonical combining class of a code point, from the table canonical
+/// ordering reads.
+///
+/// The class also says where a mark sits on its base: 230 above, 220 below,
+/// 1 overlaid, 202 attached below, and so on (UAX #44). A renderer that
+/// places marks itself, with no shaper to do it, reads that from here.
+///
+/// - Parameter codePoint: The code point to classify.
+/// - Returns: The class; 0 for a starter and for any code point the table
+///   does not list.
+[[nodiscard]] std::uint8_t canonicalCombiningClass(std::uint32_t codePoint);
+
 } // namespace Ubiquitty::Unicode

@@ -40,7 +40,10 @@
 // the cluster's slot. Only a cluster that might overflow is measured at all —
 // one with two marks or more, or one whose ink reaches its slot's edge — and
 // only once while its slot stays resident, so text whose clusters fit pays one
-// branch per cluster cell and nothing on any other cell.
+// branch per cluster cell and nothing on any other cell. The bitmap face is
+// the exception: it stacks its marks itself, by whole texels, and can stand a
+// lone mark clear past the slot's edge with no ink at the edge to show it, so
+// each of its clusters is measured once and then costs one read a cell.
 //
 // Pure arithmetic: no platform headers (Scripts/check-boundaries.py).
 
@@ -70,6 +73,19 @@ enum class ClusterOwnQuad : std::uint8_t {
     WholeSlot,
     /// Baked into its cell's quad, which covers the cell box inside the margins.
     CellBox,
+};
+
+/// What a cluster's own slot can say about whether its ink overflows the slot.
+enum class ClusterOverflowEvidence : std::uint8_t {
+    /// The slot's measured ink box, which ``clusterMayOverflowItsSlot`` reads:
+    /// a face that places its marks against its letter's ink shows a stack
+    /// past the slot as ink at the slot's edge.
+    OwnInk,
+    /// Nothing: the bitmap face stacks its marks clear of one another and can
+    /// stand one wholly past the slot, and a backend with no ink table
+    /// reports no box. Every cluster is measured, once while its slot stays
+    /// resident.
+    None,
 };
 
 /// A run of a slot's rows: `top` inclusive, `bottom` exclusive.

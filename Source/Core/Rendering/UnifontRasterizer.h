@@ -96,6 +96,84 @@ public:
         }
         return rasterizeCluster(codePoints.data(), static_cast<int>(codePoints.size()), FontFace::Regular, 0, slotWidth, slotHeight, coverageOut.data());
     }
+    /// Draws a cluster with its marks stacked, cut to the slot.
+    ///
+    /// Every code point's bitmap is drawn where Unifont puts it, the darker
+    /// ink winning where two overlap, as the portable overprint draws them,
+    /// with one exception. Unifont draws each mark at one fixed height, so a
+    /// mark that sits above or below its base by canonical combining class
+    /// and would land on the ink stacked on that side so far is moved clear
+    /// of it, one Unifont pixel apart: six marks above a letter read as six,
+    /// not as one blot. A mark already clear of that ink stays where Unifont
+    /// draws it, so a cluster whose marks all sit clear — an `é`, an `ộ` —
+    /// draws exactly the overprint. Overlays, attached and enclosing marks
+    /// keep their places, and so does every mark on a two-cell base: its
+    /// glyph fills the em, and the wide sheet it draws on carries no windows
+    /// to show a mark moved past it.
+    ///
+    /// - Parameters:
+    ///   - codePoints: The cluster's Unicode scalars.
+    ///   - count: The number of scalars to read.
+    ///   - face: Ignored: Unifont is a single-weight bitmap face.
+    ///   - weight: Ignored, for the same reason.
+    ///   - slotWidth: The destination width in pixels.
+    ///   - slotHeight: The destination height in pixels.
+    ///   - coverageOut: Caller-owned `slotWidth * slotHeight` coverage bytes.
+    /// - Returns: True when any code point drew; false leaves a blank slot.
+    bool rasterizeCluster(const std::uint32_t* codePoints, int count, FontFace face, std::uint32_t weight, int slotWidth, int slotHeight,
+        std::uint8_t* coverageOut) override;
+    /// Whether a stacked cluster's windows can be drawn: always, because every
+    /// glyph sits centred in its slot whatever the slot's height, so the
+    /// baseline in a slot is known and the stack beyond it is one drawing.
+    ///
+    /// - Returns: True.
+    [[nodiscard]] bool drawsClusterWindows() const override { return true; }
+    /// Draws a window of a cluster's uncut stacked drawing
+    /// (``GlyphRasterizer::rasterizeClusterWindow``).
+    ///
+    /// The stack is laid out in the slot exactly as ``rasterizeCluster``
+    /// lays it out, every move a whole Unifont pixel, and the window reads it
+    /// through rows moved by the offset; nothing is resampled, so every mark
+    /// stays as crisp past the slot as inside it.
+    ///
+    /// - Parameters:
+    ///   - codePoints: The cluster's Unicode scalars.
+    ///   - count: The number of scalars to read.
+    ///   - face: Ignored: Unifont is a single-weight bitmap face.
+    ///   - weight: Ignored, for the same reason.
+    ///   - phaseInPixels: Ignored: the bitmap draws at one phase.
+    ///   - bounds: Ignored: the bitmap centres in the slot.
+    ///   - slotWidth: The slot's and the window's width in pixels.
+    ///   - slotHeight: The height of the slot the cluster is drawn into.
+    ///   - rowOffsetInPixels: The slot row shown on the window's first row.
+    ///   - windowHeight: The window's height in pixels.
+    ///   - coverageOut: Caller-owned `slotWidth * windowHeight` coverage bytes.
+    /// - Returns: True when any code point drew.
+    bool rasterizeClusterWindow(const std::uint32_t* codePoints, int count, FontFace face, std::uint32_t weight, double phaseInPixels,
+        ClusterRasterBounds bounds, int slotWidth, int slotHeight, int rowOffsetInPixels, int windowHeight, std::uint8_t* coverageOut) override;
+    /// Draws a window of a cluster's stacked drawing into a bounded plane, for
+    /// a frontend that fills its own sheet with Core's raster.
+    ///
+    /// - Parameters:
+    ///   - codePoints: The cluster's Unicode scalars.
+    ///   - slotWidth: The slot's and the window's width in pixels.
+    ///   - slotHeight: The height of the slot the cluster is drawn into.
+    ///   - rowOffsetInPixels: The slot row shown on the window's first row.
+    ///   - windowHeight: The window's height in pixels.
+    ///   - coverageOut: At least `slotWidth * windowHeight` coverage bytes.
+    /// - Returns: True when any code point drew; false for a plane too small.
+    bool rasteriseClusterWindow(std::span<const std::uint32_t> codePoints, int slotWidth, int slotHeight, int rowOffsetInPixels, int windowHeight,
+        CoverageSlot coverageOut);
+    /// Measures the rows a cluster's stacked ink covers, uncut by its slot,
+    /// for a frontend that fills its own sheet with Core's raster.
+    ///
+    /// - Parameters:
+    ///   - codePoints: The cluster's Unicode scalars.
+    ///   - slotWidth: The slot's width in pixels.
+    ///   - slotHeight: The slot's height in pixels.
+    ///   - reachInPixels: How far past each edge of the slot to look.
+    /// - Returns: The inked rows, in the rows of the cluster's own slot.
+    [[nodiscard]] ClusterInkRows measureClusterInk(std::span<const std::uint32_t> codePoints, int slotWidth, int slotHeight, int reachInPixels);
     /// Rasterizes into a measured cell inside an atlas slot's margins.
     bool rasterizeGlyphInCell(std::uint32_t codePoint, int cellWidth, int cellHeight,
         int slotWidth, int slotHeight, CoverageSlot coverageOut);
@@ -158,6 +236,24 @@ public:
     bool rasteriseSizedProportionalRun(std::span<const Ubiquitty::ProportionalShapedGlyph> glyphs, FontFace face, const SizedMaster& master, int stripWidthInPixels, int stripHeightInPixels, std::span<std::uint8_t> coverageOut) override;
 
 private:
+    /// Lays a cluster's marks out in stacks and draws a window of the result.
+    ///
+    /// The one drawing behind ``rasterizeCluster``, its windows and its
+    /// measurement. Each code point is drawn into the slot as
+    /// ``rasterizeGlyph`` draws it alone, then moved by whole rows when its
+    /// combining class stacks it clear of the ink on its side, and copied
+    /// into the window through the offset.
+    ///
+    /// - Parameters:
+    ///   - codePoints: The cluster's Unicode scalars.
+    ///   - slotWidth: The slot's and the window's width in pixels.
+    ///   - slotHeight: The height of the slot the cluster is drawn into.
+    ///   - rowOffsetInPixels: The slot row shown on the window's first row.
+    ///   - windowHeight: The window's height in pixels.
+    ///   - coverageOut: Caller-owned `slotWidth * windowHeight` coverage bytes.
+    /// - Returns: True when any code point drew.
+    bool drawStackedCluster(std::span<const std::uint32_t> codePoints, int slotWidth, int slotHeight, int rowOffsetInPixels, int windowHeight,
+        std::uint8_t* coverageOut);
     /// Draws placed glyphs from the proportional face's outlines at a size,
     /// and a code point the face lacks from the grid face by whole texels.
     ///

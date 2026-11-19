@@ -189,6 +189,8 @@ void compose(std::vector<std::uint32_t>& cps)
 
 namespace Ubiquitty::Unicode {
 
+std::uint8_t canonicalCombiningClass(std::uint32_t codePoint) { return combiningClassOf(codePoint); }
+
 std::optional<NormalizationForm> normalizationFormFromName(std::string_view name)
 {
     if (tokenEq(name, "none") || tokenEq(name, "off"))

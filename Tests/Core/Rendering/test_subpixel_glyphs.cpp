@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -1341,6 +1342,14 @@ enum class WindowEntries {
     Absent,
 };
 
+/// Whether a test backend binds its ink table.
+enum class InkTable {
+    /// Bound, as every outline backend binds it.
+    Bound,
+    /// Absent, as the CPU renderer leaves it for the bitmap face.
+    Absent,
+};
+
 /// Which path a test frame's glyphs take.
 enum class GlyphPath {
     /// The subpixel glyph stream, whose quads cover the slot.
@@ -1371,6 +1380,12 @@ struct TallClusterAtlas {
     std::vector<GlyphInkBox> inkBoxes = std::vector<GlyphInkBox>(256);
     /// The cluster's ink, in its own slot's rows: 25 rows above the slot.
     ClusterInkRows ink { true, -25, 17 };
+    /// The rows the cluster's own slot inks, where they are not the part of
+    /// `ink` the slot holds: a mark stacked wholly past the slot leaves the
+    /// slot its letter alone.
+    std::optional<ClusterInkRows> slotInk;
+    /// Whether the binding carries the ink table.
+    InkTable inkTable = InkTable::Bound;
     /// How many times the builder measured a cluster.
     int measurements = 0;
     /// The offset of every window the builder rasterised, in order.
@@ -1384,18 +1399,21 @@ struct TallClusterAtlas {
         binding.cache = &monoCache;
         binding.geometry = { /*columns=*/16, slotWidth, slotHeight, slotWidth - 2 * marginX, { marginX, marginY } };
         binding.slotCapacity = 256;
-        binding.inkBoxForSlot = inkBoxes.data();
+        binding.inkBoxForSlot = inkTable == InkTable::Bound ? inkBoxes.data() : nullptr;
         return binding;
     }
     /// The guarded box a raster of slot rows `[firstRow, firstRow + slotHeight)`
     /// of the cluster's drawing measures, as measureInkBox would.
     ///
-    /// - Parameter firstRow: The cluster's own slot row on the raster's top row.
+    /// - Parameters:
+    ///   - firstRow: The cluster's own slot row on the raster's top row.
+    ///   - rows: The drawing's inked rows; the cluster's whole stack unless named.
     /// - Returns: The box.
-    GlyphInkBox boxFor(int firstRow) const
+    GlyphInkBox boxFor(int firstRow, std::optional<ClusterInkRows> rows = std::nullopt) const
     {
-        const int top = std::max(ink.topInPixels - firstRow, 0);
-        const int bottom = std::min(ink.bottomInPixels - firstRow, slotHeight);
+        const ClusterInkRows drawn = rows.value_or(ink);
+        const int top = std::max(drawn.topInPixels - firstRow, 0);
+        const int bottom = std::min(drawn.bottomInPixels - firstRow, slotHeight);
         if (bottom <= top)
             return emptyGlyphInkBox();
         return { { 0.0f, static_cast<float>(std::max(top - 1, 0)) }, { static_cast<float>(slotWidth), static_cast<float>(std::min(bottom + 1, slotHeight)) } };
@@ -1417,7 +1435,7 @@ struct TallClusterAtlas {
         table.monoGlyph = [](void*, std::uint32_t, FontFace, std::uint32_t, std::uint32_t) { return AtlasGlyph {}; };
         table.rasteriseClusterGlyph = [](void* context, ClusterSpan, FontFace, std::uint32_t, int slot) {
             auto& atlas = *static_cast<TallClusterAtlas*>(context);
-            atlas.inkBoxes[static_cast<std::size_t>(slot)] = atlas.boxFor(0);
+            atlas.inkBoxes[static_cast<std::size_t>(slot)] = atlas.boxFor(0, atlas.slotInk);
             return true;
         };
         if (entries == WindowEntries::Offered) {
@@ -1635,6 +1653,54 @@ TEST(aStackReachingUpTwoRowsRepaintsWithEveryRowItsInkCrosses)
     CHECK(cleared.glyphs == 0);
     CHECK_MSG(!standsWithDirtyRow(row, withStack, frame.crossings),
         "erasing the stack refuses while the target still holds its marks over the rows above");
+}
+
+// A lone mark the bitmap face stacks wholly past its slot leaves the slot its
+// letter alone, so the slot's ink cannot vouch for the cluster: on the bitmap
+// face an e whose acute stands clear above its slot is measured, once, and
+// draws that acute through a window, where a face whose slot shows a stack
+// past its edge as ink at the edge is never asked. A backend that binds no ink
+// table is measured the same way, and its window keeps every row it may draw.
+TEST(aClusterItsSlotCannotVouchForIsMeasuredOnce)
+{
+    struct Frame {
+        /// Whether the frame's face is the bitmap face.
+        bool isBitmapFace;
+        /// Whether the backend binds its ink table.
+        InkTable inkTable;
+        /// The windows the frame should draw.
+        std::size_t windows;
+    };
+    for (const Frame expected : { Frame { false, InkTable::Bound, 0 }, Frame { true, InkTable::Bound, 1 }, Frame { false, InkTable::Absent, 1 } }) {
+        TallClusterAtlas atlas;
+        atlas.marginY = 0;
+        atlas.ink = { true, -6, 14 };
+        atlas.slotInk = ClusterInkRows { true, 5, 14 };
+        atlas.inkTable = expected.inkTable;
+        TallClusterGrid frame;
+        BuildInputs in = frame.inputs(atlas, GlyphPath::Baked);
+        in.isBitmapFace = expected.isBitmapFace;
+        in.clusterResolver = [](const Cell*, std::span<std::uint32_t> output, void*) {
+            output[0] = 'e';
+            output[1] = 0x301u;
+            return 2;
+        };
+        for (int pass = 0; pass < 2; ++pass) {
+            const InstanceCounts counts = buildCellInstances(in, atlas.backend(WindowEntries::Offered), frame.buffers());
+            CHECK_EQ(counts.glyphs, expected.windows);
+        }
+        CHECK_EQ(static_cast<std::size_t>(atlas.measurements), expected.windows);
+        if (expected.windows == 0)
+            continue;
+        const int pitch = clusterWindowPitch(TallClusterAtlas::slotHeight);
+        CHECK_MSG((atlas.windowOffsets == std::vector<int> { -pitch - clusterWindowGuardRows }), "one window, over the cell's top");
+        const GlyphInstance& window = frame.glyphs[0];
+        const float rows = window.atlasBottomRight.y - window.atlasTopLeft.y;
+        if (expected.inkTable == InkTable::Absent)
+            CHECK_MSG(approx(rows, static_cast<float>(pitch)), "with no ink table the window keeps every row it may draw");
+        else
+            CHECK_MSG(approx(rows, 7.0f), "with one, it narrows to the acute's rows and a guard row");
+    }
 }
 
 UBIQUITTY_TEST_MAIN()

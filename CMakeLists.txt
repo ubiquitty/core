@@ -498,8 +498,9 @@ elseif(UBIQUITTY_FRONTEND STREQUAL "Agent")
         # unused vtable; Debug does not).
         Source/Core/Transport/DelegatedChannel.cpp
         Source/Core/Transport/KnownHosts.cpp
-        Source/Core/Transport/LocalPTYChannel.cpp
-        Source/Core/Unicode/Normalize.cpp)
+        Source/Core/Transport/LocalPTYChannel.cpp)
+    # Unicode/Normalize.cpp STAYS: the screenshot raster's Unifont stacks a
+    # cluster's marks by their canonical combining class, which it defines.
 
     add_executable(ubq
         # Agent frontend: the headless main + the MCP/policy/session glue + JSON,

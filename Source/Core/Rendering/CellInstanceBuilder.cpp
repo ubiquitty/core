@@ -814,17 +814,19 @@ int monoSlotContaining(const MonoAtlasBinding& mono, const AtlasGlyph& glyph)
 
 /// Plans the windows a cluster draws through, faulting each into the mono sheet.
 ///
-/// Leaves the plan unowned for a cluster that fits its slot: one whose own
-/// raster neither holds two marks nor reaches the slot's edge is never
-/// measured, and one the backend measured inside the slot takes no window. A
-/// window the sheet refuses ends its side, and the ink beyond it is cut as it
-/// was before windows existed.
+/// Leaves the plan unowned for a cluster that fits its slot: where the slot's
+/// ink is the evidence, one whose own raster neither holds two marks nor
+/// reaches the slot's edge is never measured, and one the backend measured
+/// inside the slot takes no window. A window the sheet refuses ends its side,
+/// and the ink beyond it is cut as it was before windows existed.
 ///
 /// - Parameters:
 ///   - plan: The frame's plan, overwritten.
 ///   - owner: The cell being planned.
 ///   - atlas: The frame's backend, which offers both window entries.
-///   - mono: The frame's mono binding, with a cache and an ink table.
+///   - mono: The frame's mono binding, with a cache; its ink table, where
+///     the backend keeps one, narrows each window's quad to its ink.
+///   - evidence: What the cluster's own slot can say about overflow.
 ///   - cluster: The cluster's code points.
 ///   - face: The cluster's face.
 ///   - weight: The cluster's variable weight.
@@ -834,8 +836,8 @@ int monoSlotContaining(const MonoAtlasBinding& mono, const AtlasGlyph& glyph)
 ///   - ownSlot: The cluster's own slot, or -1 to find it from `own`.
 ///   - quad: How the cluster's own glyph lands.
 [[gnu::noinline]] void planClusterWindows(ClusterWindowPlan& plan, const Ubiquitty::Cell* owner, const GlyphBackend& atlas,
-    const MonoAtlasBinding& mono, std::span<const std::uint32_t> cluster, FontFace face, std::uint32_t weight, std::uint32_t phase,
-    std::uint32_t variant, const AtlasGlyph& own, int ownSlot, ClusterOwnQuad quad)
+    const MonoAtlasBinding& mono, ClusterOverflowEvidence evidence, std::span<const std::uint32_t> cluster, FontFace face, std::uint32_t weight,
+    std::uint32_t phase, std::uint32_t variant, const AtlasGlyph& own, int ownSlot, ClusterOwnQuad quad)
 {
     plan.owner = nullptr;
     plan.count = 0;
@@ -849,11 +851,13 @@ int monoSlotContaining(const MonoAtlasBinding& mono, const AtlasGlyph& glyph)
         return;
     const int slotHeight = mono.geometry.slotHeightInPixels;
     const int margin = mono.geometry.glyphMarginInPixels.height;
-    const GlyphInkBox& ownInk = mono.inkBoxForSlot[ownSlot];
-    if (ownInk.minInPixels.x > ownInk.maxInPixels.x || ownInk.maxInPixels.y <= ownInk.minInPixels.y)
-        return;
-    if (!clusterMayOverflowItsSlot(static_cast<int>(cluster.size()), ownInk, slotHeight))
-        return;
+    if (evidence == ClusterOverflowEvidence::OwnInk) {
+        const GlyphInkBox& ownInk = mono.inkBoxForSlot[ownSlot];
+        if (ownInk.minInPixels.x > ownInk.maxInPixels.x || ownInk.maxInPixels.y <= ownInk.minInPixels.y)
+            return;
+        if (!clusterMayOverflowItsSlot(static_cast<int>(cluster.size()), ownInk, slotHeight))
+            return;
+    }
     ClusterInkRecord record = mono.cache->clusterInkForSlot(ownSlot);
     if (!record.isMeasured) {
         record = { true, atlas.measureClusterInk(atlas.context, cluster, face, weight, variant, clusterWindowReach(slotHeight)) };
@@ -878,7 +882,10 @@ int monoSlotContaining(const MonoAtlasBinding& mono, const AtlasGlyph& glyph)
             mono.cache->forgetKeyAtSlot(key, slot);
             return false;
         }
-        const ClusterSlotRows rows = clusterWindowInkRows(clusterWindowRows(slotHeight), mono.inkBoxForSlot[slot]);
+        // Without an ink table the quad keeps every row it may draw; the rows
+        // its raster left blank sample nothing.
+        const ClusterSlotRows rows = mono.inkBoxForSlot != nullptr ? clusterWindowInkRows(clusterWindowRows(slotHeight), mono.inkBoxForSlot[slot])
+                                                                   : clusterWindowRows(slotHeight);
         if (rows.bottom > rows.top)
             plan.windows[static_cast<std::size_t>(plan.count++)] = { slot, rowOffset, rows };
         return true;
@@ -2476,12 +2483,19 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
     // where its glyph is resolved, spent where its quad is emitted. Frame
     // scope for the reason the tiles above are, and owned by the cell it was
     // planned for, so no other cell reads it. Windows need both backend
-    // entries, a mono cache whose slots carry measured ink, and a glyph stream
-    // to draw into; a bitmap face keeps its cells, which it tiles exactly.
+    // entries, a mono cache to keep their slots and each cluster's measured
+    // reach, and a glyph stream to draw into.
     ClusterWindowPlan clusterWindows;
     const bool canDrawClusterWindows = atlas.measureClusterInk != nullptr && atlas.rasteriseClusterWindow != nullptr
-        && mono.cache != nullptr && mono.inkBoxForSlot != nullptr && out.glyphs != nullptr && !in.isBitmapFace
-        && mono.geometry.columns > 0 && mono.geometry.slotWidthInPixels > 0 && clusterWindowPitch(mono.geometry.slotHeightInPixels) > 0;
+        && mono.cache != nullptr && out.glyphs != nullptr && mono.geometry.columns > 0 && mono.geometry.slotWidthInPixels > 0
+        && clusterWindowPitch(mono.geometry.slotHeightInPixels) > 0;
+    // The bitmap face restacks its marks by whole texels and can stand one
+    // wholly past the slot with no ink at its edge, and a backend with no ink
+    // table reports none: for either, a cluster's own slot says nothing, and
+    // every cluster is measured once while its slot stays resident.
+    const ClusterOverflowEvidence clusterOverflowEvidence = in.isBitmapFace || mono.inkBoxForSlot == nullptr
+        ? ClusterOverflowEvidence::None
+        : ClusterOverflowEvidence::OwnInk;
     // A frame with no selection or search drawn in its cells, no native
     // vibrancy, no occluding letterbox and no live text-size spec is the
     // common one, and the walk below is compiled for it with
@@ -3939,7 +3953,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                                     if (canDrawClusterWindows && glyph.present && !shouldTakeWideCluster && !isTierPass && !isCellDoubleWide
                                         && sizedSpec == nullptr && !hasFraction && !isEnclosedByCircle && cellClipFrac >= 1.0f
                                         && penScript(&pen) == Ubiquitty::VT::scriptNone) [[unlikely]]
-                                        planClusterWindows(clusterWindows, &cell, atlas, mono,
+                                        planClusterWindows(clusterWindows, &cell, atlas, mono, clusterOverflowEvidence,
                                             std::span(clusterCodePoints.data(), static_cast<std::size_t>(clusterCount)), clusterFace, weight,
                                             clusterPhase, clusterVariant, glyph, clusterOwnSlot,
                                             isSubpixelGlyph ? ClusterOwnQuad::WholeSlot : ClusterOwnQuad::CellBox);

@@ -15,9 +15,12 @@
 #include "Core/Rendering/ProportionalStrike.h"
 #include "Core/Rendering/SubpixelPhase.h"
 #include "Core/Rendering/Unifont.h"
+#include "Core/Unicode/GraphemeBreak.h"
+#include "Core/Unicode/Normalize.h"
 
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 namespace Ubiquitty::Rendering {
 
@@ -141,7 +144,199 @@ ProportionalStrike::Face strikeFace(FontFace face)
     return face == FontFace::Bold || face == FontFace::BoldItalic ? ProportionalStrike::Face::Bold : ProportionalStrike::Face::Regular;
 }
 
+/// Where a code point of a cluster stands against the ink drawn before it.
+enum class MarkSide : std::uint8_t {
+    /// Where Unifont draws it: a base, an overlay, an attached or enclosing
+    /// mark, or any other class with a place of its own on the base.
+    InPlace,
+    /// Stacked over the ink above: combining classes 228, 230, 232 and 234.
+    Above,
+    /// Stacked under the ink below: combining classes 218, 220, 222 and 233.
+    Below,
+};
+
+/// Which side of the ink drawn so far a code point stacks on.
+///
+/// The classes the FreeType fallback stacks an unattached mark by, less the
+/// attached ones: an attached mark (a cedilla, an ogonek, a horn) is drawn
+/// touching its base on purpose, and moving it clear would detach it.
+///
+/// - Parameter codePoint: The code point.
+/// - Returns: The side, or ``MarkSide::InPlace`` for anything that does not stack.
+MarkSide markSideOf(std::uint32_t codePoint)
+{
+    switch (Unicode::canonicalCombiningClass(codePoint)) {
+    case 228: // above left
+    case 230: // above
+    case 232: // above right
+    case 234: // double above
+        return MarkSide::Above;
+    case 218: // below left
+    case 220: // below
+    case 222: // below right
+    case 233: // double below
+        return MarkSide::Below;
+    default:
+        return MarkSide::InPlace;
+    }
+}
+
+/// Whether a cluster's marks stack at all.
+enum class MarkPlacement : std::uint8_t {
+    /// Each above or below mark stacks clear of the ink on its side.
+    Stacked,
+    /// Every mark keeps the place Unifont gives it, overprinting its base.
+    InPlace,
+};
+
+/// Whose ink stands outermost on one side of a stack.
+enum class StackedInk : std::uint8_t {
+    /// The base's, or an in-place mark's: a mark Unifont draws touching it
+    /// stays touching, as the face draws it.
+    Base,
+    /// A stacked mark's: the next mark keeps a pixel's gap from it.
+    Mark,
+};
+
+/// The outermost ink a cluster has stacked on one side so far.
+struct StackEdge {
+    /// Whether any ink has been placed; false leaves the rest unread.
+    bool isInked = false;
+    /// The outermost inked row: the top row above, one past the bottom row below.
+    int row = 0;
+    /// Whose ink that row is.
+    StackedInk owner = StackedInk::Base;
+};
+
+/// The rows a slot-sized raster has ink in.
+struct InkRowSpan {
+    /// The first inked row.
+    int top = 0;
+    /// One past the last inked row; at or above `top` when nothing inked.
+    int bottom = 0;
+};
+
+/// Finds the rows a slot-sized raster has ink in.
+///
+/// - Parameters:
+///   - coverage: The raster, `slotWidth * slotHeight` bytes.
+///   - slotWidth: The raster's width.
+///   - slotHeight: The raster's height.
+/// - Returns: The inked rows; an empty span for a blank raster.
+InkRowSpan inkRowsOf(std::span<const std::uint8_t> coverage, int slotWidth, int slotHeight)
+{
+    const auto isInked = [&](int row) {
+        const auto line = coverage.subspan(static_cast<std::size_t>(row) * static_cast<std::size_t>(slotWidth), static_cast<std::size_t>(slotWidth));
+        return std::ranges::any_of(line, [](std::uint8_t texel) { return texel != 0; });
+    };
+    int top = 0;
+    while (top < slotHeight && !isInked(top))
+        ++top;
+    int bottom = slotHeight;
+    while (bottom > top && !isInked(bottom - 1))
+        --bottom;
+    return { top, bottom };
+}
+
 } // namespace
+
+bool UnifontRasterizer::drawStackedCluster(std::span<const std::uint32_t> codePoints, int slotWidth, int slotHeight, int rowOffsetInPixels,
+    int windowHeight, std::uint8_t* coverageOut)
+{
+    if (codePoints.empty() || slotWidth <= 0 || slotHeight <= 0 || windowHeight <= 0 || !coverageOut)
+        return false;
+    const std::size_t width = static_cast<std::size_t>(slotWidth);
+    const std::span<std::uint8_t> window(coverageOut, width * static_cast<std::size_t>(windowHeight));
+    std::ranges::fill(window, std::uint8_t { 0 });
+    std::vector<std::uint8_t> glyph(width * static_cast<std::size_t>(slotHeight));
+    // One Unifont pixel, the gap a moved mark keeps: every glyph's rows lie
+    // on the upscaled grid, so a move by whole pixels of it keeps every mark
+    // on the grid, as crisp as the face draws it.
+    const int gap = m_scale;
+    // A two-cell base fills the em from its top row to its bottom, so any mark
+    // moved clear of it stands past the slot, and a two-cell cluster draws on
+    // the wide sheet, which carries no windows to show what stands there. Its
+    // marks keep the places Unifont gives them.
+    const std::uint32_t base = codePoints[Unicode::clusterBaseIndex(codePoints)];
+    const MarkPlacement placement
+        = Unicode::Width::forCodePoint(base, Unicode::Width::AmbiguousWidth::Narrow) >= 2 ? MarkPlacement::InPlace : MarkPlacement::Stacked;
+    StackEdge above;
+    StackEdge below;
+    bool didDraw = false;
+    for (const std::uint32_t codePoint : codePoints) {
+        if (Unicode::Width::isInvisibleFormat(codePoint) || !rasterizeGlyph(codePoint, FontFace::Regular, 0, slotWidth, slotHeight, glyph.data()))
+            continue;
+        didDraw = true;
+        const InkRowSpan ink = inkRowsOf(glyph, slotWidth, slotHeight);
+        if (ink.bottom <= ink.top)
+            continue;
+        // A mark moves only when it would land on the ink already on its side:
+        // overlapping it, or touching another stacked mark. One clear of it
+        // stays where Unifont draws it.
+        const MarkSide side = placement == MarkPlacement::Stacked ? markSideOf(codePoint) : MarkSide::InPlace;
+        int shift = 0;
+        if (side == MarkSide::Above && above.isInked) {
+            const int clearance = above.owner == StackedInk::Mark ? gap : 0;
+            if (ink.bottom + clearance > above.row)
+                shift = above.row - gap - ink.bottom;
+        } else if (side == MarkSide::Below && below.isInked) {
+            const int clearance = below.owner == StackedInk::Mark ? gap : 0;
+            if (ink.top - clearance < below.row)
+                shift = below.row + gap - ink.top;
+        }
+        const StackedInk owner = side == MarkSide::InPlace ? StackedInk::Base : StackedInk::Mark;
+        if (!above.isInked || ink.top + shift < above.row)
+            above = { true, ink.top + shift, owner };
+        if (!below.isInked || ink.bottom + shift > below.row)
+            below = { true, ink.bottom + shift, owner };
+        // The glyph's inked rows, moved by the shift and read through the
+        // window's offset; the darker ink wins where two overlap.
+        for (int row = ink.top; row < ink.bottom; ++row) {
+            const int destinationRow = row + shift - rowOffsetInPixels;
+            if (destinationRow < 0 || destinationRow >= windowHeight)
+                continue;
+            const auto source = std::span<const std::uint8_t>(glyph).subspan(static_cast<std::size_t>(row) * width, width);
+            const auto destination = window.subspan(static_cast<std::size_t>(destinationRow) * width, width);
+            std::ranges::transform(destination, source, destination.begin(), [](std::uint8_t under, std::uint8_t over) { return std::max(under, over); });
+        }
+    }
+    return didDraw;
+}
+
+bool UnifontRasterizer::rasterizeCluster(const std::uint32_t* codePoints, int count, FontFace /*face*/, std::uint32_t /*weight*/, int slotWidth,
+    int slotHeight, std::uint8_t* coverageOut)
+{
+    if (count <= 0 || !codePoints || slotWidth <= 0 || slotHeight <= 0)
+        return false;
+    return drawStackedCluster(std::span(codePoints, static_cast<std::size_t>(count)), slotWidth, slotHeight, 0, slotHeight, coverageOut);
+}
+
+bool UnifontRasterizer::rasterizeClusterWindow(const std::uint32_t* codePoints, int count, FontFace /*face*/, std::uint32_t /*weight*/,
+    double /*phaseInPixels*/, ClusterRasterBounds /*bounds*/, int slotWidth, int slotHeight, int rowOffsetInPixels, int windowHeight,
+    std::uint8_t* coverageOut)
+{
+    if (count <= 0 || !codePoints)
+        return false;
+    return drawStackedCluster(std::span(codePoints, static_cast<std::size_t>(count)), slotWidth, slotHeight, rowOffsetInPixels, windowHeight,
+        coverageOut);
+}
+
+bool UnifontRasterizer::rasteriseClusterWindow(std::span<const std::uint32_t> codePoints, int slotWidth, int slotHeight, int rowOffsetInPixels,
+    int windowHeight, CoverageSlot coverageOut)
+{
+    if (slotWidth <= 0 || windowHeight <= 0
+        || coverageOut.size() < static_cast<std::size_t>(slotWidth) * static_cast<std::size_t>(windowHeight))
+        return false;
+    return drawStackedCluster(codePoints, slotWidth, slotHeight, rowOffsetInPixels, windowHeight, coverageOut.data());
+}
+
+ClusterInkRows UnifontRasterizer::measureClusterInk(std::span<const std::uint32_t> codePoints, int slotWidth, int slotHeight, int reachInPixels)
+{
+    // Measured through one tall window of the drawing the slot and its
+    // windows hold, so the rows cannot disagree with them.
+    std::vector<std::uint8_t> scratch;
+    return measureClusterInkThroughWindow(*this, codePoints, FontFace::Regular, 0, 0.0, {}, slotWidth, slotHeight, reachInPixels, scratch);
+}
 
 int UnifontRasterizer::proportionalStripOverhangInPixels() const
 {
