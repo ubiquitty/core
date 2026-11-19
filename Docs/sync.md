@@ -3083,7 +3083,7 @@ the same way.
 | Op | Body | Notes |
 |---|---|---|
 | `DefinePen` | `id:varint`, `Pen` | `id` must equal the watermark. A `Pen` is the full attribute tuple: colours, flags, underline style and colour, sizing. |
-| `DefineLink` | `id:u16`, `key:bytes`, `uri:bytes` | The host's own link id and the OSC 8 `id=` key it was opened with, as the host's ring holds them. Opaque, NUL-free key and URI bytes, at most 31 and 2,047 bytes. |
+| `DefineLink` | `id:u16`, `key:bytes`, `uri:bytes` | The host's own link id and the OSC 8 `id=` key it was opened with, as the host's link table holds them. Opaque, NUL-free key and URI bytes, at most 31 and 2,047 bytes. |
 | `DefineCluster` | `id:varint`, `utf8` | Only for clusters over 32 B |
 | `ScrollRect` | `screen:u8`, `top:u16`, `bottom:u16`, `left:u16`, `right:u16`, `delta:svarint` | Chain mode only. Revealed cells take the canonical blank of the rectangle's erase pen. |
 | `Row` | `screen:u8`, `row:u16`, `RowForm` | Whole-row replace |
@@ -3171,8 +3171,8 @@ cold blocks with as well):
   host's ring holds it, and the cluster dictionary is the host's cluster pool,
   append-only below its id ceiling. Every pool cluster rides `clusterRefs`, of
   whatever length, for the same reason.
-- An id no live link slot holds is a link the host's ring retired; it resolves
-  to no target on either side and travels undefined.
+- An id no live link slot holds is a link the host's table retired once no
+  cell named it; it resolves to no target on either side and travels undefined.
 - `widths` is not carried: the Core stores no width override a cell does not
   already spell through its pen.
 
