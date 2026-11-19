@@ -563,6 +563,10 @@ static void keepWithinBudget(Ubiquitty::Terminal& t, LinkTable& links, std::size
 
 const char* uri(const Ubiquitty::Terminal* t, uint16_t id)
 {
+    // Null is a caller with no terminal, a frontend asking before one exists,
+    // and resolves nothing, as an id of 0 does.
+    if (!t || id == 0)
+        return nullptr;
     const LinkTable* links = table(t);
     if (!links)
         return nullptr;
@@ -572,6 +576,9 @@ const char* uri(const Ubiquitty::Terminal* t, uint16_t id)
 
 bool isExplicitlyKeyed(const Ubiquitty::Terminal* t, uint16_t id)
 {
+    // Null and the 0 id name no entry, so neither was interned under a key.
+    if (!t || id == 0)
+        return false;
     const LinkTable* links = table(t);
     if (!links)
         return false;
