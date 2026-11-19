@@ -2710,7 +2710,7 @@ class TidyGateTests(unittest.TestCase):
             root = Path(directory).resolve()
             scripts = root / "Scripts"
             scripts.mkdir()
-            for name in ("check-tidy.sh", "gate-report-lib.sh", "build-root.sh", "ccache-env.sh"):
+            for name in ("check-tidy.sh", "gate-report-lib.sh", "build-root.sh", "ccache-env.sh", "default-compiler.sh"):
                 shutil.copyfile(batteries.ROOT / "Scripts" / name, scripts / name)
             shutil.copyfile(batteries.ROOT / ".clang-tidy", root / ".clang-tidy")
             source = root / "Source/Probe.cpp"

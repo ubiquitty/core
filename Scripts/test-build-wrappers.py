@@ -22,7 +22,7 @@ class BuildWrapperTests(unittest.TestCase):
         self.scripts.mkdir(parents=True)
         original = Path(__file__).resolve().parent
         for name in ("pre-push-gates.sh", "pre-push-gates-lib.sh", "build-root.sh", "build_root.py",
-                     "ccache-env.sh", "portable-core-lib.sh"):
+                     "ccache-env.sh", "default-compiler.sh", "portable-core-lib.sh"):
             shutil.copy2(original / name, self.scripts / name)
         self.buildRoot = self.directory / "external build root"
         self.bin = self.directory / "bin"

@@ -82,6 +82,8 @@ ubq_link_compile_database() { # <build directory> <checkout>
 # root could not be derived would also quietly compile uncached.
 # shellcheck source=Scripts/ccache-env.sh
 . "${BASH_SOURCE[0]%/*}/ccache-env.sh"
+# shellcheck source=Scripts/default-compiler.sh
+. "${BASH_SOURCE[0]%/*}/default-compiler.sh"
 
 # The value every sourcing script reads. Derived once here so a script that
 # calls it in a loop pays for it once, and so `set -u` never meets it unset.

@@ -47,6 +47,7 @@ Building the frontends, the host, and their shared libraries. Every build writes
 | [`cmake/UbiquittyPreProject.cmake`](cmake/UbiquittyPreProject.cmake) | What a build of Core decides before `project()`: the compiler launcher, the deployment floors, the macOS SDK, and the version. |
 | [`cmake/UbiquittyTests.cmake`](cmake/UbiquittyTests.cmake) | Registers a repository's host tests with CTest, each rooted at the checkout that owns it, and makes each stanza its shell driver lists a CTest entry of its own. |
 | [`cmake/UbiquittyToolchain.cmake`](cmake/UbiquittyToolchain.cmake) | What every target of a build of Core is compiled under: the compiler floor, the build type, the version header, the warnings, the instrumentation, and the QUIC dependencies. |
+| [`default-compiler.sh`](default-compiler.sh) | Which compiler a build takes when its caller names none. |
 | [`ensure-quic-deps.sh`](ensure-quic-deps.sh) | Validates the cached QUIC archives and rebuilds only a missing or foreign prefix. |
 | [`fetch-quic-deps.sh`](fetch-quic-deps.sh) | Fetches and builds the pinned ngtcp2 and AWS-LC sources the QUIC transport links. |
 | [`generate-xcode-workspace.sh`](generate-xcode-workspace.sh) | Generate the Xcode projects collected by Ubiquitty.xcworkspace. |
