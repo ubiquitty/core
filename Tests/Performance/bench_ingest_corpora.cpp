@@ -229,19 +229,32 @@ std::vector<Corpus> buildCorpora(std::size_t targetBytes)
 // Best-of-N, because the floor is the only figure attributable to the parser on
 // a machine with other tenants: a slow pass measures the scheduler, never a
 // faster parser.
-double bestMegabytesPerSecond(const Corpus& corpus, int repetitions)
+// Feeds the corpus whole, or in the pieces a runtime hands the parser: a pane's
+// drain parses one model-lock bite at a time, and what a run costs when its
+// input ends mid-row is part of what the pane pays.
+void feed(Ubiquitty::Terminal& term, const std::string& bytes, std::size_t chunkBytes)
+{
+    if (chunkBytes == 0) {
+        Ubiquitty::processBytes(&term, bytes);
+        return;
+    }
+    for (std::size_t offset = 0; offset < bytes.size(); offset += chunkBytes)
+        Ubiquitty::processBytes(&term, std::string_view(bytes).substr(offset, chunkBytes));
+}
+
+double bestMegabytesPerSecond(const Corpus& corpus, int repetitions, std::size_t chunkBytes)
 {
     const auto& bytes = corpus.bytes;
     Ubiquitty::Terminal term;
     Ubiquitty::hardReset(term);
     Ubiquitty::resize(term, corpus.rows, corpus.columns);
     // One untimed pass so first-touch faults and table init stay out of the sample.
-    Ubiquitty::processBytes(&term, bytes);
+    feed(term, bytes, chunkBytes);
 
     double bestSeconds = 1e30;
     for (int repetition = 0; repetition < repetitions; ++repetition) {
         const auto start = ClockType::now();
-        Ubiquitty::processBytes(&term, bytes);
+        feed(term, bytes, chunkBytes);
         const double seconds = std::chrono::duration<double>(ClockType::now() - start).count();
         if (seconds < bestSeconds)
             bestSeconds = seconds;
@@ -271,16 +284,29 @@ int main(int argc, char** argv)
     // built-in lanes cancel when they ride the same run.
     const char* streamPath = std::getenv("UBQ_BENCH_STREAM");
     int repetitions = 7;
+    std::size_t chunkBytes = 0;
+    int streamRows = benchRows;
+    int streamColumns = benchColumns;
     const char* loopCorpus = nullptr;
     for (int index = 1; index < argc; ++index) {
         if (std::strcmp(argv[index], "--stream") == 0 && index + 1 < argc)
             streamPath = argv[++index];
-        else if (std::strcmp(argv[index], "--loop") == 0 && index + 1 < argc)
+        else if (std::strcmp(argv[index], "--chunk") == 0 && index + 1 < argc)
+            chunkBytes = static_cast<std::size_t>(std::max(0, std::atoi(argv[++index])));
+        else if (std::strcmp(argv[index], "--stream-grid") == 0 && index + 1 < argc) {
+            // A capture is a stream for one geometry: where its lines wrap and
+            // how much of the grid a scroll moves both follow the pane it was
+            // taken in.
+            if (std::sscanf(argv[++index], "%dx%d", &streamColumns, &streamRows) != 2 || streamColumns < 1 || streamRows < 1) {
+                std::fprintf(stderr, "bench_ingest_corpora: --stream-grid takes COLUMNSxROWS\n");
+                return 2;
+            }
+        } else if (std::strcmp(argv[index], "--loop") == 0 && index + 1 < argc)
             loopCorpus = argv[++index];
         else if (std::strcmp(argv[index], "--repetitions") == 0 && index + 1 < argc)
             repetitions = std::atoi(argv[++index]);
         else {
-            std::fprintf(stderr, "usage: bench_ingest_corpora [--repetitions N] [--loop <corpus>]\n");
+            std::fprintf(stderr, "usage: bench_ingest_corpora [--repetitions N] [--loop <corpus>] [--chunk BYTES] [--stream <file> [--stream-grid COLUMNSxROWS]]\n");
             return 2;
         }
     }
@@ -300,7 +326,7 @@ int main(int argc, char** argv)
         while ((got = std::fread(chunk, 1, sizeof chunk, file)) > 0)
             bytes.append(chunk, got);
         std::fclose(file);
-        corpora.push_back({ "stream", repeatToBytes(bytes, 8u * 1024u * 1024u) });
+        corpora.push_back({ "stream", repeatToBytes(bytes, 8u * 1024u * 1024u), streamRows, streamColumns });
     }
 
     // --loop parses one corpus forever through the same call, so an external
@@ -330,7 +356,7 @@ int main(int argc, char** argv)
     std::printf(R"({"benchmarks":[)");
     bool first = true;
     for (const Corpus& corpus : corpora) {
-        const double megabytesPerSecond = bestMegabytesPerSecond(corpus, repetitions);
+        const double megabytesPerSecond = bestMegabytesPerSecond(corpus, repetitions, chunkBytes);
         std::fprintf(stderr, "%-18s %4dx%-4d %12.1f\n", corpus.name, corpus.columns, corpus.rows, megabytesPerSecond);
         std::printf(R"(%s{"name":"%s","value":%.3f,"unit":"MB/s","rows":%d,"columns":%d})", first ? "" : ",", corpus.name, megabytesPerSecond, corpus.rows, corpus.columns);
         first = false;
