@@ -393,8 +393,9 @@ bool linkColorSystemBlue(const Values& c);
 /// Whether each OSC 8 link kind takes its own underline:
 /// `[underline] link_style_per_kind`.
 ///
-/// On by default: file links dotted, mailto links dashed, and web links in
-/// `link_style`. Off draws every link in `link_style`.
+/// On by default: file links dotted (`file://` or a bare absolute path),
+/// mailto links dashed, and web links in `link_style`. Off draws every link
+/// in `link_style`.
 ///
 /// - Parameter c: The configuration to read.
 /// - Returns: The setting, or its default.

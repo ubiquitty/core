@@ -386,8 +386,8 @@ TEST(testAConnectionNeedsTheLinkModifier)
 }
 
 // kindForURI — scheme → link category, so a frontend paints url/file/mailto
-// distinctly. mailto: → Mailto, file: → File, every other absolute scheme →
-// URL, schemeless / empty → Other. Case-insensitive.
+// distinctly. mailto: → Mailto, file: or a bare absolute path → File, every
+// other absolute scheme → URL, schemeless / empty → Other. Case-insensitive.
 TEST(testKindForURI)
 {
     CHECK(Attributes::LinkRun::kindForURI("https://example.com") == Attributes::LinkRun::Kind::URL);
@@ -402,6 +402,11 @@ TEST(testKindForURI)
     CHECK(Attributes::LinkRun::kindForURI("ubiquitty:action/connect") == Attributes::LinkRun::Kind::Action); // the app's own control
     CHECK(Attributes::LinkRun::kindForURI("UBIQUITTY:action/connect") == Attributes::LinkRun::Kind::Action);
     CHECK(Attributes::LinkRun::kindForURI("ubiquittyx:action") == Attributes::LinkRun::Kind::URL); // another scheme, not a prefix match
+    CHECK(Attributes::LinkRun::kindForURI("/etc/hosts") == Attributes::LinkRun::Kind::File); // a bare absolute path
+    CHECK(Attributes::LinkRun::kindForURI("/src/layout.rs:42:17") == Attributes::LinkRun::Kind::File); // its ':' is no scheme
+    CHECK(Attributes::LinkRun::kindForURI("/") == Attributes::LinkRun::Kind::File);
+    CHECK(Attributes::LinkRun::kindForURI("//example.com/path") == Attributes::LinkRun::Kind::Other); // a network path, no scheme
+    CHECK(Attributes::LinkRun::kindForURI("src/layout.rs") == Attributes::LinkRun::Kind::Other); // relative: no scheme
     CHECK(Attributes::LinkRun::kindForURI("example.com") == Attributes::LinkRun::Kind::Other); // no scheme
     CHECK(Attributes::LinkRun::kindForURI(":nohost") == Attributes::LinkRun::Kind::Other); // empty scheme
     CHECK(Attributes::LinkRun::kindForURI("") == Attributes::LinkRun::Kind::Other); // empty

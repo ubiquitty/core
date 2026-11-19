@@ -498,7 +498,7 @@ struct Values {
     std::optional<bool> underlineLinks; // OSC 8 link cells dotted-underlined
     std::optional<int> linkUnderlineStyle; // OSC 8 link underline: 0 = single, 1 = dotted
     std::optional<bool> linkColorSystemBlue; // force OSC 8 link text + underline to system blue
-    std::optional<bool> linkStylePerKind; // default on: OSC 8 kinds get distinct underlines (file:// dotted, mailto: dashed,
+    std::optional<bool> linkStylePerKind; // default on: OSC 8 kinds get distinct underlines (file dotted, mailto: dashed,
                                           // url/other in link_style); off = all links use link_style
     std::optional<bool> smartDoubleClick; // double-click selects URL/path token, not a word
 

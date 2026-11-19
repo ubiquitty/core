@@ -98,8 +98,8 @@ inline constexpr UnderlineMetrics underlineMetrics = UnderlineMetrics::Ubiquitty
 inline constexpr bool underlineLinks = true;
 inline constexpr int linkUnderlineStyle = 0; // 0 = solid/single
 inline constexpr bool linkColorSystemBlue = false;
-// [underline] link_style_per_kind — on: file links dotted, mailto links
-// dashed, web links in link_style, so a link's kind reads before it is opened;
+// [underline] link_style_per_kind — on: file links (file:// or a bare
+// absolute path) dotted, mailto links dashed, web links in link_style, so a link's kind reads before it is opened;
 // off: every link uses link_style.
 inline constexpr bool linkStylePerKind = true; // bool-ok: mirrors a boolean config key
 inline constexpr bool smartDoubleClick = false;

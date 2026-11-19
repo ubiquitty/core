@@ -45,7 +45,8 @@ enum class Kind : uint8_t {
     Action,
 };
 
-// Classify a resolved URI into a Kind from its scheme. Pure bytes (no platform URL type), case-insensitive.
+// Classify a resolved URI into a Kind from its scheme, or as a file when it is a bare absolute path. Pure bytes (no
+// platform URL type), case-insensitive.
 /// Categorises a resolved URI so the frontend can style or gate it.
 ///
 /// - Parameter uri: The resolved link target.

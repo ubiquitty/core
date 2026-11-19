@@ -274,6 +274,13 @@ std::optional<ColumnSpan> pathMatchSpanAtColumn(const uint32_t* row, int n, int 
 
 Kind kindForURI(std::string_view uri)
 {
+    // A bare absolute path names a local file without its scheme, as some
+    // programs write one, and it opens as a file, so it is styled as one. It is
+    // read before the scheme because a path may carry a ':' for its line and
+    // column (/src/layout.rs:42:17). Two slashes begin a network-path reference
+    // (RFC 3986 4.2), which names a host, not a path.
+    if (uri.starts_with('/') && !uri.starts_with("//"))
+        return Kind::File;
     // The scheme is the run before the first ':' (RFC 3986). No ':' means a
     // schemeless / relative reference → Other.
     const std::size_t colon = uri.find(':');

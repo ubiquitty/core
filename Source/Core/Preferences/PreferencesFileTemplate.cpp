@@ -94,7 +94,7 @@ std::string defaultFileContents()
            "# links = true            # OSC 8 link cells get an underline\n"
            "# link_style = 0          # link underline: 0 = solid (default), 1 = dotted\n"
            "# link_color_blue = false # force link text + underline to system blue (web-style)\n"
-           "# link_style_per_kind = true # on (default): file:// links dotted, mailto: dashed, web links in link_style; "
+           "# link_style_per_kind = true # on (default): file links (file:// or /path) dotted, mailto: dashed, web links in link_style; "
            "off: all links use link_style\n"
            "\n"
            "[text]\n"
