@@ -12,6 +12,10 @@
 #if defined(__aarch64__)
 #include <arm_neon.h>
 #endif
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#include <immintrin.h>
+#define UBIQUITTY_UTF8_THREE_BYTE_AVX2 1
+#endif
 
 namespace Ubiquitty::Unicode {
 
@@ -212,6 +216,79 @@ UTF8Status utf8Feed(UTF8Decoder* d, std::uint8_t byte, std::uint32_t* outCodePoi
     return UTF8Status::Invalid;
 }
 
+#if UBIQUITTY_UTF8_THREE_BYTE_AVX2
+/// Converts complete three-byte sequences, eight to a step.
+///
+/// A row of ideographs is three-byte sequences end to end, and the general
+/// converter spends most of such a row finding that out. Here each 128-bit
+/// lane takes four sequences into four 32-bit lanes as third, second, lead and
+/// a zero, and two multiply-adds pack the three payloads into the code point.
+/// The second lane is loaded eight bytes on and gathered from its last twelve
+/// bytes, so the two loads cover the step's twenty-four bytes and nothing past
+/// them.
+///
+/// Every lane is validated before the step stores: the first malformed
+/// sequence, overlong form or surrogate ends the conversion on a step
+/// boundary, and the caller's scalar loop stops at the exact byte.
+///
+/// The caller checks AVX2 support.
+///
+/// - Parameters:
+///   - input: The input, starting at a lead byte.
+///   - output: Receives the code points; its size bounds the conversion.
+/// - Returns: The code points stored, each of which stood for three bytes.
+[[gnu::target("avx2")]] static int convertThreeByteRunAVX2(std::span<const char> input, std::span<std::uint32_t> output)
+{
+    const char* in = input.data();
+    const int length = static_cast<int>(input.size());
+    std::uint32_t* out = output.data();
+    const int maxOut = static_cast<int>(output.size());
+    const __m256i gather = _mm256_setr_epi8(2, 1, 0, -1, 5, 4, 3, -1, 8, 7, 6, -1, 11, 10, 9, -1,
+        6, 5, 4, -1, 9, 8, 7, -1, 12, 11, 10, -1, 15, 14, 13, -1);
+    const __m256i shapeMask = _mm256_set1_epi32(0x00F0C0C0);
+    const __m256i shape = _mm256_set1_epi32(0x00E08080);
+    const __m256i payloadMask = _mm256_set1_epi32(0x000F3F3F);
+    // third + 64 * second in the low word, the lead's four bits in the high.
+    const __m256i joinBytes = _mm256_set1_epi32(0x00014001);
+    const __m256i joinWords = _mm256_set1_epi32(0x10000001);
+    // Below U+0800 is an overlong form and U+D800..DFFF a surrogate; both are
+    // read from the code point's top five bits.
+    const __m256i rangeMask = _mm256_set1_epi32(0xF800);
+    const __m256i surrogates = _mm256_set1_epi32(0xD800);
+    int n = 0;
+    while (length - n * 3 >= 24 && maxOut - n >= 8) {
+        const char* bytes = in + n * 3;
+        const __m128i low = _mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes));
+        const __m128i high = _mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes + 8));
+        const __m256i lanes = _mm256_shuffle_epi8(_mm256_inserti128_si256(_mm256_castsi128_si256(low), high, 1), gather);
+        const __m256i codePoints = _mm256_madd_epi16(_mm256_maddubs_epi16(_mm256_and_si256(lanes, payloadMask), joinBytes), joinWords);
+        const __m256i range = _mm256_and_si256(codePoints, rangeMask);
+        const __m256i isShaped = _mm256_cmpeq_epi32(_mm256_and_si256(lanes, shapeMask), shape);
+        const __m256i isOutOfRange = _mm256_or_si256(_mm256_cmpeq_epi32(range, _mm256_setzero_si256()), _mm256_cmpeq_epi32(range, surrogates));
+        if (_mm256_movemask_epi8(_mm256_andnot_si256(isOutOfRange, isShaped)) != -1)
+            break;
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + n), codePoints);
+        n += 8;
+    }
+    // One half step for what is left of a row: four sequences from one load,
+    // which reads four bytes past them and so needs sixteen in hand.
+    if (length - n * 3 >= 16 && maxOut - n >= 4) {
+        const __m128i lanes = _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(in + n * 3)), _mm256_castsi256_si128(gather));
+        const __m128i codePoints = _mm_madd_epi16(
+            _mm_maddubs_epi16(_mm_and_si128(lanes, _mm256_castsi256_si128(payloadMask)), _mm256_castsi256_si128(joinBytes)),
+            _mm256_castsi256_si128(joinWords));
+        const __m128i range = _mm_and_si128(codePoints, _mm256_castsi256_si128(rangeMask));
+        const __m128i isShaped = _mm_cmpeq_epi32(_mm_and_si128(lanes, _mm256_castsi256_si128(shapeMask)), _mm256_castsi256_si128(shape));
+        const __m128i isOutOfRange = _mm_or_si128(_mm_cmpeq_epi32(range, _mm_setzero_si128()), _mm_cmpeq_epi32(range, _mm256_castsi256_si128(surrogates)));
+        if (_mm_movemask_epi8(_mm_andnot_si128(isOutOfRange, isShaped)) == 0xFFFF) {
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + n), codePoints);
+            n += 4;
+        }
+    }
+    return n;
+}
+#endif
+
 // Decode a run of complete MULTI-byte UTF-8 sequences (lead >= 0xC2) from
 // in[0..length) into out[0..maxOut), stopping at the first ASCII / control /
 // continuation byte (< 0xC2), an incomplete trailing sequence, an invalid
@@ -260,6 +337,20 @@ int utf8DecodeRun(std::span<const char> input, std::span<std::uint32_t> out, int
             p += 48;
             n += 16;
         }
+#if UBIQUITTY_ENABLE_TEST_HOOKS
+        if (n) {
+            ++simdRunCountForTest;
+            ++threeByteSIMDRunCountForTest;
+        }
+#endif
+    }
+#elif UBIQUITTY_UTF8_THREE_BYTE_AVX2
+    // Admitted from one step up. A step is two loads and a shuffle with no
+    // span scan ahead of it, so it has no crossover to wait for, and the rows a
+    // wrapped line starts mid-way are shorter than the general converter's gate.
+    if (maxOut >= 8 && length >= 24 && (static_cast<std::uint8_t>(in[0]) & 0xF0) == 0xE0 && __builtin_cpu_supports("avx2")) {
+        n = convertThreeByteRunAVX2(input, out);
+        p = n * 3;
 #if UBIQUITTY_ENABLE_TEST_HOOKS
         if (n) {
             ++simdRunCountForTest;

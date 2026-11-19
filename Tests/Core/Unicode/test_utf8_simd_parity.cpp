@@ -133,6 +133,12 @@ static void testThreeByteRunBoundaries()
     }
 #if defined(__aarch64__)
     CHECK(Ubiquitty::Unicode::threeByteSIMDRunCountForTest > before);
+#elif defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    // The x86 converter is chosen at run time, by what the processor has.
+    if (__builtin_cpu_supports("avx2"))
+        CHECK(Ubiquitty::Unicode::threeByteSIMDRunCountForTest > before);
+    else
+        CHECK(Ubiquitty::Unicode::threeByteSIMDRunCountForTest == before);
 #else
     CHECK(Ubiquitty::Unicode::threeByteSIMDRunCountForTest == before);
 #endif
@@ -221,9 +227,17 @@ static void testTheOutputCapacityDecidesWhichPathDecodes()
     // Written as the boundary rather than as one value on each side: a
     // capacity picked with slack cannot tell a moved gate from a gate that
     // stopped being reached at all.
+    //
+    // The x86 three-byte converter has no span scan to amortize and admits
+    // from one eight-sequence step, so its boundary is there instead; a
+    // processor without AVX2 has the general converter's.
     const int atLeftMargin = 40;
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    const int lastCapacityThatAdmits = __builtin_cpu_supports("avx2") ? 8 : 32;
+#else
     const int lastCapacityThatAdmits = 32;
-    const int pastTheWindow = 31;
+#endif
+    const int pastTheWindow = lastCapacityThatAdmits - 1;
 
     std::uint32_t wide[128];
     std::uint32_t narrow[128];
@@ -246,8 +260,8 @@ static void testTheOutputCapacityDecidesWhichPathDecodes()
     CHECK(Ubiquitty::Unicode::simdRunCountForTest > afterNarrow);
     // The scan reaches the output bound exactly, rather than a conservative
     // byte limit leaving a third of the output span unused.
-    CHECK(admittedCount == 32);
-    CHECK(admittedConsumed == 96);
+    CHECK(admittedCount == lastCapacityThatAdmits);
+    CHECK(admittedConsumed == lastCapacityThatAdmits * 3);
     CHECK(std::memcmp(wide, admitted, static_cast<std::size_t>(admittedCount) * sizeof(std::uint32_t)) == 0);
 
     // The narrow call returns less, and what it returns has to be the wide
