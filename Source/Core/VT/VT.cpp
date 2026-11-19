@@ -5402,11 +5402,11 @@ static inline std::optional<uint32_t> decodeCombiningDiacriticPair(std::string_v
 // active ROW (DWL/DHL, left/right margins, status line), or defer output must
 // add its bail here. emitClusterRun uses the lighter !display/status/marginBell
 // gate because its clusters route through emitCharacter.
-static inline bool batchedWriteEligible(Ubiquitty::Terminal& t, Ubiquitty::Screen::State* s)
+static inline bool batchedWriteEligibleIgnoringWrap(Ubiquitty::Terminal& t, Ubiquitty::Screen::State* s)
 {
     if (!t.grid)
         return false;
-    if (t.statusLineActive || t.isAlignedTabActive || t.modes.insertMode || s->wrapPending || t.marginBell || t.shouldWriteRightToLeft)
+    if (t.statusLineActive || t.isAlignedTabActive || t.modes.insertMode || t.marginBell || t.shouldWriteRightToLeft)
         return false;
     // GB9b allows even an ordinary base to join a live Prepend, so the
     // character path must decide its cluster before any direct span write.
@@ -5425,6 +5425,11 @@ static inline bool batchedWriteEligible(Ubiquitty::Terminal& t, Ubiquitty::Scree
     if (s->cursorY < 0 || s->cursorY >= t.rows || s->lineAttribute[s->cursorY] != lineAttributeNormal)
         return false;
     return true;
+}
+
+static inline bool batchedWriteEligible(Ubiquitty::Terminal& t, Ubiquitty::Screen::State* s)
+{
+    return !s->wrapPending && batchedWriteEligibleIgnoringWrap(t, s);
 }
 
 // Reached once a writer has cleared the bails: wrapPending is false, so writing
@@ -5487,11 +5492,63 @@ static inline bool textFastPathEligible(Ubiquitty::Terminal& t, Ubiquitty::Scree
     return true;
 }
 
+/// Commits the autowrap a plain glyph causes, the way emitCharacter commits
+/// it, so a run can start on the new row.
+///
+/// A row a run fills leaves its wrap pending, and a wide glyph at the last
+/// column wraps before it is placed. Either way the glyph that follows would
+/// otherwise take the per-character path alone, once a row, with the decoder
+/// fed a byte at a time behind it.
+///
+/// The caller has established that the glyph is plain. Everything else a wrap
+/// can involve stays on the per-character path: a code point that extends the
+/// cluster at the wrap takes no wrap at all, and triggers, a cancellable
+/// graphic and sized text each attach rules of their own to it.
+///
+/// - Parameters:
+///   - t: The terminal.
+///   - s: Its active screen.
+///   - codePoint: The glyph about to be placed.
+/// - Returns: Whether the wrap was committed. The cursor is then at the left
+///   margin of the row below and no wrap is pending.
+static bool commitWrapBeforePlainGlyph(Ubiquitty::Terminal& t, Ubiquitty::Screen::State* s, uint32_t codePoint)
+{
+    if (!t.modes.autowrap || !batchedWriteEligibleIgnoringWrap(t, s))
+        return false;
+    if ((t.triggersEngine && t.triggersEngine->ruleCount() != 0) || (t.graphicCancellation && t.graphicCancellation->isCapturing)
+        || t.grid->hasSizedCellHint())
+        return false;
+    if (Ubiquitty::Unicode::isGraphemeRelevant(codePoint) && clusterIsLive(t)) {
+        Ubiquitty::Unicode::GraphemeState probe = t.parser.clusterState;
+        if (Ubiquitty::Unicode::graphemeExtends(&probe, t.parser.clusterLast, codePoint))
+            return false;
+    }
+    s->cursorX = std::max(Ubiquitty::Screen::effectiveLeft(t), Screen::lineHomeColumn(t));
+    wrapCommitLinefeed(t);
+    s->wrapPending = false;
+    // The row just left is joined to this one, wherever the feed put it.
+    if (s->cursorY > 0)
+        s->lineWrapped[s->cursorY - 1] = true;
+    return true;
+}
+
 // Batches ASCII bases with U+0300..036F continuations into complete cells.
 // These marks only extend the cluster; they cannot change its width or presentation.
 template<GraphicCapture Capture> static int emitASCIICombiningRun(Ubiquitty::Terminal& t, const char* buffer, int start, int length)
 {
     Ubiquitty::Screen::State* s = t.screens.active;
+    // The base wraps a filled row before its mark attaches, and it is the
+    // base alone the per-character path would place there: one ASCII cell on
+    // a recycled row, which the mark behind it then has to expand.
+    // Only once something follows the base and its mark: a cell that could
+    // still be cancelled takes its wrap back with it, and that wrap is
+    // journalled on the per-character path.
+    if (s->wrapPending
+        && (t.characterSetG[t.characterSetActive] != characterSetUSASCII || start + 3 > length
+            || !decodeCombiningDiacriticPair({ buffer + start + 1, static_cast<std::size_t>(length - start - 1) })
+            || graphicCaptureBefore<Capture>(buffer, start + 3, length) != GraphicCapture::Discard
+            || !commitWrapBeforePlainGlyph(t, s, static_cast<unsigned char>(buffer[start]))))
+        return 0;
     if (!textFastPathEligible(t, s))
         return 0;
 
@@ -5598,6 +5655,17 @@ template<GraphicCapture Capture> static int emitASCIICombiningRun(Ubiquitty::Ter
 template<GraphicCapture Capture> static int emitASCIIRun(Ubiquitty::Terminal& t, const char* buffer, int start, int length)
 {
     Ubiquitty::Screen::State* s = t.screens.active;
+    // A row the last run filled wraps at this run's first glyph. A designated
+    // set keeps the per-character path's wrap: what its byte resolves to
+    // decides whether there is one.
+    // The wrap is committed here only for a glyph something already follows:
+    // one that could still be cancelled takes its wrap back with it, and that
+    // wrap is journalled on the per-character path.
+    if (s->wrapPending
+        && (t.characterSetG[t.characterSetActive] != characterSetUSASCII
+            || graphicCaptureBefore<Capture>(buffer, start + 1, length) != GraphicCapture::Discard
+            || !commitWrapBeforePlainGlyph(t, s, static_cast<unsigned char>(buffer[start]))))
+        return 0;
     if (!batchedWriteEligible(t, s))
         return 0;
     // A designated GL set does not cost this writer its batch: one byte still
@@ -5785,7 +5853,6 @@ static inline bool isPlainWideGraphic(uint32_t codePoint, Unicode::Width::Ambigu
 // grapheme tables stay authoritative — a debug assert pins this range to them.
 [[gnu::always_inline]] static inline bool isNarrowGraphicFast(uint32_t codePoint) { return codePoint >= 0x2500 && codePoint <= 0x259F; }
 
-#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || defined(_M_X64)
 static inline bool isPlainNarrowGraphic(uint32_t codePoint, Unicode::Width::AmbiguousWidth ambiguousWidth)
 {
     if (codePoint >= 0x20 && codePoint < 0x7F)
@@ -5798,7 +5865,6 @@ static inline bool isPlainNarrowGraphic(uint32_t codePoint, Unicode::Width::Ambi
     return Unicode::Width::cellsForWidthClass(Unicode::detail::PropWidthField::get(properties), ambiguousWidth) == 1
         && !Unicode::mayNeedShaping(codePoint);
 }
-#endif
 
 // A code point read without consuming it, and how many bytes carry it.
 struct PeekedCodePoint {
@@ -6178,6 +6244,22 @@ static inline int nextTextRunDecodeBudget(int budget, int placedBytes, int decod
 template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, const char* buffer, int start, int length, int& decodeBudget)
 {
     Ubiquitty::Screen::State* s = t.screens.active;
+    const auto firstCodePoint = peekMultibyteUTF8CodePoint({ buffer + start, static_cast<std::size_t>(length - start) });
+    const bool isFirstPlainWide = firstCodePoint && isPlainWideGraphic(firstCodePoint->codePoint, t.ambiguousWidth);
+    // The glyph that wraps can still be cancelled while nothing is known to
+    // follow it, and the cancellation takes the wrap back with it: that wrap
+    // is journalled on the per-character path, and stays there.
+    const bool isFirstSucceeded = firstCodePoint && graphicCaptureBefore<Capture>(buffer, start + firstCodePoint->length, length) == GraphicCapture::Discard;
+    if (s->wrapPending) {
+        if (!isFirstSucceeded || !(isFirstPlainWide || isPlainNarrowGraphic(firstCodePoint->codePoint, t.ambiguousWidth))
+            || !commitWrapBeforePlainGlyph(t, s, firstCodePoint->codePoint))
+            return 0;
+    } else if (isFirstPlainWide && s->cursorX == Ubiquitty::Screen::effectiveRight(t)) {
+        // No room for both halves: the per-character path wraps first too.
+        // A refusal leaves the glyph to that path, as it was.
+        if (!isFirstSucceeded || !commitWrapBeforePlainGlyph(t, s, firstCodePoint->codePoint))
+            return 0;
+    }
     if (!textFastPathEligible(t, s))
         return 0;
     const int rightMargin = Ubiquitty::Screen::effectiveRight(t);
@@ -6225,10 +6307,7 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
     // including punctuation outside the ideograph ranges. A mixed-width tail
     // may leave room for another run, but never consumes an unplaced glyph.
     std::array<std::uint32_t, Ubiquitty::maxColumns> codePoints;
-    const auto firstCodePoint = peekMultibyteUTF8CodePoint({ buffer + start, static_cast<std::size_t>(length - start) });
-    const int rowCodePointCapacity = firstCodePoint && isPlainWideGraphic(firstCodePoint->codePoint, t.ambiguousWidth)
-        ? std::max(1, writableColumns / 2)
-        : writableColumns;
+    const int rowCodePointCapacity = isFirstPlainWide ? std::max(1, writableColumns / 2) : writableColumns;
     const int codePointCapacity = std::min<int>(static_cast<int>(std::size(codePoints)), rowCodePointCapacity);
     int nDec = 0;
     // The input bytes each decoded code point stands for, kept only once a
