@@ -1658,6 +1658,37 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
     }();
 
     const CellMetrics& metrics = in.metrics;
+    // Whether the face's declared rule replaces ours (`[underline] metrics`):
+    // one answer for the frame, read by every underlined cell.
+    const bool isDeclaredRule = usesDeclaredUnderline(metrics);
+    /// The single underline's rows for the inputs that decide them, kept for
+    /// the next cell: every cell of a row shares the baseline, the rule line
+    /// and the weight unless it is bold, so a row of underlined text places its
+    /// rule once rather than once a cell.
+    struct SingleRuleRows {
+        /// The baseline the rows were placed from.
+        float baselineY = std::numeric_limits<float>::quiet_NaN();
+        /// The rule line they were placed on.
+        float ruleLine = std::numeric_limits<float>::quiet_NaN();
+        /// The weight they were placed at.
+        float thickness = std::numeric_limits<float>::quiet_NaN();
+        /// The rows: the rule's top and weight.
+        RuleRows rows {};
+    };
+    SingleRuleRows singleRuleRows;
+    /// Returns the single underline's rows, placing them only when a cell's
+    /// inputs differ from the last cell's.
+    ///
+    /// - Parameters:
+    ///   - baselineY: The cell's baseline.
+    ///   - ruleLine: The cell's rule line.
+    ///   - thickness: The cell's rule weight before rounding.
+    /// - Returns: The rule's top and weight (singleUnderlineRows).
+    const auto placeSingleRule = [&](float baselineY, float ruleLine, float thickness) -> const RuleRows& {
+        if (singleRuleRows.baselineY != baselineY || singleRuleRows.ruleLine != ruleLine || singleRuleRows.thickness != thickness)
+            singleRuleRows = { baselineY, ruleLine, thickness, singleUnderlineRows(metrics, baselineY, ruleLine, thickness) };
+        return singleRuleRows.rows;
+    };
     const float presentationScale = metrics.presentationScale > 0 && std::isfinite(metrics.presentationScale) ? metrics.presentationScale : 1;
     // Optional atlas facts fall back to the original cell, not the smaller
     // destination pitch. Every raster route applies the presentation once.
@@ -6247,17 +6278,23 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     // pen. The plan names the cell it was made for, so only the
                     // cell whose glyph was just planned reads it.
                     if (clusterCount > 1 && clusterWindows.owner == &cell && !isTierPass) [[unlikely]] {
-                        [&, glyphIndex, scaleX, scaleY, slotHeight, slotWidth] [[gnu::noinline]] {
+                        // The cell's own values travel by copy. A cold lambda that
+                        // named them by reference would pin every one of them to
+                        // memory for the whole walk, and each write to them on
+                        // every cell would become a store.
+                        [&, glyphIndex, scaleX, scaleY, slotHeight, slotWidth, snappedPenX = phaseSnap.snappedPenX, glyphMinUV = glyph.minUV,
+                            glyphMaxUV = glyph.maxUV, cellForeground = foreground, cellBackground = background, cellRow = row,
+                            mayUseCellBackground = mayUseNativeBackground] [[gnu::noinline]] {
                             const float trimTop = clusterWindows.hasWindowAbove ? static_cast<float>(clusterWindowGuardRows) : 0.0f;
                             const float trimBottom = clusterWindows.hasWindowBelow ? static_cast<float>(clusterWindowGuardRows) : 0.0f;
                             ClusterOwnPlacement own;
-                            own.originInPixels = { static_cast<float>(phaseSnap.snappedPenX) - in.glyphMarginInPixels.width * scaleX,
-                                in.originInPixels.y + row * metrics.cellHeight + (trimTop - in.glyphMarginInPixels.height) * scaleY };
+                            own.originInPixels = { static_cast<float>(snappedPenX) - in.glyphMarginInPixels.width * scaleX,
+                                in.originInPixels.y + cellRow * metrics.cellHeight + (trimTop - in.glyphMarginInPixels.height) * scaleY };
                             own.sizeInPixels = { slotWidth * scaleX, (slotHeight - trimTop - trimBottom) * scaleY };
-                            own.atlasTopLeft = { glyph.minUV.x - in.glyphMarginInPixels.width, glyph.minUV.y - in.glyphMarginInPixels.height + trimTop };
-                            own.atlasBottomRight = { glyph.maxUV.x + in.glyphMarginInPixels.width, glyph.maxUV.y + in.glyphMarginInPixels.height - trimBottom };
-                            const Vec4 ink = nativeSecondaryInk(usesNativeTextVibrancy, foreground, background, in, framePalette8.defaultForeground);
-                            const Vec4 ground = nativeBackgroundInk(usesNativeBackgroundVibrancy, background, in, mayUseNativeBackground);
+                            own.atlasTopLeft = { glyphMinUV.x - in.glyphMarginInPixels.width, glyphMinUV.y - in.glyphMarginInPixels.height + trimTop };
+                            own.atlasBottomRight = { glyphMaxUV.x + in.glyphMarginInPixels.width, glyphMaxUV.y + in.glyphMarginInPixels.height - trimBottom };
+                            const Vec4 ink = nativeSecondaryInk(usesNativeTextVibrancy, cellForeground, cellBackground, in, framePalette8.defaultForeground);
+                            const Vec4 ground = nativeBackgroundInk(usesNativeBackgroundVibrancy, cellBackground, in, mayUseCellBackground);
                             if (glyphIndex < out.glyphCapacity && out.glyphs) {
                                 GlyphInstance& gi = out.glyphs[glyphIndex];
                                 gi.originInPixels = own.originInPixels;
@@ -6269,20 +6306,22 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                             clusterWindows.owner = nullptr;
                         }();
                     }
-                }
-                // The same windows for a cluster baked into its cell. The cell's
-                // quad is the cell box and gives nothing up; the windows meet it
-                // at the cell's edges, on the map the cell draws its box by.
-                if (!isSubpixelGlyph && clusterCount > 1 && clusterWindows.owner == &cell && !isTierPass && glyph.present) [[unlikely]] {
-                    [&, cellGridX, cellVisibleWidth] [[gnu::noinline]] {
+                    // The same windows for a cluster baked into its cell. The cell's
+                    // quad is the cell box and gives nothing up; the windows meet it
+                    // at the cell's edges, on the map the cell draws its box by. The
+                    // other arm of the subpixel test, so a cell asks once.
+                } else if (clusterCount > 1 && !isSubpixelGlyph && glyph.present && clusterWindows.owner == &cell && !isTierPass) [[unlikely]] {
+                    // By copy, for the reason the subpixel arm above gives.
+                    [&, cellGridX, cellVisibleWidth, glyphMinUV = glyph.minUV, glyphMaxUV = glyph.maxUV, cellForeground = foreground,
+                        cellBackground = background, cellRow = row, mayUseCellBackground = mayUseNativeBackground] [[gnu::noinline]] {
                         ClusterOwnPlacement own;
-                        own.originInPixels = { in.originInPixels.x + cellGridX * metrics.cellWidth, in.originInPixels.y + row * metrics.cellHeight };
+                        own.originInPixels = { in.originInPixels.x + cellGridX * metrics.cellWidth, in.originInPixels.y + cellRow * metrics.cellHeight };
                         own.sizeInPixels = { cellVisibleWidth * metrics.cellWidth, metrics.cellHeight };
-                        own.atlasTopLeft = glyph.minUV;
-                        own.atlasBottomRight = glyph.maxUV;
+                        own.atlasTopLeft = glyphMinUV;
+                        own.atlasBottomRight = glyphMaxUV;
                         emitClusterWindows(clusterWindows, mono, own,
-                            nativeSecondaryInk(usesNativeTextVibrancy, foreground, background, in, framePalette8.defaultForeground),
-                            nativeBackgroundInk(usesNativeBackgroundVibrancy, background, in, mayUseNativeBackground), out, counts);
+                            nativeSecondaryInk(usesNativeTextVibrancy, cellForeground, cellBackground, in, framePalette8.defaultForeground),
+                            nativeBackgroundInk(usesNativeBackgroundVibrancy, cellBackground, in, mayUseCellBackground), out, counts);
                         clusterWindows.owner = nullptr;
                     }();
                 }
@@ -6731,8 +6770,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                     // no higher than the face's declared one, or the face's
                     // declared rule itself (`[underline] metrics`), and every
                     // shape below follows them.
-                    const bool isDeclaredRule = usesDeclaredUnderline(metrics);
-                    const RuleRows single = singleUnderlineRows(metrics, baselineY, uy, thick);
+                    const RuleRows single = placeSingleRule(baselineY, uy, thick);
                     const float t = single.weight;
                     const float singleTop = withinCell(single.top);
                     switch (style) {
@@ -6915,7 +6953,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                         // below's leading, as the SGR 4:2 lower does.
                         // The SGR 4 rule's own top and weight, from whichever
                         // source `[underline] metrics` names (singleUnderlineRows).
-                        const RuleRows under = singleUnderlineRows(metrics, baselineY, uy, thick);
+                        const RuleRows under = placeSingleRule(baselineY, uy, thick);
                         const float underWeight = under.weight;
                         const float underGap = doubledRuleGap(underWeight, metrics.deviceScale);
                         const float top = withinCellBand(under.top, underWeight);
