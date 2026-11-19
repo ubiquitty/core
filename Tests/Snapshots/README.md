@@ -125,6 +125,12 @@ The runner uses only the Python standard library. A mismatch writes the actual
 image and an amplified diff image (when dimensions agree) under
 `$TMPDIR/ubiquitty-regression-fail/`.
 
+Cases render `--jobs N` at a time: by default half the processors, at most
+eight, and `--jobs 1` renders them one after another. Only the app launches
+run side by side. Comparison, golden updates and every printed line follow
+catalog order, so a run reads the same at any `--jobs`. iOS cases always
+render one at a time, because that arm drives a single simulator device.
+
 ## Baseline policy
 
 A golden is the reviewed visible contract, not an alternative implementation

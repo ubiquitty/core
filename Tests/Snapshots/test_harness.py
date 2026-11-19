@@ -5,6 +5,8 @@
 import contextlib
 import io
 import json
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -741,6 +743,264 @@ class RunFailFastTests(unittest.TestCase):
                     patch.object(run, "run_regressions", return_value=0) as execute:
                 self.assertEqual(run.main(["--catalog", "cases", "--backend", "portable"] + arguments), 0)
                 self.assertEqual(execute.call_args.kwargs["fail_fast"], expected)
+
+
+# A stand-in app for the real launch path: it renders by copying a PNG it is
+# named, after a delay it is named, and logs when it starts and ends so a test
+# can see which renders overlapped. A reply probe reads the same three facts
+# from its feed file, which is all `run_reply` hands it.
+FAKE_APP = r'''
+import os, shutil, sys, time
+
+arguments = sys.argv[1:]
+
+def value(flag):
+    return arguments[arguments.index(flag) + 1] if flag in arguments else None
+
+def log(event):
+    with open(os.environ["FAKE_APP_LOG"], "a") as handle:
+        handle.write(f"{event} {index} {time.monotonic()}\n")
+
+reply = arguments[0] == "--probe-reply"
+if reply:
+    with open(value("--feed-file"), "rb") as feed:
+        index, delay, answer = feed.read().decode().split(":")
+else:
+    index, delay = value("--index"), value("--delay")
+log("start")
+time.sleep(float(delay))
+sys.stderr.write(f"metrics: case {index}\n")
+status = 0
+if reply:
+    print("REPLY-HEX " + answer.encode().hex())
+else:
+    if value("--snapshot-backend") == "ios":
+        print("ubiquitty-render-path: builder=core compositor=metal encoder=swift")
+    rendered_before = os.path.join(os.environ["FAKE_APP_STATE"], index)
+    source = value("--again") if os.path.exists(rendered_before) and value("--again") else value("--copy")
+    open(rendered_before, "w").close()
+    if source == "exit":
+        sys.stderr.write(f"render {index} failed\n")
+        status = 3
+    else:
+        shutil.copyfile(source, value("--snapshot"))
+log("end")
+sys.exit(status)
+'''
+
+
+class ParallelRenderTests(unittest.TestCase):
+    """Cases render side by side, and the report is the one a single job prints.
+
+    Driven through the real launch path — render_snapshot, run_reply, run_app
+    — against a fake app whose renders finish in the reverse of catalog order,
+    so a pool that reported in completion order would be caught here.
+    """
+
+    PIXELS = {
+        "golden": (10, 20, 30, 40, 50, 60),
+        # Within the channel tolerance of the golden, and not its bytes.
+        "drift": (22, 20, 30, 40, 50, 60),
+        "different": (90, 20, 30, 40, 50, 60),
+    }
+
+    def run_catalog(self, plan, jobs, *, step=0.01, update=False, **options):
+        """Runs `plan` with `jobs` and returns what a reader of the run sees.
+
+        - Parameters:
+          - plan: Outcomes, each a word or a `(word, backend)` pair. Case N
+            sleeps `step` * (len(plan) - N), so later cases finish first.
+        - Returns: The status, stdout and stderr with the run's directory
+          spelled `<root>`, each golden's bytes after the run, and every launch
+          as an `(index, start, end)` triple.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "cases.json").write_text("[]")
+            images = {}
+            for name, pixels in self.PIXELS.items():
+                images[name] = root / f"{name}-source.png"
+                run.write_rgb_png(images[name], 2, 1, bytes(pixels))
+            state = root / "state"
+            state.mkdir()
+            script = root / "fake_app.py"
+            script.write_text(FAKE_APP)
+            app = root / "fake-app"
+            app.write_text(f"#!/bin/sh\nexec {sys.executable!r} -I -S {str(script)!r} \"$@\"\n")
+            app.chmod(0o755)
+
+            regressions = []
+            known = set()
+            for index, entry in enumerate(plan):
+                outcome, backend = entry if isinstance(entry, tuple) else (entry, "testarm")
+                delay = f"{step * (len(plan) - index):.3f}"
+                identifier = f"case:case{index}:{backend}"
+                if outcome.startswith("reply"):
+                    answer = "ok" if outcome == "reply-pass" else "no"
+                    regressions.append(run.Regression(
+                        identifier=identifier, catalog="cases", section="Section", title=f"case{index}",
+                        kind="reply", backend=backend, expected_reply="^ok$",
+                        sequence=f"{index}:{delay}:{answer}".encode()))
+                    continue
+                golden = root / f"case{index}.png"
+                if outcome != "missing":
+                    shutil.copyfile(images["golden"], golden)
+                rendered = {"pass": "golden", "missing": "golden", "flaky": "golden",
+                            "fail": "different", "known": "different", "drift": "drift"}.get(outcome)
+                arguments = ["--index", str(index), "--delay", delay,
+                             "--copy", str(images[rendered]) if rendered else "exit"]
+                if outcome == "flaky":
+                    arguments += ["--again", str(images["different"])]
+                if outcome == "known":
+                    known.add(identifier)
+                regressions.append(run.Regression(
+                    identifier=identifier, catalog="cases", section="Section", title=f"case{index}",
+                    kind="snapshot", backend=backend, golden=golden,
+                    case={"columns": 2, "rows": 1, "config": str(root / "unused.toml"),
+                          "feed": "", "args": arguments}))
+
+            log = root / "launches.log"
+            output, errors = io.StringIO(), io.StringIO()
+            with patch.dict(run.os.environ, {"FAKE_APP_LOG": str(log), "FAKE_APP_STATE": str(state),
+                                             "UBIQUITTY_METRICS_LOG": "1"}), \
+                    patch.object(run, "HERE", root), patch.object(run, "GOLDEN_ROOT", root), \
+                    patch.object(run, "FAILURE_ROOT", root / "failures"), \
+                    patch.object(run, "approved_goldens", return_value={}), \
+                    patch.object(run, "known_failing_identifiers", return_value=known), \
+                    patch.object(run, "exempt_identifiers", return_value=set()), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                run.os.environ.pop("UBIQUITTY_SHIM_LOG", None)
+                status = run.run_regressions(
+                    {regression.backend: str(app) for regression in regressions}, regressions, update,
+                    jobs=jobs, **options)
+
+            launches = {}
+            for line in log.read_text().splitlines() if log.exists() else []:
+                event, index, moment = line.split()
+                launches.setdefault(int(index), []).append((event, float(moment)))
+            intervals = []
+            for index, events in launches.items():
+                starts = [moment for event, moment in events if event == "start"]
+                ends = [moment for event, moment in events if event == "end"]
+                self.assertEqual(len(starts), len(ends), f"case {index} was still rendering when the run returned")
+                intervals.extend((index, start, end) for start, end in zip(starts, ends))
+
+            def spelled(text):
+                for spelling in (str(root.resolve()), str(root)):
+                    text = text.replace(spelling, "<root>")
+                return text
+
+            return {
+                "status": status, "output": spelled(output.getvalue()), "errors": spelled(errors.getvalue()),
+                "goldens": [regression.golden.read_bytes() if regression.golden and regression.golden.exists()
+                            else None for regression in regressions],
+                "launches": intervals,
+            }
+
+    @staticmethod
+    def overlap(launches):
+        """The most launches running at one moment."""
+        events = sorted([(start, 1) for _, start, _ in launches] + [(end, -1) for _, _, end in launches])
+        running = peak = 0
+        for _, change in events:
+            running += change
+            peak = max(peak, running)
+        return peak
+
+    def assertSameReport(self, serial, pooled):
+        self.assertEqual(pooled["status"], serial["status"])
+        self.assertEqual(pooled["output"], serial["output"])
+        self.assertEqual(pooled["errors"], serial["errors"])
+        self.assertEqual(pooled["goldens"], serial["goldens"])
+
+    def test_a_pool_reports_what_one_job_reports(self):
+        plan = ["pass", "fail", "known", "error", "reply-pass", "missing", "reply-fail", "pass"]
+        serial = self.run_catalog(plan, 1, step=0.03)
+        pooled = self.run_catalog(plan, 4, step=0.03)
+        self.assertSameReport(serial, pooled)
+        self.assertEqual(serial["status"], 1)
+        # One job is the serial harness: a launch never overlaps another.
+        self.assertEqual(self.overlap(serial["launches"]), 1)
+        self.assertIn(self.overlap(pooled["launches"]), range(2, 5))
+        # The pool finished cases out of catalog order, and the report is still
+        # in it: results, the one-time note, and each case's own stderr.
+        finished = [index for index, _, end in sorted(pooled["launches"], key=lambda launch: launch[2])]
+        self.assertNotEqual(finished, sorted(finished))
+        self.assertEqual(re.findall(r"^  \w+\s+Section / case(\d+)", pooled["output"], re.M),
+                         [str(index) for index in range(len(plan))])
+        self.assertEqual(re.findall(r"metrics: case (\d+)", pooled["errors"]),
+                         [str(index) for index in range(len(plan))])
+        self.assertEqual(pooled["errors"].count("emits no ubiquitty-render-path marker"), 1)
+        self.assertIn("PASS=3  FAIL=4  KNOWN=1", pooled["output"])
+
+    def test_fail_fast_stops_where_one_job_stops(self):
+        plan = ["pass", "pass", "fail", "pass", "pass", "pass", "pass", "pass"]
+        serial = self.run_catalog(plan, 1, fail_fast=True)
+        pooled = self.run_catalog(plan, 4, fail_fast=True)
+        self.assertSameReport(serial, pooled)
+        self.assertIn("executed 3 of 8", pooled["output"])
+        self.assertEqual({index for index, _, _ in serial["launches"]}, {0, 1, 2})
+        # The pool may have rendered past the failure; those cases are reported
+        # unexecuted, as one job reports them, and none outlived the run.
+        self.assertLessEqual({0, 1, 2}, {index for index, _, _ in pooled["launches"]})
+
+    def test_twice_and_update_judge_the_same_through_a_pool(self):
+        golden, different = (bytes(self.PIXELS[name]) for name in ("golden", "different"))
+        # After an update: the missing and failing goldens minted from their
+        # render, the drifted and nondeterministic ones refused, the passing
+        # one left alone. --twice writes nothing.
+        for plan, options, minted in (
+                (["pass", "flaky", "pass", "fail"], {"twice": True}, [golden] * 4),
+                (["missing", "fail", "drift", "pass", "flaky"], {"update": True},
+                 [golden, different, golden, golden, golden])):
+            with self.subTest(options=options):
+                serial = self.run_catalog(plan, 1, **options)
+                pooled = self.run_catalog(plan, 4, **options)
+                self.assertSameReport(serial, pooled)
+                self.assertEqual(pooled["status"], 1)
+                self.assertIn("NONDETERMINISTIC", pooled["output"])
+                # Every case renders twice, the second straight after the first.
+                self.assertEqual(sorted(index for index, _, _ in pooled["launches"]),
+                                 sorted(list(range(len(plan))) * 2))
+                with tempfile.TemporaryDirectory() as directory:
+                    pixels = []
+                    for index, data in enumerate(pooled["goldens"]):
+                        path = Path(directory) / f"{index}.png"
+                        path.write_bytes(data)
+                        pixels.append(run.read_png_rgb(path)[2])
+                self.assertEqual(pixels, minted)
+
+    def test_ios_cases_render_one_at_a_time(self):
+        alone = self.run_catalog([("pass", "ios")] * 4, 4)
+        self.assertEqual(alone["status"], 0, alone["output"] + alone["errors"])
+        self.assertEqual(self.overlap(alone["launches"]), 1)
+        mixed = self.run_catalog([("pass", "ios"), ("pass", "testarm")] * 3, 4, step=0.03)
+        self.assertEqual(mixed["status"], 0, mixed["output"] + mixed["errors"])
+        ios = [launch for launch in mixed["launches"] if launch[0] % 2 == 0]
+        self.assertEqual(self.overlap(ios), 1)
+        self.assertGreater(self.overlap(mixed["launches"]), 1)
+
+    def test_cli_takes_jobs_and_defaults_to_half_the_processors(self):
+        regression = run.Regression(
+            identifier="case:cli:portable", catalog="cases", section="Section", title="cli",
+            kind="reply", backend="portable", expected_reply="^expected$")
+        for arguments, expected in (([], run.default_jobs()), (["--jobs", "1"], 1), (["--jobs", "3"], 3)):
+            with self.subTest(arguments=arguments), \
+                    patch.object(run, "load_regressions", return_value=[regression]), \
+                    patch.object(run, "baseline_problems", return_value=([], [])), \
+                    patch.object(run, "find_binary", return_value=Path("unused")), \
+                    patch.object(run, "run_regressions", return_value=0) as execute:
+                self.assertEqual(run.main(["--catalog", "cases", "--backend", "portable"] + arguments), 0)
+                self.assertEqual(execute.call_args.kwargs["jobs"], expected)
+        for refused in ("0", "-2", "many"):
+            with self.subTest(refused=refused), contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                run.main(["--catalog", "cases", "--backend", "portable", "--jobs", refused])
+        for processors, expected in ((1, 1), (2, 1), (10, 5), (16, 8), (64, 8), (None, 1)):
+            with self.subTest(processors=processors), \
+                    patch.object(run.os, "process_cpu_count", return_value=processors, create=True), \
+                    patch.object(run.os, "cpu_count", return_value=processors):
+                self.assertEqual(run.default_jobs(), expected)
 
 
 class KnownFailureCeilingTests(unittest.TestCase):

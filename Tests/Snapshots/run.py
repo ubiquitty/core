@@ -87,6 +87,7 @@ permanent reference.
 
 import argparse
 import atexit
+import contextlib
 import json
 import os
 import re
@@ -95,8 +96,10 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import zlib
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -1168,10 +1171,35 @@ EXPECTED_ENCODER = {
     "swift": "swift",
 }
 
-# Arms whose absence of a marker has already been reported. An unwired arm is
-# named once per run: repeating it per case trains the reader to skip it, which
-# is the failure mode this whole check exists to remove.
-_PATHLESS_ARMS_REPORTED = set()
+# What a render says on stderr, held for its case while cases render side by
+# side.
+#
+# Two renders on two workers would write whenever each finished, so their lines
+# would land in completion order — a different interleaving every run, beside
+# result lines that come out in catalog order. A render collects its case's
+# lines here instead, and the case's verdict writes them just before its result
+# line, so the streams read the same whichever render finished first and
+# whatever --jobs said.
+_render_diagnostics = threading.local()
+
+
+def _diagnose(text, once=None):
+    """Holds `text` for the case rendering on this thread, or writes it to stderr.
+
+    Every launch a run makes is inside `render_case`, which holds; a call from
+    anywhere else writes straight away.
+
+    - Parameters:
+      - text: What to write, its newline included.
+      - once: A key naming a note the run says once, or None. Decided when the
+        verdict writes the held text, so the case that says it is the first in
+        catalog order rather than the first render to finish.
+    """
+    held = getattr(_render_diagnostics, "held", None)
+    if held is None:
+        sys.stderr.write(text)
+    else:
+        held.append((once, text))
 
 
 def _check_render_path(backend, stdout, expected_builder=None, token=None):
@@ -1193,11 +1221,11 @@ def _check_render_path(backend, stdout, expected_builder=None, token=None):
                 f"the {backend} arm emitted no ubiquitty-render-path marker, and "
                 f"one is expected: the frame cannot be attributed to a renderer, "
                 f"so a fall-through to another path would read as a pass.")
-        if backend not in _PATHLESS_ARMS_REPORTED:
-            _PATHLESS_ARMS_REPORTED.add(backend)
-            print(f"note: the {backend} arm emits no ubiquitty-render-path marker, "
-                  f"so which renderer produced its frames was not verified.",
-                  file=sys.stderr)
+        # Named once per run: repeating it per case trains the reader to skip
+        # it, which is the failure mode this whole check exists to remove.
+        _diagnose(f"note: the {backend} arm emits no ubiquitty-render-path marker, "
+                  f"so which renderer produced its frames was not verified.\n",
+                  once=("pathless", backend))
         return
     if expected_builder is not None and f"builder={expected_builder}" not in marker:
         raise RuntimeError(
@@ -1235,7 +1263,11 @@ _fixture_fontconfig = None
 
 
 def fixture_fontconfig():
-    """Returns a fontconfig file that adds the fixture fonts to the system's."""
+    """Returns a fontconfig file that adds the fixture fonts to the system's.
+
+    Made on first use and only read after. `run_regressions` makes it before any
+    render starts, so two cases rendering at once never race to create it.
+    """
     global _fixture_fontconfig
     if _fixture_fontconfig is None:
         directory = Path(tempfile.mkdtemp(prefix="ubiquitty-fontconfig-"))
@@ -1341,7 +1373,7 @@ def run_app(arguments, expected_output=None, environment=None, timeout=15):
     # (UBIQUITTY_METRICS_LOG); those lines are the point of the run, and a
     # successful exit would otherwise discard them with the rest of stderr.
     if os.environ.get("UBIQUITTY_METRICS_LOG") and result.stderr:
-        sys.stderr.write(result.stderr.decode("utf-8", "replace"))
+        _diagnose(result.stderr.decode("utf-8", "replace"))
     if result.returncode:
         stderr = result.stderr.decode("utf-8", "replace").strip()
         raise RuntimeError(f"app exited {result.returncode}: {stderr}")
@@ -1729,9 +1761,148 @@ def update_action(golden_exists, passing, byte_identical, remint_passing):
     return "launder"
 
 
+# The arms that render one case at a time whatever --jobs says.
+#
+# The iOS arm installs, launches and reads back through a single simulator
+# device, at fixed paths inside its app container (Scripts/ios-snapshot-shim.sh):
+# two renders at once would terminate each other's launch and copy out each
+# other's PNG. The other arms are a process per case that writes only the paths
+# it is handed, so they render side by side. The web arm is node loading the
+# wasm module, with no browser, port or profile to share; the Linux arm on a Mac
+# is a container per render, staging its frame under a mktemp name.
+SERIAL_BACKENDS = frozenset({"ios"})
+
+
+def serial_backends():
+    """The arms this run renders one case at a time; see SERIAL_BACKENDS.
+
+    The Linux shim appends each render's own words to the file
+    UBIQUITTY_SHIM_LOG names, and two renders appending at once interleave
+    the record that variable is set to produce, so that arm is serial while
+    it is set.
+    """
+    serial = set(SERIAL_BACKENDS)
+    if os.environ.get("UBIQUITTY_SHIM_LOG"):
+        serial.add("linux")
+    return serial
+
+
+def default_jobs():
+    """How many cases render at once when --jobs does not say.
+
+    Half the processors this process may use, and at most eight. Not all of
+    them, because the per-case timeouts measure wall-clock time: a machine
+    oversubscribed with renders makes a slow case a timed-out one, and that
+    reports as the case failing.
+    """
+    count = getattr(os, "process_cpu_count", os.cpu_count)() or 2
+    return max(1, min(8, count // 2))
+
+
+@dataclass
+class Rendered:
+    """What one case's app launches left for its verdict to read.
+
+    - reply: A reply probe's answer.
+    - error: What stopped the launches, re-raised by the verdict.
+    - diagnostics: The stderr the launches held, as `(once, text)` pairs.
+    """
+    reply: Optional[bytes] = None
+    error: Optional[Exception] = None
+    diagnostics: list = field(default_factory=list)
+
+
+def render_paths(actual_root, regression):
+    """Where a case's render and its second render land: names of its own."""
+    stem = regression.identifier.replace(":", "-")
+    return actual_root / f"{stem}.png", actual_root / f"{stem}.again.png"
+
+
+def render_case(binaries, regression, actual_root, second_render, serial_locks):
+    """Runs every app launch one case's verdict reads, and returns what they left.
+
+    This is all of a case that runs beside other cases: launches that write
+    only to this case's paths under `actual_root` and to scratch directories of
+    their own. Comparing, writing goldens and printing are the verdict's, on
+    the main thread in catalog order.
+
+    The case's error is returned rather than raised, and the verdict raises it
+    under the handler it reached when the launch ran inline.
+    """
+    held = []
+    _render_diagnostics.held = held
+    try:
+        with serial_locks.get(regression.backend) or contextlib.nullcontext():
+            binary = binaries[regression.backend]
+            if regression.kind == "reply":
+                return Rendered(reply=run_reply(binary, regression), diagnostics=held)
+            actual, again = render_paths(actual_root, regression)
+            render_snapshot(binary, regression, actual)
+            if second_render:
+                render_snapshot(binary, regression, again)
+            return Rendered(diagnostics=held)
+    except Exception as error:
+        return Rendered(error=error, diagnostics=held)
+    finally:
+        _render_diagnostics.held = None
+
+
+class CaseRenders:
+    """The cases' launches, up to `jobs` at a time, handed back in catalog order.
+
+    With one job a case renders when its verdict asks for it, which is the
+    serial harness exactly: nothing launches that is not judged, and
+    --fail-fast stops before the next launch. With more, `jobs` cases render
+    ahead of the verdict, and a case they rendered that a stop leaves unjudged
+    is reported UNEXECUTED, as the serial harness reports it.
+    """
+
+    def __init__(self, regressions, jobs, render):
+        self._regressions = regressions
+        self._jobs = jobs
+        self._render = render
+        self._pool = (ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="snapshot-render")
+                      if jobs > 1 else None)
+        self._pending = {}
+        self._scheduled = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exception):
+        # A stop cancels what has not started and waits for what has: a render
+        # still running would write into the run's directory as it is removed.
+        if self._pool is not None:
+            self._pool.shutdown(wait=True, cancel_futures=True)
+        return False
+
+    def result(self, index):
+        """What case `index` rendered, waited for; asked once per case, in order."""
+        if self._pool is None:
+            return self._render(self._regressions[index])
+        # This case and `jobs` past it, so every worker has a case while the
+        # verdict reads this one.
+        horizon = min(len(self._regressions), index + self._jobs + 1)
+        while self._scheduled < horizon:
+            self._pending[self._scheduled] = self._pool.submit(
+                self._render, self._regressions[self._scheduled])
+            self._scheduled += 1
+        return self._pending.pop(index).result()
+
+
+def write_diagnostics(diagnostics, said_once):
+    """Writes a case's held stderr; a note keyed `once` is written the first time."""
+    for once, text in diagnostics:
+        if once is not None:
+            if once in said_once:
+                continue
+            said_once.add(once)
+        sys.stderr.write(text)
+
+
 def run_regressions(binaries, regressions, update, quiet=False, twice=False,
                     remint_passing=False, update_budgets=False, require_ceilings=False,
-                    *, fail_fast=False):
+                    *, fail_fast=False, jobs=1):
     failed_identifiers = set()
     executed = []
     update_refusals = []
@@ -1761,14 +1932,31 @@ def run_regressions(binaries, regressions, update, quiet=False, twice=False,
         if update:
             update_refusals.append(f"{regression.identifier} (exempt on this arm: nothing is compared, so nothing is updated)")
     temporary_parent = GOLDEN_ROOT if update else None
+    # Only the launches run `jobs` at a time. Everything after them — comparing,
+    # writing goldens, budgets, tallies and every printed line — reads each
+    # case's launches back in catalog order on this thread, so the report is
+    # the serial one whatever finished first.
+    serial = serial_backends()
+    serial_locks = {backend: threading.Lock() for backend in backends & serial}
+    if all(regression.backend in serial for regression in regressions):
+        jobs = 1
+    jobs = max(1, min(jobs, len(regressions)))
+    if "linux" in backends:
+        fixture_fontconfig()
+    said_once = set()
     # Under the goldens on an update and under this directory otherwise, never
     # the system's temporary one: the Linux arm's container sees only the
     # repository, and a frames case writes its held frame straight to the
     # actual path.
+    #
+    # The renders are closed before the directory: a stop waits for a render
+    # still running rather than removing the directory it writes into.
     with tempfile.TemporaryDirectory(
-            prefix=".ubiquitty-regressions-", dir=temporary_parent or HERE) as directory:
+            prefix=".ubiquitty-regressions-", dir=temporary_parent or HERE) as directory, \
+            CaseRenders(regressions, jobs, lambda regression: render_case(
+                binaries, regression, Path(directory), twice or update, serial_locks)) as renders:
         actual_root = Path(directory)
-        for regression in regressions:
+        for position, regression in enumerate(regressions):
             # Only an executed case can recover from its waiver. Known failures
             # within their ceilings do not fail the gate and must not stop it.
             if fail_fast and executed:
@@ -1777,9 +1965,13 @@ def run_regressions(binaries, regressions, update, quiet=False, twice=False,
                         or (require_ceilings and unbudgeted)):
                     break
             executed.append(regression)
+            rendered = renders.result(position)
+            write_diagnostics(rendered.diagnostics, said_once)
             if regression.kind == "reply":
                 try:
-                    reply = run_reply(binaries[regression.backend], regression)
+                    if rendered.error is not None:
+                        raise rendered.error
+                    reply = rendered.reply
                     kind = expected_reply_kind(regression.expected_reply)
                     if kind == "empty":
                         matches = not reply
@@ -1806,14 +1998,17 @@ def run_regressions(binaries, regressions, update, quiet=False, twice=False,
                     print_result(failure_label(regression.identifier, known), regression, str(error))
                 continue
 
-            actual = actual_root / f"{regression.identifier.replace(':', '-')}.png"
+            actual, again = render_paths(actual_root, regression)
             try:
-                render_snapshot(binaries[regression.backend], regression, actual)
+                if rendered.error is not None:
+                    raise rendered.error
                 if twice or update:
                     # Determinism guard: a second render must be byte-identical.
                     # A difference means the render depends on non-input state
                     # (SDK-gated CoreText font resolution, uninitialised memory,
                     # ordering) — the class of bug that silently poisons a golden.
+                    # render_case made it straight after the first, on the same
+                    # worker.
                     #
                     # Always on for --update, whether or not --twice was asked
                     # for. Writing the reference is the moment the guard is worth
@@ -1821,8 +2016,6 @@ def run_regressions(binaries, regressions, update, quiet=False, twice=False,
                     # gets looked at, while the golden itself is believed. A
                     # render that cannot reproduce itself has no reference to
                     # offer, and the second render costs one case.
-                    again = actual_root / f"{regression.identifier.replace(':', '-')}.again.png"
-                    render_snapshot(binaries[regression.backend], regression, again)
                     if actual.read_bytes() != again.read_bytes():
                         counts[failure_label(regression.identifier, known)] += 1
                         failed_identifiers.add(regression.identifier)
@@ -2271,6 +2464,17 @@ def judge_against_known_failures(failed, regressions, overrun=(), *, backends=No
     return 0, ""
 
 
+def positive_integer(text):
+    """An argparse type: a whole number of at least one."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {text}") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1: {text}")
+    return value
+
+
 def _main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", help="consuming checkout whose snapshot products are tested")
@@ -2307,6 +2511,11 @@ def _main(argv=None):
                         default=os.environ.get("UBQ_TEST_FAIL_FAST") == "1",
                         help="stop after the first gating failure or stale waiver recovery "
                              "(also enabled by UBQ_TEST_FAIL_FAST=1)")
+    parser.add_argument("--jobs", type=positive_integer, default=None, metavar="N",
+                        help="render N cases at once (default: half the processors, at most "
+                             "8; 1 renders one after another). Results print in catalog order "
+                             "either way, and iOS cases always render one at a time: that arm "
+                             "drives a single simulator device")
     parser.add_argument("--twice", action="store_true",
                         help="render each snapshot twice and fail if the two renders "
                              "differ (determinism guard: catches toolchain/SDK-gated "
@@ -2480,7 +2689,8 @@ def _main(argv=None):
     try:
         return run_regressions(binaries, regressions, update, args.quiet, args.twice,
                                args.remint_passing, args.update_budgets,
-                               args.require_ceilings, fail_fast=args.fail_fast)
+                               args.require_ceilings, fail_fast=args.fail_fast,
+                               jobs=args.jobs or default_jobs())
     finally:
         if bootedIOSHere:
             subprocess.run([str(repository_file("Scripts/ios-simulator.sh")), "--shutdown"],
