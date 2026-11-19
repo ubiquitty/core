@@ -150,8 +150,10 @@ class CatalogTests(unittest.TestCase):
         native = [regression for regression in run.load_regressions()
                   if regression.title == held["name"] and regression.section.startswith("Native agreement")]
         self.assertEqual({regression.backend for regression in native}, set(run.CORETEXT_BACKENDS))
-        self.assertEqual({regression.golden for regression in native},
-                         {run.GOLDEN_ROOT / "native" / "coretext" / f"{held['name']}.png"})
+        shared = run.GOLDEN_ROOT / "native" / "coretext" / f"{held['name']}.png"
+        override = run.GOLDEN_ROOT / "native" / "coretext-ios" / f"{held['name']}.png"
+        for regression in native:
+            self.assertEqual(regression.golden, override if regression.backend == "ios" and override.exists() else shared)
 
     def test_focused_case_schema_rejects_a_structured_setting(self):
         case = {
@@ -218,13 +220,38 @@ class CatalogTests(unittest.TestCase):
             freetype = [regression for regression in mine if ":freetype:" in regression.identifier]
             if case.get("native"):
                 self.assertEqual({regression.backend for regression in coretext}, set(run.CORETEXT_BACKENDS))
-                self.assertEqual({regression.golden for regression in coretext},
-                                 {run.GOLDEN_ROOT / "native" / "coretext" / f"{case['name']}.png"})
+                shared = run.GOLDEN_ROOT / "native" / "coretext" / f"{case['name']}.png"
+                override = run.GOLDEN_ROOT / "native" / "coretext-ios" / f"{case['name']}.png"
+                for regression in coretext:
+                    expected = override if regression.backend == "ios" and override.exists() else shared
+                    self.assertEqual(regression.golden, expected)
                 self.assertEqual({regression.backend for regression in freetype}, set(run.FREETYPE_BACKENDS))
                 self.assertFalse(any(regression.exact for regression in coretext + freetype))
             else:
                 self.assertEqual(coretext, [])
                 self.assertEqual(freetype, [])
+
+    def test_an_ios_coretext_arm_mints_its_own_picture_beside_the_shared_one(self):
+        """iOS draws CoreText unsmoothed, so its picture lives beside the shared one.
+
+        Every CoreText arm compares against the shared golden until iOS has a
+        picture of its own in golden/native/coretext-ios, and --update on the
+        iOS arm writes there: a macOS golden is never minted from an iOS frame.
+        The macOS and Swift arms write the shared golden, as before.
+        """
+        cases = json.loads((Path(run.HERE) / "cases.json").read_text(encoding="utf-8"))
+        names = {entry["name"] for entry in cases if entry.get("native") and "coretext" in entry.get("native_stacks", ["coretext"])}
+        coretext = [regression for regression in run.load_case_regressions()
+                    if ":coretext:" in regression.identifier and regression.title in names]
+        self.assertTrue(coretext)
+        for regression in coretext:
+            shared = run.GOLDEN_ROOT / "native" / "coretext" / f"{regression.title}.png"
+            override = run.GOLDEN_ROOT / "native" / "coretext-ios" / f"{regression.title}.png"
+            if regression.backend == "ios":
+                self.assertEqual(regression.update_golden, override)
+                self.assertEqual(regression.golden, override if override.exists() else shared)
+            else:
+                self.assertIsNone(regression.update_golden)
 
     def test_a_materialised_config_carries_the_tier_font_and_the_case_settings(self):
         """The file an arm is launched with is the tier's [font], the harness baseline, and the case's sections."""

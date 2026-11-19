@@ -246,6 +246,10 @@ class Regression:
     kind: str
     backend: str
     golden: Optional[Path] = None
+    # Where --update writes this arm's golden, where that is not `golden`: an
+    # iOS arm held to the shared CoreText golden mints its own picture beside
+    # it (golden/native/coretext-ios) rather than overwriting the macOS one.
+    update_golden: Optional[Path] = None
     # Held to pixel identity rather than the comparator's tolerance: the unifont
     # tier, where every arm draws the same pixels or one of them is wrong.
     exact: bool = False
@@ -484,6 +488,18 @@ def load_case_regressions():
             golden = snapshot_path(f"golden/native/{stack}/{name}.png")
             for backend in backends:
                 variant = arm_variant(case, backend, native_config)
+                # iOS CoreText never smooths a glyph, and a rule's weight is the
+                # face's own underscore as the platform draws it, so an iOS frame
+                # differs from the macOS one wherever a stem's edge or a rule's
+                # weight shows. A case the shared golden holds stays on it; one
+                # iOS draws differently by platform carries its own picture in
+                # golden/native/coretext-ios, which --update writes so that a
+                # macOS golden is never minted from an iOS frame.
+                arm_golden, update_golden = golden, None
+                if stack == "coretext" and backend == "ios":
+                    update_golden = snapshot_path(f"golden/native/coretext-ios/{name}.png")
+                    if update_golden.exists():
+                        arm_golden = update_golden
                 # A stdout contract quotes the macOS driver's own report of
                 # the face CoreText resolved. The Linux and iOS drivers print
                 # no such line, so on those arms the case is its pixels.
@@ -497,7 +513,8 @@ def load_case_regressions():
                     title=name,
                     kind="snapshot",
                     backend=backend,
-                    golden=golden,
+                    golden=arm_golden,
+                    update_golden=update_golden,
                     case=variant,
                     expected_builder="core" if backend == "macos" else None,
                 ))
@@ -2025,16 +2042,22 @@ def run_regressions(binaries, regressions, update, quiet=False, twice=False,
                                         "that does not reproduce itself" if update else ""))
                         continue
                 if update:
-                    regression.golden.parent.mkdir(parents=True, exist_ok=True)
-                    exists = regression.golden.exists()
+                    # The golden written is the arm's own where it has one to
+                    # write; the one compared is that, once it exists, and the
+                    # shared golden until then, so an arm the shared golden
+                    # still holds mints nothing.
+                    target = regression.update_golden or regression.golden
+                    reference = target if target.exists() else regression.golden
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    exists = reference.exists()
                     byte_identical = exists and (
-                        actual.read_bytes() == regression.golden.read_bytes())
+                        actual.read_bytes() == reference.read_bytes())
                     if exists and not byte_identical:
                         passing, detail, _, _ = compare_png(
-                            actual, regression.golden, strict=is_strict(regression))
+                            actual, reference, strict=is_strict(regression))
                     else:
                         passing, detail = byte_identical, ("identical" if byte_identical else "missing")
-                    approval = approved_goldens().get(regression.golden.resolve()) if regression.golden else None
+                    approval = approved_goldens().get(target.resolve())
                     if approval_action(approval is not None, byte_identical) == "refuse":
                         counts["FAIL"] += 1
                         failed_identifiers.add(regression.identifier)
@@ -2044,7 +2067,7 @@ def run_regressions(binaries, regressions, update, quiet=False, twice=False,
                                      f"{approval['on']}); no flag writes it. The render is not "
                                      f"the approved bytes (comparator: {detail}), so the renderer "
                                      f"is what has to change. Compare: Scripts/compare-snapshot.py "
-                                     f"{regression.golden} {actual}")
+                                     f"{target} {actual}")
                         continue
                     action = update_action(exists, passing, byte_identical, remint_passing)
                     if action == "noop":
@@ -2060,10 +2083,10 @@ def run_regressions(binaries, regressions, update, quiet=False, twice=False,
                         print_result("FAIL", regression,
                                      f"REFUSED to launder a passing golden ({detail}); --update "
                                      f"rewrites only failing or missing goldens. Review the drift "
-                                     f"(Scripts/compare-snapshot.py {regression.golden} <render>), "
+                                     f"(Scripts/compare-snapshot.py {reference} <render>), "
                                      f"and pass --remint-passing to rebaseline it deliberately")
                         continue
-                    os.replace(actual, regression.golden)
+                    os.replace(actual, target)
                     counts["UPDATE"] += 1
                     print_result("UPDATE", regression, quiet=quiet)
                     continue
