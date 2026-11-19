@@ -386,6 +386,36 @@ struct UBIQUITTY_NONESCAPABLE GlyphBackend {
     /// slot instead and the cluster falls to ``clusterGlyph``.
     bool (*rasteriseClusterGlyph)(void* context, ClusterSpan codePoints, FontFace, std::uint32_t variant, int slot) = nullptr;
 
+    /// Measures the rows a mono cluster's ink covers, in its own slot's rows.
+    ///
+    /// The cluster is drawn exactly as it is into its own slot — same pen,
+    /// same phase, same baseline — but nothing is cut at the slot's edges, so a
+    /// stack of marks reports how far above or below the slot it reaches
+    /// (ClusterWindows.h). Looking `reachInPixels` rows past each edge is
+    /// enough: ink beyond that is cut by the window limit whatever it reports.
+    ///
+    /// Asked once per cluster the builder suspects of overflowing, and the
+    /// answer kept with the cluster's slot (``GlyphSlotCache::recordClusterInk``),
+    /// so a resident cluster crosses here zero times. Null, together with a
+    /// null ``rasteriseClusterWindow``, leaves every cluster cut at its slot,
+    /// which is what a backend without the pair drew before it existed.
+    ClusterInkRows (*measureClusterInk)(void* context, ClusterSpan codePoints, FontFace, std::uint32_t weight, std::uint32_t variant, int reachInPixels) = nullptr;
+
+    /// Rasterises one window of a tall cluster into a mono slot the cache assigned.
+    ///
+    /// A window is the cluster drawn exactly as into its own slot and then
+    /// moved up by `rowOffsetInPixels` rows, so row `r` of the window shows row
+    /// `rowOffsetInPixels + r` of the cluster's own slot, uncut: negative
+    /// offsets show the marks above the slot, offsets past its height the
+    /// marks below. ClusterWindows.h owns the offsets and the quads.
+    ///
+    /// Reached only on a probe miss, so this is per window per style rather
+    /// than per cell. The slot's ink box, where the backend measures one, is
+    /// owed exactly as any other writer of the mono sheet owes it. A raster
+    /// that draws nothing writes a blank and still answers true: the slot is
+    /// this window's either way.
+    bool (*rasteriseClusterWindow)(void* context, ClusterSpan codePoints, FontFace, std::uint32_t weight, std::uint32_t variant, int rowOffsetInPixels, int slot) = nullptr;
+
     /// Stages a coverage plane Core rasterised into a slot the cache assigned.
     ///
     /// For the glyphs Core draws itself rather than asks the font for. A DECDLD

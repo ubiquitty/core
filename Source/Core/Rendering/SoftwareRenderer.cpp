@@ -574,6 +574,34 @@ void SoftwareRenderer::rasterizeClusterInto(Atlas& atlas, int slot, std::span<co
     atlas.recordInkBox(slot, plane, width, height);
 }
 
+ClusterInkRows SoftwareRenderer::measureClusterInk(std::span<const std::uint32_t> codePoints, FontFace face, std::uint32_t weight, std::uint32_t variant, int reachInPixels)
+{
+    const GlyphSlotGeometry& geometry = m_mono.geometry;
+    const double phase = static_cast<double>(variantPhase(variant)) / std::max(1, m_rasterizer.glyphPhaseCount());
+    const ClusterRasterBounds bounds { geometry.glyphMarginInPixels.width + phase, static_cast<double>(geometry.glyphWidthInPixels) };
+    return measureClusterInkThroughWindow(m_rasterizer, codePoints, face, weight, phase, bounds, geometry.slotWidthInPixels,
+        geometry.slotHeightInPixels, reachInPixels, m_sizedScratch);
+}
+
+bool SoftwareRenderer::rasteriseClusterWindow(std::span<const std::uint32_t> codePoints, FontFace face, std::uint32_t weight, std::uint32_t variant, int rowOffsetInPixels, int slot)
+{
+    ++m_monoAtlasGeneration;
+    const GlyphSlotGeometry& geometry = m_mono.geometry;
+    const int width = geometry.slotWidthInPixels;
+    const int height = geometry.slotHeightInPixels;
+    const AtlasSlotRegion region { (slot % geometry.columns) * width, (slot / geometry.columns) * height, width, height };
+    // The pen, phase and fit the cluster's own slot is drawn at, so the
+    // window's rows continue that slot's raster.
+    const double phase = static_cast<double>(variantPhase(variant)) / std::max(1, m_rasterizer.glyphPhaseCount());
+    const ClusterRasterBounds bounds { geometry.glyphMarginInPixels.width + phase, static_cast<double>(geometry.glyphWidthInPixels) };
+    const bool inked = m_rasterizer.rasterizeClusterWindow(codePoints.data(), static_cast<int>(codePoints.size()), face, weight, phase, bounds,
+        width, height, rowOffsetInPixels, height, m_slotScratch.data());
+    const std::span<const std::uint8_t> plane = inked ? std::span<const std::uint8_t>(m_slotScratch).first(static_cast<std::size_t>(width) * static_cast<std::size_t>(height)) : std::span<const std::uint8_t> {};
+    writeAtlasCoverage(m_mono.pixels, m_mono.atlasWidth, region, plane);
+    m_mono.recordInkBox(slot, plane, width, height);
+    return true;
+}
+
 // Reached by no unit test. The builder probes the cache itself and asks for a
 // fill through rasteriseMonoGlyph, so the mono path through here belongs to
 // callers that fault a glyph directly, and shell_snapshots is the only lane that
@@ -765,6 +793,17 @@ GlyphBackend SoftwareRenderer::glyphBackend()
     backend.stageMonoCoverage = [](void* context, int slot, std::span<const std::uint8_t> coverage) {
         return static_cast<SoftwareRenderer*>(context)->stageMonoCoverage(slot, coverage);
     };
+    // A stack of marks past the slot draws through windows (ClusterWindows.h)
+    // where the rasterizer says where its slot's baseline is; a bitmap face
+    // tiles its cells and keeps them.
+    if (!m_isBitmapFace && m_rasterizer.drawsClusterWindows()) {
+        backend.measureClusterInk = [](void* context, ClusterSpan codePoints, FontFace face, std::uint32_t weight, std::uint32_t variant, int reachInPixels) {
+            return static_cast<SoftwareRenderer*>(context)->measureClusterInk(codePoints, face, weight, variant, reachInPixels);
+        };
+        backend.rasteriseClusterWindow = [](void* context, ClusterSpan codePoints, FontFace face, std::uint32_t weight, std::uint32_t variant, int rowOffsetInPixels, int slot) {
+            return static_cast<SoftwareRenderer*>(context)->rasteriseClusterWindow(codePoints, face, weight, variant, rowOffsetInPixels, slot);
+        };
+    }
     // Box LINES keep Core's font-first policy: the face's own strokes carry
     // its weight, dashes and junction artwork, and the box sheet draws only
     // what the face lacks plus the classes prefersProcedural claims. Answered

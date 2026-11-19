@@ -18,6 +18,7 @@
 #include "Core/Rendering/CellInstanceBuilder.h"
 
 #include "Core/Rendering/CellDecisions.h"
+#include "Core/Rendering/ClusterWindows.h"
 #include "Core/Rendering/FrameDamage.h"
 #include "Core/Rendering/SubpixelPhase.h"
 #include "StrictAtlas.h"
@@ -28,6 +29,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <span>
 #include <vector>
 
@@ -1327,6 +1329,312 @@ TEST(aRuleOutsideTheGridRequiresItsOuterRowToRepaintTheWholeTarget)
         CHECK_MSG(settleRowInkCrossings(dirty, target, crossings, 0, rows - 1, 0),
             "an unrelated row may still load the retained target");
     }
+}
+
+namespace {
+
+/// Whether a test backend offers the cluster window entries.
+enum class WindowEntries {
+    /// Both entries, so a tall cluster draws through windows.
+    Offered,
+    /// Neither, which is every backend before windows existed.
+    Absent,
+};
+
+/// Which path a test frame's glyphs take.
+enum class GlyphPath {
+    /// The subpixel glyph stream, whose quads cover the slot.
+    Subpixel,
+    /// Baked into the cell quads.
+    Baked,
+};
+
+/// A mono sheet whose clusters draw a stack reaching past their slot, for the
+/// tall-slot cases below.
+///
+/// The stack's ink is one span of rows in the cluster's own slot; every
+/// raster the builder asks for — the own slot, a window, the measurement —
+/// reports the part of that span it holds, so the cases read where the
+/// builder put each window against where the ink is.
+struct TallClusterAtlas {
+    /// The slot's width, margins and headroom included.
+    static constexpr int slotWidth = 8;
+    /// The slot's height, margins included.
+    static constexpr int slotHeight = 20;
+    /// The slot's horizontal margin.
+    static constexpr int marginX = 1;
+    /// The slot's vertical margin.
+    int marginY = 2;
+    /// The cache the builder probes.
+    Ubiquitty::Rendering::GlyphSlotCache monoCache { 256, Ubiquitty::Rendering::recommendedHashBuckets(256), 16 };
+    /// One measured ink box per slot, as the rasters below leave them.
+    std::vector<GlyphInkBox> inkBoxes = std::vector<GlyphInkBox>(256);
+    /// The cluster's ink, in its own slot's rows: 25 rows above the slot.
+    ClusterInkRows ink { true, -25, 17 };
+    /// How many times the builder measured a cluster.
+    int measurements = 0;
+    /// The offset of every window the builder rasterised, in order.
+    std::vector<int> windowOffsets;
+    /// Binds the sheet as a backend does.
+    ///
+    /// - Returns: The binding, with the cache and the ink table.
+    MonoAtlasBinding bindMonoAtlas()
+    {
+        MonoAtlasBinding binding;
+        binding.cache = &monoCache;
+        binding.geometry = { /*columns=*/16, slotWidth, slotHeight, slotWidth - 2 * marginX, { marginX, marginY } };
+        binding.slotCapacity = 256;
+        binding.inkBoxForSlot = inkBoxes.data();
+        return binding;
+    }
+    /// The guarded box a raster of slot rows `[firstRow, firstRow + slotHeight)`
+    /// of the cluster's drawing measures, as measureInkBox would.
+    ///
+    /// - Parameter firstRow: The cluster's own slot row on the raster's top row.
+    /// - Returns: The box.
+    GlyphInkBox boxFor(int firstRow) const
+    {
+        const int top = std::max(ink.topInPixels - firstRow, 0);
+        const int bottom = std::min(ink.bottomInPixels - firstRow, slotHeight);
+        if (bottom <= top)
+            return emptyGlyphInkBox();
+        return { { 0.0f, static_cast<float>(std::max(top - 1, 0)) }, { static_cast<float>(slotWidth), static_cast<float>(std::min(bottom + 1, slotHeight)) } };
+    }
+    /// The backend table over this sheet.
+    ///
+    /// - Parameter entries: Whether it offers the cluster window entries.
+    /// - Returns: The table.
+    GlyphBackend backend(WindowEntries entries)
+    {
+        GlyphBackend table;
+        table.context = this;
+        table.beginFrame = [](void*) { };
+        table.bindMonoAtlas = [](void* context) { return static_cast<TallClusterAtlas*>(context)->bindMonoAtlas(); };
+        table.rasteriseMonoGlyph = [](void* context, std::uint32_t, FontFace, std::uint32_t, int slot) {
+            static_cast<TallClusterAtlas*>(context)->inkBoxes[static_cast<std::size_t>(slot)] = { { 1.0f, 3.0f }, { 7.0f, 17.0f } };
+            return true;
+        };
+        table.monoGlyph = [](void*, std::uint32_t, FontFace, std::uint32_t, std::uint32_t) { return AtlasGlyph {}; };
+        table.rasteriseClusterGlyph = [](void* context, ClusterSpan, FontFace, std::uint32_t, int slot) {
+            auto& atlas = *static_cast<TallClusterAtlas*>(context);
+            atlas.inkBoxes[static_cast<std::size_t>(slot)] = atlas.boxFor(0);
+            return true;
+        };
+        if (entries == WindowEntries::Offered) {
+            table.measureClusterInk = [](void* context, ClusterSpan, FontFace, std::uint32_t, std::uint32_t, int) {
+                auto& atlas = *static_cast<TallClusterAtlas*>(context);
+                ++atlas.measurements;
+                return atlas.ink;
+            };
+            table.rasteriseClusterWindow = [](void* context, ClusterSpan, FontFace, std::uint32_t, std::uint32_t, int rowOffset, int slot) {
+                auto& atlas = *static_cast<TallClusterAtlas*>(context);
+                atlas.windowOffsets.push_back(rowOffset);
+                atlas.inkBoxes[static_cast<std::size_t>(slot)] = atlas.boxFor(rowOffset);
+                return true;
+            };
+        }
+        return table;
+    }
+};
+
+/// A grid of blank rows with one cluster, a Z under three marks, in it.
+struct TallClusterGrid {
+    /// The grid's rows.
+    static constexpr int rows = 6;
+    /// The grid's columns.
+    static constexpr int columns = 3;
+    /// The row the cluster stands on.
+    static constexpr int clusterRow = 3;
+    /// The column it stands in.
+    static constexpr int clusterColumn = 1;
+    /// The frame's palette.
+    TermPalette palette;
+    /// The cells, row-major.
+    std::vector<Cell> grid = std::vector<Cell>(static_cast<std::size_t>(rows) * columns, defaultBlankCell);
+    /// The cell stream the build writes.
+    std::vector<CellInstance> cells = std::vector<CellInstance>(static_cast<std::size_t>(rows) * columns);
+    /// The glyph stream the build writes.
+    std::vector<GlyphInstance> glyphs = std::vector<GlyphInstance>(16);
+    /// The row boundaries the build's ink crosses.
+    std::vector<std::uint8_t> crossings = std::vector<std::uint8_t>(static_cast<std::size_t>(rows) + 1, 0);
+    /// Seeds the palette and puts the cluster in its cell.
+    TallClusterGrid()
+    {
+        palette.seedDefaults();
+        Cell& cell = grid[static_cast<std::size_t>(clusterRow) * columns + clusterColumn];
+        cell.codePoint = 'Z';
+        cell.setClusterID(1);
+    }
+    /// The frame's inputs, at the sheet's slot geometry.
+    ///
+    /// - Parameters:
+    ///   - atlas: The sheet whose geometry the inputs carry.
+    ///   - path: Which path the glyphs take.
+    /// - Returns: The inputs.
+    BuildInputs inputs(const TallClusterAtlas& atlas, GlyphPath path)
+    {
+        BuildInputs in = baseInputs(grid, palette, rows, columns, 8.0f);
+        in.subpixelGlyphs = path == GlyphPath::Subpixel;
+        in.glyphSlotWidthInPixels = TallClusterAtlas::slotWidth;
+        in.glyphSlotHeightInPixels = TallClusterAtlas::slotHeight;
+        in.glyphMarginInPixels = { static_cast<float>(TallClusterAtlas::marginX), static_cast<float>(atlas.marginY) };
+        in.glyphReferenceAdvanceInPixels = 8.0f;
+        in.glyphReferenceLineHeightInPixels = 16.0f;
+        in.clusterResolver = [](const Cell*, std::span<std::uint32_t> output, void*) {
+            constexpr std::array<std::uint32_t, 4> stack { 'Z', 0x301u, 0x302u, 0x303u };
+            std::ranges::copy(stack, output.begin());
+            return static_cast<int>(stack.size());
+        };
+        return in;
+    }
+    /// The streams the build writes into.
+    ///
+    /// - Returns: The buffers over this grid's storage.
+    InstanceBuffers buffers()
+    {
+        InstanceBuffers out;
+        out.cells = cells.data();
+        out.cellCapacity = cells.size();
+        out.glyphs = glyphs.data();
+        out.glyphCapacity = glyphs.size();
+        out.rowInkCrossings = crossings.data();
+        out.rowInkCrossingCapacity = crossings.size();
+        return out;
+    }
+};
+
+} // namespace
+
+// A Z under a stack reaching 25 rows above its slot keeps its own quad where a
+// cluster that fits draws it, and the stack's ink past the slot lands in two
+// windows stacked on it: each window's rows end where the next one's begin,
+// the first meets the own quad, which gives up the guard row it shares, and
+// all of them keep the own quad's columns. Measured once and rasterised once,
+// so the second frame finds everything resident.
+TEST(aStackPastItsSlotDrawsThroughWindowsStackedAboveIt)
+{
+    TallClusterAtlas atlas;
+    TallClusterGrid frame;
+    const BuildInputs in = frame.inputs(atlas, GlyphPath::Subpixel);
+    for (int pass = 0; pass < 2; ++pass) {
+        const InstanceCounts counts = buildCellInstances(in, atlas.backend(WindowEntries::Offered), frame.buffers());
+        REQUIRE(counts.glyphs == 3);
+        const GlyphInstance& own = frame.glyphs[0];
+        const GlyphInstance& first = frame.glyphs[1];
+        const GlyphInstance& second = frame.glyphs[2];
+        const float rowTop = static_cast<float>(TallClusterGrid::clusterRow) * 16.0f;
+        CHECK_MSG(approx(own.originInPixels.y, rowTop - atlas.marginY + clusterWindowGuardRows),
+            "the own quad starts a guard row below the slot's top, which the window above draws");
+        CHECK(approx(own.sizeInPixels.y, TallClusterAtlas::slotHeight - clusterWindowGuardRows));
+        CHECK_MSG(approx(first.originInPixels.y + first.sizeInPixels.y, own.originInPixels.y), "the first window meets the own quad");
+        CHECK_MSG(approx(second.originInPixels.y + second.sizeInPixels.y, first.originInPixels.y), "and the second meets the first");
+        CHECK_MSG(approx(second.originInPixels.y, rowTop - atlas.marginY + atlas.ink.topInPixels - 1.0f),
+            "the topmost window starts a guard row above the stack's ink");
+        for (const GlyphInstance* window : { &first, &second }) {
+            CHECK(approx(window->originInPixels.x, own.originInPixels.x) && approx(window->sizeInPixels.x, own.sizeInPixels.x));
+            CHECK_MSG(approx(window->atlasBottomRight.y - window->atlasTopLeft.y, window->sizeInPixels.y),
+                "a window maps its rows one for one, as the own quad does");
+            CHECK(approx(window->atlasBottomRight.x - window->atlasTopLeft.x, own.atlasBottomRight.x - own.atlasTopLeft.x));
+        }
+        CHECK(approx(own.atlasBottomRight.y - own.atlasTopLeft.y, own.sizeInPixels.y));
+    }
+    CHECK_MSG(atlas.measurements == 1, "the stack is measured once, and the answer rides its slot");
+    const int pitch = clusterWindowPitch(TallClusterAtlas::slotHeight);
+    CHECK_MSG((atlas.windowOffsets == std::vector<int> { -pitch, -2 * pitch }), "each window is rasterised once, a pitch apart");
+}
+
+// A cluster whose ink stays inside its slot draws byte for byte what it drew
+// on a backend with no windows at all, and an accented letter whose ink keeps
+// clear of the slot's edges is never even measured.
+TEST(aClusterThatFitsDrawsExactlyWhatItDrewWithoutWindows)
+{
+    for (const GlyphPath path : { GlyphPath::Subpixel, GlyphPath::Baked }) {
+        TallClusterAtlas plain;
+        TallClusterAtlas windowed;
+        // The rows its quad draws: the whole slot on the glyph stream, the
+        // cell box inside the margins when baked.
+        plain.ink = windowed.ink = { true, path == GlyphPath::Subpixel ? 0 : plain.marginY, 17 };
+        TallClusterGrid without;
+        TallClusterGrid with;
+        const InstanceCounts expected = buildCellInstances(without.inputs(plain, path), plain.backend(WindowEntries::Absent), without.buffers());
+        const InstanceCounts actual = buildCellInstances(with.inputs(windowed, path), windowed.backend(WindowEntries::Offered), with.buffers());
+        CHECK_MSG(windowed.measurements == 1, "three code points are worth one measurement");
+        CHECK(windowed.windowOffsets.empty());
+        REQUIRE(expected.glyphs == actual.glyphs);
+        REQUIRE(expected.cells == actual.cells);
+        CHECK(std::memcmp(without.glyphs.data(), with.glyphs.data(), sizeof(GlyphInstance) * expected.glyphs) == 0);
+        CHECK(std::memcmp(without.cells.data(), with.cells.data(), sizeof(CellInstance) * expected.cells) == 0);
+        CHECK(without.crossings == with.crossings);
+    }
+    TallClusterAtlas accented;
+    accented.ink = { true, 3, 16 };
+    TallClusterGrid frame;
+    BuildInputs in = frame.inputs(accented, GlyphPath::Subpixel);
+    in.clusterResolver = [](const Cell*, std::span<std::uint32_t> output, void*) {
+        output[0] = 'e';
+        output[1] = 0x301u;
+        return 2;
+    };
+    const InstanceCounts counts = buildCellInstances(in, accented.backend(WindowEntries::Offered), frame.buffers());
+    CHECK(counts.glyphs == 1);
+    CHECK_MSG(accented.measurements == 0, "an e with an acute inside its slot is never measured");
+}
+
+// Baked into its cell, a cluster's windows meet the cell's own edges and map
+// their rows by the cell's own scale.
+TEST(aBakedStackDrawsItsWindowsAgainstItsCell)
+{
+    TallClusterAtlas atlas;
+    atlas.marginY = 0;
+    atlas.ink = { true, -20, 16 };
+    TallClusterGrid frame;
+    const BuildInputs in = frame.inputs(atlas, GlyphPath::Baked);
+    const InstanceCounts counts = buildCellInstances(in, atlas.backend(WindowEntries::Offered), frame.buffers());
+    REQUIRE(counts.glyphs == 2);
+    const float rowTop = static_cast<float>(TallClusterGrid::clusterRow) * 16.0f;
+    const float scale = 16.0f / static_cast<float>(TallClusterAtlas::slotHeight);
+    const GlyphInstance& first = frame.glyphs[0];
+    const GlyphInstance& second = frame.glyphs[1];
+    CHECK_MSG(approx(first.originInPixels.y + first.sizeInPixels.y, rowTop), "the first window meets the cell's top edge");
+    CHECK(approx(second.originInPixels.y + second.sizeInPixels.y, first.originInPixels.y));
+    CHECK_MSG(approx(first.sizeInPixels.y, (first.atlasBottomRight.y - first.atlasTopLeft.y) * scale),
+        "at the scale the cell maps its glyph box by");
+    CHECK(approx(first.originInPixels.x, 8.0f) && approx(first.sizeInPixels.x, 8.0f));
+}
+
+// A stack reaching up out of its row marks every row boundary its windows'
+// ink crosses, so a retained frame that repaints a row the ink reaches into —
+// two rows up, where the fills would wipe the top marks — rebuilds the frame
+// instead, and so does one repainting the cluster's own row. A row the ink
+// never reaches keeps the retained target. Removing the stack refuses too:
+// the target still holds its marks over the rows above.
+TEST(aStackReachingUpTwoRowsRepaintsWithEveryRowItsInkCrosses)
+{
+    TallClusterAtlas atlas;
+    TallClusterGrid frame;
+    const BuildInputs in = frame.inputs(atlas, GlyphPath::Subpixel);
+    const InstanceCounts counts = buildCellInstances(in, atlas.backend(WindowEntries::Offered), frame.buffers());
+    REQUIRE(counts.glyphs == 3);
+    const std::vector<std::uint8_t> withStack = frame.crossings;
+    const int row = TallClusterGrid::clusterRow;
+    CHECK_MSG(withStack[static_cast<std::size_t>(row)] != 0, "the own quad's ink crosses into the row above");
+    CHECK_MSG(withStack[static_cast<std::size_t>(row - 1)] != 0, "and the windows' ink into the one above that");
+    CHECK_MSG(withStack[static_cast<std::size_t>(row - 2)] == 0, "but no further than the stack reaches");
+    const auto standsWithDirtyRow = [&](int dirtyRow, std::vector<std::uint8_t> target, const std::vector<std::uint8_t>& built) {
+        std::vector<std::uint8_t> dirty(TallClusterGrid::rows, 0);
+        dirty[static_cast<std::size_t>(dirtyRow)] = 1;
+        return settleRowInkCrossings(dirty, target, built, 0, TallClusterGrid::rows - 1, 0);
+    };
+    CHECK_MSG(!standsWithDirtyRow(row - 2, withStack, withStack), "repainting the row the top marks reach into redraws the stack");
+    CHECK_MSG(!standsWithDirtyRow(row - 1, withStack, withStack), "and the row between");
+    CHECK_MSG(!standsWithDirtyRow(row, withStack, withStack), "and the cluster's own row");
+    CHECK_MSG(standsWithDirtyRow(row + 2, withStack, withStack), "a row the ink never reaches keeps the target");
+
+    frame.grid[static_cast<std::size_t>(row) * TallClusterGrid::columns + TallClusterGrid::clusterColumn] = defaultBlankCell;
+    const InstanceCounts cleared = buildCellInstances(in, atlas.backend(WindowEntries::Offered), frame.buffers());
+    CHECK(cleared.glyphs == 0);
+    CHECK_MSG(!standsWithDirtyRow(row, withStack, frame.crossings),
+        "erasing the stack refuses while the target still holds its marks over the rows above");
 }
 
 UBIQUITTY_TEST_MAIN()

@@ -373,4 +373,143 @@ TEST(theAdapterInstallsNothingAFixtureNeitherDeclaresNorInherits)
     CHECK_MSG(backend.colorGlyph == nullptr, "nothing to install, so the entry stays null");
 }
 
+namespace {
+
+/// Whether the stacking face below says where its slot puts the baseline.
+enum class WindowDrawing {
+    /// It draws cluster windows.
+    Drawn,
+    /// It keeps the default, and its clusters stay cut at their slot.
+    Declined,
+};
+
+/// A face whose clusters stack a bar of marks 36 rows over the baseline, far
+/// past the top of a cell 16 rows tall.
+///
+/// Its slot centres the cell, so the baseline in a slot of any height is
+/// known, and a window is the same drawing moved up by its offset.
+struct StackingRasterizer final : GlyphRasterizer {
+    /// The baseline's row in the cell.
+    static constexpr int baselineFromTop = 12;
+    /// How far over the baseline the stack's top stands.
+    static constexpr int stackTopAboveBaseline = 36;
+    /// Whether the face draws cluster windows.
+    WindowDrawing windows = WindowDrawing::Drawn;
+    /// - Returns: An 8 by 16 cell.
+    CellMetrics cellMetrics() const override
+    {
+        CellMetrics metrics;
+        metrics.cellWidth = 8;
+        metrics.cellHeight = 16;
+        metrics.baselineFromTop = baselineFromTop;
+        return metrics;
+    }
+    /// The baseline's row in a slot `height` rows tall.
+    ///
+    /// - Parameter height: The slot's height.
+    /// - Returns: The row, the cell centred in the slot.
+    static int baselineIn(int height) { return baselineFromTop + (height - 16) / 2; }
+    /// Draws a letter body standing eight rows on the baseline, and the marks
+    /// over it when `marks` is positive, clipped to the canvas.
+    ///
+    /// - Parameters:
+    ///   - baseline: The baseline's row in the canvas.
+    ///   - width: The canvas's width.
+    ///   - height: The canvas's height.
+    ///   - marks: How many marks ride the letter.
+    ///   - out: The canvas, `width * height` bytes.
+    static void draw(int baseline, int width, int height, int marks, std::uint8_t* out)
+    {
+        std::fill_n(out, static_cast<std::size_t>(width) * static_cast<std::size_t>(height), std::uint8_t { 0 });
+        const auto fill = [&](int top, int bottom, int left, int right) {
+            for (int row = std::max(top, 0); row < std::min(bottom, height); ++row)
+                std::fill(out + static_cast<std::size_t>(row) * width + left, out + static_cast<std::size_t>(row) * width + right, std::uint8_t { 255 });
+        };
+        fill(baseline - 8, baseline, 1, 7);
+        if (marks > 0)
+            fill(baseline - stackTopAboveBaseline, baseline - 10, 3, 5);
+    }
+    /// - Returns: True, having drawn the letter body alone.
+    bool rasterizeGlyph(std::uint32_t, FontFace, std::uint32_t, int width, int height, std::uint8_t* out) override
+    {
+        draw(baselineIn(height), width, height, 0, out);
+        return true;
+    }
+    /// - Returns: True, having drawn the letter and its marks, cut at the slot.
+    bool rasterizeClusterInCell(const std::uint32_t*, int count, FontFace, std::uint32_t, double, ClusterRasterBounds, int width, int height, std::uint8_t* out) override
+    {
+        draw(baselineIn(height), width, height, count - 1, out);
+        return true;
+    }
+    /// - Returns: Whether the face draws cluster windows.
+    bool drawsClusterWindows() const override { return windows == WindowDrawing::Drawn; }
+    /// - Returns: True, having drawn the cluster moved up by the offset.
+    bool rasterizeClusterWindow(const std::uint32_t*, int count, FontFace, std::uint32_t, double, ClusterRasterBounds, int width, int height,
+        int rowOffset, int windowHeight, std::uint8_t* out) override
+    {
+        draw(baselineIn(height) - rowOffset, width, windowHeight, count - 1, out);
+        return true;
+    }
+};
+
+} // namespace
+
+// The CPU renderer draws a stack of marks whole: a cluster in the bottom row
+// whose marks reach two rows up inks those rows, where a face that draws no
+// windows leaves them bare, and the cluster's own cell is the same pixels
+// either way.
+TEST(theSoftwareRendererDrawsAStackPastItsCellThroughWindows)
+{
+    constexpr int rows = 4;
+    constexpr int columns = 2;
+    TermPalette palette;
+    palette.seedDefaults();
+    std::vector<Cell> grid(static_cast<std::size_t>(rows) * columns, defaultBlankCell);
+    Cell& stacked = grid[static_cast<std::size_t>(rows - 1) * columns];
+    stacked.codePoint = 'Z';
+    stacked.setClusterID(1);
+    const auto render = [&](WindowDrawing windows, std::vector<std::uint8_t>& rgba) {
+        StackingRasterizer rasterizer;
+        rasterizer.windows = windows;
+        SoftwareRenderer renderer(rasterizer);
+        BuildInputs in;
+        in.cells = grid.data();
+        in.rows = rows;
+        in.columns = columns;
+        in.palette = &palette;
+        in.clusterResolver = [](const Cell*, std::span<std::uint32_t> output, void*) {
+            constexpr std::array<std::uint32_t, 4> stack { 'Z', 0x301u, 0x302u, 0x303u };
+            std::ranges::copy(stack, output.begin());
+            return static_cast<int>(stack.size());
+        };
+        const GlyphBackend backend = renderer.glyphBackend();
+        CHECK_EQ(backend.rasteriseClusterWindow != nullptr, windows == WindowDrawing::Drawn);
+        int width = 0;
+        int height = 0;
+        REQUIRE(renderer.render(in, rgba, width, height));
+        REQUIRE(width == columns * 8 && height == rows * 16);
+    };
+    std::vector<std::uint8_t> whole;
+    std::vector<std::uint8_t> cut;
+    render(WindowDrawing::Drawn, whole);
+    render(WindowDrawing::Declined, cut);
+    const auto pixel = [](const std::vector<std::uint8_t>& rgba, int x, int y) {
+        const std::size_t at = (static_cast<std::size_t>(y) * columns * 8 + static_cast<std::size_t>(x)) * 4;
+        return std::array<std::uint8_t, 3> { rgba[at], rgba[at + 1], rgba[at + 2] };
+    };
+    const int rowTop = (rows - 1) * 16;
+    const int stackTop = rowTop + StackingRasterizer::baselineFromTop - StackingRasterizer::stackTopAboveBaseline;
+    REQUIRE(stackTop < rowTop - 16);
+    const auto background = pixel(cut, 7, 0);
+    for (int y = stackTop; y < rowTop; ++y) {
+        CHECK_MSG(pixel(whole, 3, y) != background, "the marks over the cell land on the rows above it");
+        CHECK_MSG(pixel(cut, 3, y) == background, "and a face that draws no windows leaves them bare");
+    }
+    CHECK_MSG(pixel(whole, 3, stackTop - 1) == background, "nothing lands above the stack's own top");
+    for (int y = rowTop; y < rows * 16; ++y) {
+        for (int x = 0; x < 8; ++x)
+            CHECK_MSG(pixel(whole, x, y) == pixel(cut, x, y), "the cluster's own cell is the same pixels either way");
+    }
+}
+
 UBIQUITTY_TEST_MAIN()

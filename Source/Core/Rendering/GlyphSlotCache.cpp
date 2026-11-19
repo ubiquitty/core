@@ -109,6 +109,7 @@ void GlyphSlotCache::reset()
     std::ranges::fill(m_ownedInkMeasured, std::uint8_t { 0 });
     std::ranges::fill(m_inkRowTop, std::int16_t { 1 });
     std::ranges::fill(m_inkRowBottom, std::int16_t { 0 });
+    std::ranges::fill(m_clusterInkTop, clusterInkUnmeasured);
     m_lruHead = noSlot;
     m_lruTail = noSlot;
     m_used = 0;
@@ -442,6 +443,7 @@ int GlyphSlotCache::allocateSlot(Key key, bool* fresh)
     touchThisFrame(slot);
     m_contentsForSlot[slot].clear(); // recycled slot: any verified-cluster contents are gone
     clearOwnedInkRecord(slot);
+    clearClusterInkRecord(slot);
     if (m_freshThisFrame.size() < m_freshThisFrame.capacity())
         m_freshThisFrame.push_back(slot);
     if (fresh)
@@ -483,6 +485,7 @@ void GlyphSlotCache::forgetKeyAtSlot(Key key, int slot)
     m_keyForSlot[slot] = emptyKey;
     m_contentsForSlot[slot].clear();
     clearOwnedInkRecord(slot);
+    clearClusterInkRecord(slot);
     // Nobody can want these pixels, so the slot goes to the front of the queue
     // for reuse rather than ageing to it behind every live glyph. Dropping the
     // frame stamp is what makes that reachable within this frame: slotForKey
@@ -689,6 +692,48 @@ GlyphSlotCache::InkRows GlyphSlotCache::inkRowsForSlot(int slot) const
     if (m_inkRowTop[index] > m_inkRowBottom[index])
         return {};
     return InkRows { true, static_cast<float>(m_inkRowTop[index]), static_cast<float>(m_inkRowBottom[index]) };
+}
+
+void GlyphSlotCache::clearClusterInkRecord(int slot)
+{
+    if (m_clusterInkTop.empty() || slot < 0 || slot >= m_capacity)
+        return;
+    m_clusterInkTop[static_cast<std::size_t>(slot)] = clusterInkUnmeasured;
+}
+
+void GlyphSlotCache::recordClusterInk(int slot, ClusterInkRows rows)
+{
+    if (slot < 0 || slot >= m_capacity)
+        return;
+    if (m_clusterInkTop.empty()) {
+        m_clusterInkTop.assign(static_cast<std::size_t>(m_capacity), clusterInkUnmeasured);
+        m_clusterInkBottom.assign(static_cast<std::size_t>(m_capacity), std::int16_t { 0 });
+    }
+    // Clamped one short of the sentinel, so no measurement reads as unmeasured;
+    // a reach that far past the slot is cut by the window limit long before.
+    const auto clampRow = [](int row) {
+        return static_cast<std::int16_t>(std::clamp(row, static_cast<int>(clusterInkUnmeasured) + 1, static_cast<int>(INT16_MAX)));
+    };
+    const std::size_t index = static_cast<std::size_t>(slot);
+    if (!rows.isInked || rows.bottomInPixels <= rows.topInPixels) {
+        m_clusterInkTop[index] = 0;
+        m_clusterInkBottom[index] = 0;
+        return;
+    }
+    m_clusterInkTop[index] = clampRow(rows.topInPixels);
+    m_clusterInkBottom[index] = clampRow(rows.bottomInPixels);
+}
+
+ClusterInkRecord GlyphSlotCache::clusterInkForSlot(int slot) const
+{
+    if (m_clusterInkTop.empty() || slot < 0 || slot >= m_capacity)
+        return {};
+    const std::size_t index = static_cast<std::size_t>(slot);
+    const std::int16_t top = m_clusterInkTop[index];
+    if (top == clusterInkUnmeasured)
+        return {};
+    const std::int16_t bottom = m_clusterInkBottom[index];
+    return { true, { bottom > top, top, bottom } };
 }
 
 } // namespace Ubiquitty::Rendering

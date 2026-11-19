@@ -2466,6 +2466,19 @@
     "native": "jetbrains_mono_10"
   },
   {
+    "name": "zalgo_every_mark_visible",
+    "columns": 24,
+    "rows": 6,
+    "feed": "\r\n\r\n Z\u0301\u0302\u0303\u0304\u0306\u0309| Z\u0301\u0302\u0303| Z\u0301| Z|\r\n g\u0316\u0317\u0318\u0319\u031c\u031d| e\u0301\u0316|",
+    "doc": "Zalgo: a Z under six stacked marks (acute, circumflex, tilde, macron, breve, hook above), then three, one and none; a g over six marks below; an e with one above and one below. Every letter keeps its full size on its baseline, and its marks overhang the cell into the rows above and below rather than being cut at the edge of the glyph's slot. Count them: six, three, one above the Zs, six below the g. The blank rows above and below give the overhang room to show.",
+    "settings": {
+      "appearance": {
+        "theme": "Noir Clair"
+      }
+    },
+    "native": "jetbrains_mono_10"
+  },
+  {
     "name": "dim_and_conceal",
     "columns": 16,
     "rows": 5,

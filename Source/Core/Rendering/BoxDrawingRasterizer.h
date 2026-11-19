@@ -381,6 +381,37 @@ public:
         return m_inner->rasterizeClusterInCell(codePoints, count, face, weight, phaseInPixels, bounds, slotWidth, slotHeight, coverageOut);
     }
 
+    /// Forwards whether the decorated rasterizer draws cluster windows.
+    ///
+    /// A cluster is the face's to draw, never this decorator's, so the answer
+    /// is the face's: without it a stacked cluster drawn through this wrapper
+    /// would stay cut at its slot whatever the face can do.
+    ///
+    /// - Returns: What the decorated rasterizer answers.
+    [[nodiscard]] bool drawsClusterWindows() const override { return m_inner->drawsClusterWindows(); }
+
+    /// Forwards a window of a cluster's uncut drawing.
+    ///
+    /// - Parameters:
+    ///   - codePoints: The cluster's Unicode scalars.
+    ///   - count: The number of scalars to read.
+    ///   - face: The font style to use.
+    ///   - weight: The weight override, or zero for the style's default.
+    ///   - phaseInPixels: The pen's fraction within one device pixel.
+    ///   - bounds: The cell interval inside the padded slot.
+    ///   - slotWidth: The slot's and the window's width in pixels.
+    ///   - slotHeight: The height of the slot the cluster is drawn into.
+    ///   - rowOffsetInPixels: The slot row shown on the window's first row.
+    ///   - windowHeight: The window's height in pixels.
+    ///   - coverageOut: Caller-owned `slotWidth * windowHeight` coverage bytes.
+    /// - Returns: What the decorated rasterizer answers.
+    bool rasterizeClusterWindow(const std::uint32_t* codePoints, int count, FontFace face, std::uint32_t weight, double phaseInPixels,
+        ClusterRasterBounds bounds, int slotWidth, int slotHeight, int rowOffsetInPixels, int windowHeight, std::uint8_t* coverageOut) override
+    {
+        return m_inner->rasterizeClusterWindow(codePoints, count, face, weight, phaseInPixels, bounds, slotWidth, slotHeight, rowOffsetInPixels,
+            windowHeight, coverageOut);
+    }
+
     bool rasterizeGlyph(std::uint32_t codePoint, FontFace face, std::uint32_t weight, int slotWidth, int slotHeight, std::uint8_t* coverageOut) override
     {
         if (Rendering::BoxDrawing::prefersProcedural(codePoint)) {

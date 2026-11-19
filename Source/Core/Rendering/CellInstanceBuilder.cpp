@@ -18,6 +18,7 @@
 #include "Core/Rendering/BoxFillEmit.h"
 #include "Core/Rendering/BrailleLattice.h"
 #include "Core/Rendering/CellDecisions.h"
+#include "Core/Rendering/ClusterWindows.h"
 #include "Core/Rendering/ColorResolve.h"
 #include "Core/Rendering/DRCSRaster.h"
 #include "Core/Rendering/DottedRuleRun.h"
@@ -756,6 +757,201 @@ void attachMeasuredInk(AtlasGlyph& glyph, const MonoAtlasBinding& mono, int slot
         static_cast<float>(slotBox.y) + ink.minInPixels.y };
     glyph.inkMaxUV = { static_cast<float>(slotBox.x) + ink.maxInPixels.x,
         static_cast<float>(slotBox.y) + ink.maxInPixels.y };
+}
+
+/// The windows one tall cluster draws through this frame (ClusterWindows.h).
+///
+/// Planned where the cluster's own glyph is resolved and spent where its quad
+/// is emitted, so it lives at frame scope and names the cell it was planned
+/// for: a cell that reaches the emitter without having been planned finds
+/// another owner and emits nothing.
+struct ClusterWindowPlan {
+    /// One window resolved to a slot.
+    struct Window {
+        /// The mono slot holding the window's raster.
+        int slot = -1;
+        /// The row of the cluster's own slot shown on the window's first row.
+        int rowOffsetInPixels = 0;
+        /// The window slot's rows its quad draws.
+        ClusterSlotRows rows {};
+    };
+    /// The cell the plan was made for; null when no plan is pending.
+    const Ubiquitty::Cell* owner = nullptr;
+    /// The cluster's own slot, whose atlas origin every window is placed from.
+    int ownSlot = -1;
+    /// Whether a window abuts the own quad's top edge, which then gives up its guard row.
+    bool hasWindowAbove = false;
+    /// Whether a window abuts the own quad's bottom edge.
+    bool hasWindowBelow = false;
+    /// How many entries of ``windows`` hold a window to draw.
+    int count = 0;
+    /// The windows to draw, those above first.
+    std::array<Window, 2 * clusterWindowLimitPerSide> windows {};
+};
+
+/// The mono slot an atlas rect lies in.
+///
+/// For a cluster a backend faulted itself and handed back as a rect alone:
+/// every mono rect a backend answers with lies inside one slot, so the slot
+/// whose box holds the rect's corner is the slot.
+///
+/// - Parameters:
+///   - mono: The frame's mono binding.
+///   - glyph: The rect.
+/// - Returns: The slot, or -1 for a rect outside the sheet.
+int monoSlotContaining(const MonoAtlasBinding& mono, const AtlasGlyph& glyph)
+{
+    const GlyphSlotGeometry& geometry = mono.geometry;
+    if (geometry.columns <= 0 || geometry.slotWidthInPixels <= 0 || geometry.slotHeightInPixels <= 0)
+        return -1;
+    const int column = static_cast<int>(std::floor(glyph.minUV.x / static_cast<float>(geometry.slotWidthInPixels)));
+    const int slotRow = static_cast<int>(std::floor(glyph.minUV.y / static_cast<float>(geometry.slotHeightInPixels)));
+    if (column < 0 || slotRow < 0 || column >= geometry.columns)
+        return -1;
+    const int slot = slotRow * geometry.columns + column;
+    return slot < mono.slotCapacity ? slot : -1;
+}
+
+/// Plans the windows a cluster draws through, faulting each into the mono sheet.
+///
+/// Leaves the plan unowned for a cluster that fits its slot: one whose own
+/// raster neither holds two marks nor reaches the slot's edge is never
+/// measured, and one the backend measured inside the slot takes no window. A
+/// window the sheet refuses ends its side, and the ink beyond it is cut as it
+/// was before windows existed.
+///
+/// - Parameters:
+///   - plan: The frame's plan, overwritten.
+///   - owner: The cell being planned.
+///   - atlas: The frame's backend, which offers both window entries.
+///   - mono: The frame's mono binding, with a cache and an ink table.
+///   - cluster: The cluster's code points.
+///   - face: The cluster's face.
+///   - weight: The cluster's variable weight.
+///   - phase: The subpixel phase its own slot was keyed at.
+///   - variant: The raster variant its own slot was keyed at.
+///   - own: The cluster's own glyph rect.
+///   - ownSlot: The cluster's own slot, or -1 to find it from `own`.
+///   - quad: How the cluster's own glyph lands.
+[[gnu::noinline]] void planClusterWindows(ClusterWindowPlan& plan, const Ubiquitty::Cell* owner, const GlyphBackend& atlas,
+    const MonoAtlasBinding& mono, std::span<const std::uint32_t> cluster, FontFace face, std::uint32_t weight, std::uint32_t phase,
+    std::uint32_t variant, const AtlasGlyph& own, int ownSlot, ClusterOwnQuad quad)
+{
+    plan.owner = nullptr;
+    plan.count = 0;
+    plan.hasWindowAbove = false;
+    plan.hasWindowBelow = false;
+    if (cluster.empty() || cluster.size() > static_cast<std::size_t>(clusterPoolMaximumCodePoints))
+        return;
+    if (ownSlot < 0)
+        ownSlot = monoSlotContaining(mono, own);
+    if (ownSlot < 0 || ownSlot >= mono.slotCapacity)
+        return;
+    const int slotHeight = mono.geometry.slotHeightInPixels;
+    const int margin = mono.geometry.glyphMarginInPixels.height;
+    const GlyphInkBox& ownInk = mono.inkBoxForSlot[ownSlot];
+    if (ownInk.minInPixels.x > ownInk.maxInPixels.x || ownInk.maxInPixels.y <= ownInk.minInPixels.y)
+        return;
+    if (!clusterMayOverflowItsSlot(static_cast<int>(cluster.size()), ownInk, slotHeight))
+        return;
+    ClusterInkRecord record = mono.cache->clusterInkForSlot(ownSlot);
+    if (!record.isMeasured) {
+        record = { true, atlas.measureClusterInk(atlas.context, cluster, face, weight, variant, clusterWindowReach(slotHeight)) };
+        mono.cache->recordClusterInk(ownSlot, record.rows);
+    }
+    const ClusterWindowCounts counts = clusterWindowCounts(record.rows, quad, slotHeight, margin);
+    if (counts.above == 0 && counts.below == 0)
+        return;
+    const ClusterSlotRows beside = clusterOwnRowsBesideWindows(quad, slotHeight, margin);
+    std::array<std::uint32_t, clusterPoolMaximumCodePoints + 1> contents {};
+    std::ranges::copy(cluster, contents.begin());
+    const int contentCount = static_cast<int>(cluster.size()) + 1;
+    const auto resolve = [&](ClusterWindowSide side, int index) {
+        const int rowOffset = clusterWindowRowOffset(beside, slotHeight, side, index);
+        contents[cluster.size()] = clusterWindowWord(rowOffset);
+        const std::uint64_t key = glyphSlotKey(clusterWindowKey(contents.data(), contentCount, static_cast<int>(phase), face), variant);
+        bool isFresh = false;
+        const int slot = mono.cache->slotForKeyVerified(key, contents.data(), contentCount, &isFresh);
+        if (slot < 0)
+            return false;
+        if (isFresh && !atlas.rasteriseClusterWindow(atlas.context, cluster, face, weight, variant, rowOffset, slot)) {
+            mono.cache->forgetKeyAtSlot(key, slot);
+            return false;
+        }
+        const ClusterSlotRows rows = clusterWindowInkRows(clusterWindowRows(slotHeight), mono.inkBoxForSlot[slot]);
+        if (rows.bottom > rows.top)
+            plan.windows[static_cast<std::size_t>(plan.count++)] = { slot, rowOffset, rows };
+        return true;
+    };
+    for (int index = 1; index <= counts.above && resolve(ClusterWindowSide::Above, index); ++index)
+        plan.hasWindowAbove = true;
+    for (int index = 1; index <= counts.below && resolve(ClusterWindowSide::Below, index); ++index)
+        plan.hasWindowBelow = true;
+    if (plan.hasWindowAbove || plan.hasWindowBelow) {
+        plan.owner = owner;
+        plan.ownSlot = ownSlot;
+    }
+}
+
+/// Where a cluster's own glyph lands: its atlas rect and the screen rect it maps onto.
+///
+/// Every window is placed by this one map, extended past the rect: a window
+/// row is the own slot's row its offset names, and lands where the own quad
+/// would have drawn that row.
+struct ClusterOwnPlacement {
+    /// The own quad's top-left on screen, in device pixels.
+    Vec2 originInPixels {};
+    /// The own quad's extent on screen.
+    Vec2 sizeInPixels {};
+    /// The atlas rect the own quad samples.
+    Vec2 atlasTopLeft {};
+    /// The far corner of that rect.
+    Vec2 atlasBottomRight {};
+};
+
+/// Emits a planned cluster's windows on the mono glyph stream.
+///
+/// Each window keeps the own quad's columns and its atlas-to-screen scale, so
+/// the stack is one picture: a window's rows land where the own quad would
+/// have drawn the same rows of an uncut slot.
+///
+/// - Parameters:
+///   - plan: The cluster's plan, owned by the cell being emitted.
+///   - mono: The frame's mono binding.
+///   - own: Where the cluster's own glyph lands, after any guard rows it gave up.
+///   - foreground: The own glyph's ink.
+///   - background: The own glyph's ground.
+///   - out: The frame's streams.
+///   - counts: The frame's counts, whose glyph count each window advances.
+void emitClusterWindows(const ClusterWindowPlan& plan, const MonoAtlasBinding& mono, const ClusterOwnPlacement& own, Vec4 foreground,
+    Vec4 background, const InstanceBuffers& out, InstanceCounts& counts)
+{
+    const float atlasWidth = own.atlasBottomRight.x - own.atlasTopLeft.x;
+    const float atlasHeight = own.atlasBottomRight.y - own.atlasTopLeft.y;
+    if (!(atlasWidth > 0.0f) || !(atlasHeight > 0.0f))
+        return;
+    const float scaleY = own.sizeInPixels.y / atlasHeight;
+    const GlyphSlotGeometry& geometry = mono.geometry;
+    const AtlasSlotRegion ownRegion = atlasSlotRegion(plan.ownSlot, geometry.columns, geometry.slotWidthInPixels, geometry.slotHeightInPixels);
+    for (int index = 0; index < plan.count; ++index) {
+        const ClusterWindowPlan::Window& window = plan.windows[static_cast<std::size_t>(index)];
+        const AtlasSlotRegion region = atlasSlotRegion(window.slot, geometry.columns, geometry.slotWidthInPixels, geometry.slotHeightInPixels);
+        const std::size_t glyphIndex = counts.glyphs++;
+        if (glyphIndex >= out.glyphCapacity || !out.glyphs)
+            continue;
+        // The own slot's row this window row shows, read through the own
+        // quad's map: where the own quad would have drawn it.
+        const float ownRow = static_cast<float>(ownRegion.y + window.rowOffsetInPixels + window.rows.top);
+        GlyphInstance& instance = out.glyphs[glyphIndex];
+        instance.originInPixels = { own.originInPixels.x, own.originInPixels.y + (ownRow - own.atlasTopLeft.y) * scaleY };
+        instance.sizeInPixels = { own.sizeInPixels.x, static_cast<float>(window.rows.bottom - window.rows.top) * scaleY };
+        instance.foreground = foreground;
+        instance.background = background;
+        instance.atlasTopLeft = { static_cast<float>(region.x) + (own.atlasTopLeft.x - static_cast<float>(ownRegion.x)),
+            static_cast<float>(region.y + window.rows.top) };
+        instance.atlasBottomRight = { static_cast<float>(region.x) + (own.atlasBottomRight.x - static_cast<float>(ownRegion.x)),
+            static_cast<float>(region.y + window.rows.bottom) };
+    }
 }
 
 /// Resolves the glyph a shaper chose to a mono slot, rasterising on a miss.
@@ -2276,6 +2472,16 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
     // and only a sized cell writes it — each entry it reads was written by
     // the same cell's probe.
     AtlasGlyph bakedTiles[maxSizedWindowsPerBand];
+    // The windows of the tall cluster being drawn (ClusterWindows.h): planned
+    // where its glyph is resolved, spent where its quad is emitted. Frame
+    // scope for the reason the tiles above are, and owned by the cell it was
+    // planned for, so no other cell reads it. Windows need both backend
+    // entries, a mono cache whose slots carry measured ink, and a glyph stream
+    // to draw into; a bitmap face keeps its cells, which it tiles exactly.
+    ClusterWindowPlan clusterWindows;
+    const bool canDrawClusterWindows = atlas.measureClusterInk != nullptr && atlas.rasteriseClusterWindow != nullptr
+        && mono.cache != nullptr && mono.inkBoxForSlot != nullptr && out.glyphs != nullptr && !in.isBitmapFace
+        && mono.geometry.columns > 0 && mono.geometry.slotWidthInPixels > 0 && clusterWindowPitch(mono.geometry.slotHeightInPixels) > 0;
     // A frame with no selection or search drawn in its cells, no native
     // vibrancy, no occluding letterbox and no live text-size spec is the
     // common one, and the walk below is compiled for it with
@@ -3688,6 +3894,10 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                                     // memcmps the stored run on a hit and reports fresh
                                     // on a collision instead of serving another cluster's
                                     // pixels.
+                                    // The own slot, where the hit path below names it; a
+                                    // backend that faults its own clusters hands back a
+                                    // rect, and the window plan finds the slot from that.
+                                    int clusterOwnSlot = -1;
                                     if (shouldTakeWideCluster) {
                                         glyph = atlas.wideClusterGlyph(atlas.context, std::span(clusterCodePoints.data(), static_cast<std::size_t>(clusterCount)), clusterFace, weight, cellVariantStyle | widePhase);
                                     } else if (mono.cache && atlas.rasteriseClusterGlyph) {
@@ -3703,6 +3913,7 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                                             } else {
                                                 const GlyphUV uv = monoSlotUV(slot, isSubpixelGlyph);
                                                 glyph = { { uv.minU, uv.minV }, { uv.maxU, uv.maxV }, true };
+                                                clusterOwnSlot = slot;
                                             }
                                         }
                                     } else if (atlas.clusterGlyph) {
@@ -3717,7 +3928,21 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                                         const std::size_t base = Ubiquitty::Unicode::clusterBaseIndex(
                                             std::span(clusterCodePoints.data(), static_cast<std::size_t>(clusterCount)));
                                         glyph = atlas.monoGlyph(atlas.context, clusterCodePoints[base], clusterFace, weight, clusterVariant);
+                                        return;
                                     }
+                                    // A stack of marks reaching past the slot takes the
+                                    // windows of a tall slot (ClusterWindows.h). Only a
+                                    // plain mono cell: a sized, doubled, scripted or
+                                    // enclosed glyph is drawn by geometry of its own that
+                                    // the windows would not follow, and the cursor's tier
+                                    // redraws the cell over a grid that already holds them.
+                                    if (canDrawClusterWindows && glyph.present && !shouldTakeWideCluster && !isTierPass && !isCellDoubleWide
+                                        && sizedSpec == nullptr && !hasFraction && !isEnclosedByCircle && cellClipFrac >= 1.0f
+                                        && penScript(&pen) == Ubiquitty::VT::scriptNone) [[unlikely]]
+                                        planClusterWindows(clusterWindows, &cell, atlas, mono,
+                                            std::span(clusterCodePoints.data(), static_cast<std::size_t>(clusterCount)), clusterFace, weight,
+                                            clusterPhase, clusterVariant, glyph, clusterOwnSlot,
+                                            isSubpixelGlyph ? ClusterOwnQuad::WholeSlot : ClusterOwnQuad::CellBox);
                                 }();
                             } else if (isWide) {
                                 if (!(ablate & AblateWideFetch)) {
@@ -6002,6 +6227,50 @@ InstanceCounts buildCellInstances(const BuildInputs& requested, const GlyphBacke
                             gi.sizeInPixels = scripted.size;
                         }
                     }
+                    // A tall cluster (ClusterWindows.h): its own quad is the
+                    // whole slot, less the guard row it gives up to each window
+                    // that abuts it, and the windows stack on it at the same
+                    // pen. The plan names the cell it was made for, so only the
+                    // cell whose glyph was just planned reads it.
+                    if (clusterCount > 1 && clusterWindows.owner == &cell && !isTierPass) [[unlikely]] {
+                        [&, glyphIndex, scaleX, scaleY, slotHeight, slotWidth] [[gnu::noinline]] {
+                            const float trimTop = clusterWindows.hasWindowAbove ? static_cast<float>(clusterWindowGuardRows) : 0.0f;
+                            const float trimBottom = clusterWindows.hasWindowBelow ? static_cast<float>(clusterWindowGuardRows) : 0.0f;
+                            ClusterOwnPlacement own;
+                            own.originInPixels = { static_cast<float>(phaseSnap.snappedPenX) - in.glyphMarginInPixels.width * scaleX,
+                                in.originInPixels.y + row * metrics.cellHeight + (trimTop - in.glyphMarginInPixels.height) * scaleY };
+                            own.sizeInPixels = { slotWidth * scaleX, (slotHeight - trimTop - trimBottom) * scaleY };
+                            own.atlasTopLeft = { glyph.minUV.x - in.glyphMarginInPixels.width, glyph.minUV.y - in.glyphMarginInPixels.height + trimTop };
+                            own.atlasBottomRight = { glyph.maxUV.x + in.glyphMarginInPixels.width, glyph.maxUV.y + in.glyphMarginInPixels.height - trimBottom };
+                            const Vec4 ink = nativeSecondaryInk(usesNativeTextVibrancy, foreground, background, in, framePalette8.defaultForeground);
+                            const Vec4 ground = nativeBackgroundInk(usesNativeBackgroundVibrancy, background, in, mayUseNativeBackground);
+                            if (glyphIndex < out.glyphCapacity && out.glyphs) {
+                                GlyphInstance& gi = out.glyphs[glyphIndex];
+                                gi.originInPixels = own.originInPixels;
+                                gi.sizeInPixels = own.sizeInPixels;
+                                gi.atlasTopLeft = own.atlasTopLeft;
+                                gi.atlasBottomRight = own.atlasBottomRight;
+                            }
+                            emitClusterWindows(clusterWindows, mono, own, ink, ground, out, counts);
+                            clusterWindows.owner = nullptr;
+                        }();
+                    }
+                }
+                // The same windows for a cluster baked into its cell. The cell's
+                // quad is the cell box and gives nothing up; the windows meet it
+                // at the cell's edges, on the map the cell draws its box by.
+                if (!isSubpixelGlyph && clusterCount > 1 && clusterWindows.owner == &cell && !isTierPass && glyph.present) [[unlikely]] {
+                    [&, cellGridX, cellVisibleWidth] [[gnu::noinline]] {
+                        ClusterOwnPlacement own;
+                        own.originInPixels = { in.originInPixels.x + cellGridX * metrics.cellWidth, in.originInPixels.y + row * metrics.cellHeight };
+                        own.sizeInPixels = { cellVisibleWidth * metrics.cellWidth, metrics.cellHeight };
+                        own.atlasTopLeft = glyph.minUV;
+                        own.atlasBottomRight = glyph.maxUV;
+                        emitClusterWindows(clusterWindows, mono, own,
+                            nativeSecondaryInk(usesNativeTextVibrancy, foreground, background, in, framePalette8.defaultForeground),
+                            nativeBackgroundInk(usesNativeBackgroundVibrancy, background, in, mayUseNativeBackground), out, counts);
+                        clusterWindows.owner = nullptr;
+                    }();
                 }
 
                 // The same shrink for a cell whose glyph would have been baked into

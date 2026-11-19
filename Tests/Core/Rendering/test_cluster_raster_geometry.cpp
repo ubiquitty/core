@@ -4,6 +4,7 @@
 #include "Harness.h"
 
 #include "Core/Rendering/ClusterRasterGeometry.h"
+#include "Core/Rendering/ClusterWindows.h"
 
 #include <array>
 #include <cmath>
@@ -136,6 +137,110 @@ TEST(clusterFitRejectsInvalidMetricsAndHandlesEmptyInk)
     const auto empty = fitClusterHorizontal(20, 20, { 0, 8 });
     CHECK_EQ(empty.scaleX, 1);
     CHECK_EQ(empty.translationX, -12);
+}
+
+// A cluster that fits its slot takes no window on either side, whether its
+// quad is the whole slot or the cell box inside the margins: only ink past
+// the rows the own quad draws asks for one.
+TEST(aClusterInsideTheRowsItsQuadDrawsTakesNoWindow)
+{
+    constexpr int slotHeight = 20;
+    constexpr int margin = 2;
+    const ClusterWindowCounts whole = clusterWindowCounts({ true, 0, slotHeight }, ClusterOwnQuad::WholeSlot, slotHeight, margin);
+    CHECK_EQ(whole.above, 0);
+    CHECK_EQ(whole.below, 0);
+    const ClusterWindowCounts box = clusterWindowCounts({ true, margin, slotHeight - margin }, ClusterOwnQuad::CellBox, slotHeight, margin);
+    CHECK_EQ(box.above, 0);
+    CHECK_EQ(box.below, 0);
+    const ClusterWindowCounts blank = clusterWindowCounts({ false, -40, 60 }, ClusterOwnQuad::WholeSlot, slotHeight, margin);
+    CHECK_MSG(blank.above == 0 && blank.below == 0, "a cluster that drew nothing takes nothing");
+    const ClusterWindowCounts margins = clusterWindowCounts({ true, 1, slotHeight - 1 }, ClusterOwnQuad::CellBox, slotHeight, margin);
+    CHECK_MSG(margins.above == 1 && margins.below == 1, "ink in the margins a baked cell does not draw takes a window each side");
+}
+
+// The windows a measured stack takes cover its ink at the window pitch, out
+// to the limit and no further.
+TEST(aStackTakesWindowsAtThePitchUpToTheLimit)
+{
+    constexpr int slotHeight = 20;
+    constexpr int pitch = slotHeight - 2 * clusterWindowGuardRows;
+    CHECK_EQ(clusterWindowPitch(slotHeight), pitch);
+    // The own quad keeps rows [1, 19) beside windows; the first window above
+    // covers the pitch of rows before row 1.
+    const ClusterWindowCounts one = clusterWindowCounts({ true, 1 - pitch, slotHeight }, ClusterOwnQuad::WholeSlot, slotHeight, 0);
+    CHECK_EQ(one.above, 1);
+    const ClusterWindowCounts two = clusterWindowCounts({ true, -pitch, slotHeight }, ClusterOwnQuad::WholeSlot, slotHeight, 0);
+    CHECK_EQ(two.above, 2);
+    const ClusterWindowCounts below = clusterWindowCounts({ true, 0, slotHeight + 1 }, ClusterOwnQuad::WholeSlot, slotHeight, 0);
+    CHECK_EQ(below.below, 1);
+    CHECK_EQ(below.above, 0);
+    const ClusterWindowCounts zalgo = clusterWindowCounts({ true, -10 * slotHeight, 11 * slotHeight }, ClusterOwnQuad::WholeSlot, slotHeight, 0);
+    CHECK_MSG(zalgo.above == clusterWindowLimitPerSide && zalgo.below == clusterWindowLimitPerSide,
+        "a pathological stack is cut at the limit, which bounds what it spends of the sheet");
+    CHECK_MSG(clusterWindowReach(slotHeight) >= clusterWindowLimitPerSide * pitch,
+        "a measurement looks far enough to count every window the limit allows");
+}
+
+// The windows tile one tall drawing: each window's drawn rows end where the
+// next one's begin, the first meets the rows the own quad keeps, and every
+// window's slot carries a guard row of its neighbour each side.
+TEST(windowsTileTheTallDrawingWithAGuardRowEachSide)
+{
+    constexpr int slotHeight = 20;
+    constexpr int margin = 2;
+    for (const ClusterOwnQuad quad : { ClusterOwnQuad::WholeSlot, ClusterOwnQuad::CellBox }) {
+        const ClusterSlotRows beside = clusterOwnRowsBesideWindows(quad, slotHeight, margin);
+        const ClusterSlotRows drawn = clusterWindowRows(slotHeight);
+        CHECK_EQ(drawn.top, clusterWindowGuardRows);
+        CHECK_EQ(drawn.bottom, slotHeight - clusterWindowGuardRows);
+        int edge = beside.top;
+        for (int index = 1; index <= clusterWindowLimitPerSide; ++index) {
+            const int offset = clusterWindowRowOffset(beside, slotHeight, ClusterWindowSide::Above, index);
+            CHECK_MSG(offset + drawn.bottom == edge, "a window above ends where the rows below it begin");
+            edge = offset + drawn.top;
+        }
+        edge = beside.bottom;
+        for (int index = 1; index <= clusterWindowLimitPerSide; ++index) {
+            const int offset = clusterWindowRowOffset(beside, slotHeight, ClusterWindowSide::Below, index);
+            CHECK_MSG(offset + drawn.top == edge, "a window below begins where the rows above it end");
+            edge = offset + drawn.bottom;
+        }
+    }
+    CHECK_MSG(clusterOwnRowsBesideWindows(ClusterOwnQuad::WholeSlot, slotHeight, margin).top == clusterWindowGuardRows,
+        "a slot-sized quad gives a guard row up to the window above it");
+    CHECK_MSG(clusterOwnRowsBesideWindows(ClusterOwnQuad::CellBox, slotHeight, margin).top == margin,
+        "a baked cell gives nothing up: the window meets it at the cell's edge");
+}
+
+// Only a cluster that might overflow is measured: two marks or more, or ink at
+// the slot's edge. An accented letter inside its slot is not.
+TEST(onlyAClusterThatMightOverflowIsMeasured)
+{
+    constexpr int slotHeight = 20;
+    const GlyphInkBox inside { { 1.0f, 3.0f }, { 7.0f, 17.0f } };
+    const GlyphInkBox atTop { { 1.0f, 0.0f }, { 7.0f, 17.0f } };
+    const GlyphInkBox atBottom { { 1.0f, 3.0f }, { 7.0f, 20.0f } };
+    CHECK(!clusterMayOverflowItsSlot(2, inside, slotHeight));
+    CHECK(clusterMayOverflowItsSlot(3, inside, slotHeight));
+    CHECK(clusterMayOverflowItsSlot(2, atTop, slotHeight));
+    CHECK(clusterMayOverflowItsSlot(2, atBottom, slotHeight));
+}
+
+// A window's quad narrows to the ink its raster measured, and a blank window
+// draws nothing; an unmeasured one keeps every row it may draw.
+TEST(aWindowQuadNarrowsToItsMeasuredInk)
+{
+    constexpr int slotHeight = 20;
+    const ClusterSlotRows rows = clusterWindowRows(slotHeight);
+    const ClusterSlotRows unmeasured = clusterWindowInkRows(rows, unmeasuredGlyphInkBox());
+    CHECK(unmeasured.top == rows.top && unmeasured.bottom == rows.bottom);
+    const ClusterSlotRows blank = clusterWindowInkRows(rows, emptyGlyphInkBox());
+    CHECK(blank.bottom <= blank.top);
+    const ClusterSlotRows inked = clusterWindowInkRows(rows, { { 0.0f, 9.0f }, { 8.0f, 20.0f } });
+    CHECK_EQ(inked.top, 9);
+    CHECK_EQ(inked.bottom, slotHeight - clusterWindowGuardRows);
+    CHECK_MSG(clusterWindowWord(-18) > 0x10FFFFu && clusterWindowWord(-18) != clusterWindowWord(18),
+        "a window's contents end in a word no cluster holds, distinct per window");
 }
 
 UBIQUITTY_TEST_MAIN()

@@ -247,6 +247,33 @@ struct GlyphSlotGeometry {
     [[nodiscard]] GlyphUV atlasRectForBuilder(int slot, int capacity) const;
 };
 
+/// The rows a cluster's ink covers, measured against the cluster's own slot.
+///
+/// Rows count down from the slot's top edge, so ink a stacked mark carries
+/// above the slot is negative and ink a mark below carries past it reaches
+/// beyond the slot's height. ClusterWindows.h turns the span into the windows
+/// that carry that ink.
+struct UBIQUITTY_ESCAPABLE ClusterInkRows {
+    /// Whether the cluster drew any ink; false leaves the rows unread.
+    bool isInked = false;
+    /// The first inked row.
+    int topInPixels = 0;
+    /// One past the last inked row.
+    int bottomInPixels = 0;
+};
+
+/// A slot's record of its cluster's measured ink.
+///
+/// `isMeasured` false is a slot whose cluster nobody has measured, which is
+/// every slot a lone glyph holds and every cluster slot until the builder
+/// first asks about it.
+struct ClusterInkRecord {
+    /// Whether ``GlyphSlotCache::recordClusterInk`` filled this record.
+    bool isMeasured = false;
+    /// The measured rows, valid when `isMeasured`.
+    ClusterInkRows rows {};
+};
+
 } // namespace Ubiquitty::Rendering
 
 namespace Ubiquitty::Rendering {
@@ -647,6 +674,26 @@ public:
     /// - Returns: The rows; unmeasured when no raster reported the slot.
     [[nodiscard]] InkRows inkRowsForSlot(int slot) const;
 
+    /// Records how far the cluster a slot holds reaches, as the backend measured it.
+    ///
+    /// The record belongs to the slot's current key: assigning the slot to
+    /// another key or forgetting it clears the record, so a cluster's reach is
+    /// never read for the glyph that replaced it. Storage is taken on the
+    /// first record, so a cache that never holds a measured cluster — the wide,
+    /// colour and strip sheets — spends nothing on it.
+    ///
+    /// - Parameters:
+    ///   - slot: The slot whose cluster was measured.
+    ///   - rows: The cluster's ink, in the rows of that slot.
+    void recordClusterInk(int slot, ClusterInkRows rows);
+
+    /// The reach ``recordClusterInk`` recorded for `slot`.
+    ///
+    /// - Parameter slot: The slot to ask about.
+    /// - Returns: The record; unmeasured when nothing measured the slot's
+    ///   current cluster.
+    [[nodiscard]] ClusterInkRecord clusterInkForSlot(int slot) const;
+
 private:
     /// Finds the bucket holding `key`.
     ///
@@ -818,6 +865,19 @@ private:
     // slot never measured.
     std::vector<std::int16_t> m_inkRowTop; // capacity
     std::vector<std::int16_t> m_inkRowBottom;
+    /// Per slot, the rows its cluster's ink spans, from ``recordClusterInk``.
+    ///
+    /// Empty until the first record; ``clusterInkUnmeasured`` in the top marks a
+    /// slot nobody measured, and a bottom at or above the top a measured blank.
+    std::vector<std::int16_t> m_clusterInkTop;
+    /// The other end of each ``m_clusterInkTop`` span.
+    std::vector<std::int16_t> m_clusterInkBottom;
+    /// The top a slot with no cluster record holds.
+    static constexpr std::int16_t clusterInkUnmeasured = INT16_MIN;
+    /// Clears `slot`'s cluster record, for a slot whose key just changed.
+    ///
+    /// - Parameter slot: The slot to clear; ignored while no record exists.
+    void clearClusterInkRecord(int slot);
     int m_ownedInkColumnsPerSlot = 0;
     int m_ownedInkSlotWidthInPixels = 0;
     /// Stamps a slot as touched this pass.

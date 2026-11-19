@@ -22,6 +22,7 @@
 #include "Core/Rendering/ClusterRasterGeometry.h"
 #include "Core/Rendering/FontMetrics.h"
 #include "Core/Rendering/GlyphKey.h"
+#include "Core/Rendering/GlyphSlotCache.h"
 #include "Core/Rendering/GlyphSlotPolicy.h"
 #include "Core/Rendering/RuleGeometry.h"
 #include "Core/Unicode/Width.h"
@@ -282,6 +283,57 @@ struct GlyphRasterizer {
     {
         (void)bounds;
         return rasterizeClusterAtPhase(codePoints, count, face, weight, phaseInPixels, slotWidth, slotHeight, coverageOut);
+    }
+
+    /// Whether ``rasterizeClusterWindow`` draws, so a backend may give a
+    /// stacked cluster the windows of a tall slot (ClusterWindows.h).
+    ///
+    /// False by default: a rasterizer that has not said where its slot puts
+    /// the baseline cannot be asked for rows above or below it, and its
+    /// clusters stay cut at their slot as they always were.
+    ///
+    /// - Returns: True when the rasterizer draws cluster windows.
+    [[nodiscard]] virtual bool drawsClusterWindows() const { return false; }
+
+    /// Draws a cluster as ``rasterizeClusterInCell`` draws it into its slot,
+    /// uncut, and writes a window of that drawing.
+    ///
+    /// Row `r` of `coverageOut` is row `rowOffsetInPixels + r` of the slot the
+    /// cluster was drawn into — the same pen, phase, baseline and fit — read
+    /// as though the slot ran on without edges, so a negative offset shows
+    /// the marks stacked above the slot and an offset past its height the
+    /// marks below. The rows a window shares with the slot are byte for byte
+    /// the slot's raster: the windows and the slot tile one tall drawing.
+    ///
+    /// - Parameters:
+    ///   - codePoints: The cluster's Unicode scalars.
+    ///   - count: The number of scalars to read.
+    ///   - face: The font style to use.
+    ///   - weight: The weight override, or zero for the style's default.
+    ///   - phaseInPixels: The pen's fraction within one device pixel.
+    ///   - bounds: The allocated cell interval in slot coordinates.
+    ///   - slotWidth: The slot's and the window's width in pixels.
+    ///   - slotHeight: The height of the slot the cluster is drawn into.
+    ///   - rowOffsetInPixels: The slot row shown on the window's first row.
+    ///   - windowHeight: The window's height in pixels.
+    ///   - coverageOut: Caller-owned `slotWidth * windowHeight` coverage bytes.
+    /// - Returns: True when the window was drawn; false leaves `coverageOut`
+    ///   unwritten, which a caller writes as a blank.
+    virtual bool rasterizeClusterWindow(const std::uint32_t* codePoints, int count, FontFace face, std::uint32_t weight, double phaseInPixels,
+        ClusterRasterBounds bounds, int slotWidth, int slotHeight, int rowOffsetInPixels, int windowHeight, std::uint8_t* coverageOut)
+    {
+        (void)codePoints;
+        (void)count;
+        (void)face;
+        (void)weight;
+        (void)phaseInPixels;
+        (void)bounds;
+        (void)slotWidth;
+        (void)slotHeight;
+        (void)rowOffsetInPixels;
+        (void)windowHeight;
+        (void)coverageOut;
+        return false;
     }
 
     /// Whether ``rasterizeSizedMaster`` draws at the master's size rather than
@@ -707,6 +759,53 @@ protected:
     if (!rasterizer.rasterizeGlyph(0x5Fu, FontFace::Regular, 0u, slotWidth, slotHeight, coverage.data()))
         return 0.0f;
     return measuredUnderscoreWeight(coverage.data(), slotWidth, slotHeight);
+}
+
+/// Measures the rows a cluster's ink covers through one tall window.
+///
+/// The window holds the cluster's slot and `reachInPixels` rows past each of
+/// its edges, drawn by ``GlyphRasterizer::rasterizeClusterWindow``, so the
+/// rows measured are the rows the cluster's windows will draw: one drawing,
+/// read twice, cannot disagree with itself about where a mark stands.
+///
+/// - Parameters:
+///   - rasterizer: The engine, already set to the face and size it draws.
+///   - codePoints: The cluster's Unicode scalars.
+///   - face: The font style to use.
+///   - weight: The weight override, or zero for the style's default.
+///   - phaseInPixels: The pen's fraction within one device pixel.
+///   - bounds: The allocated cell interval in slot coordinates.
+///   - slotWidth: The slot's width in pixels.
+///   - slotHeight: The slot's height in pixels.
+///   - reachInPixels: How far past each edge of the slot to look.
+///   - scratch: Storage for the window, grown as needed and kept by the caller.
+/// - Returns: The inked rows in the slot's own rows; not inked when nothing
+///   drew or the rasterizer draws no windows.
+[[nodiscard]] inline ClusterInkRows measureClusterInkThroughWindow(GlyphRasterizer& rasterizer, std::span<const std::uint32_t> codePoints,
+    FontFace face, std::uint32_t weight, double phaseInPixels, ClusterRasterBounds bounds, int slotWidth, int slotHeight, int reachInPixels,
+    std::vector<std::uint8_t>& scratch)
+{
+    if (codePoints.empty() || slotWidth <= 0 || slotHeight <= 0 || reachInPixels < 0)
+        return {};
+    const int windowHeight = slotHeight + 2 * reachInPixels;
+    const std::size_t bytes = static_cast<std::size_t>(slotWidth) * static_cast<std::size_t>(windowHeight);
+    if (scratch.size() < bytes)
+        scratch.resize(bytes);
+    if (!rasterizer.rasterizeClusterWindow(codePoints.data(), static_cast<int>(codePoints.size()), face, weight, phaseInPixels, bounds,
+            slotWidth, slotHeight, -reachInPixels, windowHeight, scratch.data()))
+        return {};
+    int top = windowHeight;
+    int bottom = -1;
+    for (int row = 0; row < windowHeight; ++row) {
+        const std::uint8_t* const pixels = scratch.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(slotWidth);
+        if (std::any_of(pixels, pixels + slotWidth, [](std::uint8_t texel) { return texel != 0; })) {
+            top = std::min(top, row);
+            bottom = row;
+        }
+    }
+    if (bottom < 0)
+        return {};
+    return { true, top - reachInPixels, bottom + 1 - reachInPixels };
 }
 
 } // namespace Ubiquitty::Rendering
