@@ -1110,6 +1110,78 @@ struct ProcessEntry {
     return entries;
 }
 
+// A session's own processes, found by descending from its leader.
+//
+// The kernel lists each thread's children in /proc/<pid>/task/<tid>/children,
+// so the subtree costs a few reads per process in the session. The table walk
+// above costs four system calls per process on the machine, on the thread that
+// parses the session's output, and it is asked for when the foreground group
+// moves: exactly as a command starts writing.
+//
+// The lists are a snapshot of a tree that may be forking. A child born during
+// the read can be missed, as the table walk misses one whose number it has
+// already passed, and the next sample finds it.
+//
+// Entries come back in ascending process order, the order the table walk
+// yields them in, so the classifier fills the same records either way.
+//
+// Absent where the kernel does not expose the lists or the leader is gone;
+// the caller walks the table.
+[[nodiscard]] std::optional<std::vector<ProcessEntry>> enumerateSubtree(long leader)
+{
+    if (::faccessat(AT_FDCWD, "/proc/thread-self/children", R_OK, 0) != 0)
+        return std::nullopt;
+    // A session is a handful of processes; the bound is for a hostile one.
+    constexpr std::size_t maxEntries = 4096;
+    constexpr std::size_t maxListBytes = 256 * 1024;
+    std::vector<ProcessEntry> entries;
+    std::vector<long> pending { leader };
+    std::string list;
+    for (std::size_t next = 0; next < pending.size(); ++next) {
+        const long processID = pending[next];
+        if (auto read = readProcessEntry(processID))
+            entries.push_back(*read);
+        else if (next == 0)
+            return std::nullopt;
+        DIR* tasks = ::opendir(procPath(processID, "task").data());
+        if (!tasks)
+            continue; // gone between its parent's list and here, which is ordinary
+        while (const dirent* task = ::readdir(tasks)) {
+            const std::string_view name { task->d_name };
+            long taskID = 0;
+            const auto [end, error] = std::from_chars(name.data(), name.data() + name.size(), taskID);
+            if (error != std::errc {} || end != name.data() + name.size() || taskID <= 0)
+                continue;
+            std::array<char, 48> leaf {};
+            const auto written = std::to_chars(leaf.data(), leaf.data() + 24, taskID);
+            constexpr std::string_view suffix = "/children";
+            std::copy(suffix.begin(), suffix.end(), written.ptr);
+            const UnixFileDescriptor descriptor { ::openat(::dirfd(tasks), leaf.data(), O_RDONLY | O_CLOEXEC) };
+            if (!descriptor)
+                continue;
+            list.clear();
+            std::array<char, 4096> chunk {};
+            for (ssize_t length = 0; list.size() < maxListBytes && (length = ::read(descriptor.get(), chunk.data(), chunk.size())) > 0;)
+                list.append(chunk.data(), static_cast<std::size_t>(length));
+            // Process ids separated by spaces.
+            for (const char *cursor = list.data(), *listEnd = list.data() + list.size(); cursor < listEnd;) {
+                long child = 0;
+                const auto [childEnd, childError] = std::from_chars(cursor, listEnd, child);
+                if (childError != std::errc {}) {
+                    ++cursor;
+                    continue;
+                }
+                cursor = childEnd;
+                if (child > 0 && pending.size() < maxEntries)
+                    pending.push_back(child);
+            }
+        }
+        ::closedir(tasks);
+    }
+    std::ranges::sort(entries, {}, [](const ProcessEntry& entry) { return entry.node.processID; });
+    return entries;
+}
+
 // The classifier takes a contiguous RawNode array, so the nodes are lifted out
 // of the entries once rather than the two being kept in step by hand.
 [[nodiscard]] std::vector<Ubiquitty::Session::Process::RawNode> nodesOf(std::span<const ProcessEntry> entries)
@@ -1280,16 +1352,17 @@ std::string processForegroundName(ProcessID processID)
 // enumerates the table for it and fills the strings it leaves empty. Same
 // division as the Darwin arm, so both answer with one policy.
 //
-// No tracker path: startProcessTracker returns nullptr here, so this always
-// takes the full walk — the same path Darwin takes when its kqueue setup
-// fails, and correct rather than merely acceptable. A tracker would make it
-// cheaper, not different.
+// No tracker path: startProcessTracker returns nullptr here. The subtree is
+// read by descending from the leader where the kernel lists children, and by
+// the full table walk where it does not — the same path Darwin takes when its
+// kqueue setup fails, and correct rather than merely acceptable.
 int gatherSubtree(ProcessID leader, ProcessID foregroundGroup, const std::string& tty, std::span<PAL::Process::Record> outputBuffer, ProcessTracker* /*tracker*/)
 {
     if (outputBuffer.empty() || leader <= 0)
         return 0;
 
-    const std::vector<ProcessEntry> entries = enumerateProcesses();
+    std::optional<std::vector<ProcessEntry>> subtree = enumerateSubtree(static_cast<long>(leader));
+    const std::vector<ProcessEntry> entries = subtree ? std::move(*subtree) : enumerateProcesses();
     const std::vector<Ubiquitty::Session::Process::RawNode> nodes = nodesOf(entries);
 
     const int count = Ubiquitty::Session::Process::gatherSubtree(nodes.data(), static_cast<int>(nodes.size()),
