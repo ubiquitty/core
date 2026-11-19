@@ -876,6 +876,15 @@ public:
     ///   - command: Which clear the user asked for.
     /// - Returns: Whether the call was queued, not whether it has completed.
     [[nodiscard]] bool clearPane(uint32_t sessionID, Ubiquitty::Screen::ClearCommand command);
+
+    /// Queues a typed reset call for the exact bound pane, leaving its replica
+    /// untouched until the host publishes the resulting state.
+    ///
+    /// - Parameters:
+    ///   - sessionID: The session whose bound handle is addressed.
+    ///   - command: Which reset the user asked for.
+    /// - Returns: Whether the call was queued, not whether it has completed.
+    [[nodiscard]] bool resetPane(uint32_t sessionID, Ubiquitty::Screen::ResetCommand command);
     void buildExit(std::vector<uint8_t>& out) const;
 
     /// Builds a CLIPBOARD_DATA frame: the answer to a CLIPBOARD_REQUEST.

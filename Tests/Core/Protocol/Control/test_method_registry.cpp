@@ -127,6 +127,26 @@ TEST(paneClearRequiresDriveAndAnExactCommand)
         CHECK(Control::admitCall(method, json(invalid), caller).has_value());
 }
 
+TEST(paneResetRequiresDriveAndAnExactCommand)
+{
+    using namespace Ubiquitty::Protocol;
+    const auto* method = Control::findSyncMethod("pane.reset");
+    REQUIRE(method);
+    CHECK(method->target == Control::CallTarget::Pane);
+    for (const auto role : Sync::everyRole) {
+        Control::CallerAuthority caller { .role = role, .scopes = { Sync::Scope::Drive }, .origin = Ubiquitty::CapabilityOrigin::Remote };
+        for (const char* command : { "soft", "hard" }) {
+            const auto parameters = json((std::string(R"({"pane":1,"command":")") + command + R"("})").c_str());
+            CHECK(Control::admitCall(method, parameters, caller).has_value() == (role == Sync::Role::Viewer));
+        }
+        caller.scopes = { Sync::Scope::Observe, Sync::Scope::Control, Sync::Scope::RegionRead };
+        CHECK(Control::admitCall(method, json(R"({"pane":1,"command":"soft"})"), caller).has_value());
+    }
+    const Control::CallerAuthority caller { .role = Sync::Role::Owner, .scopes = { Sync::Scope::Drive }, .origin = Ubiquitty::CapabilityOrigin::Remote };
+    for (const char* invalid : { "{}", R"({"pane":1})", R"({"pane":0,"command":"soft"})", R"({"pane":1,"command":"full"})", R"({"pane":1,"command":"hard","all":true})" })
+        CHECK(Control::admitCall(method, json(invalid), caller).has_value());
+}
+
 TEST(paneReclaimIsLocalHumanObserveOnlyAndExposesNoFreshSocketSurface)
 {
     using namespace Ubiquitty::Protocol;

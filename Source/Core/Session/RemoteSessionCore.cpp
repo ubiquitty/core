@@ -779,6 +779,17 @@ bool RemoteSessionCore::sendClearBuffer(Ubiquitty::Screen::ClearCommand command)
     return true;
 }
 
+bool RemoteSessionCore::sendReset(Ubiquitty::Screen::ResetCommand command)
+{
+    if (!m_ackSeen || m_stopped)
+        return false;
+    auto& owner = screenOwner();
+    if (!owner.m_core->resetPane(m_sessionID, command))
+        return false;
+    owner.flushScreen();
+    return true;
+}
+
 void RemoteSessionCore::setSize(int columns, int rows)
 {
     if (columns < 1 || rows < 1)

@@ -1319,6 +1319,22 @@ bool SyncClientCore::clearPane(uint32_t sessionID, Ubiquitty::Screen::ClearComma
     return true;
 }
 
+bool SyncClientCore::resetPane(uint32_t sessionID, Ubiquitty::Screen::ResetCommand command)
+{
+    static constexpr std::array names { "soft", "hard" };
+    const auto index = std::to_underlying(command);
+    const auto handle = paneHandle(sessionID);
+    if (!isScreenAttached() || !handle || index >= names.size() || m_nextCallID >= 9'007'199'254'740'991ULL)
+        return false;
+    const auto request = R"({"jsonrpc":"2.0","id":)" + std::to_string(m_nextCallID)
+        + R"(,"method":"pane.reset","params":{"pane":)" + std::to_string(handle)
+        + R"(,"command":")" + names[index] + R"("}})";
+    if (!call(request))
+        return false;
+    ++m_nextCallID;
+    return true;
+}
+
 void SyncClientCore::setThemePalette(const TermPalette& palette, const TermPalette& baseline)
 {
     const Sync::ThemePalette theme { .live = palette, .baseline = baseline };

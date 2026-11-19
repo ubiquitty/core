@@ -3640,6 +3640,15 @@ returns the accepted pane and command. Every mirror receives the ordinary
 screen update and any destructive `HistoryReset`; no client clears its
 replica speculatively.
 
+`pane.reset` takes a bound `pane` handle and one `command`: `soft` or `hard`.
+It requires Drive and a driving attachment role, as `pane.clear` does. `soft`
+is DECSTR plus the mouse, paste and focus modes it leaves on; the screen
+stands. `hard` does the same from the primary screen, moves the rows above
+the current prompt into history, blanks the screen with the cursor home and
+sends the program Ctrl-L, typed as the caller. The host returns the accepted
+pane and command, and every mirror receives the reset modes and screen in its
+ordinary update; no client resets its replica speculatively.
+
 `client.clipboardServing` takes only `enabled`, a boolean, and changes the
 calling connection's own clipboard offer. Every live attachment with Observe
 may offer or revoke its own clipboard; no parameter can select another

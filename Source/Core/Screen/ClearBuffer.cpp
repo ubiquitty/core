@@ -157,6 +157,38 @@ bool runClearCommand(ClearCommand command, Terminal* t, SelectionState* selectio
     return returnsViewToTail;
 }
 
+bool runResetCommand(ResetCommand command, Terminal* t, SelectionState* selection, const SendToProcess& sendToProcess)
+{
+    if (!t || !t->screens.active)
+        return false;
+    if (command == ResetCommand::Soft) {
+        Ubiquitty::softReset(t);
+        return false;
+    }
+    // RIS takes a program off the alternate screen; the primary screen's rows
+    // are the ones the scrollback can keep.
+    if (t->screens.isUsingAlternateScreen)
+        applyAlternateScreenChange(*t, Ubiquitty::Modes::ScreenChoice::Primary);
+    // The soft reset first: it takes the scroll region and the margins away,
+    // so the whole screen is the screen again and the clear below scrolls it
+    // rather than handing off to a program that owned its layout.
+    Ubiquitty::softReset(t);
+    (void)clearScreen(t, ClearBoundary::CurrentPrompt, selection, nullptr, nullptr);
+    // The prompt the clear lifted, and anything below it, goes: the program
+    // draws itself again on the redraw request, on a screen a reset leaves
+    // blank with the cursor home.
+    Ubiquitty::Screen::State* s = t->screens.active;
+    s->cursorX = 0;
+    s->cursorY = 0;
+    s->wrapPending = false;
+    eraseInDisplay(*t, 2);
+    if (selection)
+        Selection::clear(selection);
+    if (sendToProcess)
+        sendToProcess(redrawRequest);
+    return true;
+}
+
 void clearScrollback(Terminal* t, SelectionState* selection, const ResetViewOffset& resetViewOffset)
 {
     if (!t)

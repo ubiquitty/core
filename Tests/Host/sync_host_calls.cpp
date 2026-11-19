@@ -213,6 +213,60 @@ void checkClearAuthorityAndExactCommand()
     }
 }
 
+// A reset is a pane's, as a clear is: a watch-only attachment is refused and
+// changes nothing, and a driver's runs on the host's terminal exactly as a
+// local reset runs, the hard one's redraw request typed into the program.
+void checkResetAuthorityAndExactCommand()
+{
+    using Ubiquitty::Screen::ResetCommand;
+    for (const auto& [name, command] : { std::pair { "soft", ResetCommand::Soft }, { "hard", ResetCommand::Hard } }) {
+        Daemon daemon;
+        auto stream = std::make_unique<Ubiquitty::TestDoubles::StreamDouble>();
+        auto* writer = stream.get();
+        auto& session = Screen::makeSession(daemon, 24, 80, std::move(stream));
+        Ubiquitty::Terminal expected;
+        Ubiquitty::resize(expected, 24, 80);
+        session.term->scrollbackLimit = expected.scrollbackLimit = 2000;
+        for (const auto* bytes : { "history\r\n", "history\r\n", "\033]133;A\aprompt$ \033[4h\033[?1000h" }) {
+            Ubiquitty::processBytes(session.term.get(), bytes);
+            Ubiquitty::processBytes(&expected, bytes);
+        }
+        const auto before = Ubiquitty::Accessibility::visibleScreenText(*session.term, 0);
+        Caller viewer(daemon, session.id, { Sync::Scope::Observe }, "reset-viewer");
+        Screen::markInteractiveUser(daemon, viewer.index);
+        viewer.greet();
+        const auto parameters = std::string(R"({"pane":1,"command":")") + name + R"("})";
+        CHECK(has(viewer.call("pane.reset", parameters), "-32002"));
+        CHECK(session.term->modes.insertMode);
+        CHECK(Ubiquitty::Accessibility::visibleScreenText(*session.term, 0) == before);
+        CHECK(writer->written.empty());
+
+        Caller driver(daemon, session.id, { Sync::Scope::Observe, Sync::Scope::Drive }, "reset-driver");
+        Screen::markInteractiveUser(daemon, driver.index);
+        driver.greet();
+        for (const char* invalid : { R"({"pane":1,"command":"full"})", R"({"pane":1})", R"({"pane":1,"command":"soft","all":true})" })
+            CHECK(has(driver.call("pane.reset", invalid), "-32602"));
+        CHECK(has(driver.call("pane.reset", R"({"pane":2,"command":"soft"})"), "-32003"));
+        CHECK(session.term->modes.insertMode);
+
+        std::string expectedInput;
+        (void)Ubiquitty::Screen::runResetCommand(command, &expected, nullptr, [&](std::span<const char> bytes) { expectedInput.append(bytes.begin(), bytes.end()); });
+        const auto answer = driver.call("pane.reset", parameters);
+        bool parsed = false;
+        const auto decoded = Ubiquitty::Codec::JSON::parse(answer, parsed);
+        const auto* result = parsed ? decoded.find("result") : nullptr;
+        CHECK(result);
+        if (result) {
+            CHECK(result->numberOr("pane") == 1 && result->stringOr("command") == name);
+        }
+        CHECK(!session.term->modes.insertMode);
+        CHECK(Ubiquitty::Accessibility::visibleScreenText(*session.term, 0) == Ubiquitty::Accessibility::visibleScreenText(expected, 0));
+        CHECK(Ubiquitty::Screen::scrollbackCount(session.term.get()) == Ubiquitty::Screen::scrollbackCount(&expected));
+        CHECK(writer->written == expectedInput);
+        CHECK(driver.isAttached());
+    }
+}
+
 void checkClearInputProvenance()
 {
     for (const std::string command : { "buffer", "screen", "previous-mark", "scrollback" }) {
@@ -655,6 +709,7 @@ int main()
     ::signal(SIGPIPE, SIG_IGN);
     checkClearAuthorityAndExactCommand();
     checkClearInputProvenance();
+    checkResetAuthorityAndExactCommand();
     checkTypedTerminationAuthorityAndConsent();
     checkCaptureTextAndCompleteness();
     checkPassiveBackgroundRefresh();

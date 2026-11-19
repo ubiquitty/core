@@ -762,6 +762,15 @@ public:
     /// - Parameter command: Which clear the user asked for.
     /// - Returns: True when the frame went out; false before HELLO_ACK.
     [[nodiscard]] bool sendClearBuffer(Ubiquitty::Screen::ClearCommand command);
+    /// Asks the host to run a reset command on its Terminal.
+    ///
+    /// The host owns the session's terminal, so the reset runs there exactly
+    /// as it runs on a local session, redraw request included, and every
+    /// attached client sees the result in its next frame.
+    ///
+    /// - Parameter command: Which reset the user asked for.
+    /// - Returns: True when the call went out; false before HELLO_ACK.
+    [[nodiscard]] bool sendReset(Ubiquitty::Screen::ResetCommand command);
     /// Reports the grid this client's drawable holds for the session's pane.
     ///
     /// The fact is the client's and stays its own: the host decides what the

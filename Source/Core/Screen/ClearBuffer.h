@@ -153,5 +153,36 @@ enum class ClearCommand : uint8_t {
 ///   there is no terminal to clear.
 bool runClearCommand(ClearCommand command, Terminal*, SelectionState* selection, const SendToProcess& sendToProcess);
 
+/// The resets a menu offers, so a frontend names the one the user asked for.
+///
+/// Attached clients name these in a typed `pane.reset` Call; the host runs the
+/// reset on the terminal it owns, and every attached client receives the
+/// result as it receives any other screen.
+enum class ResetCommand : uint8_t {
+    /// DECSTR, plus the mouse, paste and focus modes it leaves on: modes, pen,
+    /// palette, character sets, margins and the cursor's style return to their
+    /// defaults, and the screen stands. Frees a terminal a program left in a
+    /// stuck mode without moving a row.
+    Soft = 0,
+    /// Everything ``Soft`` resets, on the primary screen, which is then blank
+    /// with the cursor home. Nothing is destroyed: the rows above the current
+    /// prompt move into the scrollback as Clear Screen moves them, and the
+    /// program is sent Ctrl-L to draw itself again.
+    Hard = 1,
+};
+
+/// Runs one reset command.
+///
+/// - Parameters:
+///   - command: Which reset the user asked for.
+///   - selection: Dropped when the rows it names move; null for a frontend
+///     with no selection model.
+///   - sendToProcess: The route to the foreground process, for the redraw
+///     request a hard reset owes it.
+/// - Returns: Whether the viewport must return to the live tail: true for a
+///   hard reset, which moves the screen; false for a soft one and for no
+///   terminal.
+bool runResetCommand(ResetCommand command, Terminal*, SelectionState* selection, const SendToProcess& sendToProcess);
+
 } // namespace Screen
 } // namespace Ubiquitty

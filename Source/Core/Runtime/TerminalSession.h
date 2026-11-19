@@ -7799,18 +7799,44 @@ public:
     /// focus modes DECSTR leaves, republished so a frontend's cached mode
     /// mirrors retire now rather than one drain later.
     ///
-    /// A session attached to a host is left as it is: the program's terminal
-    /// is the host's, which encodes the pane's input under its own modes, and
-    /// only the authority mutates a mirrored grid.
-    void softResetTerminal() UBIQUITTY_EXCLUDES(modelLockRole)
+    /// A session attached to a host asks the host, as ``runResetCommand(_:_:)``
+    /// does.
+    void softResetTerminal() UBIQUITTY_EXCLUDES(modelLockRole) { (void)runResetCommand(Ubiquitty::Screen::ResetCommand::Soft, nullptr); }
+
+    /// Runs a reset command against this session's terminal.
+    ///
+    /// The reset itself is Core's — see ``Screen::runResetCommand`` — and this
+    /// adds what a session holds: the model lock, the route the redraw byte
+    /// takes, and the republish a frontend's cached mode mirrors retire on.
+    ///
+    /// A session attached to a host asks the host: the program's terminal is
+    /// the host's, which encodes the pane's input under its own modes, and
+    /// only the authority mutates a mirrored grid. The host resets its own and
+    /// every attached client receives the result in its next frame.
+    ///
+    /// - Parameters:
+    ///   - command: Which reset the user asked for.
+    ///   - selection: The view's selection, dropped when the rows it names
+    ///     move. Null for a frontend with no selection model.
+    /// - Returns: Whether the viewport must return to the live tail.
+    bool runResetCommand(Ubiquitty::Screen::ResetCommand command, Ubiquitty::SelectionState* selection) UBIQUITTY_EXCLUDES(modelLockRole)
     {
         const ModelLockHold hold(*m_activeLock);
-        if (m_remote)
-            return;
-        if (Ubiquitty::Terminal* term = modelTerm()) {
-            Ubiquitty::softReset(term);
-            republishModel();
+        Ubiquitty::Terminal* term = modelTerm();
+        if (!term)
+            return false;
+        if (m_remote) {
+            if (!m_remote->core || !m_remote->core->sendReset(command))
+                return false;
+            const bool doesMoveScreen = command == Ubiquitty::Screen::ResetCommand::Hard;
+            if (doesMoveScreen && selection)
+                Ubiquitty::Selection::clear(selection);
+            return doesMoveScreen;
         }
+        const bool returnsViewToTail = Ubiquitty::Screen::runResetCommand(
+            command, term, selection, [this](ByteSpan bytes) { sendInput(bytes); });
+        republishModel();
+        return returnsViewToTail;
     }
 
     /// Selects the last command's output, by the shell's OSC 133 marks.

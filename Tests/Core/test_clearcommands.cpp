@@ -159,3 +159,82 @@ TEST(testNoTerminalIsANoOp)
 }
 
 UBIQUITTY_TEST_MAIN()
+
+namespace {
+
+ClearObservation runReset(Ubiquitty::Terminal& t, Ubiquitty::Screen::ResetCommand command)
+{
+    ClearObservation observed;
+    observed.returnsViewToTail = Ubiquitty::Screen::runResetCommand(
+        command, &t, nullptr, [&observed](std::span<const char> bytes) { observed.sent.append(bytes.data(), bytes.size()); });
+    return observed;
+}
+
+}
+
+// Soft Reset frees the stuck modes and moves no row: the screen and the
+// history stand, nothing is sent and the view stays where it is.
+TEST(testSoftResetFreesModesAndLeavesTheScreen)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::hardReset(t);
+    Ubiquitty::resize(t, 12, 40);
+    feedHistory(t);
+    feed(t, "\033[4h\033[?1000h\033[?2004hprompt$ ");
+    const int history = t.scrollbackCount;
+    const ClearObservation observed = runReset(t, Ubiquitty::Screen::ResetCommand::Soft);
+    CHECK(!t.modes.insertMode);
+    CHECK(!t.modes.bracketedPaste);
+    CHECK(t.scrollbackCount == history);
+    const Ubiquitty::Cell* promptCell = Ubiquitty::Screen::visibleCell(&t, 0, t.screens.active->cursorY, 0);
+    CHECK(promptCell && promptCell->codePoint == 'p');
+    CHECK(observed.sent.empty());
+    CHECK(!observed.returnsViewToTail);
+}
+
+// Hard Reset resets from a blank primary screen with the cursor home, keeps
+// everything above the prompt as history, and asks the program to draw
+// itself again.
+TEST(testHardResetKeepsHistoryAndBlanksTheScreen)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::hardReset(t);
+    Ubiquitty::resize(t, 12, 40);
+    feedHistory(t);
+    feed(t, "\033[4h\033[3;8r\033[31mprompt$ ");
+    const int history = t.scrollbackCount;
+    const int promptRow = t.screens.active->cursorY;
+    const ClearObservation observed = runReset(t, Ubiquitty::Screen::ResetCommand::Hard);
+    CHECK(t.scrollbackCount == history + promptRow);
+    CHECK(!anyVisibleRowHasInk(t));
+    CHECK(t.screens.active->cursorX == 0 && t.screens.active->cursorY == 0);
+    CHECK(!t.modes.insertMode);
+    CHECK(t.screens.active->scrollTop == 0 && t.screens.active->scrollBottom == t.rows - 1);
+    CHECK(observed.sent == "\x0c");
+    CHECK(observed.returnsViewToTail);
+}
+
+// A program on the alternate screen is taken off it, as RIS takes it: the
+// primary screen's rows are the history kept, and the alternate screen's are
+// not added to it.
+TEST(testHardResetLeavesTheAlternateScreen)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::hardReset(t);
+    Ubiquitty::resize(t, 12, 40);
+    feedHistory(t);
+    const int history = t.scrollbackCount;
+    feed(t, "\033[?1049h\033[Hfull-screen program");
+    CHECK(t.screens.isUsingAlternateScreen);
+    const ClearObservation observed = runReset(t, Ubiquitty::Screen::ResetCommand::Hard);
+    CHECK(!t.screens.isUsingAlternateScreen);
+    CHECK(t.scrollbackCount >= history);
+    CHECK(!anyVisibleRowHasInk(t));
+    CHECK(observed.sent == "\x0c");
+}
+
+TEST(testResetWithNoTerminalIsANoOp)
+{
+    CHECK(!Ubiquitty::Screen::runResetCommand(Ubiquitty::Screen::ResetCommand::Hard, nullptr, nullptr, nullptr));
+    CHECK(!Ubiquitty::Screen::runResetCommand(Ubiquitty::Screen::ResetCommand::Soft, nullptr, nullptr, nullptr));
+}

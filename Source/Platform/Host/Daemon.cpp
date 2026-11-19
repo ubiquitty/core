@@ -9168,22 +9168,33 @@ Codec::JSON::Value Daemon::serveScreenCall(Client& client, const Protocol::Contr
     }
     if (method->name == "file.read")
         return serveFileRead(client, *session, handle, request);
+    // The redraw byte a clear or a reset owes the program, typed as the caller.
+    const auto sendFromCaller = [this, session, clientID = client.clientID](std::span<const char> bytes) {
+        if (!session->stream || bytes.empty())
+            return;
+        const auto sender = std::ranges::find(m_clients, clientID, &Client::clientID);
+        if (sender == m_clients.end())
+            return;
+        stampInputOrigin(*session, *sender);
+        session->stream->writeAll(bytes);
+    };
     if (method->name == "pane.clear") {
         const auto name = request.params.stringOr("command");
         const auto command = name == "buffer" ? Screen::ClearCommand::Buffer
             : name == "scrollback"            ? Screen::ClearCommand::Scrollback
             : name == "screen"                ? Screen::ClearCommand::Screen
                                               : Screen::ClearCommand::ToPreviousMark;
-        Screen::runClearCommand(command, session->term.get(), nullptr,
-            [this, session, clientID = client.clientID](std::span<const char> bytes) {
-                if (!session->stream || bytes.empty())
-                    return;
-                const auto sender = std::ranges::find(m_clients, clientID, &Client::clientID);
-                if (sender == m_clients.end())
-                    return;
-                stampInputOrigin(*session, *sender);
-                session->stream->writeAll(bytes);
-            });
+        Screen::runClearCommand(command, session->term.get(), nullptr, sendFromCaller);
+        session->isFrameDue = true;
+        auto result = Codec::JSON::Value::object();
+        result.set("pane", Codec::JSON::Value::number(handle));
+        result.set("command", Codec::JSON::Value::string(name));
+        return Protocol::Control::rpcResult(request.idOrNull(), std::move(result));
+    }
+    if (method->name == "pane.reset") {
+        const auto name = request.params.stringOr("command");
+        const auto command = name == "hard" ? Screen::ResetCommand::Hard : Screen::ResetCommand::Soft;
+        (void)Screen::runResetCommand(command, session->term.get(), nullptr, sendFromCaller);
         session->isFrameDue = true;
         auto result = Codec::JSON::Value::object();
         result.set("pane", Codec::JSON::Value::number(handle));

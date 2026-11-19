@@ -5084,6 +5084,40 @@ TEST(clearBufferIsSentToAHostThatAdvertisedIt)
     term.reset();
 }
 
+// A reset on an attached pane is the host's to run, as a clear is: the client
+// asks, and its replica waits for the host's frame.
+TEST(resetIsSentToTheHost)
+{
+    auto term = makeTerm();
+    FakeDispatcher dispatcher;
+    FakeFactory factory;
+    RecordingObserver observer;
+    UbiquittyTest::HostScreen host(1, 17);
+    RemoteSessionCore core(term.get(), &dispatcher, &factory, &observer);
+    core.start(0, 80, 24);
+    pumpConnect(factory.last(), dispatcher);
+    pumpData(factory.last(), dispatcher, welcomeOnly(host, factory, 1));
+    CHECK(!core.sendReset(Ubiquitty::Screen::ResetCommand::Soft));
+    host.receive(factory.sentLog());
+    pumpData(factory.last(), dispatcher, host.publish());
+    CHECK(core.sendReset(Screen::ResetCommand::Soft));
+    CHECK(core.sendReset(Screen::ResetCommand::Hard));
+    CHECK(!core.sendReset(static_cast<Screen::ResetCommand>(2)));
+    host.receive(factory.sentLog());
+    const auto calls = host.plane().connection().takeCalls();
+    REQUIRE(calls.size() == 2);
+    const std::array names { "soft", "hard" };
+    for (std::size_t index = 0; index < calls.size(); ++index) {
+        const auto request = Protocol::Control::decodeRequest(calls[index].text, {});
+        CHECK(request.method == "pane.reset");
+        CHECK(request.params.numberOr("pane") == 1);
+        CHECK(request.params.stringOr("command") == names[index]);
+    }
+    CHECK(factory.hasCanonicalTranscript());
+
+    term.reset();
+}
+
 // Docs/session-model.md rule 5: the mirror of a hosted workspace is the host's
 // to write. A frontend reads it and cannot adopt an inner mux's ids into it,
 // because the only handle it gets is read-only.
