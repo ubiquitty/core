@@ -75,10 +75,11 @@ enum class DecorationKind {
 inline constexpr float dottedRuleWeightScale = 1.15f;
 
 /// The shortest stretch of a solid or dashed rule kept between two cuts, or
-/// between a cut and the line's end, in rule weights. A stretch a weight long
-/// reads as a stray dot between two close descenders rather than as the line,
-/// as under the `yg` of "pygmy"; two weights is the shortest that reads as line.
-inline constexpr float shortestRulePieceInWeights = 2.0f;
+/// between a cut and the line's end, in rule weights. A stretch a weight long,
+/// two pixels at 2x between the `y` and `p` of "typography", is the line
+/// carrying on between two descenders, as TextEdit keeps it; only a sliver
+/// thinner than the rule is tall reads as a stray speck and goes.
+inline constexpr float shortestRulePieceInWeights = 1.0f;
 inline constexpr float dashedRuleWeightScale = 1.1f;
 inline constexpr float dashedRuleOnShare = 0.6f;
 
