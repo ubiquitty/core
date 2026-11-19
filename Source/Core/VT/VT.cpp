@@ -3,6 +3,7 @@
 
 #include "Core/CellGrid.h"
 #include "Core/CellPen.h"
+#include "Core/CellStamp.h"
 #include "Core/Codec/Base64.h"
 #include "Core/Cursor/RenderState.h"
 #include "Core/Diagnostics/DiagLog.h"
@@ -6291,7 +6292,8 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
     // wide halves substitute loop-invariant sets, and a narrow glyph keeps the
     // template's. So no cell needs a pen of its own.
 
-    Ubiquitty::CellScratchBuffer<Ubiquitty::maxColumns> spanStorage;
+    // One cell past the widest row: see the placement's unconditional store.
+    Ubiquitty::CellScratchBuffer<Ubiquitty::maxColumns + 1> spanStorage;
     Ubiquitty::Cell* span = spanStorage.data();
     int nCells = 0; // span cells filled (1 or 2 per glyph)
     int currentColumn = column;
@@ -6536,33 +6538,46 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
     }
 #endif
 
+    // The four cells a staged glyph is made of: each differs from the run's
+    // template in its attribute set alone, so each is a stamp of its own. The
+    // lead's three are indexed by what the glyph is: narrow, wide, emoji.
+    const auto stampWithAttributes = [&tmpl](VT::AttributeSet attributes) {
+        Ubiquitty::Cell cell = tmpl;
+        Ubiquitty::cellSetPenAttributes(cell, attributes);
+        return Ubiquitty::CellStamp(cell);
+    };
+    const std::array<Ubiquitty::CellStamp, 3> stagedStamps {
+        Ubiquitty::CellStamp(tmpl), stampWithAttributes(leadAttributes), stampWithAttributes(leadAttributes | VT::Attribute::Emoji)
+    };
+    const Ubiquitty::CellStamp continuationStamp = stampWithAttributes(continuationAttributes);
     for (int ci = 0; wideCodePointCount == 0 && narrowCodePointCount == 0 && ci < nDec; ++ci) {
         const uint32_t codePoint = codePoints[ci];
         if (isC1CodePoint(codePoint))
             break; // ignored or performed, which the per-character path owns
 
-        int width;
-        // Beside the width because it comes from the same probe: the flat table
-        // answers width and presentation in one byte, and both are per glyph.
+        // One probe of the flat table answers width, presentation and break
+        // class, and what the answer selects is computed rather than branched
+        // on: text that mixes scripts glyph by glyph gives a chain of range
+        // tests nothing to predict. Three ranges are answered without the
+        // table. Printable ASCII and the box and block elements are one cell
+        // whatever the table holds for them, and a Hangul syllable carries a
+        // break class and is placed as a plain wide glyph all the same.
+        const std::uint8_t wb = Ubiquitty::Unicode::Width::classify(codePoint);
+        const bool isOneCellByRange = (ci < verifiedNarrowPrefixCount) | (codePoint < 0x80) | isNarrowGraphicFast(codePoint);
+        const bool isPlainWideByRange = isWideIdeographFast(codePoint);
+        assert(!isPlainWideByRange || (Ubiquitty::Unicode::Width::forCodePoint(codePoint, t.ambiguousWidth) == 2 && !Ubiquitty::Unicode::Width::isEmojiPresentation(codePoint)));
+        assert(!isNarrowGraphicFast(codePoint) || (Ubiquitty::Unicode::Width::forCodePoint(codePoint, t.ambiguousWidth) == 1 && !Ubiquitty::Unicode::Width::isEmojiPresentation(codePoint) && !Ubiquitty::Unicode::isGraphemeRelevant(codePoint)));
+        constexpr std::uint8_t clusterMask = Ubiquitty::Unicode::detail::PropEmojiPresentationField::mask
+            | Ubiquitty::Unicode::detail::PropGCBClassField::mask | Ubiquitty::Unicode::detail::PropExtPictField::mask;
+        // Beside the width because it comes from the same probe, and both are
+        // per glyph.
         bool isEmojiPresentation = false;
-        if (ci < verifiedNarrowPrefixCount)
-            width = 1;
-        else if (codePoint < 0x80)
-            width = 1; // printable ASCII: the decode admits nothing else below it
-        else if (isWideIdeographFast(codePoint)) {
-            width = 2; // CJK/Kana/Hangul/compat — skip the table lookups
-            assert(Ubiquitty::Unicode::Width::forCodePoint(codePoint, t.ambiguousWidth) == 2 && !Ubiquitty::Unicode::Width::isEmojiPresentation(codePoint));
-        } else if (isNarrowGraphicFast(codePoint)) {
-            width = 1; // box / block — skip the three table lookups
-            assert(Ubiquitty::Unicode::Width::forCodePoint(codePoint, t.ambiguousWidth) == 1 && !Ubiquitty::Unicode::Width::isEmojiPresentation(codePoint) && !Ubiquitty::Unicode::isGraphemeRelevant(codePoint));
-        } else {
-            // One flat-table probe for width + emoji + grapheme-relevance together.
-            const std::uint8_t wb = Ubiquitty::Unicode::Width::classify(codePoint);
+        if (((wb & clusterMask) != 0) & !isOneCellByRange & !isPlainWideByRange) [[unlikely]] {
             isEmojiPresentation = (wb & Ubiquitty::Unicode::detail::PropEmojiPresentationField::mask) != 0;
             // Every question below comes from the byte already in hand: a break
             // class of its own is what lets a code point extend the cluster
             // before it, and pictograph-ness is what lets one stand alone.
-            if (wb & Ubiquitty::Unicode::detail::PropEmojiPresentationField::mask) {
+            if (isEmojiPresentation) {
                 // A pictograph standing alone is a plain wide glyph. The run is
                 // already decoded, so the successor it is judged against costs
                 // nothing to reach; one at the end of the decode is left to the
@@ -6574,7 +6589,7 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
             } else if (wb & Ubiquitty::Unicode::detail::PropGCBClassField::mask) {
                 break; // combining mark / SpacingMark / ZWJ / RI / jamo:
                        // could extend a cluster, so leave it to emitCharacter
-            } else if (wb & Ubiquitty::Unicode::detail::PropExtPictField::mask) {
+            } else {
                 // A text-default pictograph — a card suit, an arrow, a trademark
                 // sign — asks the same question as an emoji-default one.
                 // Presentation decides the width it draws at, and the branch
@@ -6585,31 +6600,26 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
                 if (!pictographStandsAloneBefore(codePoint, codePoints[ci + 1]))
                     break;
             }
-            width = Ubiquitty::Unicode::Width::cellsForWidthClass(Ubiquitty::Unicode::detail::PropWidthField::get(wb), t.ambiguousWidth);
-            if (width != 1 && width != 2)
-                break; // zero-width control etc.: not a plain glyph
         }
+        const int tableWidth = Ubiquitty::Unicode::Width::cellsForWidthClass(Ubiquitty::Unicode::detail::PropWidthField::get(wb), t.ambiguousWidth);
+        const int width = isOneCellByRange ? 1 : isPlainWideByRange ? 2
+                                                                    : tableWidth;
+        if (width != 1 && width != 2) [[unlikely]]
+            break; // zero-width control etc.: not a plain glyph
         const int glyphEndColumn = currentColumn + width - 1;
         if (glyphEndColumn >= column + writableColumns)
             break; // glyph would need a wrap
 
         // Cells share the run's pen, empty cluster, and link id; only the code
         // point and wide-half attributes vary.
-        if (width == 2) {
-            Ubiquitty::Cell& leadCell = spanStorage.constructAt(static_cast<std::size_t>(nCells), tmpl);
-            leadCell.codePoint = codePoint; // resolveCodePoint is identity for codePoint >= 0x80
-            Ubiquitty::cellSetPenAttributes(leadCell,
-                isEmojiPresentation ? (leadAttributes | VT::Attribute::Emoji) : leadAttributes);
-            Ubiquitty::Cell& continuationCell = spanStorage.constructAt(static_cast<std::size_t>(nCells + 1), tmpl);
-            continuationCell.codePoint = Ubiquitty::wideContinuationSentinelCodePoint;
-            Ubiquitty::cellSetPenAttributes(continuationCell, continuationAttributes);
-            nCells += 2;
-        } else {
-            // A narrow glyph carries the run's pen unchanged.
-            assert(nCells >= 0 && nCells < Ubiquitty::maxColumns);
-            std::construct_at(span + nCells, codePoint, tmpl.pen, tmpl.combining, tmpl.linkIDLo, tmpl.linkIDHi, tmpl.clusterPacked);
-            nCells += 1;
-        }
+        // Both cells are stored whatever the width: a narrow glyph's second is
+        // the next glyph's first, or past the span's end, where the staging
+        // buffer keeps a cell for it. resolveCodePoint is identity for
+        // codePoint >= 0x80, and the decode admits no ASCII it would change.
+        assert(nCells >= 0 && nCells + 1 <= Ubiquitty::maxColumns);
+        stagedStamps[static_cast<std::size_t>(isEmojiPresentation ? 2 : width - 1)].store(span + nCells, codePoint);
+        continuationStamp.store(span + nCells + 1, Ubiquitty::wideContinuationSentinelCodePoint);
+        nCells += width;
         lastLeadColumn = currentColumn;
         lastCodePoint = codePoint;
         lastByteLength = byteLength(ci);

@@ -15,6 +15,7 @@
 #include "Core/CellContent.h"
 #include "Core/CellPen.h"
 #include "Core/CellScan.h"
+#include "Core/CellStamp.h"
 #include "Core/Unicode/Joining.h"
 #include <algorithm>
 #include <array>
@@ -27,6 +28,9 @@
 
 #if defined(__aarch64__)
 #include <arm_neon.h>
+
+#elif defined(__x86_64__) || defined(_M_X64)
+#include <emmintrin.h>
 
 #endif
 
@@ -67,6 +71,18 @@ static inline void fillBlank(Cell* dst, const Cell& blank, int count)
     }
     if (index < count) {
         asm volatile("stp %q0, %q1, [%2]" : : "w"(patternLow), "w"(patternHigh), "r"(destinationBytes) : "memory");
+    }
+#elif defined(__x86_64__) || defined(_M_X64)
+    // Two 16-byte stores a cell, from registers. The portable arm below
+    // reloads the pattern from memory for every cell it stores.
+    static_assert(sizeof(Cell) == 32, "the fill kernel walks 32-byte cells");
+    const __m128i patternLow = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&blank));
+    const __m128i patternHigh = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&blank) + 1);
+    auto* destinationHalves = reinterpret_cast<__m128i*>(dst);
+    for (int index = 0; index < count; ++index) {
+        _mm_storeu_si128(destinationHalves, patternLow);
+        _mm_storeu_si128(destinationHalves + 1, patternHigh);
+        destinationHalves += 2;
     }
 #else
     constexpr int fillBlankDoublingThreshold = 128;
@@ -1145,25 +1161,10 @@ template<bool Translated>
 static inline void storeRunCells(std::span<Cell> destination, const Cell& cellTemplate, const char* source, const std::uint16_t* translation)
 {
     const int count = static_cast<int>(destination.size());
-#if defined(__aarch64__)
-    static_assert(sizeof(Cell) == 32 && offsetof(Cell, codePoint) == 0, "the run kernel builds 32-byte cells led by the code point");
-    const uint8_t* templateBytes = reinterpret_cast<const uint8_t*>(&cellTemplate);
-    const uint32x4_t templateLow = vreinterpretq_u32_u8(vld1q_u8(templateBytes));
-    const uint8x16_t templateHigh = vld1q_u8(templateBytes + 16);
-    uint8_t* destinationBytes = reinterpret_cast<uint8_t*>(destination.data());
-    for (int index = 0; index < count; ++index) {
-        const uint32x4_t low = vsetq_lane_u32(runCodePoint<Translated>(source, index, translation), templateLow, 0);
-        vst1q_u8(destinationBytes, vreinterpretq_u8_u32(low));
-        vst1q_u8(destinationBytes + 16, templateHigh);
-        destinationBytes += sizeof(Cell);
-    }
-#else
-    Cell cell = cellTemplate;
-    for (int index = 0; index < count; ++index) {
-        cell.codePoint = runCodePoint<Translated>(source, index, translation);
-        destination[index] = cell;
-    }
-#endif
+    const CellStamp stamp(cellTemplate);
+    Cell* cells = destination.data();
+    for (int index = 0; index < count; ++index)
+        stamp.store(cells + index, runCodePoint<Translated>(source, index, translation));
 }
 
 // A deferred row is logically blank: store the desired cells and materialize
@@ -1344,16 +1345,14 @@ void CellGrid::writeWideCodePointRun(Row rowValue, Column firstColumnValue, cons
         if (!hasDifference)
             return;
     }
+    const CellStamp leadStamp(lead);
+    const CellStamp continuationStamp(continuation);
     for (std::size_t index = 0; index < codePoints.size(); ++index) {
         const int column = firstColumn + static_cast<int>(index) * 2;
         assert(column >= 0 && column + 1 < m_columns);
         assert(codePoints[index] && !Unicode::mayNeedShaping(codePoints[index]));
-        const uint32_t codePoint = codePoints[index];
-        // Keep the template invariant: patching its code point before the
-        // whole-cell copy makes a wide load depend on a partial stack store.
-        destination[column] = lead;
-        destination[column].codePoint = codePoint;
-        destination[column + 1] = continuation;
+        leadStamp.store(destination + column, codePoints[index]);
+        continuationStamp.store(destination + column + 1, continuation.codePoint);
     }
     m_anyMutationsSinceLastPaint = true;
     bumpRow(row);
@@ -1407,15 +1406,12 @@ void CellGrid::writeNarrowCodePointRun(Row rowValue, Column firstColumnValue, co
         if (!hasDifference)
             return;
     }
+    const CellStamp stamp(cell);
     for (std::size_t index = 0; index < codePoints.size(); ++index) {
         const int column = firstColumn + static_cast<int>(index);
         assert(column >= 0 && column < m_columns);
         assert(codePoints[index] && !Unicode::mayNeedShaping(codePoints[index]));
-        const uint32_t codePoint = codePoints[index];
-        // Copy the invariant template before patching the destination, without
-        // reloading a whole temporary cell after a partial code-point store.
-        destination[column] = cell;
-        destination[column].codePoint = codePoint;
+        stamp.store(destination + column, codePoints[index]);
     }
     m_anyMutationsSinceLastPaint = true;
     bumpRow(row);

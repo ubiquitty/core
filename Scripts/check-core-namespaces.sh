@@ -75,6 +75,7 @@ Source/Core/CellContent.h             a cell's payload, inline or interned
 Source/Core/RunTextStore.h            the interned text a run's anchor cell names — cell payload, read by Screen, Selection and Sync
 Source/Core/CellPen.h                 the pen a cell carries
 Source/Core/CellScan.h                scanning a row of them
+Source/Core/CellStamp.h               storing a run of them from one template
 Source/Core/CellGrid.h                the grid of them, and the paint bookkeeping
 Source/Core/Pen.h                     SGR state, 20 bytes, in every cell
 Source/Core/RenderCell.h              a cell resolved for drawing
