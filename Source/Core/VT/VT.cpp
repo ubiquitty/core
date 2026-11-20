@@ -9559,6 +9559,15 @@ template<bool StopAtSyncClear> static int processBytesWithGraphicCapture(Ubiquit
         if (VT::shouldStopAfterDispatch(t))
             return processBytesImpl<StopAtSyncClear>(t, input, stoppedAtSyncClear);
     }
+    // A chunk that begins inside a control string is that string's payload as
+    // far as its terminator: megabytes of an image or of a clipboard, which
+    // hold no graphic for a cancel to reach. The search below would read all
+    // of such a chunk, backwards, to find no boundary in it, and that costs
+    // more than the payload does to take. Text behind the terminator in the
+    // same chunk is parsed the general way, which is the way of any chunk
+    // the search finds nothing in.
+    if (VT::isStringState(t.parser.parseState))
+        return processBytesImpl<StopAtSyncClear>(t, input, stoppedAtSyncClear);
     const int boundary = VT::graphicCancellationBoundary(input);
     if (boundary == 0)
         return processBytesImpl<StopAtSyncClear>(t, input, stoppedAtSyncClear);
