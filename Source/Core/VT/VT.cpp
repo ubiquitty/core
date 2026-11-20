@@ -6394,6 +6394,111 @@ inline constexpr std::array<std::uint32_t, 5> lowestScalar { 0x400000, 0, 0x80, 
     return n;
 }
 
+/// A cluster ``didStageLineSpanCluster`` staged: its cells, its bytes, and its
+/// code points, which the parser is left holding if the stretch ends on it.
+struct StagedCluster {
+    int cells = 0;
+    int bytes = 0;
+    int count = 0;
+    std::array<std::uint32_t, Ubiquitty::clusterPoolMaximumCodePoints> codePoints;
+};
+[[gnu::noinline]] static bool didStageLineSpanCluster(Ubiquitty::Terminal& t, const char* buffer, int length, int from, std::uint32_t base, int baseLength, std::uint8_t properties, const Ubiquitty::Cell& cellTemplate, Ubiquitty::Cell* destination, int cellsLeft, StagedCluster& staged)
+{
+    const auto isPrintable = [](char byte) { return static_cast<unsigned char>(byte) - 0x20u <= 0x7Eu - 0x20u; };
+    // Built in the caller's record: a refusal leaves it unspecified.
+    auto& cluster = staged.codePoints;
+    std::size_t count = 1;
+    cluster[0] = base;
+    int bytes = baseLength;
+    const bool isPictographic = Ubiquitty::Unicode::isExtendedPictographic(base);
+    bool isEmoji = (properties & Ubiquitty::Unicode::detail::PropEmojiPresentationField::mask) != 0;
+    Ubiquitty::Unicode::GraphemeState state {};
+    Ubiquitty::Unicode::graphemeStateReset(&state, base);
+    for (;;) {
+        const int next = from + bytes;
+        if (next >= length)
+            return false; // what follows is not here to ask
+        // A cluster is final once a graphic that does not join it follows:
+        // until then it can still be cancelled or grow, which is the
+        // cluster writers' to follow. Nothing in ASCII joins one.
+        if (isPrintable(buffer[next]))
+            break;
+        if (static_cast<unsigned char>(buffer[next]) < 0xC2 || next + 4 > length)
+            return false;
+        std::uint32_t codePoint;
+        const int sequenceLength = MixedDecode::decodeScalar(buffer + next, codePoint);
+        if (sequenceLength < 2 || codePoint < 0xA0)
+            return false;
+        Ubiquitty::Unicode::GraphemeState nextState = state;
+        if (!Ubiquitty::Unicode::isGraphemeRelevant(codePoint) || !Ubiquitty::Unicode::graphemeExtendsHot(&nextState, cluster[count - 1], codePoint)) {
+            // Asked last: most code points of a break class stand alone,
+            // and those are refused before the width is looked up.
+            if (count < 2 || Ubiquitty::Unicode::Width::forCodePoint(codePoint, t.ambiguousWidth) <= 0)
+                return false;
+            break;
+        }
+        if (count == cluster.size())
+            return false;
+        state = nextState;
+        if (isPictographic) {
+            if (codePoint == Ubiquitty::Unicode::Width::variationSelector16)
+                isEmoji = true;
+            else if (codePoint == Ubiquitty::Unicode::Width::variationSelector15)
+                isEmoji = false;
+        }
+        cluster[count++] = codePoint;
+        bytes += sequenceLength;
+    }
+    if (count < 2)
+        return false;
+    const bool hasWideSelector = isPictographic && cluster[1] == Ubiquitty::Unicode::Width::variationSelector16;
+    const int width = hasWideSelector ? 2
+                                      : Ubiquitty::Unicode::Width::cellsForWidthClass(Ubiquitty::Unicode::detail::PropWidthField::get(properties), t.ambiguousWidth);
+    // The bases the cluster writers place differently are declined.
+    if (Ubiquitty::Unicode::isGraphemePrepend(base) || (width != 1 && width != 2)
+        || (width == 1 && (isPictographic || Ubiquitty::Unicode::isKeycapBase(base))) || width > cellsLeft)
+        return false;
+    const VT::AttributeSet attributes = cellPen(cellTemplate).attributes - VT::Attribute::Emoji;
+    Ubiquitty::Cell lead = cellTemplate;
+    lead.codePoint = base;
+    Ubiquitty::cellSetPenAttributes(lead, attributes | (width == 2 ? VT::AttributeSet { VT::Attribute::Wide } : VT::AttributeSet {}) | (isEmoji ? VT::AttributeSet { VT::Attribute::Emoji } : VT::AttributeSet {}));
+    lead.combining[0] = cluster[1];
+    lead.setCombiningLength(1);
+    if (count > 2)
+        lead.setClusterID(t.clusterPool.intern(std::span<const std::uint32_t> { cluster.data(), count }));
+    destination[0] = lead;
+    if (width == 2) {
+        Ubiquitty::Cell continuation = cellTemplate;
+        continuation.codePoint = Ubiquitty::wideContinuationSentinelCodePoint;
+        Ubiquitty::cellSetPenAttributes(continuation, attributes | VT::Attribute::WideContinuation);
+        destination[1] = continuation;
+    }
+    staged.cells = width;
+    staged.bytes = bytes;
+    staged.count = static_cast<int>(count);
+    return true;
+}
+
+// Leaves the cluster a stretch ended on open with all it holds, as the
+// cluster writers leave the last one they place.
+[[gnu::noinline]] static void openLineSpanCluster(Ubiquitty::Terminal& t, int row, int leadColumn, const StagedCluster& cluster)
+{
+    const auto codePoints = std::span<const std::uint32_t> { cluster.codePoints.data(), static_cast<std::size_t>(cluster.count) };
+    Ubiquitty::Unicode::GraphemeState state {};
+    Ubiquitty::Unicode::graphemeStateReset(&state, codePoints[0]);
+    for (std::size_t index = 1; index < codePoints.size(); ++index)
+        (void)Ubiquitty::Unicode::graphemeExtends(&state, codePoints[index - 1], codePoints[index]);
+    clusterOpen(t, row, leadColumn, codePoints[0]);
+    t.parser.clusterState = state;
+    t.parser.clusterLast = codePoints.back();
+    std::copy_n(codePoints.data(), codePoints.size(), t.parser.clusterCodePoints.data());
+    t.parser.clusterCodepointLength = static_cast<uint8_t>(codePoints.size());
+    const bool isSelectorPair = codePoints.size() == 2 && Ubiquitty::Unicode::Width::isEmojiVariationSelector(codePoints[1]);
+    const std::uint32_t selector = isSelectorPair ? codePoints[1] : 0;
+    const std::uint32_t lastGraphic = isSelectorPair ? codePoints[0] : codePoints.back();
+    t.parser.precedingItem.setGraphic(lastGraphic, lastGraphic, selector);
+}
+
 /// Writes a stretch of a line made of short pieces as one span of the row.
 ///
 /// The pieces are an SGR, a short run of printable ASCII, and a stretch of
@@ -6422,79 +6527,6 @@ inline constexpr std::array<std::uint32_t, 5> lowestScalar { 0x400000, 0, 0x80, 
 ///     calls before this one found; kept by the caller for one parse.
 /// - Returns: The index after the last byte consumed, or zero when nothing
 ///   was done, with a pending SGR still the caller's to dispatch.
-/// A cluster ``stageLineSpanCluster`` staged: its cells, or 0 for none, and its bytes.
-struct StagedCluster {
-    int cells = 0;
-    int bytes = 0;
-};
-[[gnu::noinline]] static StagedCluster stageLineSpanCluster(Ubiquitty::Terminal& t, const char* buffer, int length, int from, std::uint32_t base, int baseLength, std::uint8_t properties, const Ubiquitty::Cell& cellTemplate, Ubiquitty::Cell* destination, int cellsLeft)
-{
-    const auto isPrintable = [](char byte) { return static_cast<unsigned char>(byte) - 0x20u <= 0x7Eu - 0x20u; };
-    std::array<std::uint32_t, Ubiquitty::clusterPoolMaximumCodePoints> cluster;
-    std::size_t count = 1;
-    cluster[0] = base;
-    int bytes = baseLength;
-    const bool isPictographic = Ubiquitty::Unicode::isExtendedPictographic(base);
-    bool isEmoji = (properties & Ubiquitty::Unicode::detail::PropEmojiPresentationField::mask) != 0;
-    Ubiquitty::Unicode::GraphemeState state {};
-    Ubiquitty::Unicode::graphemeStateReset(&state, base);
-    for (;;) {
-        const int next = from + bytes;
-        if (next >= length)
-            return {}; // what follows is not here to ask
-        // Nothing in ASCII joins a cluster, and a word behind this one
-        // is what makes it worth staging: text of another script would
-        // end the stretch on it, and it would come off again.
-        if (isPrintable(buffer[next]))
-            break;
-        if (static_cast<unsigned char>(buffer[next]) < 0xC2 || next + 4 > length)
-            return {};
-        std::uint32_t codePoint;
-        const int sequenceLength = MixedDecode::decodeScalar(buffer + next, codePoint);
-        if (sequenceLength < 2 || codePoint < 0xA0 || !Ubiquitty::Unicode::isGraphemeRelevant(codePoint))
-            return {};
-        Ubiquitty::Unicode::GraphemeState nextState = state;
-        if (!Ubiquitty::Unicode::graphemeExtendsHot(&nextState, cluster[count - 1], codePoint))
-            return {};
-        if (count == cluster.size())
-            return {};
-        state = nextState;
-        if (isPictographic) {
-            if (codePoint == Ubiquitty::Unicode::Width::variationSelector16)
-                isEmoji = true;
-            else if (codePoint == Ubiquitty::Unicode::Width::variationSelector15)
-                isEmoji = false;
-        }
-        cluster[count++] = codePoint;
-        bytes += sequenceLength;
-    }
-    if (count < 2)
-        return {};
-    const bool hasWideSelector = isPictographic && cluster[1] == Ubiquitty::Unicode::Width::variationSelector16;
-    const int width = hasWideSelector ? 2
-                                      : Ubiquitty::Unicode::Width::cellsForWidthClass(Ubiquitty::Unicode::detail::PropWidthField::get(properties), t.ambiguousWidth);
-    // The bases the cluster writers decline are declined here too.
-    if (!Ubiquitty::Unicode::isGraphemeRelevant(base) || Ubiquitty::Unicode::isGraphemePrepend(base) || (width != 1 && width != 2)
-        || (width == 1 && (isPictographic || Ubiquitty::Unicode::isKeycapBase(base))) || width > cellsLeft)
-        return {};
-    const VT::AttributeSet attributes = cellPen(cellTemplate).attributes - VT::Attribute::Emoji;
-    Ubiquitty::Cell lead = cellTemplate;
-    lead.codePoint = base;
-    Ubiquitty::cellSetPenAttributes(lead, attributes | (width == 2 ? VT::AttributeSet { VT::Attribute::Wide } : VT::AttributeSet {}) | (isEmoji ? VT::AttributeSet { VT::Attribute::Emoji } : VT::AttributeSet {}));
-    lead.combining[0] = cluster[1];
-    lead.setCombiningLength(1);
-    if (count > 2)
-        lead.setClusterID(t.clusterPool.intern(std::span<const std::uint32_t> { cluster.data(), count }));
-    destination[0] = lead;
-    if (width == 2) {
-        Ubiquitty::Cell continuation = cellTemplate;
-        continuation.codePoint = Ubiquitty::wideContinuationSentinelCodePoint;
-        Ubiquitty::cellSetPenAttributes(continuation, attributes | VT::Attribute::WideContinuation);
-        destination[1] = continuation;
-    }
-    return { width, bytes };
-}
-
 template<GraphicCapture Capture> [[gnu::noinline]] static int emitLineSpan(Ubiquitty::Terminal& t, const char* buffer, int start, int length, LineSpanEntry entry, int& resumeIndex)
 {
     const auto isPrintable = [](char byte) { return static_cast<unsigned char>(byte) - 0x20u <= 0x7Eu - 0x20u; };
@@ -6593,13 +6625,24 @@ template<GraphicCapture Capture> [[gnu::noinline]] static int emitLineSpan(Ubiqu
     // set once a cell staged here is one that form cannot.
     bool doesRowNeedCells = false;
     bool didDispatch = false;
-    // The last cluster staged: where it began and where it ended. One the
-    // stretch ends on is the cluster writers', which leave it open as it
-    // must be left, so it comes off again; two never stand side by side
-    // here, so what is left behind it is a plain glyph.
-    int clusterStartCells = -1;
-    int clusterEndCells = -1;
-    int clusterStartPosition = 0;
+    // The last two clusters staged and the cell count each ended at. The
+    // stretch may end on either: the latest, or, when that one is the glyph
+    // taken back at the end, the one before it. A third record is where the
+    // next is built, so staging one copies nothing.
+    std::array<StagedCluster, 3> clusters;
+    int latestCluster = 0;
+    int earlierCluster = 1;
+    int spareCluster = 2;
+    int latestClusterEndCells = -1;
+    int earlierClusterEndCells = -1;
+    const auto noteCluster = [&](int endCells) {
+        const int released = earlierCluster;
+        earlierCluster = latestCluster;
+        earlierClusterEndCells = latestClusterEndCells;
+        latestCluster = spareCluster;
+        latestClusterEndCells = endCells;
+        spareCluster = released;
+    };
     const Ubiquitty::CellStamp defaultPenProbe(t.grid->defaultBlank());
     Ubiquitty::CellGrid::SpanFacts spanFacts;
     // The two-byte code points the tables hold nothing for but a width of
@@ -6623,9 +6666,7 @@ template<GraphicCapture Capture> [[gnu::noinline]] static int emitLineSpan(Ubiqu
     }
     while (position < length && cellCount < room) {
         if (buffer[position] == 0x1B) {
-            // A cluster is not made final by an SGR here: taking it back
-            // would take the SGR's bytes back with it, already dispatched.
-            if (position + 3 >= length || buffer[position + 1] != '[' || cellCount == clusterEndCells)
+            if (position + 3 >= length || buffer[position + 1] != '[')
                 break;
             // The parameters are read once, by the scan the ground loop would
             // have made of them. A sequence that turns out not to be an SGR
@@ -6720,8 +6761,26 @@ template<GraphicCapture Capture> [[gnu::noinline]] static int emitLineSpan(Ubiqu
                         // it, in that glyph's own cell.
                         // Only one that directly follows its base: across an
                         // SGR the two are not one stretch of bytes to take back.
-                        if (cellCount == 0 || lastGlyphCells != 1 || lastMark != 0 || didDispatchAfterLastGlyph)
+                        if (cellCount == 0 || lastGlyphCells != 1 || didDispatchAfterLastGlyph)
                             break;
+                        if (lastMark != 0) {
+                            // A second mark makes the glyph a cluster, built
+                            // again from its base with every mark it carries.
+                            if (!isClusterStagingAllowed || cellCount <= cellsBeforePen || cellCount == latestClusterEndCells)
+                                break;
+                            const std::uint32_t base = span[cellCount - 1].codePoint;
+                            const int basePosition = position - lastGlyphBytes;
+                            StagedCluster& cluster = clusters[static_cast<std::size_t>(spareCluster)];
+                            if (!didStageLineSpanCluster(t, buffer, length, basePosition, base, lastGlyphBytes - 2,
+                                    Ubiquitty::Unicode::Width::classify(base), cellTemplate, span + cellCount - 1, 1, cluster))
+                                break;
+                            noteCluster(cellCount);
+                            position = basePosition + cluster.bytes;
+                            spanFacts.mayNeedShaping = true;
+                            lastGlyphBytes = cluster.bytes;
+                            lastMark = 0;
+                            continue;
+                        }
                         Ubiquitty::Cell& base = span[cellCount - 1];
                         base.combining[0] = codePoint;
                         base.setCombiningLength(1);
@@ -6743,18 +6802,15 @@ template<GraphicCapture Capture> [[gnu::noinline]] static int emitLineSpan(Ubiqu
                     // cluster that is all here: a joined pictograph, a
                     // selector pair, a syllable.
                     if (isClusterBase) {
-                        const StagedCluster cluster = isClusterStagingAllowed && cellCount != clusterEndCells
-                            ? stageLineSpanCluster(t, buffer, length, position, codePoint, sequenceLength, properties, cellTemplate, span + cellCount, room - cellCount)
-                            : StagedCluster {};
-                        if (cluster.cells > 0) {
-                            clusterStartCells = cellCount;
-                            clusterStartPosition = position;
+                        StagedCluster& cluster = clusters[static_cast<std::size_t>(spareCluster)];
+                        if (isClusterStagingAllowed
+                            && didStageLineSpanCluster(t, buffer, length, position, codePoint, sequenceLength, properties, cellTemplate, span + cellCount, room - cellCount, cluster)) {
+                            spanFacts.attributes.add(cellPen(span[cellCount]).attributes);
                             cellCount += cluster.cells;
-                            clusterEndCells = cellCount;
+                            noteCluster(cellCount);
                             position += cluster.bytes;
                             if (cluster.cells == 2)
                                 spanFacts.attributes.add(VT::AttributeSet { VT::Attribute::Wide } | VT::Attribute::WideContinuation);
-                            spanFacts.attributes.add(cellPen(span[clusterStartCells]).attributes);
                             spanFacts.mayNeedShaping = true;
                             lastGlyphCells = cluster.cells;
                             lastGlyphBytes = cluster.bytes;
@@ -6830,14 +6886,10 @@ template<GraphicCapture Capture> [[gnu::noinline]] static int emitLineSpan(Ubiqu
         position -= lastGlyphBytes;
         lastMark = cellCount > 0 && span[cellCount - 1].combiningLength() ? span[cellCount - 1].combining[0] : 0;
     }
-    // A cluster the stretch ends on is left to the writers that leave it
-    // open. No SGR was dispatched behind it, and the glyph before it is a
-    // plain one.
-    if (cellCount > 0 && cellCount == clusterEndCells) {
-        cellCount = clusterStartCells;
-        position = clusterStartPosition;
-        lastMark = cellCount > 0 && span[cellCount - 1].combiningLength() ? span[cellCount - 1].combining[0] : 0;
-    }
+    // The cluster the stretch ends on, if it ends on one.
+    const StagedCluster* lastCluster = cellCount > 0 && cellCount == latestClusterEndCells ? &clusters[static_cast<std::size_t>(latestCluster)]
+        : cellCount > 0 && cellCount == earlierClusterEndCells                             ? &clusters[static_cast<std::size_t>(earlierCluster)]
+                                                                                           : nullptr;
     // With nothing staged, the stretch is the SGRs it dispatched.
     if (cellCount == 0)
         return didDispatch ? position : 0;
@@ -6867,7 +6919,9 @@ template<GraphicCapture Capture> [[gnu::noinline]] static int emitLineSpan(Ubiqu
     } else {
         s->cursorX = lastColumn + 1;
     }
-    if (lastMark) {
+    if (lastCluster) {
+        openLineSpanCluster(t, row, lastLeadColumn, *lastCluster);
+    } else if (lastMark) {
         // The last received graphic is the mark, and the cluster it joined is
         // open with it, as the per-character path leaves both.
         t.parser.precedingItem.setGraphic(lastMark, lastMark, 0);
