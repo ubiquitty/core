@@ -51,6 +51,8 @@ struct Corpus {
     std::string bytes;
     int rows = benchRows;
     int columns = benchColumns;
+    /// The history the corpus scrolls into, or zero for the terminal's own.
+    int historyLines = 0;
 };
 
 // Fixed seeds, so every run and both arms of an A/B parse the same bytes.
@@ -81,6 +83,82 @@ std::string multiscriptWords()
                 Ubiquitty::Unicode::appendUTF8(unit, alphabet[0] + nextRandom(state) % (alphabet[1] - alphabet[0] + 1));
             used += word + 1;
             unit += ' ';
+        }
+        unit += "\r\n";
+    }
+    return unit;
+}
+
+// What a session keeps: its history is larger than the cache, and a row that
+// scrolls into it is written at memory's speed rather than the cache's.
+constexpr int sessionHistoryLines = 10000;
+
+// Lines of ideographs with fullwidth punctuation among them, longer than the
+// grid so each wraps, as a page of East Asian text does in a narrow pane.
+std::string wrappedIdeographLines()
+{
+    std::uint64_t state = 0x5EED0003;
+    std::string unit;
+    for (int line = 0; line < 1024; ++line) {
+        const int glyphs = 50 + static_cast<int>(nextRandom(state) % 60);
+        for (int glyph = 0; glyph < glyphs; ++glyph) {
+            const std::uint32_t pick = nextRandom(state);
+            if (pick % 13 == 0)
+                Ubiquitty::Unicode::appendUTF8(unit, pick % 2 ? 0xFF0Cu : 0x3002u); // a fullwidth comma or an ideographic stop
+            else
+                Ubiquitty::Unicode::appendUTF8(unit, 0x4E00u + pick % 0x5000u);
+        }
+        unit += "\r\n";
+    }
+    return unit;
+}
+
+// Lines that change script from word to word: ASCII, a conjunct, a pair of
+// ideographs, a letter under a mark, a joined pictograph. Each piece is a
+// different writer's, and a line of them is what chat and logs look like.
+std::string mixedScriptLines()
+{
+    constexpr const char* pieces[] = {
+        "plain",
+        "width",
+        "emoji",
+        "cache",
+        "status",
+        "ok",
+        "\xE0\xA4\xA8\xE0\xA4\xAE\xE0\xA4\xB8\xE0\xA5\x8D\xE0\xA4\xA4\xE0\xA5\x87", // a Devanagari word with a conjunct
+        "\xE6\x9D\xB1\xE4\xBA\xAC",
+        "\xE4\xBD\xA0\xE5\xA5\xBD", // two ideographs
+        "e\xCC\x81",
+        "n\xCC\x83o", // letters under a combining mark
+        "\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x92\xBB", // a joined pictograph
+        "\xF0\x9F\x9A\x80",
+        "\xCE\xB1\xCE\xB2\xCE\xB3",
+        "\xD0\xBF\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82",
+    };
+    std::uint64_t state = 0x5EED0004;
+    std::string unit;
+    for (int line = 0; line < 2048; ++line) {
+        const int words = 8 + static_cast<int>(nextRandom(state) % 20);
+        for (int word = 0; word < words; ++word) {
+            unit += pieces[nextRandom(state) % std::size(pieces)];
+            unit += ' ';
+        }
+        unit += "\r\n";
+    }
+    return unit;
+}
+
+// Printable ASCII with a tab and a line break every few dozen bytes, some
+// lines past the grid's width: unformatted program output in a narrow pane.
+std::string tabbedASCIILines()
+{
+    std::uint64_t state = 0x5EED0005;
+    std::string unit;
+    for (int line = 0; line < 2048; ++line) {
+        const int length = 20 + static_cast<int>(nextRandom(state) % 130);
+        for (int column = 0; column < length; ++column) {
+            const std::uint32_t pick = nextRandom(state);
+            unit += pick % 90 == 0 ? '\t' : static_cast<char>(0x20 + pick % 95);
         }
         unit += "\r\n";
     }
@@ -218,6 +296,12 @@ std::vector<Corpus> buildCorpora(std::size_t targetBytes)
     // decoder that pays off only on long runs never meets one here.
     corpora.push_back({ "multiscript_words", repeatToBytes(multiscriptWords(), targetBytes) });
 
+    // Text scrolling into a session's history: the rows leave as cells, as
+    // bytes, or wrapped, and the writers change from piece to piece.
+    corpora.push_back({ "session_ideographs", repeatToBytes(wrappedIdeographLines(), targetBytes), 24, 80, sessionHistoryLines });
+    corpora.push_back({ "session_mixed_scripts", repeatToBytes(mixedScriptLines(), targetBytes), 48, 200, sessionHistoryLines });
+    corpora.push_back({ "session_tabbed_ascii", repeatToBytes(tabbedASCIILines(), targetBytes), 24, 80, sessionHistoryLines });
+
     // Marks scattered through words: the batched writer hands each mark to the
     // cluster path and takes the row back after it, the hand-off a corpus with
     // a mark on every cell or on none never makes.
@@ -247,8 +331,8 @@ double bestMegabytesPerSecond(const Corpus& corpus, int repetitions, std::size_t
     const auto& bytes = corpus.bytes;
     Ubiquitty::Terminal term;
     Ubiquitty::hardReset(term);
-    if (scrollbackLines > 0)
-        Ubiquitty::setScrollbackLimit(&term, scrollbackLines);
+    if (const int historyLines = scrollbackLines > 0 ? scrollbackLines : corpus.historyLines; historyLines > 0)
+        Ubiquitty::setScrollbackLimit(&term, historyLines);
     Ubiquitty::resize(term, corpus.rows, corpus.columns);
     // One untimed pass so first-touch faults and table init stay out of the sample.
     feed(term, bytes, chunkBytes);
@@ -346,8 +430,8 @@ int main(int argc, char** argv)
                 continue;
             Ubiquitty::Terminal term;
             Ubiquitty::hardReset(term);
-            if (scrollbackLines > 0)
-                Ubiquitty::setScrollbackLimit(&term, scrollbackLines);
+            if (const int historyLines = scrollbackLines > 0 ? scrollbackLines : corpus.historyLines; historyLines > 0)
+                Ubiquitty::setScrollbackLimit(&term, historyLines);
             Ubiquitty::resize(term, corpus.rows, corpus.columns);
             for (;;)
                 Ubiquitty::processBytes(&term, corpus.bytes);

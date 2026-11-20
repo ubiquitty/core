@@ -157,7 +157,7 @@ for lane in $REQUIRED_LANES; do
     grep -q "\"$lane\"" "$BUILD/training-run.json" || MISSING="$MISSING $lane"
 done
 # The corpora half, asserted the same way and for the same reason.
-for lane in ascii latin1_multibyte cjk_wide combining sgr_truecolor legacy_graphics; do
+for lane in ascii latin1_multibyte cjk_wide combining sgr_truecolor legacy_graphics session_ideographs session_mixed_scripts session_tabbed_ascii; do
     grep -q "\"$lane\"" "$BUILD/training-corpora.json" || MISSING="$MISSING $lane"
 done
 if [ -n "$MISSING" ]; then
