@@ -1878,6 +1878,16 @@ std::unique_ptr<Stream> openPTY(std::span<const std::string> arguments, const PT
             startLifelineGuard(::getpid(), lifelineRead.get(), maxDescriptorCount);
         }
 #endif
+#if defined(IUTF8)
+        // The terminal reads and writes UTF-8, and the line discipline must
+        // know it: told so, a backspace in canonical mode erases a whole
+        // character, where otherwise it erases the character's last byte and
+        // leaves the rest in the line. A new PTY starts without the flag.
+        if (struct termios mode; ::tcgetattr(STDIN_FILENO, &mode) == 0 && (mode.c_iflag & IUTF8) == 0) {
+            mode.c_iflag |= IUTF8;
+            (void)::tcsetattr(STDIN_FILENO, TCSANOW, &mode);
+        }
+#endif
         // Child: start in the requested directory when reachable, else $HOME (the
         // inherited cwd is "/" when launched from Finder / `open`). First, before
         // the sweep below, so the directory is the shell's from the earliest
