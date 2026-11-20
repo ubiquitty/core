@@ -5745,41 +5745,44 @@ constexpr int maxLineSpanPieceCells = 24;
     s->wrapPending = false;
 }
 
-/// The last cell of a written run of printable ASCII, and the cursor as the
-/// run left it.
-struct PlacedASCII {
+/// The last glyph a flow of text placed, and the cursor as it left it.
+struct PlacedGlyph {
     int row = 0;
+    /// The glyph's column: its lead's, for a wide one.
     int column = 0;
-    uint32_t character = 0;
+    uint32_t codePoint = 0;
     int cursorX = 0;
     int cursorY = 0;
     bool isWrapPending = false;
 };
 
-/// Tells the parser what a run of printable ASCII ended on: the item a
-/// repeat replays, and the cluster a combining mark arriving next joins.
+/// Tells the parser what a piece of text ended on: the item a repeat replays,
+/// and the cluster a mark or a joiner arriving next extends.
 ///
-/// What ``clusterOpenAfterASCII`` leaves, from the cursor the run left
-/// rather than the one the screen holds now: a flow has moved on by the time
-/// it says so.
+/// What ``clusterOpen`` leaves, from the cursor the piece left rather than
+/// the one the screen holds now: a flow has moved on by the time it says so.
+/// An ASCII base has no break class, is no pictograph and no linker, so its
+/// state is the empty one, without the call that would compute it.
 ///
 /// - Parameters:
 ///   - t: The terminal.
-///   - placed: The run's last cell and the cursor behind it.
-static inline void notePlacedASCII(Ubiquitty::Terminal& t, const PlacedASCII& placed)
+///   - placed: The piece's last glyph and the cursor behind it.
+static inline void notePlacedGlyph(Ubiquitty::Terminal& t, const PlacedGlyph& placed)
 {
-    assert(placed.character < 0x80);
-    t.parser.precedingItem.setGraphic(placed.character, placed.character, 0);
+    t.parser.precedingItem.setGraphic(placed.codePoint, placed.codePoint, 0);
     t.parser.clusterActive = true;
     t.parser.clusterRow = placed.row;
     t.parser.clusterColumn = placed.column;
     t.parser.clusterScreen = t.screens.isUsingAlternateScreen ? 1u : 0u;
-    t.parser.clusterLast = placed.character;
-    t.parser.clusterState = {};
+    t.parser.clusterLast = placed.codePoint;
+    if (placed.codePoint < 0x80)
+        t.parser.clusterState = {};
+    else
+        Ubiquitty::Unicode::graphemeStateReset(&t.parser.clusterState, placed.codePoint);
     t.parser.clusterAtX = placed.cursorX;
     t.parser.clusterAtY = placed.cursorY;
     t.parser.clusterAtWrap = placed.isWrapPending;
-    t.parser.clusterCodePoints[0] = placed.character;
+    t.parser.clusterCodePoints[0] = placed.codePoint;
     t.parser.clusterCodepointLength = 1;
 }
 
@@ -5789,10 +5792,39 @@ static inline void notePlacedASCII(Ubiquitty::Terminal& t, const PlacedASCII& pl
 ///   - t: The terminal.
 ///   - s: Its active screen.
 /// - Returns: Whether the cursor is on a row of single-width cells.
-static inline bool isASCIIFlowRow(const Ubiquitty::Terminal& t, const Ubiquitty::Screen::State* s)
+static inline bool isTextFlowRow(const Ubiquitty::Terminal& t, const Ubiquitty::Screen::State* s)
 {
     return s->cursorY >= 0 && s->cursorY < t.rows && s->lineAttribute[s->cursorY] == lineAttributeNormal;
 }
+
+/// Whether text may flow on this screen at all: its rows are whole, with no
+/// left and right margins, and neither the grid nor the pen carries sized
+/// text, whose bands a row's writer has to step around.
+///
+/// - Parameters:
+///   - t: The terminal.
+///   - s: Its active screen.
+/// - Returns: Whether a written piece may carry on as a flow.
+static inline bool isTextFlowScreen(const Ubiquitty::Terminal& t, const Ubiquitty::Screen::State* s)
+{
+    return !t.modes.leftRightMarginMode && !t.grid->hasSizedCellHint() && s->pen.extendedAttributes.textSizeSpecID() == 0
+        && (parseAblateMask & AblateTextFlow) == 0;
+}
+
+/// What a flow of text finds behind it when it starts.
+enum class FlowEntry : uint8_t {
+    /// Nothing: the flow opens by itself, and the journal a cancel reads
+    /// stands until its first write.
+    Opening,
+    /// A piece a batched writer wrote, which the parser has not been told about.
+    BehindPiece,
+    /// A piece the parser has been told about, with a control performed since.
+    BehindNotedPiece
+};
+
+template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal& t, Ubiquitty::Screen::State* s, const char* buffer, int position, int length, const Ubiquitty::Cell& cellTemplate, PlacedGlyph placed, FlowEntry entry);
+static bool isPlainNarrowGlyphAt(const Ubiquitty::Terminal& t, const char* buffer, int position, int length);
+static bool isFlowGlyphAt(const Ubiquitty::Terminal& t, const char* buffer, int position, int length);
 
 /// Carries printable ASCII on past its first run: through the line feeds,
 /// returns and tabs between runs, and through the wrap a full row causes.
@@ -5806,7 +5838,9 @@ static inline bool isASCIIFlowRow(const Ubiquitty::Terminal& t, const Ubiquitty:
 ///
 /// A piece the first run would not have taken is left where it starts, for
 /// the byte loop: a lone glyph, a glyph whose cancellation the bytes behind
-/// it do not rule out, and a word that opens a line of mixed scripts.
+/// it do not rule out, and a word that opens a line of mixed scripts. Plain
+/// glyphs of another alphabet are handed to ``continueTextFlow``, which
+/// takes ASCII too; this loop is the one text that is ASCII alone stays in.
 ///
 /// - Parameters:
 ///   - t: The terminal, with the left and right margins off and no sized
@@ -5819,7 +5853,7 @@ static inline bool isASCIIFlowRow(const Ubiquitty::Terminal& t, const Ubiquitty:
 ///   - placed: The run already written, which the parser has not been told
 ///     about.
 /// - Returns: The first byte the flow left.
-template<GraphicCapture Capture> static int continueASCIIFlow(Ubiquitty::Terminal& t, Ubiquitty::Screen::State* s, const char* buffer, int position, int length, const Ubiquitty::Cell& cellTemplate, PlacedASCII placed)
+template<GraphicCapture Capture> static int continueASCIIFlow(Ubiquitty::Terminal& t, Ubiquitty::Screen::State* s, const char* buffer, int position, int length, const Ubiquitty::Cell& cellTemplate, PlacedGlyph placed)
 {
     const int rightMargin = t.columns - 1;
     // What commitWrapBeforePlainGlyph asks before it commits a wrap, for a
@@ -5833,7 +5867,7 @@ template<GraphicCapture Capture> static int continueASCIIFlow(Ubiquitty::Termina
     bool hasUnnotedRun = true;
     const auto noteRun = [&] {
         if (hasUnnotedRun) {
-            notePlacedASCII(t, placed);
+            notePlacedGlyph(t, placed);
             hasUnnotedRun = false;
         }
     };
@@ -5848,11 +5882,14 @@ template<GraphicCapture Capture> static int continueASCIIFlow(Ubiquitty::Termina
             if (column < 0 || column > rightMargin)
                 break;
             int count = countByteRun(buffer + position, std::min(length - position, rightMargin - column + 1), 0x20, 0x7E);
-            // A word with text of another script behind it is the first
-            // run's to hand over, whole.
-            if (count >= 2 && count <= maxLineSpanPieceCells && position + count + 4 <= length) {
-                const auto next = static_cast<unsigned char>(buffer[position + count]);
-                if (next >= 0xC2 && next != 0xEF)
+            if (count <= maxLineSpanPieceCells && position + count < length && static_cast<unsigned char>(buffer[position + count]) >= 0xC2) {
+                // A word with a plain narrow glyph behind it opens a line of
+                // letters among ASCII, which the general flow places as
+                // cells; with any other text behind it, it is the first
+                // run's to hand to the writer that stages a mixed line.
+                if (count < rightMargin - column + 1 && isPlainNarrowGlyphAt(t, buffer, position + count, length))
+                    return continueTextFlow<Capture>(t, s, buffer, position, length, cellTemplate, placed, hasUnnotedRun ? FlowEntry::BehindPiece : FlowEntry::BehindNotedPiece);
+                if (count >= 2 && position + count + 4 <= length && static_cast<unsigned char>(buffer[position + count]) != 0xEF)
                     break;
             }
             const bool isFollowedByTab = position + count < length && buffer[position + count] == '\t';
@@ -5870,7 +5907,7 @@ template<GraphicCapture Capture> static int continueASCIIFlow(Ubiquitty::Termina
                     s->lineWrapped[s->cursorY - 1] = true;
                 // A feed that leaves the cursor where it was scrolled a
                 // fresh row under it, or moved nothing.
-                if (s->cursorY != rowLeft && !isASCIIFlowRow(t, s))
+                if (s->cursorY != rowLeft && !isTextFlowRow(t, s))
                     break;
             }
             dropWrapTrigger(t, s);
@@ -5905,7 +5942,7 @@ template<GraphicCapture Capture> static int continueASCIIFlow(Ubiquitty::Termina
             const int rowLeft = s->cursorY;
             executeGroundLineFeed(t);
             ++position;
-            if (doesResetPen || (s->cursorY != rowLeft && !isASCIIFlowRow(t, s)))
+            if (doesResetPen || (s->cursorY != rowLeft && !isTextFlowRow(t, s)))
                 break;
             continue;
         }
@@ -5924,10 +5961,13 @@ template<GraphicCapture Capture> static int continueASCIIFlow(Ubiquitty::Termina
                 Ubiquitty::Screen::scrollLaneFlush(t);
             actExecuteHorizontalTab(t, byte);
             ++position;
-            if (t.isAlignedTabActive || !isASCIIFlowRow(t, s))
+            if (t.isAlignedTabActive || !isTextFlowRow(t, s))
                 break;
             continue;
         }
+        // Text of another alphabet behind ASCII is the general flow's.
+        if (byte >= 0xC2 && isFlowGlyphAt(t, buffer, position, length))
+            return continueTextFlow<Capture>(t, s, buffer, position, length, cellTemplate, placed, hasUnnotedRun ? FlowEntry::BehindPiece : FlowEntry::BehindNotedPiece);
         break;
     }
     noteRun();
@@ -5974,6 +6014,14 @@ template<GraphicCapture Capture> static int emitASCIIRun(Ubiquitty::Terminal& t,
     if (n >= 2 && n <= maxLineSpanPieceCells && !translation && start + n + 4 <= length) {
         const auto next = static_cast<unsigned char>(buffer[start + n]);
         if (next >= 0xC2 && next != 0xEF) {
+            // Behind a plain narrow glyph the line is letters of another
+            // alphabet among the ASCII, which the flow places as it reads
+            // them; any other text is the staging writer's.
+            if (isTextFlowScreen(t, s) && isPlainNarrowGlyphAt(t, buffer, start + n, length)) {
+                const Ubiquitty::Cell flowTemplate = Ubiquitty::cellFromPen(s->pen, t.currentLinkID);
+                if (const int end = continueTextFlow<Capture>(t, s, buffer, start, length, flowTemplate, {}, FlowEntry::Opening); end > start)
+                    return end - start;
+            }
             int unusedResumeIndex = 0;
             if (const int end = emitLineSpan<Capture>(t, buffer, start, length, LineSpanEntry::Text, unusedResumeIndex); end > 0)
                 return end - start;
@@ -6025,10 +6073,10 @@ template<GraphicCapture Capture> static int emitASCIIRun(Ubiquitty::Terminal& t,
         s->cursorX = lastColumn + 1;
     }
     // A combining mark arriving next attaches to the run's last cell.
-    const PlacedASCII placed { row, lastColumn, static_cast<uint32_t>(static_cast<unsigned char>(buffer[start + n - 1])), s->cursorX, s->cursorY, s->wrapPending };
-    if (!translation && !t.modes.leftRightMarginMode && !t.grid->hasSizedCellHint() && (parseAblateMask & AblateTextFlow) == 0)
+    const PlacedGlyph placed { row, lastColumn, static_cast<uint32_t>(static_cast<unsigned char>(buffer[start + n - 1])), s->cursorX, s->cursorY, s->wrapPending };
+    if (!translation && isTextFlowScreen(t, s))
         return continueASCIIFlow<Capture>(t, s, buffer, start + n, length, tmpl, placed) - start;
-    notePlacedASCII(t, placed);
+    notePlacedGlyph(t, placed);
     return n;
 }
 
@@ -7230,42 +7278,6 @@ static inline void eraseWidePartnersBesideRun(Ubiquitty::Terminal& t, Ubiquitty:
         t.grid->eraseRowRange(Ubiquitty::Row(row), Ubiquitty::Column(lastColumn + 1), Ubiquitty::Column(lastColumn + 1), blank);
 }
 
-/// The last glyph of a written run of wide glyphs, and the cursor as the run
-/// left it.
-struct PlacedWide {
-    int row = 0;
-    int leadColumn = 0;
-    uint32_t codePoint = 0;
-    int cursorX = 0;
-    int cursorY = 0;
-    bool isWrapPending = false;
-};
-
-/// Tells the parser what a run of wide glyphs ended on: the item a repeat
-/// replays, and the cluster a mark or a joiner arriving next extends.
-///
-/// What ``clusterOpen`` leaves, from the cursor the run left rather than the
-/// one the screen holds now: a flow has moved on by the time it says so.
-///
-/// - Parameters:
-///   - t: The terminal.
-///   - placed: The run's last glyph and the cursor behind it.
-static inline void notePlacedWide(Ubiquitty::Terminal& t, const PlacedWide& placed)
-{
-    t.parser.precedingItem.setGraphic(placed.codePoint, placed.codePoint, 0);
-    t.parser.clusterActive = true;
-    t.parser.clusterRow = placed.row;
-    t.parser.clusterColumn = placed.leadColumn;
-    t.parser.clusterScreen = t.screens.isUsingAlternateScreen ? 1u : 0u;
-    t.parser.clusterLast = placed.codePoint;
-    Ubiquitty::Unicode::graphemeStateReset(&t.parser.clusterState, placed.codePoint);
-    t.parser.clusterAtX = placed.cursorX;
-    t.parser.clusterAtY = placed.cursorY;
-    t.parser.clusterAtWrap = placed.isWrapPending;
-    t.parser.clusterCodePoints[0] = placed.codePoint;
-    t.parser.clusterCodepointLength = 1;
-}
-
 /// Whether a whole three-byte glyph past the C1 range starts at `next`,
 /// which puts the graphic before it out of a cancel's reach.
 ///
@@ -7298,7 +7310,9 @@ static inline void notePlacedWide(Ubiquitty::Terminal& t, const PlacedWide& plac
 /// extend nothing, whatever precedes them. Any other glyph ends it.
 ///
 /// What it re-reads between rows, and what it leaves where it starts for the
-/// byte loop, are what ``continueASCIIFlow`` re-reads and leaves.
+/// byte loop, are what ``continueASCIIFlow`` re-reads and leaves. ASCII and
+/// plain narrow glyphs among the wide ones are handed to
+/// ``continueTextFlow``; this loop is the one a page of wide text stays in.
 ///
 /// - Parameters:
 ///   - t: The terminal, with the left and right margins off and no sized
@@ -7311,7 +7325,7 @@ static inline void notePlacedWide(Ubiquitty::Terminal& t, const PlacedWide& plac
 ///   - placed: The run already written, which the parser has not been told
 ///     about.
 /// - Returns: The first byte the flow left.
-template<GraphicCapture Capture> static int continueWideFlow(Ubiquitty::Terminal& t, Ubiquitty::Screen::State* s, const char* buffer, int position, int length, const Ubiquitty::Cell& cellTemplate, PlacedWide placed)
+template<GraphicCapture Capture> static int continueWideFlow(Ubiquitty::Terminal& t, Ubiquitty::Screen::State* s, const char* buffer, int position, int length, const Ubiquitty::Cell& cellTemplate, PlacedGlyph placed)
 {
     const int rightMargin = t.columns - 1;
     const bool canWrap = t.modes.autowrap && !(t.triggersEngine && t.triggersEngine->ruleCount() != 0)
@@ -7325,7 +7339,7 @@ template<GraphicCapture Capture> static int continueWideFlow(Ubiquitty::Terminal
     std::array<std::uint32_t, Ubiquitty::maxColumns / 2> codePoints;
     const auto noteRun = [&] {
         if (hasUnnotedRun) {
-            notePlacedWide(t, placed);
+            notePlacedGlyph(t, placed);
             hasUnnotedRun = false;
         }
     };
@@ -7358,6 +7372,8 @@ template<GraphicCapture Capture> static int continueWideFlow(Ubiquitty::Terminal
                 --count;
                 bytes -= codePoints[count] < 0x10000 ? 3 : 4;
             }
+            if (count == 0 && isFlowGlyphAt(t, buffer, position, length))
+                return continueTextFlow<Capture>(t, s, buffer, position, length, cellTemplate, placed, hasUnnotedRun ? FlowEntry::BehindPiece : FlowEntry::BehindNotedPiece);
             if (count < 2)
                 break;
             if (isWrapping) {
@@ -7369,7 +7385,7 @@ template<GraphicCapture Capture> static int continueWideFlow(Ubiquitty::Terminal
                 // The row just left is joined to this one, wherever the feed put it.
                 if (s->cursorY > 0)
                     s->lineWrapped[s->cursorY - 1] = true;
-                if (s->cursorY != rowLeft && !isASCIIFlowRow(t, s))
+                if (s->cursorY != rowLeft && !isTextFlowRow(t, s))
                     break;
                 isRowFresh = doesScroll;
             }
@@ -7401,7 +7417,7 @@ template<GraphicCapture Capture> static int continueWideFlow(Ubiquitty::Terminal
             const bool doesScroll = rowLeft == s->scrollBottom;
             executeGroundLineFeed(t);
             ++position;
-            if (doesResetPen || (s->cursorY != rowLeft && !isASCIIFlowRow(t, s)))
+            if (doesResetPen || (s->cursorY != rowLeft && !isTextFlowRow(t, s)))
                 break;
             isRowFresh = doesScroll;
             continue;
@@ -7419,7 +7435,346 @@ template<GraphicCapture Capture> static int continueWideFlow(Ubiquitty::Terminal
             const int rowLeft = s->cursorY;
             actExecuteHorizontalTab(t, byte);
             ++position;
-            if (t.isAlignedTabActive || !isASCIIFlowRow(t, s))
+            if (t.isAlignedTabActive || !isTextFlowRow(t, s))
+                break;
+            if (s->cursorY != rowLeft)
+                isRowFresh = false;
+            continue;
+        }
+        // ASCII and plain narrow glyphs among the wide ones are the general
+        // flow's, which takes wide glyphs too.
+        if (byte - 0x20u <= 0x7Eu - 0x20u || (byte >= 0xC2 && isFlowGlyphAt(t, buffer, position, length)))
+            return continueTextFlow<Capture>(t, s, buffer, position, length, cellTemplate, placed, hasUnnotedRun ? FlowEntry::BehindPiece : FlowEntry::BehindNotedPiece);
+        break;
+    }
+    noteRun();
+    return position;
+}
+
+/// One multibyte glyph a flow of text places by itself.
+struct FlowGlyph {
+    uint32_t codePoint = 0;
+    /// The bytes that carry it.
+    int length = 0;
+    /// The cells it takes, or zero for a glyph that is not the flow's.
+    int width = 0;
+};
+
+/// Reads the multibyte glyph at `position` if a flow of text places it: a
+/// plain narrow one, or a wide one of the ranges that stand alone.
+///
+/// Those are the glyphs that extend nothing, are extended by nothing the
+/// flow places, need no shaping and take the width the table gives them, so
+/// placing one asks nothing of the glyph before it. Anything else, and any
+/// sequence that is not whole and well formed, is left to the writers that
+/// own it.
+///
+/// - Parameters:
+///   - buffer: The input.
+///   - position: A byte of C2 or above.
+///   - length: The input's length.
+///   - ambiguousWidth: How wide an ambiguous glyph is on this terminal.
+/// - Returns: The glyph, with a width of zero when it is not the flow's.
+[[gnu::always_inline]] static inline FlowGlyph peekFlowGlyph(const char* buffer, int position, int length, Unicode::Width::AmbiguousWidth ambiguousWidth)
+{
+    const auto lead = static_cast<unsigned char>(buffer[position]);
+    const auto continuationBits = [&](int offset) { return static_cast<unsigned char>(buffer[position + offset]) ^ 0x80u; };
+    // isPlainNarrowGraphic past ASCII and the C1 range, from the one byte the
+    // table holds: no presentation, no break class and no pictograph leaves
+    // the width alone, which is one cell, or ambiguous on a terminal that
+    // draws the ambiguous narrow.
+    const auto isPlainNarrow = [ambiguousWidth](uint32_t codePoint) {
+        constexpr std::uint8_t oneCell = 1;
+        const std::uint8_t ambiguous = ambiguousWidth == Unicode::Width::AmbiguousWidth::Narrow ? Unicode::Width::ambiguousWidthClass : oneCell;
+        const std::uint8_t properties = Unicode::Width::classify(codePoint);
+        const bool isPlain = static_cast<bool>(static_cast<unsigned>(properties == oneCell) | static_cast<unsigned>(properties == ambiguous))
+            && !Ubiquitty::Unicode::mayNeedShaping(codePoint);
+        assert(isPlain == isPlainNarrowGraphic(codePoint, ambiguousWidth));
+        return isPlain;
+    };
+    if (lead <= 0xDF) {
+        if (lead < 0xC2 || position + 1 >= length || continuationBits(1) > 0x3F)
+            return {};
+        const uint32_t codePoint = ((lead & 0x1Fu) << 6) | continuationBits(1);
+        // Below U+00A0 are the C1 controls.
+        return codePoint >= 0xA0 && isPlainNarrow(codePoint) ? FlowGlyph { codePoint, 2, 1 } : FlowGlyph {};
+    }
+    if (lead <= 0xEF) {
+        if (position + 2 >= length || (continuationBits(1) | continuationBits(2)) > 0x3F)
+            return {};
+        const uint32_t codePoint = ((lead & 0x0Fu) << 12) | (continuationBits(1) << 6) | continuationBits(2);
+        // An overlong form or a surrogate is no glyph at all.
+        if (codePoint < 0x800 || codePoint - 0xD800u < 0x800u)
+            return {};
+        if (isWideIdeographFast(codePoint))
+            return { codePoint, 3, 2 };
+        return isPlainNarrow(codePoint) ? FlowGlyph { codePoint, 3, 1 } : FlowGlyph {};
+    }
+    if (lead != 0xF0 || position + 3 >= length || (continuationBits(1) | continuationBits(2) | continuationBits(3)) > 0x3F)
+        return {};
+    const uint32_t codePoint = (continuationBits(1) << 12) | (continuationBits(2) << 6) | continuationBits(3);
+    return codePoint >= 0x10000 && isWideIdeographFast(codePoint) ? FlowGlyph { codePoint, 4, 2 } : FlowGlyph {};
+}
+
+/// Carries text on behind a piece already written: through the line feeds,
+/// returns and tabs between its pieces, and through the wrap a full row
+/// causes.
+///
+/// Each of those ends a batched write, and text is made of them: a line of a
+/// log is a run and a line feed, a paragraph is a run to the margin and a
+/// wrap, a page of East Asian text is a row of ideographs and a wrap. Each
+/// piece paid its writer's whole setup again, and for anything but ASCII a
+/// decode staged for every kind of glyph. What a piece's eligibility rests on
+/// was established for the piece before, and nothing the flow passes can
+/// change it, so the flow re-reads only what does change: the row the cursor
+/// is on, an aligned tab stop, and the pen a line break that ends a semantic
+/// role resets.
+///
+/// A piece is one of three: printable ASCII, which goes to the row as bytes
+/// where the row holds bytes; plain narrow glyphs with the ASCII between
+/// them, which go as cells; and wide glyphs of the ranges that stand alone.
+/// Anything a first write would not have taken this way is left where it
+/// starts, for the byte loop: a lone glyph, a glyph whose cancellation the
+/// bytes behind it do not rule out, a word that opens a line the mixed-script
+/// writer stages, and every glyph that can join another.
+///
+/// - Parameters:
+///   - t: The terminal, on a screen ``isTextFlowScreen`` admits, with the
+///     batched write's eligibility established for the cursor's row.
+///   - s: Its active screen.
+///   - buffer: The input.
+///   - position: The first byte the flow may take.
+///   - length: The input's length.
+///   - cellTemplate: The pen and link every cell of the flow carries.
+///   - placed: The last piece written, read only when the parser has not
+///     been told about it.
+///   - entry: What the flow finds behind it.
+/// - Returns: The first byte the flow left.
+template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal& t, Ubiquitty::Screen::State* s, const char* buffer, int position, int length, const Ubiquitty::Cell& cellTemplate, PlacedGlyph placed, FlowEntry entry)
+{
+    bool hasUnnotedGlyph = entry == FlowEntry::BehindPiece;
+    bool hasDiscardedCancellation = entry != FlowEntry::Opening;
+    const int rightMargin = t.columns - 1;
+    // What commitWrapBeforePlainGlyph asks before it commits a wrap, for a
+    // glyph that extends no cluster.
+    const bool canWrap = t.modes.autowrap && !(t.triggersEngine && t.triggersEngine->ruleCount() != 0)
+        && !(t.graphicCancellation && t.graphicCancellation->isCapturing);
+    // lineHomeColumn on a row of single-width cells with the margins off,
+    // which is every row the flow writes.
+    const int wrapColumn = std::min(std::max(t.lineHome, 0), rightMargin);
+    const bool isDefaultPen = t.grid->isDefaultBlankButCodePoint(cellTemplate);
+    const Unicode::Width::AmbiguousWidth ambiguousWidth = t.ambiguousWidth;
+    // A row a feed has just scrolled in holds no pair for a piece's ends to cut.
+    bool isRowFresh = false;
+    std::array<std::uint32_t, Ubiquitty::maxColumns> codePoints;
+    const auto noteGlyph = [&] [[gnu::always_inline]] {
+        if (hasUnnotedGlyph) {
+            notePlacedGlyph(t, placed);
+            hasUnnotedGlyph = false;
+        }
+    };
+    // The wrap a piece of two glyphs or more starts behind: the first of them
+    // has a glyph behind it, so nothing can cancel it and take the wrap back.
+    const auto didCommitWrap = [&] [[gnu::always_inline]] (int column) {
+        const int rowLeft = s->cursorY;
+        const bool doesScroll = rowLeft == s->scrollBottom;
+        s->cursorX = column;
+        wrapCommitLinefeed(t);
+        s->wrapPending = false;
+        // The row just left is joined to this one, wherever the feed put it.
+        if (s->cursorY > 0)
+            s->lineWrapped[s->cursorY - 1] = true;
+        // A feed that leaves the cursor where it was scrolled a fresh row
+        // under it, or moved nothing.
+        if (s->cursorY != rowLeft && !isTextFlowRow(t, s))
+            return false;
+        isRowFresh = doesScroll;
+        return true;
+    };
+    // The journal a cancel reads is dropped before the flow's first write, as
+    // each batched writer drops it before its own.
+    const auto beginWrite = [&] [[gnu::always_inline]] {
+        if (!hasDiscardedCancellation) {
+            discardGraphicCancellation(t);
+            hasDiscardedCancellation = true;
+        }
+        dropWrapTrigger(t, s);
+    };
+    // The cursor behind a piece that ended on `lastColumn`, whose last glyph
+    // leads at `leadColumn`.
+    const auto finishPiece = [&] [[gnu::always_inline]] (int row, int lastColumn, int leadColumn, uint32_t lastCodePoint) {
+        if (lastColumn >= rightMargin) {
+            s->cursorX = leadColumn; // on the lead, as emitCharacter leaves it
+            s->wrapPending = true;
+            evaluateFilledRowTriggers(&t, row);
+        } else {
+            s->cursorX = lastColumn + 1;
+        }
+        isRowFresh = false;
+        placed = { row, leadColumn, lastCodePoint, s->cursorX, s->cursorY, s->wrapPending };
+        hasUnnotedGlyph = true;
+    };
+    while (position < length) {
+        const auto byte = static_cast<unsigned char>(buffer[position]);
+        const bool isASCII = byte - 0x20u <= 0x7Eu - 0x20u;
+        if (isASCII || byte >= 0xC2) {
+            const FlowGlyph first = isASCII ? FlowGlyph { byte, 1, 1 } : peekFlowGlyph(buffer, position, length, ambiguousWidth);
+            if (first.width == 0)
+                break;
+            // A pending wrap, or one cell left where a pair has to go.
+            const bool isWrapping = s->wrapPending || (first.width == 2 && s->cursorX >= rightMargin);
+            if (isWrapping && !canWrap)
+                break;
+            assert(!isWrapping || wrapColumn == std::max(Ubiquitty::Screen::effectiveLeft(t), Screen::lineHomeColumn(t)));
+            const int column = isWrapping ? wrapColumn : s->cursorX;
+            if (column < 0 || column + first.width - 1 > rightMargin)
+                break;
+            const int room = rightMargin - column + 1;
+            if (first.width == 2) {
+                // Wide glyphs: every one of these ranges is three bytes long,
+                // or four past the basic plane.
+                int decodedBytes = 0;
+                const int decoded = Ubiquitty::Unicode::utf8DecodeRun(
+                    std::span { buffer + position, static_cast<std::size_t>(length - position) },
+                    std::span { codePoints.data(), static_cast<std::size_t>(room / 2) }, &decodedBytes);
+                int count = 0;
+                int bytes = 0;
+                while (count < decoded && isWideIdeographFast(codePoints[count])) {
+                    bytes += codePoints[count] < 0x10000 ? 3 : 4;
+                    ++count;
+                }
+                if (count > 0 && !isFollowedByWholeThreeByteGlyph(buffer, position + bytes, length)
+                    && graphicCaptureBefore<Capture>(buffer, position + bytes, length) == GraphicCapture::Retain) {
+                    --count;
+                    bytes -= codePoints[count] < 0x10000 ? 3 : 4;
+                }
+                if (count < 2)
+                    break;
+                if (isWrapping && !didCommitWrap(column))
+                    break;
+                beginWrite();
+                const int row = s->cursorY;
+                const int lastColumn = column + count * 2 - 1;
+                if (!isRowFresh)
+                    eraseWidePartnersBesideRun(t, s, row, column, lastColumn);
+                t.grid->writeWideCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, { codePoints.data(), static_cast<std::size_t>(count) });
+                finishPiece(row, lastColumn, lastColumn - 1, codePoints[count - 1]);
+                position += bytes;
+                continue;
+            }
+            // Narrow: a run of ASCII by itself goes to the row as bytes, and a
+            // word with a plain narrow glyph behind it opens a piece of cells.
+            int asciiCount = 0;
+            bool isCells = !isASCII;
+            if (isASCII) {
+                asciiCount = countByteRun(buffer + position, std::min(length - position, room), 0x20, 0x7E);
+                const int behind = position + asciiCount;
+                if (asciiCount < room && asciiCount <= maxLineSpanPieceCells && behind < length && static_cast<unsigned char>(buffer[behind]) >= 0xC2) {
+                    isCells = peekFlowGlyph(buffer, behind, length, ambiguousWidth).width == 1;
+                    // A word with any other text behind it is the first
+                    // write's to hand to the writer that stages a mixed line.
+                    if (!isCells && asciiCount >= 2 && behind + 4 <= length && static_cast<unsigned char>(buffer[behind]) != 0xEF)
+                        break;
+                }
+            }
+            if (!isCells) {
+                int count = asciiCount;
+                const bool isFollowedByTab = position + count < length && buffer[position + count] == '\t';
+                if (!isFollowedByTab && graphicCaptureBefore<Capture>(buffer, position + count, length) == GraphicCapture::Retain)
+                    --count;
+                if (count < 2)
+                    break;
+                if (isWrapping && !didCommitWrap(column))
+                    break;
+                beginWrite();
+                const int row = s->cursorY;
+                const int lastColumn = column + count - 1;
+                const std::string_view text { buffer + position, static_cast<std::size_t>(count) };
+                if (!isDefaultPen || !t.grid->didAppendDefaultASCII(Ubiquitty::Row(row), Ubiquitty::Column(column), text)) {
+                    if (t.grid->mayRowHoldWidePair(Ubiquitty::Row(row))) {
+                        Ubiquitty::Cell blank;
+                        Ubiquitty::Screen::eraseCell(&blank, s);
+                        t.grid->clearWideOverlapEdges(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::Column(lastColumn), blank);
+                    }
+                    t.grid->writeASCIIRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, text);
+                }
+                finishPiece(row, lastColumn, lastColumn, static_cast<unsigned char>(buffer[position + count - 1]));
+                position += count;
+                continue;
+            }
+            // Cells: plain narrow glyphs and the ASCII between them, to the
+            // end of the row or the first byte that is neither.
+            int count = 0;
+            int end = position;
+            int lastLength = 0;
+            while (count < room && end < length) {
+                const auto next = static_cast<unsigned char>(buffer[end]);
+                if (next - 0x20u <= 0x7Eu - 0x20u) {
+                    codePoints[count++] = next;
+                    lastLength = 1;
+                    ++end;
+                    continue;
+                }
+                if (next < 0xC2)
+                    break;
+                const FlowGlyph glyph = peekFlowGlyph(buffer, end, length, ambiguousWidth);
+                if (glyph.width != 1)
+                    break;
+                codePoints[count++] = glyph.codePoint;
+                lastLength = glyph.length;
+                end += glyph.length;
+            }
+            const bool isFollowedByTab = end < length && buffer[end] == '\t';
+            if (count > 0 && !isFollowedByTab && !isFollowedByWholeThreeByteGlyph(buffer, end, length)
+                && graphicCaptureBefore<Capture>(buffer, end, length) == GraphicCapture::Retain) {
+                --count;
+                end -= lastLength;
+            }
+            if (count < 2)
+                break;
+            if (isWrapping && !didCommitWrap(column))
+                break;
+            beginWrite();
+            const int row = s->cursorY;
+            const int lastColumn = column + count - 1;
+            if (!isRowFresh)
+                eraseWidePartnersBesideRun(t, s, row, column, lastColumn);
+            t.grid->writeNarrowCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, { codePoints.data(), static_cast<std::size_t>(count) });
+            finishPiece(row, lastColumn, lastColumn, codePoints[count - 1]);
+            position = end;
+            continue;
+        }
+        if (byte == '\n') {
+            noteGlyph();
+            // A line break that ends a semantic role resets the pen the
+            // flow's cells carry.
+            const bool doesResetPen = t.shouldEndSemanticRoleAtLineBreak;
+            const int rowLeft = s->cursorY;
+            const bool doesScroll = rowLeft == s->scrollBottom;
+            executeGroundLineFeed(t);
+            ++position;
+            if (doesResetPen || (s->cursorY != rowLeft && !isTextFlowRow(t, s)))
+                break;
+            isRowFresh = doesScroll;
+            continue;
+        }
+        if (byte == '\r') {
+            noteGlyph();
+            executeGroundCarriageReturn(t);
+            ++position;
+            continue;
+        }
+        if (byte == '\t') {
+            noteGlyph();
+            // A tab moves the cursor and reads no scroll accounting, so an
+            // open scroll run outlives it. With the more(1) fix it can feed
+            // a line the immediate way, which a run must not straddle.
+            if (t.moreFix)
+                Ubiquitty::Screen::scrollLaneFlush(t);
+            const int rowLeft = s->cursorY;
+            actExecuteHorizontalTab(t, byte);
+            ++position;
+            if (t.isAlignedTabActive || !isTextFlowRow(t, s))
                 break;
             if (s->cursorY != rowLeft)
                 isRowFresh = false;
@@ -7427,8 +7782,66 @@ template<GraphicCapture Capture> static int continueWideFlow(Ubiquitty::Terminal
         }
         break;
     }
-    noteRun();
+    noteGlyph();
     return position;
+}
+
+/// Whether a glyph the flow places, narrow or wide, starts at `position`.
+///
+/// - Parameters:
+///   - t: The terminal, for the width it gives an ambiguous glyph.
+///   - buffer: The input.
+///   - position: A byte of C2 or above.
+///   - length: The input's length.
+/// - Returns: Whether one starts there, whole.
+static bool isFlowGlyphAt(const Ubiquitty::Terminal& t, const char* buffer, int position, int length)
+{
+    return peekFlowGlyph(buffer, position, length, t.ambiguousWidth).width != 0;
+}
+
+/// Whether a plain narrow glyph the flow places starts at `position`.
+///
+/// - Parameters:
+///   - t: The terminal, for the width it gives an ambiguous glyph.
+///   - buffer: The input.
+///   - position: A byte of C2 or above.
+///   - length: The input's length.
+/// - Returns: Whether one starts there, whole.
+static bool isPlainNarrowGlyphAt(const Ubiquitty::Terminal& t, const char* buffer, int position, int length)
+{
+    return peekFlowGlyph(buffer, position, length, t.ambiguousWidth).width == 1;
+}
+
+/// Opens a flow of text on a multibyte glyph the flow places.
+///
+/// The batched writers establish their eligibility before they write, and a
+/// flow behind one inherits it. Text that opens on a plain narrow glyph of
+/// another alphabet has no such writer before it, so this asks the same
+/// questions: the batched write's own, the designated set, and a pen that
+/// forces emoji presentation.
+///
+/// - Parameters:
+///   - t: The terminal, in the ground state with no sequence open.
+///   - buffer: The input.
+///   - start: A byte of C2 or above.
+///   - length: The input's length.
+/// - Returns: The bytes consumed, or zero when the text is another writer's.
+template<GraphicCapture Capture> static int emitTextFlow(Ubiquitty::Terminal& t, const char* buffer, int start, int length)
+{
+    // A page of wide glyphs is opened by the text run, whose own flow is the
+    // one such a page stays in.
+    const FlowGlyph first = peekFlowGlyph(buffer, start, length, t.ambiguousWidth);
+    if (first.width != 1 || !t.grid)
+        return 0;
+    Ubiquitty::Screen::State* s = t.screens.active;
+    if (!isTextFlowScreen(t, s) || !batchedWriteEligibleIgnoringWrap(t, s) || t.characterSetG[t.characterSetActive] != characterSetUSASCII
+        || s->pen.attributes.contains(VT::Attribute::ForceEmojiPresentation))
+        return 0;
+    // A plain narrow glyph has no break class, so it extends no cluster,
+    // live or not.
+    assert(!Ubiquitty::Unicode::isGraphemeRelevant(first.codePoint));
+    const Ubiquitty::Cell cellTemplate = Ubiquitty::cellFromPen(s->pen, t.currentLinkID);
+    return continueTextFlow<Capture>(t, s, buffer, start, length, cellTemplate, {}, FlowEntry::Opening) - start;
 }
 
 template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, const char* buffer, int start, int length, TextRunPacing& pacing)
@@ -7896,12 +8309,13 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
     }
     decodeBudget = nextTextRunDecodeBudget(decodeBudget, p - start, decodedEnd - start);
     pacing.isMixed = wideCodePointCount == 0;
-    // A row of plain wide glyphs has more of them behind it more often than
-    // not, and the flow takes those with what lies between the rows.
-    if (wideCodePointCount && !t.modes.leftRightMarginMode && !t.grid->hasSizedCellHint()
-        && s->pen.extendedAttributes.textSizeSpecID() == 0 && (parseAblateMask & AblateTextFlow) == 0) {
-        const PlacedWide placed { row, lastLeadColumn, lastCodePoint, s->cursorX, s->cursorY, s->wrapPending };
-        return continueWideFlow<Capture>(t, s, buffer, p, length, tmpl, placed) - start;
+    // A run of plain glyphs has more of them behind it more often than not,
+    // and the flow takes those with what lies between the rows.
+    if ((wideCodePointCount || narrowCodePointCount) && isTextFlowScreen(t, s)) {
+        const PlacedGlyph placed { row, lastLeadColumn, lastCodePoint, s->cursorX, s->cursorY, s->wrapPending };
+        if (wideCodePointCount)
+            return continueWideFlow<Capture>(t, s, buffer, p, length, tmpl, placed) - start;
+        return continueTextFlow<Capture>(t, s, buffer, p, length, tmpl, placed, FlowEntry::BehindPiece) - start;
     }
     // A combining mark / VS / ZWJ arriving next attaches to the run's last glyph.
     t.parser.precedingItem.setGraphic(lastCodePoint, lastCodePoint, 0);
@@ -8513,6 +8927,10 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                                 int consumed = 0;
                                 if (VT::shouldPeekClusterLead(buffer, i, length) && VT::shouldRouteUTF8LeadToClusterRun(t, buffer, i, length))
                                     consumed = VT::emitClusterRun<Capture>(t, buffer, i, length); // emoji/combining
+                                // Plain glyphs of another alphabet, and the rows
+                                // and line ends between them, are a flow's.
+                                if (consumed == 0)
+                                    consumed = VT::emitTextFlow<Capture>(t, buffer, i, length);
                                 // Text that mixes scripts word by word is written a
                                 // line at a time, marks and all.
                                 // A stretch of one script is the text run's, which

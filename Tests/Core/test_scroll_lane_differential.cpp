@@ -954,6 +954,172 @@ int main(int argc, char** argv)
         runCorpus("wide-flow", segments);
     }
 
+    // 20. Text of other alphabets: letters of two and three bytes among ASCII
+    // words, in lines that wrap and in bare-line-feed staircases, with what
+    // is not plain among them (a mark, a pictograph, a soft hyphen, a joiner,
+    // a selector, a leading jamo with the syllable it takes, an ideograph)
+    // and what can follow a letter behind them.
+    //
+    // Each extender is followed by a plain letter, so no cluster grows past
+    // the one continuation a cell holds inline: a longer one is interned, and
+    // the number the pool gives it depends on what was interned before it,
+    // which differs between a cluster grown a byte at a time and one written
+    // whole. This fingerprint reads that number raw.
+    {
+        const auto appendUTF8 = [](std::string& out, uint32_t codePoint) {
+            if (codePoint < 0x80) {
+                out.push_back(static_cast<char>(codePoint));
+                return;
+            }
+            if (codePoint < 0x800) {
+                out.push_back(static_cast<char>(0xC0 | (codePoint >> 6)));
+            } else if (codePoint < 0x10000) {
+                out.push_back(static_cast<char>(0xE0 | (codePoint >> 12)));
+                out.push_back(static_cast<char>(0x80 | ((codePoint >> 6) & 0x3F)));
+            } else {
+                out.push_back(static_cast<char>(0xF0 | (codePoint >> 18)));
+                out.push_back(static_cast<char>(0x80 | ((codePoint >> 12) & 0x3F)));
+                out.push_back(static_cast<char>(0x80 | ((codePoint >> 6) & 0x3F)));
+            }
+            out.push_back(static_cast<char>(0x80 | (codePoint & 0x3F)));
+        };
+        const auto lettersPage = [&](int pieces, bool hasReturns) {
+            std::string out;
+            for (int i = 0; i < pieces; ++i) {
+                const uint32_t pick = rnd();
+                const int length = 1 + static_cast<int>((pick >> 8) % 9);
+                switch (pick % 32) {
+                case 0:
+                case 1:
+                    out += hasReturns ? "\r\n" : "\n";
+                    break;
+                case 2:
+                    out += "\t";
+                    break;
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                    for (int k = 0; k < length; ++k)
+                        out.push_back(static_cast<char>('a' + (pick >> (k + 3)) % 26));
+                    out += " ";
+                    break;
+                case 7:
+                    for (int k = 0; k < length; ++k)
+                        appendUTF8(out, 0x391 + (pick >> (k + 3)) % 25); // Greek capitals
+                    break;
+                case 8:
+                    for (int k = 0; k < length; ++k)
+                        appendUTF8(out, 0x430 + (pick >> (k + 3)) % 32); // Cyrillic
+                    out += " ";
+                    break;
+                case 9:
+                    appendUTF8(out, 0x2018 + pick % 6); // quotation marks, ambiguous in width
+                    break;
+                case 10:
+                    appendUTF8(out, 0x2500 + pick % 0x80); // box drawing
+                    break;
+                case 11:
+                    appendUTF8(out, 0x2192); // an arrow
+                    break;
+                case 12:
+                    out += "e\xCC\x81x"; // a letter under a mark
+                    break;
+                case 13:
+                    out += "o";
+                    appendUTF8(out, 0x301 + pick % 4); // another, under one of four marks
+                    out += "x";
+                    break;
+                case 14:
+                    appendUTF8(out, 0x1F600 + pick % 16); // a pictograph
+                    break;
+                case 15:
+                    appendUTF8(out, (pick & 64) ? 0xA9 : 0x2122); // a text pictograph
+                    break;
+                case 16:
+                    appendUTF8(out, (pick & 64) ? 0xAD : 0xA0); // a soft hyphen, a no-break space
+                    break;
+                case 17:
+                    out += "u";
+                    appendUTF8(out, (pick & 64) ? 0x200D : 0xFE0F); // a joiner, a selector
+                    out += "x";
+                    break;
+                case 18:
+                    appendUTF8(out, 0x1100 + pick % 19); // a leading jamo
+                    if (pick & 64)
+                        appendUTF8(out, 0xAC00 + (pick >> 9) % 11172); // and the syllable it takes
+                    else
+                        appendUTF8(out, 0x1161 + (pick >> 9) % 21);
+                    out += "x";
+                    break;
+                case 19:
+                    appendUTF8(out, 0x4E00 + pick % 0x5000);
+                    appendUTF8(out, 0x4E00 + (pick >> 7) % 0x5000);
+                    break;
+                default:
+                    for (int k = 0; k < length; ++k)
+                        appendUTF8(out, 0xC0 + (pick >> (k + 3)) % 0x40); // Latin-1 letters
+                    if (pick & 32)
+                        out += " ";
+                    break;
+                }
+            }
+            return out;
+        };
+        std::vector<std::string> segments;
+        segments.push_back(lettersPage(5000, true));
+        segments.push_back(lettersPage(5000, false));
+        segments.emplace_back("\x1b[?1049h\x1b[H\x1b[2J");
+        segments.push_back(lettersPage(5000, false));
+        segments.push_back("\x1b[32m" + lettersPage(1500, false) + "\x1b[m");
+        segments.emplace_back("\x1b[?1049l");
+        const std::string fullRow = [&] {
+            std::string row;
+            for (int letter = 0; letter < 80; ++letter)
+                appendUTF8(row, 0xE0 + static_cast<uint32_t>(letter % 24));
+            return row;
+        }();
+        const char* const followers[] = {
+            "\xCC\x81", // a combining mark
+            "\x1b[3b", // a repeat
+            "\x1bT", // a cancel
+            "\xEF\xB8\x8F", // a selector
+            "\xE2\x80\x8D", // a joiner
+        };
+        for (const char* follower : followers) {
+            std::string edges;
+            edges += std::string("\xC3\xA9t\xC3\xA9") + follower + "\r\n";
+            edges += fullRow + follower + "\r\n";
+            edges += fullRow + "\xC3\xA9\xC3\xA8" + follower + "\r\n";
+            edges += fullRow + "\xC3\xA9" + follower + "\r\n";
+            edges += fullRow + "\xC3\xA9\t" + follower + "\r\n";
+            edges += "mot \xC3\xA9t\xC3\xA9\n" + std::string(follower) + "\r\n";
+            edges += "mot \xC3\xA9t\xC3\xA9\r" + std::string(follower) + "\r\n";
+            edges += std::string("a\t\xC3\xA9\xC3\xA8\tc\n\n\td\xC3\xA9") + follower + "e\r\n";
+            segments.push_back(edges);
+            segments.push_back("\x1b[?1049h" + edges + lettersPage(150, false) + follower + "\x1b[?1049l");
+        }
+        // Letters written over rows that hold pairs, which their ends cut.
+        {
+            std::string pairs = "\x1b[H\x1b[2J";
+            for (int row = 0; row < 8; ++row) {
+                pairs += (row & 1) ? "a" : "";
+                for (int glyph = 0; glyph < 39; ++glyph)
+                    appendUTF8(pairs, 0x5B57);
+                pairs += "\r\n";
+            }
+            std::string over = "\x1b[1;1H" + fullRow + "\xC3\xA9\xC3\xA8\xC3\xA0 mot\n\xC3\xA9\xC3\xA8\r\t\xC3\xA9t\xC3\xA9\n\t\t\xC3\xA0 la";
+            segments.push_back(pairs + over);
+            segments.push_back("\x1b[?1049h" + pairs + over + "\x1b[?1049l");
+        }
+        segments.push_back("\x1b[?7l" + lettersPage(1200, false) + "\x1b[?7h");
+        segments.push_back("\x1b[4h" + lettersPage(600, false) + "\x1b[4l");
+        segments.push_back("\x1b[?69h\x1b[5;60s" + lettersPage(1200, false) + "\x1b[?69l");
+        segments.push_back("\x1b[H\x1b[2J\x1b[6;1H\x1b#6\x1b[1;1H" + lettersPage(600, false));
+        segments.push_back("\x1b(0" + lettersPage(600, false) + "\x1b(B"); // a designated set translates the ASCII among them
+        runCorpus("letters-flow", segments);
+    }
+
     if (failures == 0) {
         std::printf("scroll-lane differential: all corpora chunk-invariant OK\n");
         return 0;
