@@ -316,17 +316,40 @@ std::vector<Corpus> buildCorpora(std::size_t targetBytes)
 // Feeds the corpus whole, or in the pieces a runtime hands the parser: a pane's
 // drain parses one model-lock bite at a time, and what a run costs when its
 // input ends mid-row is part of what the pane pays.
-void feed(Ubiquitty::Terminal& term, const std::string& bytes, std::size_t chunkBytes)
+/// Which of the parser's two entries a run feeds.
+enum class FeedEntry : std::uint8_t {
+    /// `processBytes`, a whole chunk at a time.
+    Whole,
+    /// `processBytesUpToSyncClear`, which a session's ingest loop calls: it
+    /// stops where a synchronized update ends and is called again for the rest.
+    UpToSyncClear,
+};
+
+void feedChunk(Ubiquitty::Terminal& term, std::string_view chunk, FeedEntry entry)
+{
+    if (entry == FeedEntry::Whole) {
+        Ubiquitty::processBytes(&term, chunk);
+        return;
+    }
+    while (!chunk.empty()) {
+        const int consumed = Ubiquitty::processBytesUpToSyncClear(&term, chunk);
+        if (consumed <= 0)
+            break;
+        chunk.remove_prefix(static_cast<std::size_t>(consumed));
+    }
+}
+
+void feed(Ubiquitty::Terminal& term, const std::string& bytes, std::size_t chunkBytes, FeedEntry entry)
 {
     if (chunkBytes == 0) {
-        Ubiquitty::processBytes(&term, bytes);
+        feedChunk(term, bytes, entry);
         return;
     }
     for (std::size_t offset = 0; offset < bytes.size(); offset += chunkBytes)
-        Ubiquitty::processBytes(&term, std::string_view(bytes).substr(offset, chunkBytes));
+        feedChunk(term, std::string_view(bytes).substr(offset, chunkBytes), entry);
 }
 
-double bestMegabytesPerSecond(const Corpus& corpus, int repetitions, std::size_t chunkBytes, int scrollbackLines)
+double bestMegabytesPerSecond(const Corpus& corpus, int repetitions, std::size_t chunkBytes, int scrollbackLines, FeedEntry entry)
 {
     const auto& bytes = corpus.bytes;
     Ubiquitty::Terminal term;
@@ -335,12 +358,12 @@ double bestMegabytesPerSecond(const Corpus& corpus, int repetitions, std::size_t
         Ubiquitty::setScrollbackLimit(&term, historyLines);
     Ubiquitty::resize(term, corpus.rows, corpus.columns);
     // One untimed pass so first-touch faults and table init stay out of the sample.
-    feed(term, bytes, chunkBytes);
+    feed(term, bytes, chunkBytes, entry);
 
     double bestSeconds = 1e30;
     for (int repetition = 0; repetition < repetitions; ++repetition) {
         const auto start = ClockType::now();
-        feed(term, bytes, chunkBytes);
+        feed(term, bytes, chunkBytes, entry);
         const double seconds = std::chrono::duration<double>(ClockType::now() - start).count();
         if (seconds < bestSeconds)
             bestSeconds = seconds;
@@ -377,6 +400,10 @@ int main(int argc, char** argv)
     // A history as long as a session's is larger than the cache, and what a
     // scrolled row costs to keep depends on that; zero keeps the terminal's own.
     int scrollbackLines = 0;
+    // A session parses through the entry that stops at a synchronized
+    // update's end, a different instantiation of the parser from the whole-
+    // chunk one: each is compiled, and profiled, on its own.
+    FeedEntry entry = FeedEntry::Whole;
     for (int index = 1; index < argc; ++index) {
         if (std::strcmp(argv[index], "--stream") == 0 && index + 1 < argc)
             streamPath = argv[++index];
@@ -394,10 +421,16 @@ int main(int argc, char** argv)
             loopCorpus = argv[++index];
         else if (std::strcmp(argv[index], "--repetitions") == 0 && index + 1 < argc)
             repetitions = std::atoi(argv[++index]);
-        else if (std::strcmp(argv[index], "--scrollback") == 0 && index + 1 < argc)
+        else if (std::strcmp(argv[index], "--entry") == 0 && index + 1 < argc && std::strcmp(argv[index + 1], "sync") == 0) {
+            entry = FeedEntry::UpToSyncClear;
+            ++index;
+        } else if (std::strcmp(argv[index], "--entry") == 0 && index + 1 < argc && std::strcmp(argv[index + 1], "whole") == 0) {
+            entry = FeedEntry::Whole;
+            ++index;
+        } else if (std::strcmp(argv[index], "--scrollback") == 0 && index + 1 < argc)
             scrollbackLines = std::max(0, std::atoi(argv[++index]));
         else {
-            std::fprintf(stderr, "usage: bench_ingest_corpora [--repetitions N] [--loop <corpus>] [--chunk BYTES] [--scrollback LINES] [--stream <file> [--stream-grid COLUMNSxROWS]]\n");
+            std::fprintf(stderr, "usage: bench_ingest_corpora [--repetitions N] [--loop <corpus>] [--chunk BYTES] [--scrollback LINES] [--entry whole|sync] [--stream <file> [--stream-grid COLUMNSxROWS]]\n");
             return 2;
         }
     }
@@ -434,7 +467,7 @@ int main(int argc, char** argv)
                 Ubiquitty::setScrollbackLimit(&term, historyLines);
             Ubiquitty::resize(term, corpus.rows, corpus.columns);
             for (;;)
-                Ubiquitty::processBytes(&term, corpus.bytes);
+                feedChunk(term, corpus.bytes, entry);
         }
         std::fprintf(stderr, "bench_ingest_corpora: no corpus named '%s'\n", loopCorpus);
         return 2;
@@ -449,7 +482,7 @@ int main(int argc, char** argv)
     std::printf(R"({"benchmarks":[)");
     bool first = true;
     for (const Corpus& corpus : corpora) {
-        const double megabytesPerSecond = bestMegabytesPerSecond(corpus, repetitions, chunkBytes, scrollbackLines);
+        const double megabytesPerSecond = bestMegabytesPerSecond(corpus, repetitions, chunkBytes, scrollbackLines, entry);
         std::fprintf(stderr, "%-18s %4dx%-4d %12.1f\n", corpus.name, corpus.columns, corpus.rows, megabytesPerSecond);
         std::printf(R"(%s{"name":"%s","value":%.3f,"unit":"MB/s","rows":%d,"columns":%d})", first ? "" : ",", corpus.name, megabytesPerSecond, corpus.rows, corpus.columns);
         first = false;
