@@ -612,6 +612,25 @@ std::optional<std::uint16_t> CellGrid::styledTemplateID(const Cell& cellTemplate
     }
 }
 
+std::optional<CellGrid::StyledRow> CellGrid::styledRow(Row row, std::span<std::uint32_t> scratch) const
+{
+    if (row.value() < 0 || row.value() >= m_rows || !m_styledTemplates)
+        return std::nullopt;
+    const int slot = physicalRowSlot(m_activeIndex, row.value());
+    const auto& state = m_rowState[m_activeIndex][slot];
+    if (state.storage != RowStorage::StyledASCII)
+        return std::nullopt;
+    assert(slot != m_deferredBlankSlot[m_activeIndex] && state.filled >= 0 && state.filled <= m_columns);
+    const auto length = static_cast<std::size_t>(state.filled);
+    if (scratch.size() < length)
+        return std::nullopt;
+    Cell* backing = m_rowPtrs[m_activeIndex][slot];
+    const auto* bytes = reinterpret_cast<const std::uint8_t*>(backing);
+    for (std::size_t column = 0; column < length; ++column)
+        scratch[column] = bytes[column];
+    return StyledRow { scratch.first(length), { styledIDs(backing), length }, m_styledTemplates->cells.data() };
+}
+
 bool CellGrid::writeStyledASCIIRun(int slot, int row, int firstColumn, int lastColumn, const Cell& cellTemplate, const char* source)
 {
     auto& state = m_rowState[m_activeIndex][slot];
@@ -1416,6 +1435,10 @@ void CellGrid::writeRun(Row r, Column firstColumnValue, const Cell& tmpl, std::s
         }
     }
     if constexpr (!Translated) {
+        // A styled row emptied by an erase or a scroll holds nothing its ids
+        // are needed for, and takes text at a byte a cell again.
+        if (RowState& state = m_rowState[m_activeIndex][slot]; state.filled == 0 && state.storage == RowStorage::StyledASCII && slot != m_deferredBlankSlot[m_activeIndex])
+            state.storage = RowStorage::DefaultASCII;
         if (isCompactASCIIWriteCandidate(slot) && writeCompactASCIIRun(slot, ri, lo, hi, tmpl, src))
             return;
         if (m_rowState[m_activeIndex][slot].storage != RowStorage::Cells && slot != m_deferredBlankSlot[m_activeIndex]

@@ -664,6 +664,49 @@ public:
     ///   - length: The row's cell count.
     static void expandCompactRow(const std::uint8_t* bytes, Cell* cells, int length);
 
+    /// The first text byte of a compact row whose form is packed in its own
+    /// cells' space rather than held as text: no byte of text is this one.
+    static constexpr std::uint8_t packedRowMarker = 0xFF;
+    /// The most pens a packed row carries; a row of more is stored as cells.
+    static constexpr int maxPackedRowPens = 16;
+
+    /// Packs a row the grid already holds as code points and template ids.
+    ///
+    /// The form is a pen count, a code point a cell, a pen index a cell, and
+    /// the pens as template cells. It is a fraction of the cells' size, and a
+    /// row leaving the screen is mostly never read again.
+    ///
+    /// - Parameters:
+    ///   - codePoints: A code point a cell.
+    ///   - ids: A template id a cell, into `templates`.
+    ///   - templates: The grid's templates by id.
+    ///   - packed: Where the form goes: the cells' worth of space the row
+    ///     reserves.
+    /// - Returns: Whether the row was packed; `false` leaves `packed`
+    ///   unspecified, for a row too short or of too many pens.
+    [[nodiscard]] static bool packStyledRow(std::span<const std::uint32_t> codePoints, std::span<const std::uint16_t> ids, const Cell* templates, Cell* packed);
+
+    /// Expands a packed row into cells.
+    ///
+    /// - Parameters:
+    ///   - packed: The form ``packStyledRow`` wrote.
+    ///   - cells: Where the row's cells go; may be `packed` itself.
+    ///   - length: The row's cell count.
+    static void expandPackedRow(const Cell* packed, Cell* cells, int length);
+
+    /// Appends a row the grid holds as code points and template ids, without
+    /// making its cells.
+    ///
+    /// - Parameters:
+    ///   - codePoints: A code point a cell, the row's content width long.
+    ///   - ids: A template id a cell, into `templates`.
+    ///   - templates: The grid's templates by id.
+    ///   - lineAttribute: The row's line attribute.
+    ///   - mark: The row's prompt mark.
+    ///   - wrapped: Whether the row continues on the next.
+    ///   - needsShaping: Whether the row may need shaping.
+    void appendStyledRow(std::span<const std::uint32_t> codePoints, std::span<const std::uint16_t> ids, const Cell* templates, uint8_t lineAttribute, uint8_t mark, bool wrapped, bool needsShaping); // bool-ok: wrap and shaping are row facts, as on append
+
 private:
     /// A folded block's storage: every line's row form back to back, one
     /// entry per ordinal of the block's span at the fold, blank lines

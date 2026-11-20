@@ -301,6 +301,23 @@ public:
     ///
     /// - Returns: The default blank.
     [[nodiscard]] const Cell& defaultBlank() const { return m_defaultBlank; }
+    /// A row held as code points and template ids.
+    struct StyledRow {
+        /// A code point a cell, the row's content width long.
+        std::span<const std::uint32_t> codePoints;
+        /// A template id a cell, into `templates`.
+        std::span<const std::uint16_t> ids;
+        /// The grid's templates by id.
+        const Cell* templates;
+    };
+    /// A styled row's content without its cells, for a reader that can take it so.
+    ///
+    /// - Parameters:
+    ///   - row: The row, on the active screen.
+    ///   - scratch: Where the row's bytes are widened; at least `columns()` long.
+    /// - Returns: The row's code points and ids, valid until the grid is next
+    ///   written, or nothing for a row held as cells or as default text.
+    [[nodiscard]] std::optional<StyledRow> styledRow(Row row, std::span<std::uint32_t> scratch) const;
     // setRowSpan to a SPECIFIC screen (write mirror of cellAt(ScreenMode)); snapshot apply reconstructs the
     // frozen primary while alternate is active. Active screen → paint-tracked path; inactive → off the
     // paint-dirty path (later setAlternateActive supplies the repaint).

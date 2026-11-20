@@ -224,7 +224,10 @@ HistoryScanState HistoryScan::step(int blockBudget, HistoryHitSink sink, void* c
                     // scan's own scratch.
                     if (m_decoded.size() < facts.length)
                         m_decoded.resize(facts.length);
-                    LineStore::expandCompactRow(region.text + end, m_decoded.data(), facts.length);
+                    if (region.text[end] == LineStore::packedRowMarker)
+                        LineStore::expandPackedRow(region.cells + end, m_decoded.data(), facts.length);
+                    else
+                        LineStore::expandCompactRow(region.text + end, m_decoded.data(), facts.length);
                     takeRow(m_decoded.data(), facts);
                     continue;
                 }

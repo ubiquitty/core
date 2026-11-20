@@ -15,6 +15,7 @@
 #include "Core/Screen/SizedBlock.h"
 #include "Core/Terminal.h"
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <memory>
 
@@ -50,6 +51,15 @@ void scrollbackAppendGridRow(Terminal& terminal, int row)
     const auto& meta = captured.meta;
     if (const auto compact = terminal.grid->compactASCIIRow(Row(row))) {
         ensureLineStore(terminal).appendDefaultASCII(*compact, captured.contentWidth, meta.lineAttribute, meta.oscMark,
+            meta.has(RowFlag::Wrapped), meta.has(RowFlag::NeedsShaping));
+        terminal.scrollbackCount = terminal.lineStore->count();
+        return;
+    }
+    // A row the grid holds as code points and ids goes to history in that
+    // form: its cells are made neither here nor there until it is read.
+    std::array<std::uint32_t, maxColumns> widened;
+    if (const auto styled = terminal.grid->styledRow(Row(row), widened); styled && static_cast<int>(styled->codePoints.size()) == captured.contentWidth && captured.contentWidth > 0) {
+        ensureLineStore(terminal).appendStyledRow(styled->codePoints, styled->ids, styled->templates, meta.lineAttribute, meta.oscMark,
             meta.has(RowFlag::Wrapped), meta.has(RowFlag::NeedsShaping));
         terminal.scrollbackCount = terminal.lineStore->count();
         return;

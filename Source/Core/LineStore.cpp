@@ -5,10 +5,13 @@
 // fold of a cold block into the row form.
 
 #include "Core/LineStore.h"
+
+#include "Core/CellStamp.h"
 #include "Core/Screen/HistoryLines.h"
 #include "Core/Screen/RowForm.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cassert>
 #include <cstdlib>
@@ -385,13 +388,108 @@ void LineStore::expandCompactRow(const std::uint8_t* bytes, Cell* cells, int len
     }
 }
 
+// A packed row, in the space its cells reserve: a pen count, a code point a
+// cell, a pen index a cell, then the pens as template cells.
+namespace {
+struct PackedRowLayout {
+    std::size_t codePoints;
+    std::size_t penIndexes;
+    std::size_t pens;
+};
+constexpr PackedRowLayout packedRowLayout(int length)
+{
+    const std::size_t codePoints = sizeof(std::uint32_t);
+    const std::size_t penIndexes = codePoints + sizeof(std::uint32_t) * static_cast<std::size_t>(length);
+    // The pens are whole cells and start on a cell's alignment.
+    const std::size_t pens = (penIndexes + static_cast<std::size_t>(length) + alignof(Cell) - 1) & ~(alignof(Cell) - 1);
+    return { codePoints, penIndexes, pens };
+}
+constexpr bool doesPackedRowFit(int length)
+{
+    return length >= 2 && packedRowLayout(length).pens + LineStore::maxPackedRowPens * sizeof(Cell) <= static_cast<std::size_t>(length) * sizeof(Cell);
+}
+} // namespace
+
+bool LineStore::packStyledRow(std::span<const std::uint32_t> codePoints, std::span<const std::uint16_t> ids, const Cell* templates, Cell* packed)
+{
+    const int length = static_cast<int>(codePoints.size());
+    if (!doesPackedRowFit(length))
+        return false;
+    const PackedRowLayout layout = packedRowLayout(length);
+    auto* bytes = reinterpret_cast<std::uint8_t*>(packed);
+    std::uint8_t* penIndexes = bytes + layout.penIndexes;
+    std::array<std::uint16_t, maxPackedRowPens> penIDs;
+    std::uint32_t penCount = 0;
+    std::uint32_t current = 0;
+    for (int column = 0; column < length; ++column) {
+        const std::uint16_t id = ids[static_cast<std::size_t>(column)];
+        if (penCount == 0 || penIDs[current] != id) [[unlikely]] {
+            std::uint32_t found = 0;
+            while (found < penCount && penIDs[found] != id)
+                ++found;
+            if (found == penCount) {
+                if (penCount == maxPackedRowPens)
+                    return false;
+                penIDs[penCount++] = id;
+            }
+            current = found;
+        }
+        penIndexes[column] = static_cast<std::uint8_t>(current);
+    }
+    std::memcpy(bytes, &penCount, sizeof penCount);
+    std::memcpy(bytes + layout.codePoints, codePoints.data(), codePoints.size_bytes());
+    Cell* pens = reinterpret_cast<Cell*>(bytes + layout.pens);
+    for (std::uint32_t pen = 0; pen < penCount; ++pen)
+        pens[pen] = templates[penIDs[pen]];
+    return true;
+}
+
+void LineStore::expandPackedRow(const Cell* packed, Cell* cells, int length)
+{
+    // Lifted out first: the cells may be stored over the form they are made from.
+    const auto* bytes = reinterpret_cast<const std::uint8_t*>(packed);
+    const PackedRowLayout layout = packedRowLayout(length);
+    std::uint32_t penCount = 0;
+    std::memcpy(&penCount, bytes, sizeof penCount);
+    assert(penCount >= 1 && penCount <= maxPackedRowPens && length >= 2 && length <= maxColumns);
+    std::array<std::uint32_t, maxColumns> codePoints;
+    std::array<std::uint8_t, maxColumns> penIndexes;
+    std::array<Cell, maxPackedRowPens> pens;
+    std::memcpy(codePoints.data(), bytes + layout.codePoints, sizeof(std::uint32_t) * static_cast<std::size_t>(length));
+    std::memcpy(penIndexes.data(), bytes + layout.penIndexes, static_cast<std::size_t>(length));
+    std::memcpy(pens.data(), bytes + layout.pens, penCount * sizeof(Cell));
+    for (int column = 0; column < length;) {
+        const std::uint8_t pen = penIndexes[static_cast<std::size_t>(column)];
+        const CellStamp stamp(pens[pen]);
+        do {
+            stamp.store(cells + column, codePoints[static_cast<std::size_t>(column)]);
+            ++column;
+        } while (column < length && penIndexes[static_cast<std::size_t>(column)] == pen);
+    }
+}
+
 void LineStore::expandLine(StoredLine& line, const Block& block) const
 {
     // Under the model lock, as every read is. A reader on another thread
     // whose snapshot saw the row compact reads its bytes, which stay as they
     // are; it never reads the cells written here.
     assert(block.base && block.text && line.cells >= block.base.get());
-    expandCompactRow(block.text.get() + (line.cells - block.base.get()), line.cells, line.length);
+    const std::uint8_t* text = block.text.get() + (line.cells - block.base.get());
+    if (text[0] == packedRowMarker) {
+        // A packed row's form is in the cells' own space, which a reader on
+        // another thread may be decoding: it is let out before the cells are
+        // stored over the form, and its snapshot is stale from here.
+        if (m_gate) {
+            m_gate->invalidation.fetch_add(1, std::memory_order_seq_cst);
+            if (m_gate->readerCount.load(std::memory_order_seq_cst) != 0 && m_gate->lock) {
+                m_gate->lock->lock();
+                m_gate->lock->unlock();
+            }
+        }
+        expandPackedRow(line.cells, line.cells, line.length);
+    } else {
+        expandCompactRow(text, line.cells, line.length);
+    }
     line.isCompact = 0;
 }
 
@@ -633,6 +731,28 @@ void LineStore::append(const Cell* cells, int length, uint8_t lineAttribute, uin
     appendStoredRow(length, lineAttribute, mark, wrapped, needsShaping, [cells, length](Block&, Cell* destination) {
         copyCellsIntoSlab(destination, cells, length);
         return false; }, false);
+}
+
+void LineStore::appendStyledRow(std::span<const std::uint32_t> codePoints, std::span<const std::uint16_t> ids, const Cell* templates, uint8_t lineAttribute, uint8_t mark, bool wrapped, bool needsShaping) // bool-ok: wrap and shaping are row facts, as on append
+{
+    const int length = static_cast<int>(codePoints.size());
+    if (length <= 0 || length > maxColumns || ids.size() != codePoints.size())
+        return;
+    appendStoredRow(length, lineAttribute, mark, wrapped, needsShaping, [codePoints, ids, templates, length](Block& block, Cell* destination) {
+        if (block.text && packStyledRow(codePoints, ids, templates, destination)) {
+            block.text.get()[destination - block.base.get()] = packedRowMarker;
+            return true;
+        }
+        // Too short or too many pens to pack: the cells themselves.
+        for (int column = 0; column < length;) {
+            const std::uint16_t id = ids[static_cast<std::size_t>(column)];
+            const CellStamp stamp(templates[id]);
+            do {
+                stamp.store(destination + column, codePoints[static_cast<std::size_t>(column)]);
+                ++column;
+            } while (column < length && ids[static_cast<std::size_t>(column)] == id);
+        }
+        return false; }, true);
 }
 
 void LineStore::appendDefaultASCII(std::span<const std::uint8_t> text, int length, uint8_t lineAttribute, uint8_t mark, bool wrapped, bool needsShaping) // bool-ok: wrap and shaping are stored row metadata.
