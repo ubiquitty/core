@@ -877,9 +877,14 @@ int main(int argc, char** argv)
                 case 6:
                     appendUTF8(out, 0x20000 + pick % 0x1000); // an ideograph past the basic plane
                     break;
-                case 7:
-                    appendUTF8(out, 0x2603); // a narrow symbol among them
+                case 7: {
+                    // A narrow glyph among them: a symbol, and the letters on
+                    // either side of the first wide range and past the last
+                    // of the plane's, which a range read too wide takes in.
+                    static constexpr uint32_t narrow[] = { 0x2603, 0xA4D0, 0xA500, 0xA640, 0xFFE8, 0x3248, 0x1F100 };
+                    appendUTF8(out, narrow[(pick >> 8) % (sizeof narrow / sizeof *narrow)]);
                     break;
+                }
                 default:
                     appendUTF8(out, 0x4E00 + pick % 0x5000);
                     break;

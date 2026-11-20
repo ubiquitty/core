@@ -1684,12 +1684,17 @@ void CellGrid::writeWideCodePointRun(Row rowValue, Column firstColumnValue, cons
     }
     const CellStamp leadStamp(lead);
     const CellStamp continuationStamp(continuation);
-    for (std::size_t index = 0; index < codePoints.size(); ++index) {
-        const int column = firstColumn + static_cast<int>(index) * 2;
-        assert(column >= 0 && column + 1 < m_columns);
-        assert(codePoints[index] && !Unicode::mayNeedShaping(codePoints[index]));
-        leadStamp.store(destination + column, codePoints[index]);
-        continuationStamp.store(destination + column + 1, continuation.codePoint);
+    // The continuation's code point is read once: read from the cell inside
+    // the loop it is reloaded for every glyph, because a store through the
+    // row could, for all the compiler knows, be a store to that cell.
+    const uint32_t continuationCodePoint = continuation.codePoint;
+    assert(firstColumn + static_cast<int>(codePoints.size()) * 2 <= m_columns);
+    Cell* pair = destination + firstColumn;
+    for (const uint32_t codePoint : codePoints) {
+        assert(codePoint && !Unicode::mayNeedShaping(codePoint));
+        leadStamp.store(pair, codePoint);
+        continuationStamp.store(pair + 1, continuationCodePoint);
+        pair += 2;
     }
     m_anyMutationsSinceLastPaint = true;
     bumpRow(row);

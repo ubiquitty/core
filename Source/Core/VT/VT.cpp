@@ -6308,6 +6308,53 @@ static uint32_t continueASCIIFill(Ubiquitty::Terminal& t, uint8_t glyph, uint32_
         || codePoint - 0x20000u <= 0x2FA1Fu - 0x20000u; // CJK Ext B–F + compat suppl
 }
 
+/// The code points at the head of a decoded run that are wide ideographs of
+/// the ranges that stand alone, and the bytes that carried them.
+struct WideIdeographRun {
+    int count = 0;
+    int bytes = 0;
+};
+
+/// Counts the wide ideographs a decoded run begins with.
+///
+/// A row of East Asian text is forty glyphs of the first range
+/// ``isWideIdeographFast`` names, and asking it of each is most of what the
+/// flow of them spends between its decode and its stores. Four are compared
+/// against that range at a step where the processor has the registers; a
+/// glyph of another range, kana among the ideographs, is asked by itself and
+/// the steps of four go on behind it.
+///
+/// - Parameters:
+///   - codePoints: The decoded run.
+///   - decoded: Its length.
+/// - Returns: How many lead the run, and their length in the input: three
+///   bytes each, or four past the basic plane.
+[[gnu::always_inline]] static inline WideIdeographRun leadingWideIdeographs(const std::uint32_t* codePoints, int decoded)
+{
+    WideIdeographRun run;
+    for (;;) {
+#if defined(__x86_64__) || defined(_M_X64)
+        // Unsigned `codePoint - first <= span`, as the signed compare the
+        // instruction set has: both sides with the sign bit flipped.
+        const __m128i first = _mm_set1_epi32(0x329A);
+        const __m128i signBit = _mm_set1_epi32(static_cast<int>(0x80000000u));
+        const __m128i span = _mm_set1_epi32(static_cast<int>((0xA48Cu - 0x329Au) ^ 0x80000000u));
+        while (run.count + 4 <= decoded) {
+            const __m128i four = _mm_loadu_si128(reinterpret_cast<const __m128i*>(codePoints + run.count));
+            const __m128i offsets = _mm_xor_si128(_mm_sub_epi32(four, first), signBit);
+            if (_mm_movemask_epi8(_mm_cmpgt_epi32(offsets, span)) != 0)
+                break;
+            run.count += 4;
+            run.bytes += 12; // the first range lies in the basic plane
+        }
+#endif
+        if (run.count >= decoded || !isWideIdeographFast(codePoints[run.count]))
+            return run;
+        run.bytes += codePoints[run.count] < 0x10000 ? 3 : 4;
+        ++run.count;
+    }
+}
+
 static inline bool isPlainWideGraphic(uint32_t codePoint, Unicode::Width::AmbiguousWidth ambiguousWidth)
 {
     if (isWideIdeographFast(codePoint))
@@ -7482,14 +7529,7 @@ template<GraphicCapture Capture> static int continueWideFlow(Ubiquitty::Terminal
             const int decoded = Ubiquitty::Unicode::utf8DecodeRun(
                 std::span { buffer + position, static_cast<std::size_t>(length - position) },
                 std::span { codePoints.data(), static_cast<std::size_t>(capacity) }, &decodedBytes);
-            // Every glyph of these ranges is three bytes long, or four past
-            // the basic plane.
-            int count = 0;
-            int bytes = 0;
-            while (count < decoded && isWideIdeographFast(codePoints[count])) {
-                bytes += codePoints[count] < 0x10000 ? 3 : 4;
-                ++count;
-            }
+            auto [count, bytes] = leadingWideIdeographs(codePoints.data(), decoded);
             // A tab behind a glyph becomes the predecessor on the data
             // screen, which a flow is on, so nothing can cancel the glyph.
             const bool isFollowedByTab = position + bytes < length && buffer[position + bytes] == '\t';
