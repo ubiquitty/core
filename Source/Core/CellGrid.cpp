@@ -2765,6 +2765,10 @@ void CellGrid::scrollLaneRotateOnly(const Cell& blank)
         filled = m_columns;
     }
     m_rowState[m_activeIndex][bottomSlot].meta = RowMeta { lineAttributeNormal, 0, {}, 0 };
+    // The row above lost the neighbour a wrap would have joined it to, as
+    // the immediate scroll says of it.
+    if (m_rows > 1)
+        m_rowState[m_activeIndex][bottomSlot == 0 ? m_rows - 1 : bottomSlot - 1].meta.set(RowFlag::Wrapped, false);
 }
 
 void CellGrid::scrollLaneCommit(int scrolledLines)

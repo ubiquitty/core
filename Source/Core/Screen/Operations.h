@@ -95,7 +95,9 @@ void scrollViewportUp(Ubiquitty::Terminal* t, int n);
 ///
 /// - Parameter t: The terminal whose lane accumulates the feed.
 void scrollLaneLinefeed(Ubiquitty::Terminal& t);
-/// Commits an accumulated scroll-lane run to the screen and scrollback.
+/// Commits an accumulated scroll-lane run: its paint accounting, and on the
+/// primary screen the placements, blocks and areas that follow rows into the
+/// scrollback.
 ///
 /// - Parameter t: The terminal whose lane run is active.
 void scrollLaneFlushActive(Ubiquitty::Terminal& t);

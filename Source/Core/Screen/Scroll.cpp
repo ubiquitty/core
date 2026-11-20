@@ -267,13 +267,16 @@ void scrollUp(Ubiquitty::Terminal& t, int n)
 // reduces to: capture the top row, rotate the viewport, account the scroll
 // (amortizable per run). Triggers and auto-print observe completed lines, so
 // with either armed the classic path runs instead.
+//
+// The alternate screen keeps no history, so its rows scroll in place, and what
+// follows a row in place is moved at each scroll rather than once a run: a
+// rich-text block, a qualified area and a pinned position each send the
+// alternate screen down the classic path.
 bool scrollLaneEligible(const Ubiquitty::Terminal& t)
 {
     if (!t.isScrollLaneEnabled || !t.grid)
         return false;
     const Ubiquitty::Screen::State* s = t.screens.active;
-    if (s != &t.screens.primary)
-        return false;
     if (s->scrollTop != 0 || s->scrollBottom != t.rows - 1)
         return false;
     if (isRowNarrowedByMargins(t, s))
@@ -284,6 +287,8 @@ bool scrollLaneEligible(const Ubiquitty::Terminal& t)
         return false;
     if (t.autoPrint && t.printSinkFile)
         return false;
+    if (s != &t.screens.primary && (!t.richTextBlocks.isEmpty() || !t.qualifiedAreas.isEmpty() || hasActivePins(t)))
+        return false;
     return true;
 }
 
@@ -293,7 +298,9 @@ void scrollLaneLinefeed(Ubiquitty::Terminal& t)
     s->wrapPending = false;
     // Append the departing top row directly from its current representation.
     // The history count stays exact mid-run; only paint-side accounting defers.
-    scrollbackAppendGridRow(t, 0);
+    // The alternate screen's top row leaves for nowhere.
+    if (s == &t.screens.primary)
+        scrollbackAppendGridRow(t, 0);
     if (!t.scrollLaneRun.active) {
         // Run open: build the BCE blank once (the pen is frozen for the run's
         // lifetime; any SGR flushes and closes it). With default fg/bg the
@@ -316,6 +323,11 @@ void scrollLaneFlushActive(Ubiquitty::Terminal& t)
     t.scrollLaneRun.active = false;
     t.scrollLaneRun.scrolledLines = 0;
     t.grid->scrollLaneCommit(scrolledLines);
+    Diagnostics::diagLog(t, "core-scroll-lane", static_cast<uint32_t>(scrolledLines));
+    // Nothing rides a scroll of the alternate screen: its placements stay
+    // where they are, and a run opens there only with no block or area.
+    if (t.screens.active != &t.screens.primary)
+        return;
     // Placements shift once by the accumulated count; interleaved classic
     // scrolls shift incrementally themselves and the two compose additively.
     if (t.images.livePlacementCount != 0)
@@ -324,7 +336,6 @@ void scrollLaneFlushActive(Ubiquitty::Terminal& t)
         Ubiquitty::RichText::scrollBlocksIntoHistory(t, scrolledLines);
     if (!t.qualifiedAreas.isEmpty())
         scrollAreasIntoHistory(t, scrolledLines);
-    Diagnostics::diagLog(t, "core-scroll-lane", static_cast<uint32_t>(scrolledLines));
 }
 
 // Blank-invariant SGR continuation: a plain SGR mutates only the pen, so the
