@@ -7206,6 +7206,231 @@ template<GraphicCapture Capture> [[gnu::noinline]] static int emitLineSpan(Ubiqu
     return -1;
 }
 
+/// Breaks the wide pairs a run's two ends would cut in half.
+///
+/// The cells between the ends are overwritten by the run, so only a partner
+/// outside either end can be orphaned. A clear in both directions would blank
+/// the run's own halves, so each end is broken by hand.
+///
+/// - Parameters:
+///   - t: The terminal.
+///   - s: Its active screen.
+///   - row: The run's row.
+///   - column: The run's first column.
+///   - lastColumn: Its last column.
+static inline void eraseWidePartnersBesideRun(Ubiquitty::Terminal& t, Ubiquitty::Screen::State* s, int row, int column, int lastColumn)
+{
+    Ubiquitty::Cell blank;
+    Ubiquitty::Screen::eraseCell(&blank, s);
+    const Ubiquitty::Cell* edge0 = t.grid->logicalCellAt(Ubiquitty::Row(row), Ubiquitty::Column(column));
+    if (edge0 && Ubiquitty::cellPen(*edge0).attributes.contains(VT::Attribute::WideContinuation) && column > 0)
+        t.grid->eraseRowRange(Ubiquitty::Row(row), Ubiquitty::Column(column - 1), Ubiquitty::Column(column - 1), blank);
+    const Ubiquitty::Cell* edgeN = t.grid->logicalCellAt(Ubiquitty::Row(row), Ubiquitty::Column(lastColumn));
+    if (edgeN && Ubiquitty::cellPen(*edgeN).attributes.contains(VT::Attribute::Wide) && lastColumn + 1 < t.columns)
+        t.grid->eraseRowRange(Ubiquitty::Row(row), Ubiquitty::Column(lastColumn + 1), Ubiquitty::Column(lastColumn + 1), blank);
+}
+
+/// The last glyph of a written run of wide glyphs, and the cursor as the run
+/// left it.
+struct PlacedWide {
+    int row = 0;
+    int leadColumn = 0;
+    uint32_t codePoint = 0;
+    int cursorX = 0;
+    int cursorY = 0;
+    bool isWrapPending = false;
+};
+
+/// Tells the parser what a run of wide glyphs ended on: the item a repeat
+/// replays, and the cluster a mark or a joiner arriving next extends.
+///
+/// What ``clusterOpen`` leaves, from the cursor the run left rather than the
+/// one the screen holds now: a flow has moved on by the time it says so.
+///
+/// - Parameters:
+///   - t: The terminal.
+///   - placed: The run's last glyph and the cursor behind it.
+static inline void notePlacedWide(Ubiquitty::Terminal& t, const PlacedWide& placed)
+{
+    t.parser.precedingItem.setGraphic(placed.codePoint, placed.codePoint, 0);
+    t.parser.clusterActive = true;
+    t.parser.clusterRow = placed.row;
+    t.parser.clusterColumn = placed.leadColumn;
+    t.parser.clusterScreen = t.screens.isUsingAlternateScreen ? 1u : 0u;
+    t.parser.clusterLast = placed.codePoint;
+    Ubiquitty::Unicode::graphemeStateReset(&t.parser.clusterState, placed.codePoint);
+    t.parser.clusterAtX = placed.cursorX;
+    t.parser.clusterAtY = placed.cursorY;
+    t.parser.clusterAtWrap = placed.isWrapPending;
+    t.parser.clusterCodePoints[0] = placed.codePoint;
+    t.parser.clusterCodepointLength = 1;
+}
+
+/// Whether a whole three-byte glyph past the C1 range starts at `next`,
+/// which puts the graphic before it out of a cancel's reach.
+///
+/// The leads whose every pair of continuation bytes is a scalar: E0 has
+/// overlong forms and ED the surrogates, and both are left to the full
+/// classification, as is everything else.
+///
+/// - Parameters:
+///   - buffer: The input.
+///   - next: The first byte after the graphic.
+///   - length: The input's length.
+/// - Returns: Whether such a glyph follows whole.
+[[gnu::always_inline]] static inline bool isFollowedByWholeThreeByteGlyph(const char* buffer, int next, int length)
+{
+    if (next + 2 >= length)
+        return false;
+    const auto lead = static_cast<unsigned char>(buffer[next]);
+    return lead >= 0xE1 && lead <= 0xEF && lead != 0xED
+        && (static_cast<unsigned char>(buffer[next + 1]) & 0xC0) == 0x80 && (static_cast<unsigned char>(buffer[next + 2]) & 0xC0) == 0x80;
+}
+
+/// Carries wide glyphs on past their first run: through the wraps a full row
+/// causes, and the line feeds, returns and tabs between runs.
+///
+/// A page of East Asian text is rows of ideographs with a wrap or a line end
+/// after each, and each row paid the run writer's whole setup, a decode
+/// staged for every kind of glyph, and a pass over it for each question the
+/// staging asks. Behind a first run of plain wide glyphs the flow asks one:
+/// whether the next glyph is of the ranges that are wide, stand alone and
+/// extend nothing, whatever precedes them. Any other glyph ends it.
+///
+/// What it re-reads between rows, and what it leaves where it starts for the
+/// byte loop, are what ``continueASCIIFlow`` re-reads and leaves.
+///
+/// - Parameters:
+///   - t: The terminal, with the left and right margins off and no sized
+///     text on its grid or in its pen.
+///   - s: Its active screen.
+///   - buffer: The input.
+///   - position: The byte behind the run already written.
+///   - length: The input's length.
+///   - cellTemplate: The pen and link every cell of the flow carries.
+///   - placed: The run already written, which the parser has not been told
+///     about.
+/// - Returns: The first byte the flow left.
+template<GraphicCapture Capture> static int continueWideFlow(Ubiquitty::Terminal& t, Ubiquitty::Screen::State* s, const char* buffer, int position, int length, const Ubiquitty::Cell& cellTemplate, PlacedWide placed)
+{
+    const int rightMargin = t.columns - 1;
+    const bool canWrap = t.modes.autowrap && !(t.triggersEngine && t.triggersEngine->ruleCount() != 0)
+        && !(t.graphicCancellation && t.graphicCancellation->isCapturing);
+    // lineHomeColumn on a row of single-width cells with the margins off,
+    // which is every row the flow writes.
+    const int wrapColumn = std::min(std::max(t.lineHome, 0), rightMargin);
+    bool hasUnnotedRun = true;
+    // A row a feed has just scrolled in holds no pair for a run's ends to cut.
+    bool isRowFresh = false;
+    std::array<std::uint32_t, Ubiquitty::maxColumns / 2> codePoints;
+    const auto noteRun = [&] {
+        if (hasUnnotedRun) {
+            notePlacedWide(t, placed);
+            hasUnnotedRun = false;
+        }
+    };
+    while (position < length) {
+        const auto byte = static_cast<unsigned char>(buffer[position]);
+        if (byte >= 0xE2 && byte <= 0xF0) {
+            // A pending wrap, or one cell left where a pair has to go.
+            const bool isWrapping = s->wrapPending || s->cursorX >= rightMargin;
+            if (isWrapping && !canWrap)
+                break;
+            assert(!isWrapping || wrapColumn == std::max(Ubiquitty::Screen::effectiveLeft(t), Screen::lineHomeColumn(t)));
+            const int column = isWrapping ? wrapColumn : s->cursorX;
+            if (column < 0 || column >= rightMargin)
+                break;
+            const int capacity = (rightMargin - column + 1) / 2;
+            int decodedBytes = 0;
+            const int decoded = Ubiquitty::Unicode::utf8DecodeRun(
+                std::span { buffer + position, static_cast<std::size_t>(length - position) },
+                std::span { codePoints.data(), static_cast<std::size_t>(capacity) }, &decodedBytes);
+            // Every glyph of these ranges is three bytes long, or four past
+            // the basic plane.
+            int count = 0;
+            int bytes = 0;
+            while (count < decoded && isWideIdeographFast(codePoints[count])) {
+                bytes += codePoints[count] < 0x10000 ? 3 : 4;
+                ++count;
+            }
+            if (count > 0 && !isFollowedByWholeThreeByteGlyph(buffer, position + bytes, length)
+                && graphicCaptureBefore<Capture>(buffer, position + bytes, length) == GraphicCapture::Retain) {
+                --count;
+                bytes -= codePoints[count] < 0x10000 ? 3 : 4;
+            }
+            if (count < 2)
+                break;
+            if (isWrapping) {
+                const int rowLeft = s->cursorY;
+                const bool doesScroll = rowLeft == s->scrollBottom;
+                s->cursorX = column;
+                wrapCommitLinefeed(t);
+                s->wrapPending = false;
+                // The row just left is joined to this one, wherever the feed put it.
+                if (s->cursorY > 0)
+                    s->lineWrapped[s->cursorY - 1] = true;
+                if (s->cursorY != rowLeft && !isASCIIFlowRow(t, s))
+                    break;
+                isRowFresh = doesScroll;
+            }
+            dropWrapTrigger(t, s);
+            const int row = s->cursorY;
+            const int lastColumn = column + count * 2 - 1;
+            if (!isRowFresh)
+                eraseWidePartnersBesideRun(t, s, row, column, lastColumn);
+            t.grid->writeWideCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, { codePoints.data(), static_cast<std::size_t>(count) });
+            isRowFresh = false;
+            if (lastColumn == rightMargin) {
+                s->cursorX = lastColumn - 1; // on the lead, as emitCharacter leaves it
+                s->wrapPending = true;
+                evaluateFilledRowTriggers(&t, row);
+            } else {
+                s->cursorX = lastColumn + 1;
+            }
+            position += bytes;
+            placed = { row, lastColumn - 1, codePoints[count - 1], s->cursorX, s->cursorY, s->wrapPending };
+            hasUnnotedRun = true;
+            continue;
+        }
+        if (byte == '\n') {
+            noteRun();
+            // A line break that ends a semantic role resets the pen the
+            // flow's cells carry.
+            const bool doesResetPen = t.shouldEndSemanticRoleAtLineBreak;
+            const int rowLeft = s->cursorY;
+            const bool doesScroll = rowLeft == s->scrollBottom;
+            executeGroundLineFeed(t);
+            ++position;
+            if (doesResetPen || (s->cursorY != rowLeft && !isASCIIFlowRow(t, s)))
+                break;
+            isRowFresh = doesScroll;
+            continue;
+        }
+        if (byte == '\r') {
+            noteRun();
+            executeGroundCarriageReturn(t);
+            ++position;
+            continue;
+        }
+        if (byte == '\t') {
+            noteRun();
+            if (t.moreFix)
+                Ubiquitty::Screen::scrollLaneFlush(t);
+            const int rowLeft = s->cursorY;
+            actExecuteHorizontalTab(t, byte);
+            ++position;
+            if (t.isAlignedTabActive || !isASCIIFlowRow(t, s))
+                break;
+            if (s->cursorY != rowLeft)
+                isRowFresh = false;
+            continue;
+        }
+        break;
+    }
+    noteRun();
+    return position;
+}
+
 template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, const char* buffer, int start, int length, TextRunPacing& pacing)
 {
     int& decodeBudget = pacing.decodeBudget;
@@ -7645,17 +7870,7 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
 
     const int lastColumn = column + nCells - 1;
 
-    // Break only wide partners straddling the run's outer edges — interior
-    // partners are overwritten by the span. clearWideOverlap's both-directions
-    // clear would blank our own continuation halves, so break each edge by hand.
-    Ubiquitty::Cell blank;
-    Ubiquitty::Screen::eraseCell(&blank, s);
-    const Ubiquitty::Cell* edge0 = t.grid->logicalCellAt(Ubiquitty::Row(row), Ubiquitty::Column(column));
-    if (edge0 && Ubiquitty::cellPen(*edge0).attributes.contains(VT::Attribute::WideContinuation) && column > 0)
-        t.grid->eraseRowRange(Ubiquitty::Row(row), Ubiquitty::Column(column - 1), Ubiquitty::Column(column - 1), blank);
-    const Ubiquitty::Cell* edgeN = t.grid->logicalCellAt(Ubiquitty::Row(row), Ubiquitty::Column(lastColumn));
-    if (edgeN && Ubiquitty::cellPen(*edgeN).attributes.contains(VT::Attribute::Wide) && lastColumn + 1 < t.columns)
-        t.grid->eraseRowRange(Ubiquitty::Row(row), Ubiquitty::Column(lastColumn + 1), Ubiquitty::Column(lastColumn + 1), blank);
+    eraseWidePartnersBesideRun(t, s, row, column, lastColumn);
 
     if (wideCodePointCount)
         t.grid->writeWideCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), tmpl, { codePoints.data(), static_cast<std::size_t>(wideCodePointCount) });
@@ -7679,11 +7894,18 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
     } else {
         s->cursorX = lastColumn + 1;
     }
+    decodeBudget = nextTextRunDecodeBudget(decodeBudget, p - start, decodedEnd - start);
+    pacing.isMixed = wideCodePointCount == 0;
+    // A row of plain wide glyphs has more of them behind it more often than
+    // not, and the flow takes those with what lies between the rows.
+    if (wideCodePointCount && !t.modes.leftRightMarginMode && !t.grid->hasSizedCellHint()
+        && s->pen.extendedAttributes.textSizeSpecID() == 0 && (parseAblateMask & AblateTextFlow) == 0) {
+        const PlacedWide placed { row, lastLeadColumn, lastCodePoint, s->cursorX, s->cursorY, s->wrapPending };
+        return continueWideFlow<Capture>(t, s, buffer, p, length, tmpl, placed) - start;
+    }
     // A combining mark / VS / ZWJ arriving next attaches to the run's last glyph.
     t.parser.precedingItem.setGraphic(lastCodePoint, lastCodePoint, 0);
     clusterOpen(t, row, lastLeadColumn, lastCodePoint);
-    decodeBudget = nextTextRunDecodeBudget(decodeBudget, p - start, decodedEnd - start);
-    pacing.isMixed = wideCodePointCount == 0;
     return p - start;
 }
 

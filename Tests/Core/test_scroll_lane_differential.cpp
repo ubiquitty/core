@@ -831,6 +831,129 @@ int main(int argc, char** argv)
         runCorpus("text-flow-soup", segments);
     }
 
+    // 19. Pages of wide glyphs: rows of ideographs, kana, syllables and
+    // fullwidth punctuation that fill and wrap, in bare-line-feed staircases
+    // and with returns, behind a narrow glyph that shifts the pairs onto odd
+    // columns, with what can follow a wide glyph behind them (a mark, a
+    // trailing jamo, a repeat, a cancel), and written over rows that already
+    // hold pairs.
+    {
+        const auto appendUTF8 = [](std::string& out, uint32_t codePoint) {
+            if (codePoint < 0x800) {
+                out.push_back(static_cast<char>(0xC0 | (codePoint >> 6)));
+            } else if (codePoint < 0x10000) {
+                out.push_back(static_cast<char>(0xE0 | (codePoint >> 12)));
+                out.push_back(static_cast<char>(0x80 | ((codePoint >> 6) & 0x3F)));
+            } else {
+                out.push_back(static_cast<char>(0xF0 | (codePoint >> 18)));
+                out.push_back(static_cast<char>(0x80 | ((codePoint >> 12) & 0x3F)));
+                out.push_back(static_cast<char>(0x80 | ((codePoint >> 6) & 0x3F)));
+            }
+            out.push_back(static_cast<char>(0x80 | (codePoint & 0x3F)));
+        };
+        const auto widePage = [&](int glyphs, bool hasReturns) {
+            std::string out;
+            for (int i = 0; i < glyphs; ++i) {
+                const uint32_t pick = rnd();
+                switch (pick % 40) {
+                case 0:
+                    out += hasReturns ? "\r\n" : "\n";
+                    break;
+                case 1:
+                    out += "\t";
+                    break;
+                case 2:
+                    out += "a"; // shifts the pairs behind it onto odd columns
+                    break;
+                case 3:
+                    appendUTF8(out, 0xFF0C); // a fullwidth comma
+                    break;
+                case 4:
+                    appendUTF8(out, 0x3042 + pick % 80); // hiragana
+                    break;
+                case 5:
+                    appendUTF8(out, 0xAC00 + pick % 11172); // a Hangul syllable
+                    break;
+                case 6:
+                    appendUTF8(out, 0x20000 + pick % 0x1000); // an ideograph past the basic plane
+                    break;
+                case 7:
+                    appendUTF8(out, 0x2603); // a narrow symbol among them
+                    break;
+                default:
+                    appendUTF8(out, 0x4E00 + pick % 0x5000);
+                    break;
+                }
+            }
+            return out;
+        };
+        std::vector<std::string> segments;
+        segments.push_back(widePage(6000, true));
+        segments.push_back(widePage(6000, false));
+        segments.emplace_back("\x1b[?1049h\x1b[H\x1b[2J");
+        segments.push_back(widePage(6000, false));
+        segments.push_back("\x1b[35m" + widePage(2000, false) + "\x1b[m");
+        segments.emplace_back("\x1b[?1049l");
+        // Over rows that hold pairs already, from an odd column and an even one.
+        segments.push_back("\x1b[H\x1b[2J" + widePage(1500, true) + "\x1b[3;2H" + widePage(300, false) + "\x1b[5;3H" + widePage(300, false));
+        const std::string fullRow = [&] {
+            std::string row;
+            for (int glyph = 0; glyph < 40; ++glyph)
+                appendUTF8(row, 0x4E2D);
+            return row;
+        }();
+        const char* const followers[] = {
+            "\xCC\x81", // a combining mark
+            "\xE1\x86\xA8", // a trailing jamo, which extends a syllable
+            "\x1b[3b", // a repeat
+            "\x1bT", // a cancel
+            "\xE3\x82\x99", // a combining voiced sound mark
+        };
+        for (const char* follower : followers) {
+            std::string edges;
+            edges += fullRow + follower + "\r\n";
+            edges += fullRow + "\xE4\xB8\xAD\xE6\x96\x87" + follower + "\r\n";
+            edges += fullRow + "\xEA\xB0\x80" + follower + "\r\n"; // a syllable wraps, then the follower
+            edges += fullRow + "\xE4\xB8\xAD\t" + follower + "\r\n";
+            edges += std::string("a") + fullRow + follower + "\r\n";
+            edges += "\xE4\xB8\xAD\xE6\x96\x87\n" + std::string(follower) + "\r\n";
+            edges += "\xE4\xB8\xAD\xE6\x96\x87\r" + std::string(follower) + "\r\n";
+            segments.push_back(edges);
+            segments.push_back("\x1b[?1049h" + edges + widePage(200, false) + follower + "\x1b[?1049l");
+        }
+        // A run that ends inside a row of pairs on the other parity cuts one
+        // of them in half at each end it does not share: rows of pairs on
+        // odd columns, then pairs on even ones written over them from the row
+        // start, from a tab stop, and behind a wrap that scrolls nothing.
+        {
+            std::string oddRows = "\x1b[H\x1b[2J";
+            for (int row = 0; row < 8; ++row) {
+                oddRows += "a";
+                for (int glyph = 0; glyph < 39; ++glyph)
+                    appendUTF8(oddRows, 0x5B57);
+                oddRows += "\r\n";
+            }
+            std::string over = "\x1b[1;1H" + fullRow;
+            for (int glyph = 0; glyph < 10; ++glyph)
+                appendUTF8(over, 0x4E00 + static_cast<uint32_t>(glyph));
+            over += "\n";
+            for (int glyph = 0; glyph < 6; ++glyph)
+                appendUTF8(over, 0x4E10 + static_cast<uint32_t>(glyph));
+            over += "\r\t";
+            for (int glyph = 0; glyph < 5; ++glyph)
+                appendUTF8(over, 0x4E20 + static_cast<uint32_t>(glyph));
+            over += "\n\t\t";
+            for (int glyph = 0; glyph < 4; ++glyph)
+                appendUTF8(over, 0x4E30 + static_cast<uint32_t>(glyph));
+            segments.push_back(oddRows + over);
+            segments.push_back("\x1b[?1049h" + oddRows + over + "\x1b[?1049l");
+        }
+        segments.push_back("\x1b[?7l" + widePage(1500, false) + "\x1b[?7h");
+        segments.push_back("\x1b[?69h\x1b[5;60s" + widePage(1500, false) + "\x1b[?69l");
+        segments.push_back("\x1b[H\x1b[2J\x1b[6;1H\x1b#6\x1b[1;1H" + widePage(800, false));
+        runCorpus("wide-flow", segments);
+    }
+
     if (failures == 0) {
         std::printf("scroll-lane differential: all corpora chunk-invariant OK\n");
         return 0;
