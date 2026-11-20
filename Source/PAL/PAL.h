@@ -351,16 +351,6 @@ void schedulerYield();
 /// nothing measurable.
 void raiseCurrentThreadToInteractivePriority();
 
-/// The data cache a core keeps to itself, in bytes.
-///
-/// What a buffer handed between two threads is sized against: bytes one core
-/// wrote stay cheap for another to read only while the buffer fits where the
-/// machine's other work does not evict it.
-///
-/// - Returns: The size, or zero where the platform does not say or where a
-///   caller's own ceiling is already the measured choice.
-[[nodiscard]] std::size_t privateCacheBytes();
-
 /// Places the calling thread in the band background work runs in.
 ///
 /// The mirror of ``raiseCurrentThreadToInteractivePriority``, called once by a

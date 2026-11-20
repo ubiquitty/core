@@ -304,6 +304,20 @@ public:
     ///   leaves the hand-over to the pass's own budget, which is the default.
     [[nodiscard]] virtual int burstHandOverBytes() const { return std::numeric_limits<int>::max(); }
 
+    /// How much of a dedicated reader's buffer to keep in use while the
+    /// parser keeps up with it.
+    ///
+    /// The buffer stands between two threads, and every byte crosses it
+    /// once. While the parser empties it as fast as it fills, the reader
+    /// restarts at the buffer's start once it has written this far, so both
+    /// work in memory that is already in a core's cache. A transport whose
+    /// reads are large and whose parser outruns it wants that; one that
+    /// trickles gains nothing from it.
+    ///
+    /// - Returns: The window in bytes, or the largest `size_t` to let the
+    ///   reader use the buffer whole, which is the default.
+    [[nodiscard]] virtual std::size_t burstHotRingBytes() const { return std::numeric_limits<std::size_t>::max(); }
+
 protected:
     PollableByteStream() = default;
 };

@@ -340,6 +340,18 @@ public:
 #endif
     }
 
+    [[nodiscard]] std::size_t burstHotRingBytes() const override
+    {
+#if defined(__linux__)
+        // A read here returns tens of kilobytes and the parser mostly
+        // outruns the line discipline, so a few reads' worth is all of the
+        // ring that is in use at once.
+        return 256 * 1024;
+#else
+        return PollableByteStream::burstHotRingBytes();
+#endif
+    }
+
     [[nodiscard]] std::unique_ptr<PollableByteStream> duplicateAsPollableStream() override
     {
         // The duplicate of a duplicate keeps the guard: a caller that got here

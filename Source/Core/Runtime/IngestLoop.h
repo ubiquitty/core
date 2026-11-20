@@ -55,27 +55,18 @@ inline constexpr int ingestFallbackTickMilliseconds = 25;
 // loop stalls the WRITER whenever it parses. Power of two for index masking.
 inline constexpr std::size_t floodRingCapacity = 4 * 1024 * 1024;
 
-// The ring is a hand-off between two cores: the reader's core writes every
-// byte and the parser's reads it a ring's length later. While the parser is
-// the slower side the ring stays full, so that distance is the whole
-// capacity, and a ring larger than the cache a core keeps to itself is read
-// back from wherever the machine's other work has left it. On a core with a
-// small private cache the capacity follows that cache; one with more than the
-// ceiling above keeps the ceiling. The floor keeps several bites of slack in
-// hand whatever the cache says.
+// The smallest ring the loop keeps, whatever a transport asks for: several
+// bites of slack between the reader and the parser.
 inline constexpr std::size_t floodRingMinimumCapacity = 256 * 1024;
 
-/// The flood ring's capacity on a core with this much private cache.
-///
-/// - Parameter privateCacheBytes: What ``PAL::privateCacheBytes`` reports;
-///   zero where the platform does not say.
-/// - Returns: A power of two, for index masking.
-[[nodiscard]] constexpr std::size_t floodRingCapacityFor(std::size_t privateCacheBytes)
-{
-    if (privateCacheBytes == 0)
-        return floodRingCapacity;
-    return std::clamp(std::bit_floor(privateCacheBytes), floodRingMinimumCapacity, floodRingCapacity);
-}
+// The ring is large so that a parser that falls behind has somewhere to fall
+// behind into. A parser that keeps up never needs that room, and a ring that
+// still walks all of it hands every byte across in memory neither core has
+// in its cache. So while no more than this is waiting to be parsed, the
+// reader restarts at the ring's first byte once it has written past the
+// transport's hot window (``PAL::PollableByteStream::burstHotRingBytes``):
+// the ring is as small as the parser lets it be, and as large as it needs.
+inline constexpr std::size_t floodRewindBacklogBytes = 64 * 1024;
 
 // Refill/handoff discipline is ASYMMETRIC. The consumer POLLS on a timed nap
 // when the ring runs empty (rationale at floodConsumerNapMicros). The reader
@@ -906,15 +897,24 @@ private:
     /// fence, once the reader has stopped filling it.
     void carryRingResidue()
     {
-        const std::uint64_t consumer = m_floodRingControl->consumer.load(std::memory_order_relaxed) & floodRingPositionMask;
         const std::uint64_t producer = m_floodRingControl->producer.load(std::memory_order_acquire) & floodRingPositionMask;
-        std::uint64_t position = consumer;
-        while (position < producer) {
-            const std::size_t readIndex = static_cast<std::size_t>(position) & (m_floodRingCapacity - 1);
-            const std::size_t contiguous = std::min(static_cast<std::size_t>(producer - position), m_floodRingCapacity - readIndex);
-            m_runtime.carryFencedBytes({ m_floodRing.get() + readIndex, contiguous });
-            position += contiguous;
+        std::uint64_t position = m_floodRingControl->consumer.load(std::memory_order_relaxed) & floodRingPositionMask;
+        const auto carry = [&](std::uint64_t end) {
+            while (position < end) {
+                const std::size_t readIndex = static_cast<std::size_t>(position) & (m_floodRingCapacity - 1);
+                const std::size_t contiguous = std::min(static_cast<std::size_t>(end - position), m_floodRingCapacity - readIndex);
+                m_runtime.carryFencedBytes({ m_floodRing.get() + readIndex, contiguous });
+                position += contiguous;
+            }
+        };
+        // Across a restart the parser had not reached, the bytes are the ones
+        // before it and then the ones from the ring's first byte.
+        const std::uint64_t rewindFrom = m_floodRewindFrom.load(std::memory_order_acquire);
+        if (rewindFrom >= position && rewindFrom < producer) {
+            carry(rewindFrom);
+            position = m_floodRewindTo.load(std::memory_order_relaxed);
         }
+        carry(producer);
         m_floodRingControl->consumer.store(producer | (m_floodRingControl->consumer.load(std::memory_order_relaxed) & ~floodRingPositionMask), std::memory_order_release);
     }
 
@@ -942,14 +942,31 @@ private:
         // A fixed-ring endpoint already refutes the premise: draining it
         // admits more bytes, while waiting cannot enlarge the kernel ring.
         bool isAccumulateWaitRefuted = m_floodEndpoint->shortReadWaitStrategy() == PAL::ShortReadWaitStrategy::ReadImmediately;
+        const std::size_t hotRingBytes = m_floodEndpoint->burstHotRingBytes();
+        std::uint64_t rewoundTo = 0; // where this burst's last restart resumed; zero before the first
         for (;;) {
             if (m_stop.load(std::memory_order_relaxed) || m_runtime.isIngestHeld() || m_runtime.isDecodeFenceRaised())
                 break; // hold: the frontend answers a detected transfer; the kernel queue keeps the frame for its agent
-            const std::uint64_t producer = m_floodRingControl->producer.load(std::memory_order_relaxed);
+            std::uint64_t producer = m_floodRingControl->producer.load(std::memory_order_relaxed);
             const std::uint64_t consumerRaw = m_floodRingControl->consumer.load(std::memory_order_acquire);
             if (consumerRaw & floodRingDoneBit)
                 break; // consumer stopped mid-burst; nobody will drain the ring
-            const std::size_t freeBytes = m_floodRingCapacity - static_cast<std::size_t>(producer - (consumerRaw & floodRingPositionMask));
+            const std::uint64_t consumerPosition = consumerRaw & floodRingPositionMask;
+            // The parser is keeping up and the ring has been written past its
+            // hot window: restart at the first byte. What is still unparsed
+            // stays where it is and is read first, and the bytes skipped count
+            // as held until the parser has passed them, so nothing written
+            // from here reaches what it has yet to read. One restart at a time.
+            if ((static_cast<std::size_t>(producer) & (m_floodRingCapacity - 1)) >= hotRingBytes && producer - consumerPosition <= floodRewindBacklogBytes
+                && (rewoundTo == 0 || consumerPosition >= rewoundTo)) {
+                const std::uint64_t restart = (producer | (m_floodRingCapacity - 1)) + 1;
+                m_floodRewindTo.store(restart, std::memory_order_relaxed);
+                m_floodRewindFrom.store(producer, std::memory_order_release);
+                m_floodRingControl->producer.store(restart, std::memory_order_release);
+                rewoundTo = restart;
+                producer = restart;
+            }
+            const std::size_t freeBytes = m_floodRingCapacity - static_cast<std::size_t>(producer - consumerPosition);
             if (freeBytes == 0) {
                 // Parser is behind with a full ring queued — multi-millisecond
                 // territory, so park on the consumer counter instead of
@@ -1096,9 +1113,10 @@ private:
                 isStopping = true;
                 break;
             }
-            const std::uint64_t consumer = m_floodRingControl->consumer.load(std::memory_order_relaxed);
             const std::uint64_t producerRaw = m_floodRingControl->producer.load(std::memory_order_acquire);
-            const std::uint64_t available = (producerRaw & floodRingPositionMask) - consumer;
+            const FloodRingSpan ringSpan = floodRingSpan(producerRaw & floodRingPositionMask);
+            const std::uint64_t consumer = ringSpan.consumer;
+            const std::uint64_t available = ringSpan.available;
             if (available == 0) {
                 if (producerRaw & floodRingDoneBit)
                     break; // reader exited and the ring is drained
@@ -1218,9 +1236,10 @@ private:
                     break;
                 if (const DrainPassEnd end = duePassEnd(); end != DrainPassEnd::None)
                     finishPass(end);
-                const std::uint64_t consumer = m_floodRingControl->consumer.load(std::memory_order_relaxed);
                 const std::uint64_t producer = m_floodRingControl->producer.load(std::memory_order_acquire) & floodRingPositionMask;
-                const std::uint64_t available = producer - consumer;
+                const FloodRingSpan ringSpan = floodRingSpan(producer);
+                const std::uint64_t consumer = ringSpan.consumer;
+                const std::uint64_t available = ringSpan.available;
                 if (available == 0)
                     break;
                 const std::size_t readIndex = static_cast<std::size_t>(consumer) & (m_floodRingCapacity - 1);
@@ -1267,6 +1286,7 @@ private:
         m_runtime.setDrainPassActive(false);
         // Left as the next burst's reader finds them: it may be woken by a
         // pass, with this loop nowhere near. Also clears both done bits.
+        m_floodRewindFrom.store(noFloodRewind, std::memory_order_relaxed);
         m_floodRingControl->producer.store(0, std::memory_order_relaxed);
         m_floodRingControl->consumer.store(0, std::memory_order_release);
     }
@@ -1283,6 +1303,7 @@ private:
             return;
         if (!m_floodRing)
             m_floodRing = std::make_unique<char[]>(m_floodRingCapacity);
+        m_floodRewindFrom.store(noFloodRewind, std::memory_order_relaxed);
         if (!m_floodRingControl)
             m_floodRingControl = std::make_unique<FloodRingControl>();
         m_floodRingControl->producer.store(0, std::memory_order_relaxed);
@@ -1369,7 +1390,39 @@ private:
     std::uint32_t m_floodReaderStartsPumped = 0; // the loop thread's: the start whose burst it last pumped
     std::jthread m_floodReader;
     std::unique_ptr<char[]> m_floodRing;
-    const std::size_t m_floodRingCapacity = floodRingCapacityFor(PAL::privateCacheBytes());
+    const std::size_t m_floodRingCapacity = floodRingCapacity;
+    /// Where the reader last restarted the ring from its first byte, and the
+    /// position it restarted at; see ``floodRewindBacklogBytes``. The reader
+    /// writes the pair before it publishes the position past them, and the
+    /// parser reads it after loading that position.
+    static constexpr std::uint64_t noFloodRewind = ~std::uint64_t { 0 };
+    std::atomic<std::uint64_t> m_floodRewindFrom { noFloodRewind };
+    std::atomic<std::uint64_t> m_floodRewindTo { 0 };
+
+    /// What of the ring the parser may read next.
+    struct FloodRingSpan {
+        /// The parser's position, past a restart it had reached.
+        std::uint64_t consumer;
+        /// The bytes readable from there: up to a restart not yet reached, or
+        /// to the reader's position.
+        std::uint64_t available;
+    };
+    /// Reads the parser's side of the ring.
+    ///
+    /// - Parameter producerPosition: The reader's position, loaded before this call.
+    /// - Returns: Where the parser stands and how far it may read.
+    [[nodiscard]] FloodRingSpan floodRingSpan(std::uint64_t producerPosition)
+    {
+        std::uint64_t consumer = m_floodRingControl->consumer.load(std::memory_order_relaxed);
+        const std::uint64_t rewindFrom = m_floodRewindFrom.load(std::memory_order_acquire);
+        if (consumer == rewindFrom) {
+            consumer = m_floodRewindTo.load(std::memory_order_relaxed);
+            m_floodRingControl->consumer.store(consumer, std::memory_order_release);
+            m_floodRingControl->consumer.notify_one(); // a reader parked on a full ring counts the skipped bytes as held
+        }
+        const std::uint64_t limit = rewindFrom > consumer ? std::min(rewindFrom, producerPosition) : producerPosition;
+        return { consumer, limit > consumer ? limit - consumer : 0 };
+    }
     /// The ring's SPSC counters, heap-held for their cache-line isolation.
     std::unique_ptr<FloodRingControl> m_floodRingControl;
 };

@@ -65,8 +65,6 @@ void schedulerYield() { }
 // choose between: the hint has nothing to raise.
 void raiseCurrentThreadToInteractivePriority() { }
 
-std::size_t privateCacheBytes() { return 0; }
-
 // One thread, and it is the one rendering: there is no background band.
 void lowerCurrentThreadToUtilityPriority() { }
 
