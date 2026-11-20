@@ -1178,6 +1178,244 @@ int main(int argc, char** argv)
         runCorpus("letters-flow", segments);
     }
 
+    // Corpus 21: control sequences of every shape, read whole against read a
+    // byte at a time.
+    //
+    // A sequence that lies whole in a read is scanned where it stands: the
+    // introducer, a private marker, the parameters and the final byte in one
+    // turn of the byte loop. One that a read cuts goes through the states,
+    // and in the arm that reads a byte at a time every one does. The two
+    // must leave the same screen, cursor and scrollback, so each sequence has
+    // text behind it that shows what it did: where the cursor went, what the
+    // pen became, which modes hold.
+    //
+    // The shapes are the well formed ones a program sends and the ones a
+    // parser must not misread: an empty parameter, a zero in front, a number
+    // past the limit, more parameters than there are slots, a colon where
+    // only a rendition takes one, a marker in the wrong place or twice, an
+    // intermediate byte, a control or a cancel inside the sequence, and an
+    // escape that starts another before the first has ended.
+    {
+        std::vector<std::string> segments;
+        uint64_t state = 0x2545F4914F6CDD1Dull;
+        const auto next = [&state]() {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            return static_cast<uint32_t>(state >> 32);
+        };
+        const auto appendNumber = [&](std::string& out, uint32_t limit) {
+            const uint32_t shape = next() % 16;
+            if (shape == 0)
+                return; // an empty parameter
+            if (shape == 1) {
+                out += "99999999999"; // past the limit, and past what a word of digits holds
+                return;
+            }
+            if (shape == 2)
+                out += "00"; // zeros in front
+            out += std::to_string(next() % limit);
+        };
+        const auto appendText = [&](std::string& out) {
+            const int length = static_cast<int>(next() % 14) + 1;
+            for (int index = 0; index < length; ++index)
+                out.push_back(static_cast<char>('a' + next() % 26));
+        };
+        const char* const renditions[] = {
+            "",
+            "0",
+            "1",
+            "3",
+            "4",
+            "7",
+            "22",
+            "24",
+            "27",
+            "31",
+            "39",
+            "42",
+            "49",
+            "91",
+            "1;31",
+            "0;1;4;33;44",
+            "38;5;24",
+            "48;5;200",
+            "38;2;10;20;30",
+            "48;2;125;136;147",
+            "38:5:24",
+            "38:2::10:20:30",
+            "48:2:125:136:147",
+            "4:3",
+            "58:5:44",
+            "58;5;44;2",
+            "1;2;3;4:3;31",
+            "38:5:24;48:2:125:136:147",
+            "38;5",
+            "38;2;1",
+            ";",
+            ";;1",
+            "1;;31",
+            "0031",
+            "38;5;999",
+            "4:9",
+            "1;2;3;4;5;6;7;8;9;1;2;3;4;5;6;7;8;9;1;2;3;4;5;6;7;8;9;1;2;3;4;5;6;31", // more parameters than slots
+        };
+        const char* const privateModes[] = { "1", "5", "6", "7", "12", "25", "45", "69", "1004", "1049", "2004", "2026", "6;7", "1;25", "", "007", "1:2" };
+        const char* const oddities[] = {
+            "\x1b[1?h",
+            "\x1b[??1h",
+            "\x1b[?1?h",
+            "\x1b[>4;2m",
+            "\x1b[>c",
+            "\x1b[<u",
+            "\x1b[=1u",
+            "\x1b[?u",
+            "\x1b[2 q",
+            "\x1b[ q",
+            "\x1b[!p",
+            "\x1b[1\"q",
+            "\x1b[0\"q",
+            "\x1b[?1$p",
+            "\x1b[4$p",
+            "\x1b[1;1;2;2$z",
+            "\x1b[#P",
+            "\x1b[#Q",
+            "\x1b[5y",
+            "\x1b[1~",
+            "\x1b[3 1H",
+            "\x1b[ 3H",
+            "\x1b[1 2 q",
+            "\x1b[1\n;5H",
+            "\x1b[\r5C",
+            "\x1b[5\bC",
+            "\x1b[12\x18",
+            "\x1b[3\x1a",
+            "\x1b[12\x1b[5C",
+            "\x1b[1\x7f"
+            "2H",
+            "\x1b[1\xC3\xA9H",
+            "\x1b[1\xC2\x9B"
+            "2H",
+            "\x1b[\x1b\x1b[2C",
+            "\x1b[;H",
+            "\x1b[;;H",
+            "\x1b[3;H",
+            "\x1b[;7H",
+            "\x1b[0;0H",
+            "\x1b[999;999H",
+            "\x1b[1:2H",
+            "\x1b[3:C",
+            "\x1b[2:J",
+            "\x1b[c",
+            "\x1b[5n",
+            "\x1b[6n",
+            "\x1b[?6n",
+            "\x1b[0x",
+            "\x1b[s",
+            "\x1b[u",
+            "\x1b"
+            "7",
+            "\x1b"
+            "8",
+            "\x1b[g",
+            "\x1b[3g",
+            "\x1bH",
+            "\x1b[2I",
+            "\x1b[2Z",
+            "\t",
+            "\n",
+            "\r",
+            "\x1b[4h",
+            "\x1b[4l",
+            "\x1b[20h",
+            "\x1b[20l",
+            "\x1b[r",
+            "\x1b[5;18r",
+            "\x1b[18;5r",
+            "\x1b[;10r",
+            "\x1b[5;60s",
+            "\x1b[m\x1b[2J\x1b[H",
+        };
+        const auto appendSequences = [&](std::string& out, int count) {
+            for (int sequence = 0; sequence < count; ++sequence) {
+                const uint32_t pick = next();
+                switch (pick % 16) {
+                case 0:
+                case 1:
+                case 2: { // the cursor, to a place or by a distance
+                    out += "\x1b[";
+                    appendNumber(out, 26);
+                    const char final = "ABCDEFGH`adefHHG"[(pick >> 4) % 16];
+                    if (((pick >> 8) & 3) == 0 || final == 'H' || final == 'f') {
+                        out += ((pick >> 10) & 15) == 0 ? ":" : ";";
+                        appendNumber(out, 90);
+                    }
+                    out.push_back(final);
+                    break;
+                }
+                case 3:
+                case 4: { // erasing, inserting, deleting and scrolling
+                    out += "\x1b[";
+                    appendNumber(out, 4);
+                    out.push_back("JKKKX@PLMST"[(pick >> 4) % 11]);
+                    break;
+                }
+                case 5:
+                case 6:
+                case 7:
+                    out += std::string("\x1b[") + renditions[(pick >> 4) % (sizeof renditions / sizeof *renditions)] + "m";
+                    break;
+                case 8:
+                    out += std::string("\x1b[?") + privateModes[(pick >> 4) % (sizeof privateModes / sizeof *privateModes)] + (((pick >> 12) & 1) ? "h" : "l");
+                    break;
+                case 9:
+                    out += oddities[(pick >> 4) % (sizeof oddities / sizeof *oddities)];
+                    break;
+                case 10: { // a glyph and its repeat
+                    out.push_back(static_cast<char>('A' + (pick >> 4) % 26));
+                    static constexpr int counts[] = { 0, 1, 2, 3, 78, 79, 80, 81, 159, 200, 5000 };
+                    out += "\x1b[" + std::to_string(counts[(pick >> 9) % (sizeof counts / sizeof *counts)]) + "b";
+                    break;
+                }
+                case 11: // a pair and its repeat
+                    out += "\xE7\x95\x8C\x1b[" + std::to_string((pick >> 4) % 5) + "b";
+                    break;
+                default:
+                    appendText(out);
+                    break;
+                }
+            }
+        };
+        for (int segment = 0; segment < 48; ++segment) {
+            std::string out;
+            if (segment % 12 == 5)
+                out += "\x1b[?1049h";
+            if (segment % 12 == 9)
+                out += "\x1b[?1049l";
+            appendSequences(out, 160);
+            segments.push_back(out);
+        }
+        // Back to a known screen, then the same over rows of pairs and over a
+        // full screen of text, where a cursor that lands anywhere cuts both.
+        {
+            std::string pairs = "\x1b[!p\x1b[?1049l\x1b[?69l\x1b[?6l\x1b[?7h\x1b[4l\x1b[r\x1b[m\x1b[H\x1b[2J";
+            for (int row = 0; row < 24; ++row) {
+                pairs += (row & 1) ? "a" : "";
+                for (int glyph = 0; glyph < 39; ++glyph)
+                    pairs += "\xE7\x95\x8C";
+                pairs += "\r\n";
+            }
+            appendSequences(pairs, 400);
+            segments.push_back(pairs);
+            std::string full = "\x1b[!p\x1b[?69l\x1b[?6l\x1b[?7h\x1b[4l\x1b[r\x1b[m\x1b[H\x1b[2J";
+            for (int row = 0; row < 24; ++row)
+                full += std::string(80, static_cast<char>('a' + row)) + (row < 23 ? "\r\n" : "");
+            appendSequences(full, 400);
+            segments.push_back(full);
+        }
+        runCorpus("control-sequences", segments);
+    }
+
     if (failures == 0) {
         std::printf("scroll-lane differential: all corpora chunk-invariant OK\n");
         return 0;

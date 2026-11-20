@@ -2184,6 +2184,29 @@ static constexpr CSIPrefixedEntry csiPrefixedHandlers[] = {
 template<size_t N> constexpr bool CSIPrefixedTableSorted(const CSIPrefixedEntry (&a)[N], size_t i = 1) { return (i >= N) || ((csiPrefixedKey(a[i - 1].priv, a[i - 1].intermediate, a[i - 1].final) < csiPrefixedKey(a[i].priv, a[i].intermediate, a[i].final)) && CSIPrefixedTableSorted(a, i + 1)); }
 static_assert(CSIPrefixedTableSorted(csiPrefixedHandlers), "csiPrefixedHandlers must be sorted by (priv,int,final) key");
 
+/// The handlers of the sequences that carry a private marker and no
+/// intermediate byte, by marker and final byte: the mode sets and resets and
+/// the reports, which are most of the marked sequences a program sends.
+struct CSIMarkedJumpTable {
+    static constexpr unsigned firstMarker = 0x3C;
+    static constexpr unsigned markerCount = 4;
+    static constexpr unsigned firstFinal = 0x40;
+    static constexpr unsigned finalCount = 0x40;
+    CSIHandler slot[markerCount][finalCount];
+};
+static constexpr CSIMarkedJumpTable makeCSIMarkedJumpTable()
+{
+    CSIMarkedJumpTable table {}; // every slot null: no such sequence
+    for (const auto& entry : csiPrefixedHandlers) {
+        const unsigned marker = entry.priv - CSIMarkedJumpTable::firstMarker;
+        const unsigned final = static_cast<unsigned char>(entry.final) - CSIMarkedJumpTable::firstFinal;
+        if (entry.intermediate == 0 && marker < CSIMarkedJumpTable::markerCount && final < CSIMarkedJumpTable::finalCount)
+            table.slot[marker][final] = entry.fn;
+    }
+    return table;
+}
+static constexpr CSIMarkedJumpTable cSIMarkedJumpTable = makeCSIMarkedJumpTable();
+
 static const CSIPrefixedEntry* csiPrefixedLookup(unsigned char priv, unsigned char intermediate, char final)
 {
     unsigned want = csiPrefixedKey(priv, intermediate, final);
@@ -2233,7 +2256,7 @@ static bool takesSubparameters(const Ubiquitty::Terminal& t, char final)
     return t.parser.privatePrefix == 0 && t.parser.intermediate == ',' && final == '~';
 }
 
-static void csiDispatch(Ubiquitty::Terminal& t, char final)
+[[gnu::always_inline]] static inline void csiDispatch(Ubiquitty::Terminal& t, char final)
 {
     discardGraphicCancellation(t);
     if (final != 'm' || t.parser.privatePrefix || t.parser.intermediate)
@@ -2245,9 +2268,17 @@ static void csiDispatch(Ubiquitty::Terminal& t, char final)
     if (t.isAlignedTabActive && !((t.parser.privatePrefix == 0 && t.parser.intermediate == 0 && (final == 'm' || final == 'b' || final == 'n' || final == 'c' || final == 'x')) || (t.parser.intermediate == '$' && (final == 'p' || final == 'w'))))
         finishAlignedTabString(t);
     if (t.parser.privatePrefix != 0 || t.parser.intermediate != 0) {
-        const CSIPrefixedEntry* pe = csiPrefixedLookup(static_cast<unsigned char>(t.parser.privatePrefix), static_cast<unsigned char>(t.parser.intermediate), final);
-        if (pe)
-            pe->fn(t, final);
+        // A marker with no intermediate is one indexed load; the table of
+        // every prefixed sequence is searched for the rest.
+        CSIHandler handler = nullptr;
+        const unsigned marker = static_cast<unsigned>(t.parser.privatePrefix) - CSIMarkedJumpTable::firstMarker;
+        const unsigned finalIndex = static_cast<unsigned char>(final) - CSIMarkedJumpTable::firstFinal;
+        if (t.parser.intermediate == 0 && marker < CSIMarkedJumpTable::markerCount && finalIndex < CSIMarkedJumpTable::finalCount)
+            handler = cSIMarkedJumpTable.slot[marker][finalIndex];
+        else if (const CSIPrefixedEntry* entry = csiPrefixedLookup(static_cast<unsigned char>(t.parser.privatePrefix), static_cast<unsigned char>(t.parser.intermediate), final))
+            handler = entry->fn;
+        if (handler)
+            handler(t, final);
         else
             Diagnostics::diagLog(t, "csi-miss", (static_cast<uint32_t>(static_cast<uint8_t>(t.parser.privatePrefix)) << 16) | (static_cast<uint32_t>(static_cast<uint8_t>(t.parser.intermediate)) << 8) | static_cast<uint32_t>(static_cast<uint8_t>(final)));
         // Record this CSI as REP's predecessor; an unrecognized sequence records
@@ -9096,49 +9127,81 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                                 VT::executeGroundLineFeed(t);
                                 continue;
                             }
-                            // Fast-path the CSI introducer: ESC '[' in Ground always
-                            // means CSI entry — skip the two per-byte transition()
-                            // round-trips (Ground->Escape, Escape->CSI).
+                            // A control sequence that lies whole in the input is read
+                            // where it stands and performed in this one turn of the
+                            // loop: ESC '[' in Ground always means CSI entry, and a
+                            // private marker, a run of parameters and a final byte are
+                            // most of what follows it. A byte at a time the introducer
+                            // is a turn, the marker another through the per-byte
+                            // driver, and the parameters a third.
+                            //
+                            // What is accumulated is what those turns accumulate. A
+                            // sequence that ends short of its final byte, or carries
+                            // an intermediate, a control or a second marker, is left in
+                            // the CSI state at the byte it stopped on.
                             if (c == 0x1B && i + 1 < length && static_cast<uint8_t>(buffer[i + 1]) == '[') {
-
+                                VT::recordTraceByte(t, static_cast<uint8_t>(buffer[i + 1]));
+                                VT::resetCSI(t);
+                                int cursor = i + 2;
+                                // actCSIPrivatePrefix on a sequence just begun.
+                                if (cursor < length && static_cast<uint8_t>(buffer[cursor]) - 0x3Cu <= 0x3Fu - 0x3Cu)
+                                    t.parser.privatePrefix = buffer[cursor++];
+                                const int parameterStart = cursor;
+                                if (cursor < length && static_cast<uint8_t>(buffer[cursor]) - 0x30u <= 0x3Bu - 0x30u)
+                                    cursor += VT::scanCSIParameters(t, buffer, cursor, length);
+                                const bool hasFinalByte = cursor < length && static_cast<uint8_t>(buffer[cursor]) - 0x40u <= 0x7Eu - 0x40u;
                                 // Blank-invariant SGR continuation: a plain SGR
                                 // (parameter bytes then final 'm', both in this
                                 // buffer) mutates only the pen — it cannot observe
                                 // deferred scroll state — so the run stays open;
                                 // csiH_sgr flushes after apply iff the BCE blank
-                                // changed. Any other final, intermediates/privates,
-                                // or a sequence split across the chunk boundary
-                                // flushes here (flush timing is not observable
-                                // state, so chunk-invariance holds either way).
-                                bool laneSurvivesSGR = false;
-                                if (t.scrollLaneRun.active || t.bandScrollRun.active) {
-                                    const int parameterStart = i + 2;
-                                    if (parameterStart < length) {
-                                        const uint8_t firstByte = static_cast<uint8_t>(buffer[parameterStart]);
-                                        if (firstByte >= 0x30 && firstByte <= 0x3B) {
-                                            // Accumulation touches only CSI fields, which a
-                                            // scroll commit does not observe. Parse once to
-                                            // identify the final, then leave it to the usual
-                                            // dispatcher and its sync/reply-pressure checks.
-                                            VT::resetCSI(t);
-                                            const int parameterEnd = parameterStart + VT::scanCSIParameters(t, buffer, parameterStart, length);
-                                            if (parameterEnd == length || buffer[parameterEnd] != 'm')
-                                                Ubiquitty::Screen::scrollLaneFlush(t);
-                                            VT::recordTraceByte(t, static_cast<uint8_t>(buffer[i + 1]));
-                                            VT::recordTraceByte(t, firstByte);
-                                            t.parser.parseState = VT::ParserState::CSI;
-                                            i = parameterEnd - 1; // the next iteration owns the unconsumed byte
-                                            continue;
-                                        }
-                                        laneSurvivesSGR = firstByte == 'm';
+                                // changed. Any other final, a marker or an
+                                // intermediate, or a sequence split across the chunk
+                                // boundary flushes here (flush timing is not
+                                // observable state, so chunk-invariance holds either
+                                // way). Accumulation touches only CSI fields, which a
+                                // scroll commit does not observe, so reading the
+                                // sequence first changes nothing a flush sees.
+                                if ((t.scrollLaneRun.active || t.bandScrollRun.active) && !(hasFinalByte && buffer[cursor] == 'm' && t.parser.privatePrefix == 0))
+                                    Ubiquitty::Screen::scrollLaneFlush(t);
+                                if (!hasFinalByte) {
+                                    t.parser.parseState = VT::ParserState::CSI;
+                                    i = cursor - 1; // the next turn owns the unconsumed byte
+                                    continue;
+                                }
+                                const uint8_t finalByte = static_cast<uint8_t>(buffer[cursor]);
+                                VT::recordTraceByte(t, finalByte);
+                                // An SGR with text behind it may open a stretch of
+                                // styled pieces, which is written as one span.
+                                if (finalByte == 'm' && cursor > parameterStart && cursor + 1 < length
+                                    && (static_cast<unsigned char>(buffer[cursor + 1]) - 0x20u <= 0x7Eu - 0x20u || static_cast<unsigned char>(buffer[cursor + 1]) >= 0xC2)) {
+                                    if (const int end = VT::emitLineSpan<Capture>(t, buffer, cursor, length, VT::LineSpanEntry::PendingSGR, styledResumeIndex); end > 0) {
+                                        i = end - 1;
+                                        continue;
                                     }
                                 }
-                                if (!laneSurvivesSGR)
-                                    Ubiquitty::Screen::scrollLaneFlush(t); // leaving the lane's owned alphabet
-                                VT::recordTraceByte(t, static_cast<uint8_t>(buffer[i + 1]));
-                                VT::resetCSI(t);
-                                t.parser.parseState = VT::ParserState::CSI;
-                                ++i; // consume '['; the loop's i++ consumes the ESC
+                                VT::csiDispatch(t, static_cast<char>(finalByte));
+                                i = cursor; // the loop's i++ steps past the final byte
+                                // A dispatch can clear syncOutput (DECRST 2026), so
+                                // the sync-clear stop is checked at every one.
+                                if constexpr (StopAtSyncClear) {
+                                    if (wasSyncOutput && !t.modes.syncOutput) {
+                                        ++i;
+                                        stopAtSyncClearHit = true;
+                                        break;
+                                    }
+                                    wasSyncOutput = t.modes.syncOutput;
+                                    if (VT::shouldStopAfterDispatch(t)) {
+                                        ++i;
+                                        didHitReplyPressure = true;
+                                        break;
+                                    }
+                                }
+                                // DECSET 38 enters Tek right here.
+                                if (t.isTekModeActive || t.printMode == 5) [[unlikely]] {
+                                    ++i;
+                                    break;
+                                }
                                 continue;
                             }
                             // CR, inlined (actExecuteCarriageReturn verbatim: status-line
