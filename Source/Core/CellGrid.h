@@ -334,6 +334,24 @@ public:
     ///   - tmpl: The pen every cell in the run takes.
     ///   - text: Printable ASCII, one byte per column. Copied before returning.
     void writeASCIIRun(Row r, Column firstColumn, const Cell& tmpl, std::string_view text);
+    /// Writes one printable ASCII cell, as ``writeASCIIRun`` writes a run of
+    /// one, on a row that holds no wide pair.
+    ///
+    /// A character placed between two controls is a whole write by itself,
+    /// and it pays for none of what a run of any length sets up: on a row
+    /// held at a byte a cell it is a byte and the id of its pen, and on a row
+    /// of cells it is one cell compared and stored.
+    ///
+    /// - Parameters:
+    ///   - row: Destination row; out of range writes nothing.
+    ///   - column: Destination column; out of range writes nothing.
+    ///   - cellTemplate: The pen the cell takes, with no code point. It does
+    ///     not lie in the grid's own storage.
+    ///   - glyph: Printable ASCII.
+    /// - Returns: Whether the write was taken. A row that may hold a wide
+    ///   pair is refused untouched, as ``mayRowHoldWidePair`` would say of
+    ///   it: the halves at the cell's edges are its writer's to clear first.
+    [[nodiscard]] bool didWriteASCIICell(Row row, Column column, const Cell& cellTemplate, char glyph);
     /// Appends printable ASCII in the default pen behind everything a row
     /// held a byte a cell holds.
     ///

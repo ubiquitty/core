@@ -1945,26 +1945,25 @@ inline constexpr unsigned parseAblateMask = UBIQUITTY_PARSE_ABLATE;
     if (t.triggerWrapEvaluatedRow == row)
         t.triggerWrapEvaluatedRow = -1;
 
+    // The cell is written as a run of one, the way every run is written. It
+    // is compared before it is stored, so a repaint marks nothing, and a row
+    // of ASCII stays at a byte a cell: a cell set by itself turns a styled
+    // row into cells, which the next run from the row's start turns back,
+    // and a screen written a character at a time between controls pays for
+    // both on every row.
     const VT::AttributeSet attributes = s->pen.attributes - VT::Attribute::Emoji;
-    bool same = false;
-    bool shouldClearWideOverlap = false;
-    {
-        const auto read = t.grid->logicalCellReadAt(Ubiquitty::Row(row), Ubiquitty::Column(column));
-        const auto* current = read.get();
-        same = current && current->codePoint == codePoint && current->combiningLength() == 0
-            && current->linkID() == t.currentLinkID && cellMatchesPen(current, &s->pen, attributes);
-        shouldClearWideOverlap = !same && current && Ubiquitty::cellPen(*current).attributes.containsAny({ VT::Attribute::Wide, VT::Attribute::WideContinuation });
-    }
-    if (!same) {
-        if (shouldClearWideOverlap) {
-            Ubiquitty::Cell blank;
-            Ubiquitty::Screen::eraseCell(&blank, s);
-            t.grid->clearWideOverlap(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::Column(column), blank);
-        }
-        displaySetCell(t, row, column, &s->pen, codePoint, attributes);
+    const Ubiquitty::Cell cellTemplate = Ubiquitty::cellFromPen(s->pen, attributes, t.currentLinkID, 0);
+    if (!t.grid->didWriteASCIICell(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, static_cast<char>(c))) {
+        // A row that may hold a pair: the halves at the cell's edges are
+        // cleared, and the cell is the run writer's.
+        Ubiquitty::Cell blank;
+        Ubiquitty::Screen::eraseCell(&blank, s);
+        t.grid->clearWideOverlapEdges(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::Column(column), blank);
+        const char byte = static_cast<char>(c);
+        t.grid->writeASCIIRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, { &byte, 1 });
     }
     s->cursorX++;
-    clusterOpen(t, row, column, codePoint);
+    clusterOpenAfterASCII(t, row, column, codePoint);
     return true;
 }
 

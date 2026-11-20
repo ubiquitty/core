@@ -523,6 +523,60 @@ void CellGrid::materializeCompactRow(int screen, int slot)
     state.storage = RowStorage::Cells;
 }
 
+/// Whether each of a styled row's template ids in a run is `id`.
+///
+/// Four ids are a word, compared against the id four times over, and the
+/// last word reaches back over ids already compared rather than leaving a
+/// tail to walk: a run is the width of a word or a row of them, and a loop an
+/// id at a time is most of what an identical repaint costs.
+///
+/// - Parameters:
+///   - ids: The run's first id.
+///   - count: Its length, which is positive.
+///   - id: The id every one is compared with.
+/// - Returns: Whether none differs.
+static inline bool areStyledIDsAll(const std::uint16_t* ids, int count, std::uint16_t id)
+{
+    constexpr int idsAWord = sizeof(std::uint64_t) / sizeof(std::uint16_t);
+    if (count < idsAWord) {
+        unsigned difference = 0;
+        for (int index = 0; index < count; ++index)
+            difference |= static_cast<unsigned>(ids[index] ^ id);
+        return difference == 0;
+    }
+    const std::uint64_t pattern = id * 0x0001000100010001ull;
+    std::uint64_t difference = 0;
+    for (int index = 0; index + idsAWord <= count; index += idsAWord) {
+        std::uint64_t word;
+        std::memcpy(&word, ids + index, sizeof word);
+        difference |= word ^ pattern;
+    }
+    std::uint64_t last;
+    std::memcpy(&last, ids + count - idsAWord, sizeof last);
+    return (difference | (last ^ pattern)) == 0;
+}
+
+/// Stores `id` into each of a styled row's template ids in a run, a word of
+/// four at a step, as ``areStyledIDsAll`` reads them.
+///
+/// - Parameters:
+///   - ids: The run's first id.
+///   - count: Its length, which is positive.
+///   - id: The id to store.
+static inline void fillStyledIDs(std::uint16_t* ids, int count, std::uint16_t id)
+{
+    constexpr int idsAWord = sizeof(std::uint64_t) / sizeof(std::uint16_t);
+    if (count < idsAWord) {
+        for (int index = 0; index < count; ++index)
+            ids[index] = id;
+        return;
+    }
+    const std::uint64_t pattern = id * 0x0001000100010001ull;
+    for (int index = 0; index + idsAWord <= count; index += idsAWord)
+        std::memcpy(ids + index, &pattern, sizeof pattern);
+    std::memcpy(ids + count - idsAWord, &pattern, sizeof pattern);
+}
+
 bool CellGrid::didReplaceCellsWithCompactASCIIRun(int slot, int row, int lastColumn, const Cell& cellTemplate, const char* source)
 {
     auto& state = m_rowState[m_activeIndex][slot];
@@ -565,7 +619,7 @@ bool CellGrid::didReplaceCellsWithCompactASCIIRun(int slot, int row, int lastCol
     state.compactBlankStart = *id ? unknownCompactBlankStart : static_cast<std::uint16_t>(std::max(state.filled, cellsUnderBytes));
     std::memcpy(backing, source, static_cast<std::size_t>(lastColumn + 1));
     if (*id)
-        std::fill_n(styledIDs(backing), lastColumn + 1, *id);
+        fillStyledIDs(styledIDs(backing), lastColumn + 1, *id);
     state.filled = lastColumn + 1;
     state.storage = *id ? RowStorage::StyledASCII : RowStorage::DefaultASCII;
     if (cellPen(cellTemplate).attributes.contains(Ubiquitty::VT::Attribute::Blink))
@@ -666,20 +720,17 @@ bool CellGrid::writeStyledASCIIRun(int slot, int row, int firstColumn, int lastC
         state.compactBlankStart = unknownCompactBlankStart;
         hasDifference = true;
     }
-    if (!hasDifference && lastColumn < state.filled) {
-        hasDifference = std::memcmp(bytes + firstColumn, source, static_cast<std::size_t>(count)) != 0;
-        std::uint16_t idDifference = 0;
-        for (int index = 0; index < count; ++index)
-            idDifference |= static_cast<std::uint16_t>(ids[firstColumn + index] ^ *id);
-        if (!hasDifference && idDifference == 0)
-            return true; // an identical repaint
-    }
+    // The ids are read only behind bytes that match: text that differs is
+    // most of what is written, and its bytes say so first.
+    if (!hasDifference && lastColumn < state.filled && std::memcmp(bytes + firstColumn, source, static_cast<std::size_t>(count)) == 0
+        && areStyledIDsAll(ids + firstColumn, count, *id))
+        return true; // an identical repaint
     if (firstColumn > state.filled) {
         std::memset(bytes + state.filled, 0, static_cast<std::size_t>(firstColumn - state.filled));
         std::memset(ids + state.filled, 0, static_cast<std::size_t>(firstColumn - state.filled) * sizeof(std::uint16_t));
     }
     std::memcpy(bytes + firstColumn, source, static_cast<std::size_t>(count));
-    std::fill_n(ids + firstColumn, count, *id);
+    fillStyledIDs(ids + firstColumn, count, *id);
     state.filled = std::max(state.filled, lastColumn + 1);
     m_anyMutationsSinceLastPaint = true;
     bumpRow(row);
@@ -1521,6 +1572,72 @@ void CellGrid::writeASCIIRun(Row r, Column firstColumn, const Cell& tmpl, std::s
     writeRun<false>(r, firstColumn, tmpl, text, nullptr);
 }
 
+bool CellGrid::didWriteASCIICell(Row rowValue, Column columnValue, const Cell& cellTemplate, char glyph)
+{
+    const int row = rowValue.value();
+    const int column = columnValue.value();
+    if (row < 0 || row >= m_rows || column < 0 || column >= m_columns)
+        return true;
+    assert(cellTemplate.codePoint == 0 && glyph >= 0x20 && glyph <= 0x7E);
+    const int slot = physicalRowSlot(m_activeIndex, row);
+    RowState& state = m_rowState[m_activeIndex][slot];
+    // mayRowHoldWidePair, from the slot already resolved.
+    if (state.meta.has(RowFlag::HasMulticell) || slot == m_deferredBlankSlot[m_activeIndex])
+        return false;
+    Cell* backing = m_rowPtrs[m_activeIndex][slot];
+    assert(!(std::less<const void*>()(&cellTemplate, backing + m_columnCapacity) && std::less<const void*>()(backing, &cellTemplate + 1)));
+    const auto byte = static_cast<std::uint8_t>(glyph);
+    // Each arm below is what writeRun does for a run of one on a row of that
+    // kind, at a column the row's content reaches or ends at. Every other
+    // write is writeRun's own: a row that changes its kind, or a gap to
+    // fill before the cell.
+    if (state.storage == RowStorage::StyledASCII && state.filled > 0 && column <= state.filled) {
+        if (const auto id = styledTemplateID(cellTemplate)) {
+            auto* bytes = reinterpret_cast<std::uint8_t*>(backing);
+            std::uint16_t* ids = styledIDs(backing);
+            if (column < state.filled && bytes[column] == byte && ids[column] == *id)
+                return true; // an identical repaint
+            bytes[column] = byte;
+            ids[column] = *id;
+            state.filled = std::max(state.filled, column + 1);
+            m_anyMutationsSinceLastPaint = true;
+            bumpRow(row);
+            if (cellPen(cellTemplate).attributes.contains(Ubiquitty::VT::Attribute::Blink))
+                noteBlinkWrite();
+            return true;
+        }
+    } else if (state.storage == RowStorage::DefaultASCII && column <= state.filled && isDefaultBlankButCodePoint(cellTemplate)) {
+        auto* bytes = reinterpret_cast<std::uint8_t*>(backing);
+        if (column < state.filled && bytes[column] == byte)
+            return true; // an identical repaint
+        bytes[column] = byte;
+        state.filled = std::max(state.filled, column + 1);
+        const int cellsUnderBytes = (state.filled + static_cast<int>(sizeof(Cell)) - 1) / static_cast<int>(sizeof(Cell));
+        state.compactBlankStart = std::max(state.compactBlankStart, static_cast<std::uint16_t>(cellsUnderBytes));
+        m_anyMutationsSinceLastPaint = true;
+        bumpRow(row);
+        return true;
+    } else if (state.storage == RowStorage::Cells && (column != 0 || state.filled > 1)) {
+        // A cell at the row's first column that is all the row holds leaves
+        // the row a byte a cell can say, which writeRun makes of it.
+        const CellStamp stamp(cellTemplate);
+        if (stamp.matches(backing + column, byte))
+            return true; // an identical repaint
+        stamp.store(backing + column, byte);
+        m_anyMutationsSinceLastPaint = true;
+        bumpRow(row);
+        if (cellPen(cellTemplate).extendedAttributes.textSizeSpecID() != 0)
+            noteSizedWrite();
+        if (cellPen(cellTemplate).attributes.contains(Ubiquitty::VT::Attribute::Blink))
+            noteBlinkWrite();
+        if (column >= state.filled)
+            state.filled = column + 1;
+        return true;
+    }
+    writeRun<false>(rowValue, columnValue, cellTemplate, std::string_view(&glyph, 1), nullptr);
+    return true;
+}
+
 void CellGrid::writeWideCodePointRun(Row rowValue, Column firstColumnValue, const Cell& cellTemplate, std::span<const uint32_t> codePoints, WidePresentation presentation)
 {
     const int row = rowValue.value();
@@ -1671,8 +1788,18 @@ void CellGrid::fillCellRun(Row r, Column firstColumnValue, const Cell& cell, int
             || (lo == 0 && hi + 1 >= m_rowState[m_activeIndex][slot].filled))) {
         std::array<char, maxColumns> text;
         std::memset(text.data(), static_cast<int>(cell.codePoint), static_cast<std::size_t>(hi - lo + 1));
-        Cell cellTemplate = cell;
-        cellTemplate.codePoint = 0;
+        // The template is the cell without its code point, stored whole: a
+        // copy with the code point cleared after it is a narrow store the
+        // writers then read back wide.
+        Cell cellTemplate;
+        CellStamp(cell).store(&cellTemplate, 0);
+        // A row that holds styled text takes the fill as its writer takes a
+        // run, which is what the run writer comes to after asking what kind
+        // of row this is; a refusal changes nothing and leaves the run
+        // writer to say what becomes of the row.
+        if (RowState& state = m_rowState[m_activeIndex][slot]; state.storage == RowStorage::StyledASCII && state.filled > 0 && slot != m_deferredBlankSlot[m_activeIndex]
+            && writeStyledASCIIRun(slot, ri, lo, hi, cellTemplate, text.data()))
+            return;
         writeRun<false>(r, Column(lo), cellTemplate, std::string_view(text.data(), static_cast<std::size_t>(hi - lo + 1)), nullptr);
         return;
     }
