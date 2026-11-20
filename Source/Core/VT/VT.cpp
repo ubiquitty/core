@@ -6515,6 +6515,15 @@ template<GraphicCapture Capture> [[gnu::noinline]] static int emitLineSpan(Ubiqu
     bool didDispatch = false;
     const Ubiquitty::CellStamp defaultPenProbe(t.grid->defaultBlank());
     Ubiquitty::CellGrid::SpanFacts spanFacts;
+    // The two-byte code points the tables hold nothing for but a width of
+    // one: U+00A0 to U+058F without the copyright and registered signs, the
+    // soft hyphen, and the combining marks. Some are of ambiguous width, so
+    // they are a cell each only where that width is narrow.
+    const auto isPlainTwoByteLetter = [](std::uint32_t codePoint) {
+        return codePoint - 0xAFu <= 0x2FFu - 0xAFu || codePoint - 0x370u <= 0x482u - 0x370u || codePoint - 0x48Au <= 0x58Fu - 0x48Au
+            || codePoint - 0xA0u <= 0xA8u - 0xA0u || codePoint - 0xAAu <= 0xACu - 0xAAu;
+    };
+    const bool isPlainTwoByteLetterAllowed = t.ambiguousWidth == Ubiquitty::Unicode::Width::AmbiguousWidth::Narrow;
     int position = start;
     if (entry == LineSpanEntry::PendingSGR) {
         // The parameters are the ones the caller scanned.
@@ -6584,6 +6593,32 @@ template<GraphicCapture Capture> [[gnu::noinline]] static int emitLineSpan(Ubiqu
                 // four bytes a glyph, so it stops three short of the input's
                 // end and leaves that tail to the ground loop.
                 while (position + 4 <= length && cellCount < room) {
+                    // Latin, Greek, Cyrillic and Armenian letters are a
+                    // narrow cell each where ambiguous width is narrow: no
+                    // table says more of them, and a word of them is staged
+                    // from its bytes.
+                    if (isPlainTwoByteLetterAllowed && static_cast<unsigned char>(buffer[position]) - 0xC2u <= 0xD6u - 0xC2u) {
+                        const int before = cellCount;
+                        while (position + 4 <= length && cellCount < room) {
+                            const auto lead = static_cast<unsigned char>(buffer[position]);
+                            const auto trail = static_cast<unsigned char>(buffer[position + 1]);
+                            const std::uint32_t letter = (lead & 0x1Fu) << 6 | (trail & 0x3Fu);
+                            if (lead - 0xC2u > 0xD6u - 0xC2u || (trail & 0xC0) != 0x80 || !isPlainTwoByteLetter(letter))
+                                break;
+                            assert((Ubiquitty::Unicode::Width::classify(letter) & clusterMask) == 0 && !Ubiquitty::Unicode::mayNeedShaping(letter)
+                                && Ubiquitty::Unicode::Width::cellsForWidthClass(Ubiquitty::Unicode::detail::PropWidthField::get(Ubiquitty::Unicode::Width::classify(letter)), t.ambiguousWidth) == 1);
+                            narrowStamp.store(span + cellCount, letter);
+                            ++cellCount;
+                            position += 2;
+                        }
+                        if (cellCount != before) {
+                            lastGlyphCells = 1;
+                            lastGlyphBytes = 2;
+                            lastMark = 0;
+                            didDispatchAfterLastGlyph = false;
+                            continue;
+                        }
+                    }
                     std::uint32_t codePoint;
                     const int sequenceLength = MixedDecode::decodeScalar(buffer + position, codePoint);
                     if (sequenceLength < 2 || codePoint < 0xA0)
