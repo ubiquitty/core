@@ -669,25 +669,28 @@ public:
     static constexpr std::uint8_t packedRowMarker = 0xFF;
     /// The most pens a packed row carries; a row of more is stored as cells.
     static constexpr int maxPackedRowPens = 16;
+    /// Set in a packed row's pen count when a pen index a cell follows its text.
+    static constexpr std::uint32_t packedRowHasPenIndexes = 0x100;
     /// The count of live blocks from which the history is taken to be larger
     /// than the cache: 32 slabs of cells are 8 MB.
     static constexpr std::size_t blocksBeyondCache = 32;
 
-    /// Packs a row the grid already holds as code points and template ids.
+    /// Packs a row the grid already holds as bytes and template ids.
     ///
-    /// The form is a pen count, a code point a cell, a pen index a cell, and
-    /// the pens as template cells. It is a fraction of the cells' size, and a
-    /// row leaving the screen is mostly never read again.
+    /// The form is a pen count, a byte a cell, a pen index a cell unless one
+    /// pen is the whole row's, and the pens as template cells. It is a small
+    /// fraction of the cells' size, and a row leaving the screen is mostly
+    /// never read again.
     ///
     /// - Parameters:
-    ///   - codePoints: A code point a cell.
+    ///   - text: A byte a cell.
     ///   - ids: A template id a cell, into `templates`.
     ///   - templates: The grid's templates by id.
     ///   - packed: Where the form goes: the cells' worth of space the row
     ///     reserves.
     /// - Returns: Whether the row was packed; `false` leaves `packed`
     ///   unspecified, for a row too short or of too many pens.
-    [[nodiscard]] static bool packStyledRow(std::span<const std::uint32_t> codePoints, std::span<const std::uint16_t> ids, const Cell* templates, Cell* packed);
+    [[nodiscard]] static bool packStyledRow(std::span<const std::uint8_t> text, std::span<const std::uint16_t> ids, const Cell* templates, Cell* packed);
 
     /// Expands a packed row into cells.
     ///
@@ -708,18 +711,18 @@ public:
     /// Closes the batch, making every row appended in it visible to other threads.
     void endBatch();
 
-    /// Appends a row the grid holds as code points and template ids, without
+    /// Appends a row the grid holds as bytes and template ids, without
     /// making its cells.
     ///
     /// - Parameters:
-    ///   - codePoints: A code point a cell, the row's content width long.
+    ///   - text: A byte a cell, the row's content width long.
     ///   - ids: A template id a cell, into `templates`.
     ///   - templates: The grid's templates by id.
     ///   - lineAttribute: The row's line attribute.
     ///   - mark: The row's prompt mark.
     ///   - wrapped: Whether the row continues on the next.
     ///   - needsShaping: Whether the row may need shaping.
-    void appendStyledRow(std::span<const std::uint32_t> codePoints, std::span<const std::uint16_t> ids, const Cell* templates, uint8_t lineAttribute, uint8_t mark, bool wrapped, bool needsShaping); // bool-ok: wrap and shaping are row facts, as on append
+    void appendStyledRow(std::span<const std::uint8_t> text, std::span<const std::uint16_t> ids, const Cell* templates, uint8_t lineAttribute, uint8_t mark, bool wrapped, bool needsShaping); // bool-ok: wrap and shaping are row facts, as on append
 
 private:
     /// A folded block's storage: every line's row form back to back, one

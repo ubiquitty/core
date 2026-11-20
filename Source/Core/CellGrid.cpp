@@ -612,7 +612,7 @@ std::optional<std::uint16_t> CellGrid::styledTemplateID(const Cell& cellTemplate
     }
 }
 
-std::optional<CellGrid::StyledRow> CellGrid::styledRow(Row row, std::span<std::uint32_t> scratch) const
+std::optional<CellGrid::StyledRow> CellGrid::styledRow(Row row) const
 {
     if (row.value() < 0 || row.value() >= m_rows || !m_styledTemplates)
         return std::nullopt;
@@ -622,13 +622,8 @@ std::optional<CellGrid::StyledRow> CellGrid::styledRow(Row row, std::span<std::u
         return std::nullopt;
     assert(slot != m_deferredBlankSlot[m_activeIndex] && state.filled >= 0 && state.filled <= m_columns);
     const auto length = static_cast<std::size_t>(state.filled);
-    if (scratch.size() < length)
-        return std::nullopt;
     Cell* backing = m_rowPtrs[m_activeIndex][slot];
-    const auto* bytes = reinterpret_cast<const std::uint8_t*>(backing);
-    for (std::size_t column = 0; column < length; ++column)
-        scratch[column] = bytes[column];
-    return StyledRow { scratch.first(length), { styledIDs(backing), length }, m_styledTemplates->cells.data() };
+    return StyledRow { { reinterpret_cast<const std::uint8_t*>(backing), length }, { styledIDs(backing), length }, m_styledTemplates->cells.data() };
 }
 
 bool CellGrid::writeStyledASCIIRun(int slot, int row, int firstColumn, int lastColumn, const Cell& cellTemplate, const char* source)

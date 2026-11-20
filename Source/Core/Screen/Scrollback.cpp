@@ -55,11 +55,10 @@ void scrollbackAppendGridRow(Terminal& terminal, int row)
         terminal.scrollbackCount = terminal.lineStore->count();
         return;
     }
-    // A row the grid holds as code points and ids goes to history in that
-    // form: its cells are made neither here nor there until it is read.
-    std::array<std::uint32_t, maxColumns> widened;
-    if (const auto styled = terminal.grid->styledRow(Row(row), widened); styled && static_cast<int>(styled->codePoints.size()) == captured.contentWidth && captured.contentWidth > 0) {
-        ensureLineStore(terminal).appendStyledRow(styled->codePoints, styled->ids, styled->templates, meta.lineAttribute, meta.oscMark,
+    // A row the grid holds as bytes and ids goes to history in that form:
+    // its cells are made neither here nor there until it is read.
+    if (const auto styled = terminal.grid->styledRow(Row(row)); styled && static_cast<int>(styled->text.size()) == captured.contentWidth && captured.contentWidth > 0) {
+        ensureLineStore(terminal).appendStyledRow(styled->text, styled->ids, styled->templates, meta.lineAttribute, meta.oscMark,
             meta.has(RowFlag::Wrapped), meta.has(RowFlag::NeedsShaping));
         terminal.scrollbackCount = terminal.lineStore->count();
         return;
