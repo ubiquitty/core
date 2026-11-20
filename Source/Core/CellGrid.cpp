@@ -537,16 +537,24 @@ bool CellGrid::didReplaceCellsWithCompactASCIIRun(int slot, int row, int lastCol
     };
     if (overlapsBacking(&cellTemplate, &cellTemplate + 1) || overlapsBacking(source, source + (lastColumn + 1)))
         return false;
-    Cell cell = cellTemplate;
-    cell.codePoint = 0;
-    const auto id = isDefaultBlank(cell) ? std::optional<std::uint16_t> { 0 } : styledTemplateID(cell);
+    // A template mostly arrives with no code point, and is then read where it
+    // stands: a copy with the code point cleared is a narrow store read back
+    // whole.
+    Cell cleared;
+    const Cell* key = &cellTemplate;
+    if (cellTemplate.codePoint != 0) [[unlikely]] {
+        cleared = cellTemplate;
+        cleared.codePoint = 0;
+        key = &cleared;
+    }
+    const auto id = isDefaultBlankButCodePoint(cellTemplate) ? std::optional<std::uint16_t> { 0 } : styledTemplateID(*key);
     if (!id)
         return false;
     // An identical repaint changes nothing, and is left to the writer that
     // says so without touching the row: the cells are read before the bytes
     // that replace them are stored.
     bool hasDifference = false;
-    const CellStamp probe(cell);
+    const CellStamp probe(*key);
     for (int column = 0; !hasDifference && column <= lastColumn; ++column)
         hasDifference = !probe.matches(backing + column, static_cast<unsigned char>(source[column]));
     if (!hasDifference)
@@ -637,9 +645,14 @@ bool CellGrid::writeStyledASCIIRun(int slot, int row, int firstColumn, int lastC
     };
     if (overlapsBacking(&cellTemplate, &cellTemplate + 1) || overlapsBacking(source, source + (lastColumn - firstColumn + 1)))
         return false;
-    Cell key = cellTemplate;
-    key.codePoint = 0;
-    const auto id = styledTemplateID(key);
+    Cell cleared;
+    const Cell* key = &cellTemplate;
+    if (cellTemplate.codePoint != 0) [[unlikely]] {
+        cleared = cellTemplate;
+        cleared.codePoint = 0;
+        key = &cleared;
+    }
+    const auto id = styledTemplateID(*key);
     if (!id)
         return false;
     auto* bytes = reinterpret_cast<std::uint8_t*>(backing);
@@ -730,9 +743,7 @@ bool CellGrid::writeCompactASCIIRun(int slot, int row, int firstColumn, int last
     if (overlapsBacking(&cellTemplate, &cellTemplate + 1)
         || overlapsBacking(source, source + (lastColumn - firstColumn + 1)))
         return false;
-    Cell pattern = cellTemplate;
-    pattern.codePoint = 0;
-    if (!isDefaultBlank(pattern))
+    if (!isDefaultBlankButCodePoint(cellTemplate))
         return false;
     if (isRecycled) {
         const int count = std::min(m_deferredBlankCount[m_activeIndex], m_columnCapacity);
@@ -1672,12 +1683,10 @@ void CellGrid::fillCellRun(Row r, Column firstColumnValue, const Cell& cell, int
     // from then on as bytes.
     if (RowState& state = m_rowState[m_activeIndex][slot]; state.storage == RowStorage::Cells && slot != m_deferredBlankSlot[m_activeIndex]
         && cell.codePoint >= 0x20 && cell.codePoint <= 0x7E && lo <= 32 && hi + 1 >= state.filled) {
-        Cell pattern = cell;
-        pattern.codePoint = 0;
         Cell* row = m_rowPtrs[m_activeIndex][slot];
         const std::less<const void*> precedes;
         const bool isBorrowed = precedes(&cell, row + m_columnCapacity) && precedes(row, &cell + 1);
-        if (!isBorrowed && isDefaultBlank(pattern)) {
+        if (!isBorrowed && isDefaultBlankButCodePoint(cell)) {
             std::array<std::uint8_t, maxColumns> text;
             const CellStamp probe(m_defaultBlank);
             bool isPrefixPlain = true;

@@ -557,6 +557,20 @@ public:
     /// - Parameter cell: The cell to compare.
     /// - Returns: Whether it equals the grid's default blank.
     [[nodiscard]] bool isDefaultBlank(const Cell& cell) const;
+    /// Whether a cell is the default blank in all but its code point.
+    ///
+    /// Compared where it stands: a copy with its code point cleared is a
+    /// narrow store read back whole, which waits for the store to retire.
+    ///
+    /// - Parameter cell: The cell.
+    /// - Returns: Whether its pen, link and marks are the default blank's,
+    ///   and the default blank holds no code point of its own.
+    [[nodiscard]] bool isDefaultBlankButCodePoint(const Cell& cell) const
+    {
+        static_assert(offsetof(Cell, codePoint) == 0 && sizeof(cell.codePoint) == 4, "the code point leads the cell");
+        return m_haveDefaultBlank && m_defaultBlank.codePoint == 0
+            && std::memcmp(reinterpret_cast<const char*>(&cell) + sizeof(cell.codePoint), reinterpret_cast<const char*>(&m_defaultBlank) + sizeof(cell.codePoint), sizeof(Cell) - sizeof(cell.codePoint)) == 0;
+    }
 
     /// Reads the exact history-capture width of either screen.
     /// - Parameters:
