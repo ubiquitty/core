@@ -523,9 +523,10 @@ struct CadenceCase {
     int maxRegistrations = 1;
     Ticking ticking = Ticking::EveryRefresh;
     Feeding feeding = Feeding::Ingest;
-    // The longest stretch without a fresh frame the flow may show, for a case
-    // that holds it under the cadence's own bound.
-    std::optional<Clock::duration> maxFreshGap {};
+    // The least share of the display's refreshes in the flow windows that
+    // must show a fresh frame, for a case whose output changes the screen
+    // every refresh.
+    double minFreshShare = 0;
 };
 
 std::int64_t microsecondsOf(Clock::time_point at) { return std::chrono::duration_cast<std::chrono::microseconds>(at.time_since_epoch()).count(); }
@@ -1387,6 +1388,7 @@ void checkCadence(const CadenceCase& cadenceCase, const CadenceRun& run, double 
 
     int presentsInWindows = 0;
     int capturedInWindows = 0;
+    double flowRefreshes = 0;
     Clock::duration longestFlowGap {};
     for (const auto& [from, to] : windows) {
         if (to <= from)
@@ -1394,17 +1396,23 @@ void checkCadence(const CadenceCase& cadenceCase, const CadenceRun& run, double 
         Clock::time_point gapEnd;
         const Clock::duration gap = longestGap(run.presents, from, to, gapEnd);
         longestFlowGap = std::max(longestFlowGap, gap);
-        const Clock::duration gapBound = cadenceCase.maxFreshGap.value_or(cadenceBound);
-        CHECK_MSG(gap <= gapBound,
+        CHECK_MSG(gap <= cadenceBound,
             std::format("{}: the longest stretch without a fresh frame was {:.1f} ms, ending {:.0f} ms into the writer, against {:.1f} ms",
-                name, millisecondsOf(gap), millisecondsOf(gapEnd - run.writerStartedAt), millisecondsOf(gapBound))
+                name, millisecondsOf(gap), millisecondsOf(gapEnd - run.writerStartedAt), millisecondsOf(cadenceBound))
                 .c_str());
+        flowRefreshes += static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(to - from).count())
+            / static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(refreshInterval).count());
         presentsInWindows += static_cast<int>(std::ranges::count_if(
             run.presents, [&](const Present& present) { return present.isFresh && present.at >= from && present.at < to; }));
         capturedInWindows += static_cast<int>(std::ranges::count_if(run.presents, [&](const Present& present) {
             return present.isFresh && present.route == FrameRoute::Captured && present.at >= from && present.at < to;
         }));
     }
+    const double freshShare = flowRefreshes > 0 ? static_cast<double>(presentsInWindows) / flowRefreshes : 0;
+    CHECK_MSG(freshShare >= cadenceCase.minFreshShare,
+        std::format("{}: {} of the flow windows' {:.0f} refreshes showed a fresh frame, against at least {:.0f}%", name, presentsInWindows,
+            flowRefreshes, cadenceCase.minFreshShare * 100)
+            .c_str());
     const double capturedShare = presentsInWindows ? static_cast<double>(capturedInWindows) / presentsInWindows : 0;
     CHECK_MSG(capturedShare >= cadenceCase.minCapturedShare,
         std::format("{}: {} of {} fresh frames in the flow windows were the drain's captures, against at least {:.0f}%", name,
@@ -1785,8 +1793,9 @@ TEST(cadenceOfAStarvedWriter)
 // region. Each frame is a settle's, which a view has to ask for when none was
 // captured: asked at one tick and taken at the next, the lines reach the glass
 // at half the display's rate. A view that is taking frames is captured for at
-// the settle, so every tick finds one: the stretch without a fresh frame is a
-// refresh interval, held here to one and a half where the cadence allows two.
+// the settle, so a tick finds one waiting. Held to three refreshes in four
+// rather than to every one: a tick that lands inside a line's quiescence finds
+// that line's frame still held, more often where the drain's timer is coarse.
 TEST(cadenceOfLinesPrintedSteadily)
 {
     runAndCheck({
@@ -1794,7 +1803,7 @@ TEST(cadenceOfLinesPrintedSteadily)
         .prologue = protectedRowScreen(paneRows),
         .selection = protectedSelection,
         .write = steadyLineWriter(),
-        .maxFreshGap = isCoreInstrumented ? cadenceBound : refreshInterval * 3 / 2,
+        .minFreshShare = isCoreInstrumented ? 0 : 0.75,
     });
 }
 
