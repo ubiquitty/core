@@ -615,6 +615,91 @@ static void testRepCancellationBoundaryAcrossInputChunks()
     printf("PASS testRepCancellationBoundaryAcrossInputChunks\n");
 }
 
+// A repeated ASCII glyph is filled a row at a time and carried across the
+// wraps its count causes. What it leaves is what the glyph written that many
+// times leaves, one byte to a read so that no run of them forms: the cells
+// and their pens, the pairs it cut, the rows joined by a wrap, the cursor and
+// the lines the screen scrolled away.
+static void testRepFillsLikeTheGlyphWrittenAgain()
+{
+    constexpr int rows = 6;
+    constexpr int columns = 20;
+    struct Content {
+        const char* name;
+        std::string bytes;
+    };
+    std::string defaultText;
+    std::string styledText;
+    std::string pairs;
+    for (int row = 0; row < rows; ++row) {
+        defaultText += std::string(static_cast<std::size_t>(columns - (row & 1)), static_cast<char>('p' + row));
+        styledText += "\033[3" + std::to_string(row + 1) + "m" + std::string(static_cast<std::size_t>(columns - 3), static_cast<char>('P' + row)) + "\033[m";
+        pairs += (row & 1) ? "x" : "";
+        for (int glyph = 0; glyph < columns / 2 - (row & 1); ++glyph)
+            pairs += "\xE7\x95\x8C";
+        if (row + 1 < rows) {
+            defaultText += "\r\n";
+            styledText += "\r\n";
+            pairs += "\r\n";
+        }
+    }
+    const Content contents[] = { { "blank", "" }, { "default text", defaultText }, { "styled text", styledText }, { "pairs", pairs } };
+    // Each is set before the glyph is placed and holds through the repeat.
+    const char* const settings[] = {
+        "", // a screen text flows on
+        "\033[?7l", // no wrap at the margin
+        "\033[?69h\033[4;15s", // left and right margins, which the flow leaves to the fill of one row
+        "\033[4h", // insert mode, which leaves every repeat to the character path
+        "\033[2;5r", // a scroll region the wraps scroll in
+        "\033[2;5r\033[?6h", // and the origin inside it
+    };
+    const char* const pens[] = { "", "\033[1;31m", "\033[48;2;1;2;3m" };
+    const int counts[] = { 1, 2, 3, columns - 2, columns - 1, columns, columns + 1, 2 * columns, 2 * columns + 1, 7 * columns + 3 };
+    const int startColumns[] = { 1, 2, 8, columns - 1, columns };
+    const int startRows[] = { 1, 3, rows };
+    int cases = 0;
+    for (const auto screen : { Ubiquitty::ScreenMode::Primary, Ubiquitty::ScreenMode::Alternate }) {
+        for (const Content& content : contents) {
+            for (const char* setting : settings) {
+                for (const char* pen : pens) {
+                    for (const int startRow : startRows) {
+                        for (const int startColumn : startColumns) {
+                            // The glyph is placed at the cursor, which at the
+                            // last column leaves a wrap pending for the first
+                            // repeat to take.
+                            std::string prefix;
+                            if (screen == Ubiquitty::ScreenMode::Alternate)
+                                prefix += "\033[?1049h";
+                            prefix += "\033[H" + content.bytes + setting + pen;
+                            prefix += "\033[" + std::to_string(startRow) + ";" + std::to_string(startColumn) + "Hq";
+                            for (const int count : counts) {
+                                auto expected = makeTerm();
+                                Ubiquitty::resize(*expected, rows, columns, Ubiquitty::Modes::ReflowMode::Fixed);
+                                feed(*expected, prefix);
+                                for (int repeat = 0; repeat < count; ++repeat)
+                                    feed(*expected, "q");
+                                auto actual = makeTerm();
+                                Ubiquitty::resize(*actual, rows, columns, Ubiquitty::Modes::ReflowMode::Fixed);
+                                feed(*actual, prefix + "\033[" + std::to_string(count) + "b");
+                                const int failuresBefore = failures;
+                                checkGraphicRepeatState(*actual, *expected);
+                                CHECK_EQ(actual->parser.precedingItem.multiplier, static_cast<uint32_t>(count));
+                                if (failures != failuresBefore) {
+                                    printf("  repeat of %d over %s, screen %d, setting %s, pen %s, from row %d column %d\n", count, content.name,
+                                        screen == Ubiquitty::ScreenMode::Alternate ? 1 : 0, setting + (*setting ? 1 : 0), pen + (*pen ? 1 : 0), startRow, startColumn);
+                                    return;
+                                }
+                                ++cases;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    printf("PASS testRepFillsLikeTheGlyphWrittenAgain (%d cases)\n", cases);
+}
+
 static void testRepSelectorKeepsSeparatePlacementBeforeALowerBand()
 {
     auto actual = makeTerm();
@@ -800,6 +885,7 @@ int main(int argc, const char* argv[])
     testRepAvoidsGraphicCancellationStorage();
     testRepCancellationBoundaryAcrossInputChunks();
     testRepSelectorKeepsSeparatePlacementBeforeALowerBand();
+    testRepFillsLikeTheGlyphWrittenAgain();
     testRepAfterWideClusterAcrossInputSplits();
     testRepRestoresWideClusterPredecessorAfterCancellation();
     testRepPreservesFusedAndSeparateSelectorRoutes();

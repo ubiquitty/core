@@ -5267,6 +5267,8 @@ static void dispatchAction(Ubiquitty::Terminal& t, uint8_t b, Ubiquitty::VT::Par
 // ---- REP (CSI Ps b) — repeat the preceding data-stream item ---- *
 
 static int emitASCIIFill(Ubiquitty::Terminal& t, uint8_t ch, int count);
+static uint32_t continueASCIIFill(Ubiquitty::Terminal& t, uint8_t glyph, uint32_t count);
+static bool commitWrapBeforePlainGlyph(Ubiquitty::Terminal& t, Ubiquitty::Screen::State* s, uint32_t codePoint);
 
 // Re-dispatch the preceding data-stream item (REP, CSI Ps b). Every category
 // replays through the same path that executed the original, so margins, autowrap,
@@ -5302,18 +5304,28 @@ void repeatPrecedingCharacter(Ubiquitty::Terminal& t, int n)
         // exactly what emitASCIIFill models. It returns 0 for state it can't model;
         // the fallback emits one repeat through emitCharacter (advancing that state),
         // then batching resumes. Cell-for-cell identical to the per-char path.
+        //
+        // A count that runs past the margin wraps, and on a screen text flows
+        // on the fill carries on down the rows it reaches, asking once what
+        // each of emitASCIIFill's pieces would ask again. Elsewhere the wrap
+        // of a plain glyph is committed the way a run of text commits it; a
+        // wrap with rules of its own to observe is left to emitCharacter.
         if (attachedSelector == 0 && codePoint == resolvedCodePoint
             && codePoint >= 0x20 && codePoint < 0x7F) {
             uint32_t remaining = count;
             while (remaining > 0) {
-                const int chunk = remaining < static_cast<uint32_t>(Ubiquitty::maxColumns) ? static_cast<int>(remaining) : Ubiquitty::maxColumns;
-                const int consumed = chunk >= 2 ? emitASCIIFill(t, static_cast<uint8_t>(codePoint), chunk) : 0;
-                if (consumed > 0) {
-                    remaining -= static_cast<uint32_t>(consumed);
-                } else {
-                    emitCharacter(t, codePoint, resolvedCodePoint, 0, GraphicCapture::Discard);
-                    remaining--;
+                uint32_t placed = continueASCIIFill(t, static_cast<uint8_t>(codePoint), remaining);
+                if (placed == 0 && remaining >= 2) {
+                    Ubiquitty::Screen::State* s = t.screens.active;
+                    const int chunk = remaining < static_cast<uint32_t>(Ubiquitty::maxColumns) ? static_cast<int>(remaining) : Ubiquitty::maxColumns;
+                    if (!s->wrapPending || commitWrapBeforePlainGlyph(t, s, codePoint))
+                        placed = static_cast<uint32_t>(emitASCIIFill(t, static_cast<uint8_t>(codePoint), chunk));
                 }
+                if (placed == 0) {
+                    emitCharacter(t, codePoint, resolvedCodePoint, 0, GraphicCapture::Discard);
+                    placed = 1;
+                }
+                remaining -= placed;
             }
         } else {
             // CSI dispatch invalidates cancellation for the whole expansion.
@@ -6121,8 +6133,89 @@ static int emitASCIIFill(Ubiquitty::Terminal& t, uint8_t ch, int count)
         s->cursorX = lastColumn + 1;
     }
     t.parser.precedingItem.setGraphic(ch, ch, 0);
-    clusterOpen(t, row, lastColumn, ch);
+    clusterOpenAfterASCII(t, row, lastColumn, ch);
     return n;
+}
+
+/// Repeats a printable ASCII glyph across the rows its count reaches: a fill
+/// to the margin, the wrap, and the fill of the row below, as the flow of
+/// text carries a run on.
+///
+/// What a fill's eligibility rests on is asked once, for none of it changes
+/// between the rows of one repeat; only the row the cursor lands on is read
+/// again. The parser is told about the last glyph alone, which is all a
+/// reader of it can tell.
+///
+/// - Parameters:
+///   - t: The terminal.
+///   - glyph: The glyph, which no designated set translates.
+///   - count: How many of it to place.
+/// - Returns: How many were placed. Zero leaves the terminal untouched; fewer
+///   than `count` stops at a wrap or a row this fill does not model, which is
+///   emitCharacter's to take.
+static uint32_t continueASCIIFill(Ubiquitty::Terminal& t, uint8_t glyph, uint32_t count)
+{
+    Ubiquitty::Screen::State* s = t.screens.active;
+    if (!batchedWriteEligibleIgnoringWrap(t, s) || !isTextFlowScreen(t, s))
+        return 0;
+    // textFastPathEligible's own two conditions.
+    if (t.characterSetG[t.characterSetActive] != characterSetUSASCII || s->pen.attributes.contains(VT::Attribute::ForceEmojiPresentation))
+        return 0;
+    const int rightMargin = t.columns - 1;
+    // What commitWrapBeforePlainGlyph asks before it commits a wrap, for a
+    // glyph that extends no cluster.
+    const bool canWrap = t.modes.autowrap && !(t.triggersEngine && t.triggersEngine->ruleCount() != 0)
+        && !(t.graphicCancellation && t.graphicCancellation->isCapturing);
+    const int wrapColumn = std::min(std::max(t.lineHome, 0), rightMargin);
+    const Ubiquitty::Cell cell = Ubiquitty::cellFromPen(s->pen, t.currentLinkID, glyph);
+    uint32_t placed = 0;
+    int row = 0;
+    int lastColumn = 0;
+    while (placed < count) {
+        const bool isWrapping = s->wrapPending;
+        if (isWrapping && !canWrap)
+            break;
+        assert(!isWrapping || wrapColumn == std::max(Ubiquitty::Screen::effectiveLeft(t), Screen::lineHomeColumn(t)));
+        const int column = isWrapping ? wrapColumn : s->cursorX;
+        if (column < 0 || column > rightMargin)
+            break;
+        if (isWrapping) {
+            const int rowLeft = s->cursorY;
+            s->cursorX = column;
+            wrapCommitLinefeed(t);
+            s->wrapPending = false;
+            // The row just left is joined to this one, wherever the feed put it.
+            if (s->cursorY > 0)
+                s->lineWrapped[s->cursorY - 1] = true;
+            // A feed that leaves the cursor where it was scrolled a fresh row
+            // under it, or moved nothing.
+            if (s->cursorY != rowLeft && !isTextFlowRow(t, s))
+                break;
+        }
+        dropWrapTrigger(t, s);
+        const int cells = static_cast<int>(std::min(count - placed, static_cast<uint32_t>(rightMargin - column + 1)));
+        row = s->cursorY;
+        lastColumn = column + cells - 1;
+        if (t.grid->mayRowHoldWidePair(Ubiquitty::Row(row))) {
+            Ubiquitty::Cell blank;
+            Ubiquitty::Screen::eraseCell(&blank, s);
+            t.grid->clearWideOverlapEdges(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::Column(lastColumn), blank);
+        }
+        t.grid->fillCellRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cell, cells);
+        if (lastColumn >= rightMargin) {
+            s->cursorX = rightMargin;
+            s->wrapPending = true;
+            evaluateFilledRowTriggers(&t, row);
+        } else {
+            s->cursorX = lastColumn + 1;
+        }
+        placed += static_cast<uint32_t>(cells);
+    }
+    if (placed != 0) {
+        t.parser.precedingItem.setGraphic(glyph, glyph, 0);
+        clusterOpenAfterASCII(t, row, lastColumn, glyph);
+    }
+    return placed;
 }
 
 // Fast path: write a run of wide (double-width) glyphs — CJK ideographs,
