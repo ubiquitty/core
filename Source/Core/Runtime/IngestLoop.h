@@ -150,6 +150,16 @@ inline constexpr std::uint32_t floodConsumerNapMicros = 200;
 // a flood's last state is drawn on the tick that follows it.
 inline constexpr std::uint32_t floodQuietMicros = 5000;
 
+// How much output, within two of these spans, makes what the pipeline carries
+// a flood a frontend paces its frames for. The pipeline carries any burst
+// past the transport's hand-over, and most of those are a screen redrawn or a
+// listing: a frame shows each of them whole, and holding it back is latency
+// with nothing saved. A flood is output arriving faster than frames could
+// show it, tens of megabytes a second; output that trickles behind a burst,
+// a progress line or a log, stays under this however long the burst is open.
+inline constexpr std::uint32_t floodRateSpanMicros = 10'000;
+inline constexpr std::uint64_t floodPacingOnsetBytes = 256 * 1024;
+
 /// The sequential ingest loop over one session's transport.
 ///
 /// `run` parks in ``PAL::waitForReadiness`` with the waker joined into the
@@ -332,12 +342,16 @@ public:
 
     /// Whether output is arriving as a flood as of `nowMicros`.
     ///
-    /// True while the pipeline carries a burst that is still being fed: its
-    /// last pass filled, or closed less than ``floodQuietMicros`` ago, or the
-    /// reader is ahead of the parser by a backlog. A frontend paces its frames
-    /// by this (``FrameDriver::floodFrameIntervalSeconds``). False again within
+    /// True while the pipeline carries a burst that is still being fed faster
+    /// than frames could show it: the reader is ahead of the parser by a
+    /// backlog, or ``floodPacingOnsetBytes`` were parsed within the last two
+    /// rate spans and the last pass filled or closed less than
+    /// ``floodQuietMicros`` ago. A frontend paces its frames by this
+    /// (``FrameDriver::floodFrameIntervalSeconds``). False again within
     /// ``floodQuietMicros`` of the writer stopping, well before the reader's
-    /// quiet budget ends the burst, so the flood's last state is not held.
+    /// quiet budget ends the burst, so the flood's last state is not held,
+    /// and false throughout for a burst that is a screen's worth of output
+    /// or a trickle behind one.
     ///
     /// Reads atomics only, from any thread.
     ///
@@ -347,11 +361,13 @@ public:
     {
         if (!m_isFloodBurstLive.load(std::memory_order_acquire))
             return false;
-        if (m_runtime.isDrainSaturated() || nowMicros - m_floodLastPassMicros.load(std::memory_order_relaxed) < floodQuietMicros)
-            return true;
         const std::uint64_t produced = m_floodRingControl->producer.load(std::memory_order_relaxed) & floodRingPositionMask;
         const std::uint64_t consumed = m_floodRingControl->consumer.load(std::memory_order_relaxed) & floodRingPositionMask;
-        return produced - consumed >= floodAccumulateBacklogBytes;
+        if (produced - consumed >= floodAccumulateBacklogBytes)
+            return true;
+        if (m_floodRecentBytes.load(std::memory_order_relaxed) < floodPacingOnsetBytes)
+            return false;
+        return m_runtime.isDrainSaturated() || nowMicros - m_floodLastPassMicros.load(std::memory_order_relaxed) < floodQuietMicros;
     }
 
     /// How many short-read accumulate waits the flood reader has taken,
@@ -1100,7 +1116,23 @@ private:
         long passBytes = 0;
         std::uint32_t passStartMicros = PAL::monotonicMicros();
         m_floodLastPassMicros.store(passStartMicros, std::memory_order_relaxed);
+        m_floodRecentBytes.store(0, std::memory_order_relaxed);
         m_isFloodBurstLive.store(true, std::memory_order_release);
+        // What was parsed in the span that is filling and in the one before
+        // it: the rate isFloodUnderway reads, kept at each bite of the ring.
+        std::uint32_t rateSpanStartMicros = passStartMicros;
+        std::uint64_t rateSpanBytes = 0;
+        std::uint64_t ratePreviousSpanBytes = 0;
+        const auto noteRate = [&](int bytes) {
+            const std::uint32_t now = PAL::monotonicMicros();
+            if (const std::uint32_t age = now - rateSpanStartMicros; age >= floodRateSpanMicros) {
+                ratePreviousSpanBytes = age < 2 * floodRateSpanMicros ? rateSpanBytes : 0;
+                rateSpanBytes = 0;
+                rateSpanStartMicros = now;
+            }
+            rateSpanBytes += static_cast<std::uint64_t>(bytes);
+            m_floodRecentBytes.store(ratePreviousSpanBytes + rateSpanBytes, std::memory_order_relaxed);
+        };
         // The presentation budget runs while the frame stays held, across the
         // passes a would-block closes: a writer the machine starves arrives in
         // slices a nap apart, and restarting the budget at each slice's close
@@ -1206,6 +1238,22 @@ private:
                     didNapOnEmptyRing = false;
                     continue;
                 }
+                // The writer has paused with an outcome the throttle is
+                // holding: the pass that closed on the pause came too soon
+                // behind the last delivery. It is owed once the interval has
+                // run, as the sequential loop delivers one it holds, and not
+                // at the end of the burst, which is the reader's whole quiet
+                // budget away: what the pause left on the screen is what the
+                // outcome announces.
+                if (havePendingOutcome && didNapOnEmptyRing) {
+                    const std::uint32_t now = PAL::monotonicMicros();
+                    if (now - lastDeliverMicros >= m_deliverMinIntervalMicros.load(std::memory_order_relaxed)) {
+                        deliver(pendingOutcome, pendingIngestMicros);
+                        havePendingOutcome = false;
+                        pendingIngestMicros = 0;
+                        lastDeliverMicros = now;
+                    }
+                }
                 // A timed pass can leave a pacing or protocol hold with no
                 // partial pass left to close. The ring stayed empty across a
                 // nap, so service that hold on its own clock while the reader
@@ -1241,6 +1289,7 @@ private:
             int parsedBytes = 0;
             const bool isFenced = parseFloodBite(readIndex, biteBytes, parsedBytes, noteParsed);
             hasParsedSinceReplyFlush = true;
+            noteRate(parsedBytes);
             m_floodRingControl->consumer.store(consumer + static_cast<std::uint64_t>(isFenced ? parsedBytes : biteBytes), std::memory_order_release);
             // Wake a reader parked on ring-full (uncontended notify: no syscall).
             m_floodRingControl->consumer.notify_one();
@@ -1433,6 +1482,9 @@ private:
     // bytes closed: what isFloodUnderway reads from the frontend's thread.
     std::atomic<bool> m_isFloodBurstLive { false };
     std::atomic<std::uint32_t> m_floodLastPassMicros { 0 };
+    /// What the pipeline parsed within the last two rate spans, as of its
+    /// last bite: the rate isFloodUnderway holds against the onset.
+    std::atomic<std::uint64_t> m_floodRecentBytes { 0 };
     /// Short-read accumulate waits, cumulatively; see ``floodAccumulateWaitCount()``.
     std::atomic<std::uint64_t> m_floodAccumulateWaitCount { 0 };
     /// The burst ring, allocated on the first flood and kept.

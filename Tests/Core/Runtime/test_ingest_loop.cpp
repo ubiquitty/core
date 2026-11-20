@@ -1266,6 +1266,106 @@ TEST(testAQueryThatEndsAPipelinedBurstIsAnsweredBeforeTheNextNap)
     paused.runtime.close();
 }
 
+// The pipeline carries any burst past its transport's hand-over, and most of
+// those are a screen redrawn or a listing printed: a frame shows each whole,
+// and a frontend that paced its frames for one would hold the redraw back for
+// nothing. A burst is a flood by what arrives, not by which path carries it.
+TEST(testABurstTheSizeOfARedrawIsNoFlood)
+{
+    constexpr std::size_t burstBytes = 48 * 1024;
+    constexpr int handOverBytes = 8 * 1024;
+    std::string burst;
+    constexpr std::string_view line = "0123456789abcdefghijklmnopqrstuvwxyz\n";
+    while (burst.size() < burstBytes)
+        burst += line;
+    burst.resize(burstBytes);
+
+    PausedBurst paused(burst, handOverBytes);
+    REQUIRE(paused.isReady);
+    IngestLoop loop(paused.runtime, paused.host);
+    std::atomic<std::uint64_t> deliveredBytes { 0 };
+    loop.setDeliverHook(
+        [](void* context, const DrainOutcome& outcome, std::uint32_t) {
+            static_cast<std::atomic<std::uint64_t>*>(context)->fetch_add(static_cast<std::uint64_t>(outcome.bytesDrained), std::memory_order_relaxed);
+        },
+        &deliveredBytes);
+    (void)loop.prepare();
+    loop.adoptFloodEndpoint(std::move(paused.floodEndpoint));
+    std::jthread ingest([&loop, &paused] { loop.run(paused.loopEndpoint->handle()); });
+
+    bool wasFloodUnderway = false;
+    for (int waited = 0; waited < 10000 && deliveredBytes.load(std::memory_order_relaxed) < burstBytes; ++waited) {
+        wasFloodUnderway = wasFloodUnderway || loop.isFloodUnderway(Ubiquitty::PAL::monotonicMicros());
+        ::usleep(100);
+    }
+    wasFloodUnderway = wasFloodUnderway || loop.isFloodUnderway(Ubiquitty::PAL::monotonicMicros());
+    CHECK_MSG(deliveredBytes.load() == burstBytes, "the burst was drained");
+    CHECK_MSG(loop.floodBurstCount() == 1, "the pass handed the burst to the pipeline at the transport's hand-over");
+    CHECK_MSG(!wasFloodUnderway, "a burst the size of a redraw was called a flood");
+    loop.requestStop();
+    loop.raiseWake();
+    ingest.join();
+    paused.runtime.close();
+}
+
+// A flood is output arriving faster than frames could show it, and it is one
+// while the parser keeps up with it: megabytes parsed within the rate spans,
+// with next to nothing waiting in the ring. Asked on the parser's own thread
+// as the last bite is handed to the tap, when all that is unparsed is that
+// bite, a quarter of the backlog that makes a flood by itself.
+TEST(testOutputTheParserKeepsUpWithIsAFloodByItsRate)
+{
+    constexpr int handOverBytes = 8 * 1024;
+    constexpr std::size_t lastBiteBytes = 16 * 1024;
+    constexpr std::size_t burstBytes = 2 * static_cast<std::size_t>(TerminalRuntime::drainPassCapacityBytes) + static_cast<std::size_t>(handOverBytes) + lastBiteBytes;
+    static_assert(lastBiteBytes < Ubiquitty::Runtime::floodAccumulateBacklogBytes);
+    std::string burst;
+    constexpr std::string_view line = "0123456789abcdefghijklmnopqrstuvwxyz\n";
+    while (burst.size() < burstBytes)
+        burst += line;
+    burst.resize(burstBytes);
+
+    PausedBurst paused(burst, handOverBytes);
+    REQUIRE(paused.isReady);
+    IngestLoop loop(paused.runtime, paused.host);
+    struct Watch {
+        IngestLoop& loop;
+        std::size_t burstBytes;
+        std::size_t tappedBytes = 0; // the parser thread's own
+        std::size_t lastBiteBytes = 0;
+        std::atomic<int> wasFloodAtLastBite { -1 };
+
+        Watch(IngestLoop& watched, std::size_t bytes)
+            : loop(watched)
+            , burstBytes(bytes)
+        {
+        }
+    } watch(loop, burst.size());
+    paused.runtime.setRawByteTap(
+        [](void* context, std::string_view bytes) {
+            auto& observed = *static_cast<Watch*>(context);
+            observed.tappedBytes += bytes.size();
+            if (observed.tappedBytes == observed.burstBytes) {
+                observed.lastBiteBytes = bytes.size();
+                observed.wasFloodAtLastBite.store(observed.loop.isFloodUnderway(Ubiquitty::PAL::monotonicMicros()) ? 1 : 0, std::memory_order_release);
+            }
+        },
+        &watch);
+    (void)loop.prepare();
+    loop.adoptFloodEndpoint(std::move(paused.floodEndpoint));
+    std::jthread ingest([&loop, &paused] { loop.run(paused.loopEndpoint->handle()); });
+
+    for (int waited = 0; waited < 10000 && watch.wasFloodAtLastBite.load(std::memory_order_acquire) < 0; ++waited)
+        ::usleep(1000);
+    loop.requestStop();
+    loop.raiseWake();
+    ingest.join();
+    paused.runtime.setRawByteTap(nullptr, nullptr);
+    CHECK_MSG(watch.lastBiteBytes == lastBiteBytes, std::format("the last bite was {} bytes, so the backlog was not what the test means it to be", watch.lastBiteBytes).c_str());
+    CHECK_MSG(watch.wasFloodAtLastBite.load() == 1, "megabytes parsed within the rate spans were not called a flood");
+    paused.runtime.close();
+}
+
 TEST(testATimedPipelinePauseReleasesAHeldFrameBeforeTheBurstEnds)
 {
     class TimedPausedDrainHost final : public DrainHost {
