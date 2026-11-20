@@ -677,6 +677,160 @@ int main(int argc, char** argv)
         runCorpus("bce-blank-probes", segments);
     }
 
+    // ---- text-flow corpora --------------------------------------------------
+    // Text is runs of printable ASCII with line feeds, returns, tabs and wraps
+    // between them, and the parser carries one run's eligibility on through
+    // those. The per-byte arm never forms a run, so it is the baseline every
+    // longer chunking has to match; the lane arms hold the alternate screen's
+    // deferred scroll to its immediate one.
+
+    // 15. Staircase text: a bare line feed leaves the column where it is, so
+    // every row fills and wraps. On the primary screen and the alternate one,
+    // in the default pen and in one that is not.
+    const auto staircase = [](int bytes) {
+        static const char alphabet[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ \n\t ";
+        std::string out;
+        for (int i = 0; i < bytes; ++i)
+            out.push_back(alphabet[rnd() % (sizeof(alphabet) - 1)]);
+        return out;
+    };
+    {
+        std::vector<std::string> segments;
+        segments.push_back(staircase(20000));
+        segments.emplace_back("\x1b[?1049h\x1b[H\x1b[2J");
+        segments.push_back(staircase(20000));
+        segments.emplace_back("\x1b[31m");
+        segments.push_back(staircase(6000));
+        segments.emplace_back("\x1b[m");
+        segments.push_back(staircase(3000));
+        segments.emplace_back("\x1b[?1049l");
+        segments.push_back(staircase(8000));
+        runCorpus("text-flow-staircase", segments);
+    }
+
+    // 16. What bends a flow or ends it, each with text flowing through it:
+    // autowrap off, new-line mode, insert mode, margins, a double-width row in
+    // the way, cleared and reset tab stops, the more(1) fix, a row of wide
+    // glyphs under the text, and a line home that is not the first column.
+    {
+        std::vector<std::string> segments;
+        segments.push_back("\x1b[?7l" + staircase(3000) + "\x1b[?7h");
+        segments.push_back("\x1b[20h" + staircase(3000) + "\x1b[20l");
+        segments.push_back("\x1b[4h" + staircase(2000) + "\x1b[4l");
+        segments.push_back("\x1b[?69h\x1b[5;60s" + staircase(3000) + "\x1b[?69l");
+        segments.push_back("\x1b[H\x1b[2J\x1b[6;1H\x1b#6\x1b[9;1H\x1b#3\x1b[1;1H" + staircase(1500));
+        segments.push_back("\x1b[3g" + staircase(2000));
+        segments.push_back("\x1b[1;5H\x1bH\x1b[1;37H\x1bH\x1b[1;79H\x1bH\x1b[H" + staircase(3000));
+        segments.push_back("\x1b[?41h" + staircase(3000) + "\x1b[?41l");
+        {
+            std::string wideUnderText = "\x1b[H\x1b[2J";
+            for (int row = 0; row < 30; ++row) {
+                for (int glyph = 0; glyph < 40; ++glyph)
+                    wideUnderText += "\xE4\xB8\xAD";
+                wideUnderText += "\r";
+                wideUnderText += std::string(static_cast<std::size_t>(3 + row * 2), static_cast<char>('a' + row % 26));
+                wideUnderText += "\tmid\n";
+            }
+            segments.push_back(wideUnderText);
+        }
+        segments.push_back("\x1b[12 U" + staircase(3000) + "\x1b[1 U");
+        segments.push_back("\x1b[?1049h" + staircase(2000) + "\x1b[5;20r" + staircase(3000) + "\x1b[r\x1b[?1049l");
+        runCorpus("text-flow-modes", segments);
+    }
+
+    // 17. What a flow leaves behind it for the next byte to read: the cluster
+    // a combining mark joins, the item a repeat replays, and the graphic a
+    // cancel takes back, each behind a run that ended in the row, at the
+    // margin, on a tab and on a line feed.
+    {
+        std::vector<std::string> segments;
+        const std::string fullRow(80, 'm');
+        const char* const followers[] = {
+            "\xCC\x81", // a combining mark
+            "\x1b[3b", // a repeat
+            "\x1bT", // a cancel
+            "\xCC\x81\x1bT",
+            "\x1b[2b\x1bT",
+            "\b\x1bT",
+        };
+        for (const char* follower : followers) {
+            std::string edges;
+            edges += std::string("plain run") + follower + "\r\n";
+            edges += fullRow + follower + "\r\n";
+            edges += fullRow + "ab" + follower + "\r\n";
+            edges += fullRow + "x" + follower + "\r\n";
+            edges += fullRow + "x\t" + follower + "\r\n";
+            edges += std::string("tabbed\t") + follower + "\r\n";
+            edges += std::string("fed\n") + follower + "\r\n";
+            edges += std::string("returned\r") + follower + "\r\n";
+            edges += std::string("a\tb\tc\n\n\td") + follower + "e\r\n";
+            segments.push_back(edges);
+            segments.push_back("\x1b[?1049h" + edges + staircase(600) + follower + "\x1b[?1049l");
+        }
+        runCorpus("text-flow-successors", segments);
+    }
+
+    // 18. A soup of the same pieces: runs of every length with whatever the
+    // flow passes, ends on or hands back between them.
+    {
+        std::vector<std::string> segments;
+        for (int seg = 0; seg < 10; ++seg) {
+            std::string chunk;
+            const int ops = 500 + static_cast<int>(rnd() % 500);
+            for (int i = 0; i < ops; ++i) {
+                switch (rnd() % 24) {
+                case 0:
+                case 1:
+                    chunk += "\n";
+                    break;
+                case 2:
+                    chunk += "\r";
+                    break;
+                case 3:
+                case 4:
+                    chunk += "\t";
+                    break;
+                case 5:
+                    chunk += "\b";
+                    break;
+                case 6:
+                    chunk += "\x1bT";
+                    break;
+                case 7:
+                    chunk += "\xCC\x81";
+                    break;
+                case 8:
+                    chunk += "\xE4\xB8\xAD\xE6\x96\x87";
+                    break;
+                case 9:
+                    chunk += "\x1b[" + std::to_string(30 + rnd() % 8) + "m";
+                    break;
+                case 10:
+                    chunk += "\x1b[" + std::to_string(1 + rnd() % 30) + ";" + std::to_string(1 + rnd() % 90) + "H";
+                    break;
+                case 11:
+                    chunk += "\x1b[" + std::to_string(1 + rnd() % 5) + "b";
+                    break;
+                case 12:
+                    chunk += (rnd() & 1) ? "\x1b[K" : "\x1b[m";
+                    break;
+                case 13:
+                    if (rnd() % 8 == 0)
+                        chunk += (rnd() & 1) ? "\x1b[?1049h" : "\x1b[?1049l";
+                    else if (rnd() % 8 == 0)
+                        chunk += (rnd() & 1) ? "\x1b[?7l" : "\x1b[?7h";
+                    break;
+                default:
+                    for (int k = 0; k < static_cast<int>(rnd() % 120) + 1; ++k)
+                        chunk.push_back(static_cast<char>(0x20 + rnd() % 0x5F));
+                    break;
+                }
+            }
+            segments.push_back(chunk + "\x1b[?7h");
+        }
+        runCorpus("text-flow-soup", segments);
+    }
+
     if (failures == 0) {
         std::printf("scroll-lane differential: all corpora chunk-invariant OK\n");
         return 0;

@@ -334,6 +334,44 @@ public:
     ///   - tmpl: The pen every cell in the run takes.
     ///   - text: Printable ASCII, one byte per column. Copied before returning.
     void writeASCIIRun(Row r, Column firstColumn, const Cell& tmpl, std::string_view text);
+    /// Appends printable ASCII in the default pen behind everything a row
+    /// held a byte a cell holds.
+    ///
+    /// What a line of text is made of, without the questions `writeASCIIRun`
+    /// asks of a run it knows nothing about: a run behind the row's content
+    /// differs from what was there, and bytes hold no wide pair for its
+    /// edges to orphan.
+    ///
+    /// - Parameters:
+    ///   - row: A row of the active screen.
+    ///   - firstColumn: The run's first column.
+    ///   - text: Printable ASCII that ends inside the row, borrowed from
+    ///     outside the grid.
+    /// - Returns: Whether the run was written. A refusal changes nothing: the
+    ///   row is held as cells or carries pens, or the run starts inside what
+    ///   the row holds.
+    [[nodiscard]] bool didAppendDefaultASCII(Row row, Column firstColumn, std::string_view text)
+    {
+        const int first = firstColumn.value();
+        const int end = first + static_cast<int>(text.size());
+        assert(row.value() >= 0 && row.value() < m_rows && first >= 0 && end <= m_columns && !text.empty());
+        const int slot = physicalRowSlot(m_activeIndex, row.value());
+        RowState& state = m_rowState[m_activeIndex][slot];
+        if (state.storage != RowStorage::DefaultASCII || first < state.filled)
+            return false;
+        assert(slot != m_deferredBlankSlot[m_activeIndex]);
+        auto* bytes = reinterpret_cast<std::uint8_t*>(m_rowPtrs[m_activeIndex][slot]);
+        assert(std::less<const void*>()(text.data() + text.size() - 1, bytes) || std::less<const void*>()(bytes + m_columnCapacity * sizeof(Cell) - 1, text.data()));
+        if (first > state.filled)
+            std::memset(bytes + state.filled, 0, static_cast<std::size_t>(first - state.filled));
+        std::memcpy(bytes + first, text.data(), text.size());
+        state.filled = end;
+        const int cellsUnderBytes = (end + static_cast<int>(sizeof(Cell)) - 1) / static_cast<int>(sizeof(Cell));
+        state.compactBlankStart = std::max(state.compactBlankStart, static_cast<std::uint16_t>(cellsUnderBytes));
+        m_anyMutationsSinceLastPaint = true;
+        bumpRow(row.value());
+        return true;
+    }
     /// Writes unclustered, non-shaping, non-emoji code points as wide cell pairs.
     ///
     /// The caller establishes width and clears partners overlapping the run's

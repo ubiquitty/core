@@ -102,6 +102,18 @@ template<GraphicCapture Capture> [[gnu::always_inline]] static inline GraphicCap
     return graphicCaptureBeforeAnySuccessor(buffer, next, length);
 }
 
+/// graphicCaptureBefore for a graphic bound for the data screen, where a
+/// tab behind it becomes the predecessor and puts it out of a cancel's
+/// reach. On the status line a tab leaves the graphic the predecessor.
+template<GraphicCapture Capture> [[gnu::always_inline]] static inline GraphicCapture graphicCaptureBeforeOnDataScreen(const Ubiquitty::Terminal& t, const char* buffer, int next, int length)
+{
+    if constexpr (Capture == GraphicCapture::Discard)
+        return GraphicCapture::Discard;
+    if (next < length && buffer[next] == '\t' && !t.statusLineActive)
+        return GraphicCapture::Discard;
+    return graphicCaptureBefore<Capture>(buffer, next, length);
+}
+
 class GraphicCaptureScope {
 public:
     GraphicCaptureScope(Terminal& terminal, GraphicCapture capture)
@@ -1855,6 +1867,9 @@ enum ParseAblateBit : unsigned {
     // The idempotency probe on the batched writer's destination, which costs a
     // second row resolution per run.
     AblateRunIdempotencyProbe = 1u << 2,
+    // The flow that carries a run on through line ends, tabs and wraps: every
+    // run pays its own setup again.
+    AblateTextFlow = 1u << 3,
 };
 
 // Compiled out unless the build asks for it. An environment read would put a
@@ -5684,6 +5699,241 @@ template<GraphicCapture Capture> static int emitLineSpan(Ubiquitty::Terminal& t,
 /// a run in its own right, which the run writer stores straight into the row.
 constexpr int maxLineSpanPieceCells = 24;
 
+/// Performs a line feed met in the ground state: the byte loop's own, and
+/// the one a text flow passes.
+///
+/// `Action::ExecuteLineFeed` without the dispatch. An eligible feed at the
+/// bottom joins the scroll lane, whose eligibility holds while a run is open,
+/// so only the first feed of a run pays the full check.
+///
+/// - Parameter t: The terminal, in the ground state with no sequence open.
+[[gnu::always_inline]] static inline void executeGroundLineFeed(Ubiquitty::Terminal& t)
+{
+    discardPendingClusterPrefix(t);
+    if (t.shouldEndSemanticRoleAtLineBreak) [[unlikely]]
+        finishLineSemanticRole(t);
+    resetUTF8(t);
+    t.parser.precedingItem.setControl(0x0A);
+    if (t.modes.lnm)
+        t.screens.active->cursorX = Screen::returnColumn(t);
+    if (t.scrollLaneRun.active || Ubiquitty::Screen::scrollLaneEligible(t))
+        Ubiquitty::Screen::scrollLaneLinefeed(t);
+    else
+        linefeed(t);
+    if (t.modes.lnm && t.shouldWriteRightToLeft)
+        t.screens.active->cursorX = Screen::returnColumn(t);
+    Screen::noteStringStart(t);
+}
+
+/// Performs a carriage return met in the ground state: the byte loop's own,
+/// and the one a text flow passes.
+///
+/// `actExecuteCarriageReturn` without the dispatch: the status-line redirect,
+/// the decoder reset, the repeatable item and the landing column.
+///
+/// - Parameter t: The terminal, in the ground state with no sequence open.
+[[gnu::always_inline]] static inline void executeGroundCarriageReturn(Ubiquitty::Terminal& t)
+{
+    discardPendingClusterPrefix(t);
+    finishAlignedTabString(t);
+    resetUTF8(t);
+    t.parser.precedingItem.setControl(0x0D);
+    if (statusCursorMoveTo(t, t.shouldWriteRightToLeft ? t.columns - 1 : 0))
+        return;
+    Ubiquitty::Screen::State* s = t.screens.active;
+    s->cursorX = Ubiquitty::Screen::returnColumn(t);
+    s->wrapPending = false;
+}
+
+/// The last cell of a written run of printable ASCII, and the cursor as the
+/// run left it.
+struct PlacedASCII {
+    int row = 0;
+    int column = 0;
+    uint32_t character = 0;
+    int cursorX = 0;
+    int cursorY = 0;
+    bool isWrapPending = false;
+};
+
+/// Tells the parser what a run of printable ASCII ended on: the item a
+/// repeat replays, and the cluster a combining mark arriving next joins.
+///
+/// What ``clusterOpenAfterASCII`` leaves, from the cursor the run left
+/// rather than the one the screen holds now: a flow has moved on by the time
+/// it says so.
+///
+/// - Parameters:
+///   - t: The terminal.
+///   - placed: The run's last cell and the cursor behind it.
+static inline void notePlacedASCII(Ubiquitty::Terminal& t, const PlacedASCII& placed)
+{
+    assert(placed.character < 0x80);
+    t.parser.precedingItem.setGraphic(placed.character, placed.character, 0);
+    t.parser.clusterActive = true;
+    t.parser.clusterRow = placed.row;
+    t.parser.clusterColumn = placed.column;
+    t.parser.clusterScreen = t.screens.isUsingAlternateScreen ? 1u : 0u;
+    t.parser.clusterLast = placed.character;
+    t.parser.clusterState = {};
+    t.parser.clusterAtX = placed.cursorX;
+    t.parser.clusterAtY = placed.cursorY;
+    t.parser.clusterAtWrap = placed.isWrapPending;
+    t.parser.clusterCodePoints[0] = placed.character;
+    t.parser.clusterCodepointLength = 1;
+}
+
+/// Whether the cursor's row takes a run the way the row above it did.
+///
+/// - Parameters:
+///   - t: The terminal.
+///   - s: Its active screen.
+/// - Returns: Whether the cursor is on a row of single-width cells.
+static inline bool isASCIIFlowRow(const Ubiquitty::Terminal& t, const Ubiquitty::Screen::State* s)
+{
+    return s->cursorY >= 0 && s->cursorY < t.rows && s->lineAttribute[s->cursorY] == lineAttributeNormal;
+}
+
+/// Carries printable ASCII on past its first run: through the line feeds,
+/// returns and tabs between runs, and through the wrap a full row causes.
+///
+/// Each of those ends a run, and text is made of them: a line of a log is a
+/// run and a line feed, and a paragraph is a run to the margin and a wrap.
+/// What a run's eligibility rests on was established for the run before, and
+/// none of these can change it. The flow re-reads only what they do change:
+/// the row the cursor is on, an aligned tab stop, and the pen a line break
+/// that ends a semantic role resets.
+///
+/// A piece the first run would not have taken is left where it starts, for
+/// the byte loop: a lone glyph, a glyph whose cancellation the bytes behind
+/// it do not rule out, and a word that opens a line of mixed scripts.
+///
+/// - Parameters:
+///   - t: The terminal, with the left and right margins off and no sized
+///     text on its grid.
+///   - s: Its active screen.
+///   - buffer: The input.
+///   - position: The byte behind the run already written.
+///   - length: The input's length.
+///   - cellTemplate: The pen and link every cell of the flow carries.
+///   - placed: The run already written, which the parser has not been told
+///     about.
+/// - Returns: The first byte the flow left.
+template<GraphicCapture Capture> static int continueASCIIFlow(Ubiquitty::Terminal& t, Ubiquitty::Screen::State* s, const char* buffer, int position, int length, const Ubiquitty::Cell& cellTemplate, PlacedASCII placed)
+{
+    const int rightMargin = t.columns - 1;
+    // What commitWrapBeforePlainGlyph asks before it commits a wrap, for a
+    // glyph that extends no cluster.
+    const bool canWrap = t.modes.autowrap && !(t.triggersEngine && t.triggersEngine->ruleCount() != 0)
+        && !(t.graphicCancellation && t.graphicCancellation->isCapturing);
+    // lineHomeColumn on a row of single-width cells with the margins off,
+    // which is every row the flow writes.
+    const int wrapColumn = std::min(std::max(t.lineHome, 0), rightMargin);
+    const bool isDefaultPen = t.grid->isDefaultBlankButCodePoint(cellTemplate);
+    bool hasUnnotedRun = true;
+    const auto noteRun = [&] {
+        if (hasUnnotedRun) {
+            notePlacedASCII(t, placed);
+            hasUnnotedRun = false;
+        }
+    };
+    while (position < length) {
+        const auto byte = static_cast<unsigned char>(buffer[position]);
+        if (byte - 0x20u <= 0x7Eu - 0x20u) {
+            const bool isWrapping = s->wrapPending;
+            if (isWrapping && !canWrap)
+                break;
+            assert(!isWrapping || wrapColumn == std::max(Ubiquitty::Screen::effectiveLeft(t), Screen::lineHomeColumn(t)));
+            const int column = isWrapping ? wrapColumn : s->cursorX;
+            if (column < 0 || column > rightMargin)
+                break;
+            int count = countByteRun(buffer + position, std::min(length - position, rightMargin - column + 1), 0x20, 0x7E);
+            // A word with text of another script behind it is the first
+            // run's to hand over, whole.
+            if (count >= 2 && count <= maxLineSpanPieceCells && position + count + 4 <= length) {
+                const auto next = static_cast<unsigned char>(buffer[position + count]);
+                if (next >= 0xC2 && next != 0xEF)
+                    break;
+            }
+            const bool isFollowedByTab = position + count < length && buffer[position + count] == '\t';
+            if (!isFollowedByTab && graphicCaptureBefore<Capture>(buffer, position + count, length) == GraphicCapture::Retain)
+                --count;
+            if (count < 2)
+                break;
+            if (isWrapping) {
+                const int rowLeft = s->cursorY;
+                s->cursorX = column;
+                wrapCommitLinefeed(t);
+                s->wrapPending = false;
+                // The row just left is joined to this one, wherever the feed put it.
+                if (s->cursorY > 0)
+                    s->lineWrapped[s->cursorY - 1] = true;
+                // A feed that leaves the cursor where it was scrolled a
+                // fresh row under it, or moved nothing.
+                if (s->cursorY != rowLeft && !isASCIIFlowRow(t, s))
+                    break;
+            }
+            dropWrapTrigger(t, s);
+            const int row = s->cursorY;
+            const int lastColumn = column + count - 1;
+            const std::string_view text { buffer + position, static_cast<std::size_t>(count) };
+            if (!isDefaultPen || !t.grid->didAppendDefaultASCII(Ubiquitty::Row(row), Ubiquitty::Column(column), text)) {
+                if (t.grid->mayRowHoldWidePair(Ubiquitty::Row(row))) {
+                    Ubiquitty::Cell blank;
+                    Ubiquitty::Screen::eraseCell(&blank, s);
+                    t.grid->clearWideOverlapEdges(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::Column(lastColumn), blank);
+                }
+                t.grid->writeASCIIRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, text);
+            }
+            if (lastColumn >= rightMargin) {
+                s->cursorX = rightMargin;
+                s->wrapPending = true;
+                evaluateFilledRowTriggers(&t, row);
+            } else {
+                s->cursorX = lastColumn + 1;
+            }
+            position += count;
+            placed = { row, lastColumn, static_cast<uint32_t>(static_cast<unsigned char>(buffer[position - 1])), s->cursorX, s->cursorY, s->wrapPending };
+            hasUnnotedRun = true;
+            continue;
+        }
+        if (byte == '\n') {
+            noteRun();
+            // A line break that ends a semantic role resets the pen the
+            // flow's cells carry.
+            const bool doesResetPen = t.shouldEndSemanticRoleAtLineBreak;
+            const int rowLeft = s->cursorY;
+            executeGroundLineFeed(t);
+            ++position;
+            if (doesResetPen || (s->cursorY != rowLeft && !isASCIIFlowRow(t, s)))
+                break;
+            continue;
+        }
+        if (byte == '\r') {
+            noteRun();
+            executeGroundCarriageReturn(t);
+            ++position;
+            continue;
+        }
+        if (byte == '\t') {
+            noteRun();
+            // A tab moves the cursor and reads no scroll accounting, so an
+            // open scroll run outlives it. With the more(1) fix it can feed
+            // a line the immediate way, which a run must not straddle.
+            if (t.moreFix)
+                Ubiquitty::Screen::scrollLaneFlush(t);
+            actExecuteHorizontalTab(t, byte);
+            ++position;
+            if (t.isAlignedTabActive || !isASCIIFlowRow(t, s))
+                break;
+            continue;
+        }
+        break;
+    }
+    noteRun();
+    return position;
+}
+
 template<GraphicCapture Capture> static int emitASCIIRun(Ubiquitty::Terminal& t, const char* buffer, int start, int length)
 {
     Ubiquitty::Screen::State* s = t.screens.active;
@@ -5775,9 +6025,10 @@ template<GraphicCapture Capture> static int emitASCIIRun(Ubiquitty::Terminal& t,
         s->cursorX = lastColumn + 1;
     }
     // A combining mark arriving next attaches to the run's last cell.
-    uint32_t lastCharacter = static_cast<uint32_t>(static_cast<unsigned char>(buffer[start + n - 1]));
-    t.parser.precedingItem.setGraphic(lastCharacter, lastCharacter, 0);
-    clusterOpenAfterASCII(t, row, lastColumn, lastCharacter);
+    const PlacedASCII placed { row, lastColumn, static_cast<uint32_t>(static_cast<unsigned char>(buffer[start + n - 1])), s->cursorX, s->cursorY, s->wrapPending };
+    if (!translation && !t.modes.leftRightMarginMode && !t.grid->hasSizedCellHint() && (parseAblateMask & AblateTextFlow) == 0)
+        return continueASCIIFlow<Capture>(t, s, buffer, start + n, length, tmpl, placed) - start;
+    notePlacedASCII(t, placed);
     return n;
 }
 
@@ -7974,25 +8225,7 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                             // Bare LF, inlined: no sync-output side effect, exactly
                             // Action::ExecuteLineFeed without the DFA dispatch.
                             if (c == 0x0A) {
-                                VT::discardPendingClusterPrefix(t);
-                                if (t.shouldEndSemanticRoleAtLineBreak) [[unlikely]]
-                                    VT::finishLineSemanticRole(t);
-                                VT::resetUTF8(t);
-                                t.parser.precedingItem.setControl(0x0A);
-                                if (t.modes.lnm)
-                                    t.screens.active->cursorX = Screen::returnColumn(t);
-                                // Deferred-state scroll lane: an eligible at-bottom flood
-                                // defers per-scroll accounting to Ubiquitty::Screen::scrollLaneFlush. Once a
-                                // run is open its eligibility is invariant (every
-                                // invalidator closes the run), so only the first feed pays
-                                // the full check.
-                                if (t.scrollLaneRun.active || Ubiquitty::Screen::scrollLaneEligible(t))
-                                    Ubiquitty::Screen::scrollLaneLinefeed(t);
-                                else
-                                    VT::linefeed(t);
-                                if (t.modes.lnm && t.shouldWriteRightToLeft)
-                                    t.screens.active->cursorX = Screen::returnColumn(t);
-                                Screen::noteStringStart(t);
+                                VT::executeGroundLineFeed(t);
                                 continue;
                             }
                             // Fast-path the CSI introducer: ESC '[' in Ground always
@@ -8043,15 +8276,7 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                             // CR, inlined (actExecuteCarriageReturn verbatim: status-line
                             // redirect, decoder reset, REP record, DECLRMM landing column).
                             if (c == 0x0D) {
-                                VT::discardPendingClusterPrefix(t);
-                                VT::finishAlignedTabString(t);
-                                VT::resetUTF8(t);
-                                t.parser.precedingItem.setControl(0x0D);
-                                if (VT::statusCursorMoveTo(t, t.shouldWriteRightToLeft ? t.columns - 1 : 0))
-                                    continue;
-                                Ubiquitty::Screen::State* s = t.screens.active;
-                                s->cursorX = Ubiquitty::Screen::returnColumn(t);
-                                s->wrapPending = false;
+                                VT::executeGroundCarriageReturn(t);
                                 continue;
                             }
                             // Batch a run of non-ASCII printable glyphs into one span
@@ -8111,7 +8336,7 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                                         }
                                     }
                                 }
-                                VT::putCharacter(t, c, VT::graphicCaptureBefore<Capture>(buffer, i + 1, length));
+                                VT::putCharacter(t, c, VT::graphicCaptureBeforeOnDataScreen<Capture>(t, buffer, i + 1, length));
                                 continue;
                             }
                         }
