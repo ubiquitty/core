@@ -349,11 +349,24 @@ void feed(Ubiquitty::Terminal& term, const std::string& bytes, std::size_t chunk
         feedChunk(term, std::string_view(bytes).substr(offset, chunkBytes), entry);
 }
 
+// The deferred scroll lanes ship switched on: a session's runtime enables them
+// on every terminal it makes, and a bare terminal starts with them off. A
+// corpus parsed with them off scrolls through a path no session takes, and a
+// profile trained there calls the one sessions do take cold.
+bool areScrollLanesEnabled = true;
+
+void configureAsSession(Ubiquitty::Terminal& term)
+{
+    term.isScrollLaneEnabled = areScrollLanesEnabled;
+    term.isBandScrollLaneEnabled = areScrollLanesEnabled;
+}
+
 double bestMegabytesPerSecond(const Corpus& corpus, int repetitions, std::size_t chunkBytes, int scrollbackLines, FeedEntry entry)
 {
     const auto& bytes = corpus.bytes;
     Ubiquitty::Terminal term;
     Ubiquitty::hardReset(term);
+    configureAsSession(term);
     if (const int historyLines = scrollbackLines > 0 ? scrollbackLines : corpus.historyLines; historyLines > 0)
         Ubiquitty::setScrollbackLimit(&term, historyLines);
     Ubiquitty::resize(term, corpus.rows, corpus.columns);
@@ -429,8 +442,10 @@ int main(int argc, char** argv)
             ++index;
         } else if (std::strcmp(argv[index], "--scrollback") == 0 && index + 1 < argc)
             scrollbackLines = std::max(0, std::atoi(argv[++index]));
+        else if (std::strcmp(argv[index], "--immediate-scroll") == 0)
+            areScrollLanesEnabled = false;
         else {
-            std::fprintf(stderr, "usage: bench_ingest_corpora [--repetitions N] [--loop <corpus>] [--chunk BYTES] [--scrollback LINES] [--entry whole|sync] [--stream <file> [--stream-grid COLUMNSxROWS]]\n");
+            std::fprintf(stderr, "usage: bench_ingest_corpora [--repetitions N] [--loop <corpus>] [--chunk BYTES] [--scrollback LINES] [--entry whole|sync] [--immediate-scroll] [--stream <file> [--stream-grid COLUMNSxROWS]]\n");
             return 2;
         }
     }
@@ -463,11 +478,12 @@ int main(int argc, char** argv)
                 continue;
             Ubiquitty::Terminal term;
             Ubiquitty::hardReset(term);
+            configureAsSession(term);
             if (const int historyLines = scrollbackLines > 0 ? scrollbackLines : corpus.historyLines; historyLines > 0)
                 Ubiquitty::setScrollbackLimit(&term, historyLines);
             Ubiquitty::resize(term, corpus.rows, corpus.columns);
             for (;;)
-                feedChunk(term, corpus.bytes, entry);
+                feed(term, corpus.bytes, chunkBytes, entry);
         }
         std::fprintf(stderr, "bench_ingest_corpora: no corpus named '%s'\n", loopCorpus);
         return 2;
