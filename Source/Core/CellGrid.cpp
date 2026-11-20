@@ -648,8 +648,8 @@ std::optional<std::uint16_t> CellGrid::styledTemplateID(const Cell& cellTemplate
         return m_lastStyledTemplateID;
     if (cellEqual(table.cells[0], cellTemplate))
         return m_lastStyledTemplateID = 0;
-    std::uint64_t words[4];
-    std::memcpy(words, &cellTemplate, sizeof words);
+    std::array<std::uint64_t, 4> words;
+    std::memcpy(words.data(), &cellTemplate, sizeof words);
     const std::uint64_t hash = (words[0] * 0x9E3779B97F4A7C15ull) ^ (words[1] * 0xC2B2AE3D27D4EB4Full) ^ (words[2] * 0x165667B19E3779F9ull) ^ (words[3] * 0x27D4EB2F165667C5ull);
     for (std::size_t slot = (hash >> 40) & (styledTemplateSlots - 1);; slot = (slot + 1) & (styledTemplateSlots - 1)) {
         const std::uint16_t id = table.slots[slot];

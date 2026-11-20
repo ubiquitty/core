@@ -6871,8 +6871,10 @@ struct StagedCluster {
     int count = 0;
     std::array<std::uint32_t, Ubiquitty::clusterPoolMaximumCodePoints> codePoints;
 };
-[[gnu::noinline]] static bool didStageLineSpanCluster(Ubiquitty::Terminal& t, const char* buffer, int length, int from, std::uint32_t base, int baseLength, std::uint8_t properties, const Ubiquitty::Cell& cellTemplate, Ubiquitty::Cell* destination, int cellsLeft, StagedCluster& staged)
+[[gnu::noinline]] static bool didStageLineSpanCluster(Ubiquitty::Terminal& t, std::string_view input, int from, std::uint32_t base, int baseLength, std::uint8_t properties, const Ubiquitty::Cell& cellTemplate, Ubiquitty::Cell* destination, int cellsLeft, StagedCluster& staged)
 {
+    const char* const buffer = input.data();
+    const int length = static_cast<int>(input.size());
     const auto isPrintable = [](char byte) { return static_cast<unsigned char>(byte) - 0x20u <= 0x7Eu - 0x20u; };
     // Built in the caller's record: a refusal leaves it unspecified.
     auto& cluster = staged.codePoints;
@@ -7240,7 +7242,7 @@ template<GraphicCapture Capture> [[gnu::noinline]] static int emitLineSpan(Ubiqu
                             const std::uint32_t base = span[cellCount - 1].codePoint;
                             const int basePosition = position - lastGlyphBytes;
                             StagedCluster& cluster = clusters[static_cast<std::size_t>(spareCluster)];
-                            if (!didStageLineSpanCluster(t, buffer, length, basePosition, base, lastGlyphBytes - 2,
+                            if (!didStageLineSpanCluster(t, std::string_view(buffer, static_cast<std::size_t>(length)), basePosition, base, lastGlyphBytes - 2,
                                     Ubiquitty::Unicode::Width::classify(base), cellTemplate, span + cellCount - 1, 1, cluster))
                                 break;
                             noteCluster(cellCount);
@@ -7273,7 +7275,7 @@ template<GraphicCapture Capture> [[gnu::noinline]] static int emitLineSpan(Ubiqu
                     if (isClusterBase) {
                         StagedCluster& cluster = clusters[static_cast<std::size_t>(spareCluster)];
                         if (isClusterStagingAllowed
-                            && didStageLineSpanCluster(t, buffer, length, position, codePoint, sequenceLength, properties, cellTemplate, span + cellCount, room - cellCount, cluster)) {
+                            && didStageLineSpanCluster(t, std::string_view(buffer, static_cast<std::size_t>(length)), position, codePoint, sequenceLength, properties, cellTemplate, span + cellCount, room - cellCount, cluster)) {
                             spanFacts.attributes.add(cellPen(span[cellCount]).attributes);
                             cellCount += cluster.cells;
                             noteCluster(cellCount);
