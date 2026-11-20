@@ -206,7 +206,7 @@ if [ "${0##*/}" = bench_render_plan_instrumented ]; then
     done
 fi
 [ "$mode" = fixed ] && printf '%s\n' '"training_mode": "fixed-input-counts"'
-printf '%s\n' '"render_build" "render_build_subpixel" "render_build_full" "render_build_underline" "parse_plain" "parse_plain_syncfeed" "parse_sgr_syncfeed" "parse_wide_syncfeed" "parse_emoji_syncfeed" "parse_charset_syncfeed" "sync_burst_k8" "key_encode" "parse_charset" "ascii" "latin1_multibyte" "cjk_wide" "combining" "sgr_truecolor" "legacy_graphics"'
+printf '%s\n' '"render_build" "render_build_subpixel" "render_build_full" "render_build_underline" "parse_plain" "parse_plain_syncfeed" "parse_sgr_syncfeed" "parse_wide_syncfeed" "parse_emoji_syncfeed" "parse_charset_syncfeed" "sync_burst_k8" "key_encode" "parse_charset" "parse_scroll" "parse_sgr_scroll_full" "parse_sgr_scroll_band" "parse_sgr_scroll_full_syncfeed" "ascii" "latin1_multibyte" "cjk_wide" "combining" "sgr_truecolor" "legacy_graphics" "session_ideographs" "session_mixed_scripts" "session_tabbed_ascii" "raw_mode_ascii" "raw_mode_ideographs" "raw_mode_mixed_scripts"'
 touch "$UBQ_TEST_TRAIN_RAW"
 CORPUS
 chmod +x "$output"

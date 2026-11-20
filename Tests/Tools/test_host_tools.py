@@ -272,7 +272,7 @@ class HostBuildEntrypointTests(unittest.TestCase):
         self.repository = self.directory / "checkout with spaces"
         scripts = self.repository / "Scripts"
         scripts.mkdir(parents=True)
-        for name in ("build-host.sh", "build-root.sh", "ccache-env.sh", "build-provenance.sh"):
+        for name in ("build-host.sh", "build-root.sh", "ccache-env.sh", "default-compiler.sh", "build-provenance.sh"):
             shutil.copy2(ROOT / "Scripts" / name, scripts / name)
         self.buildRoot = self.directory / "external build output"
         self.trace = self.directory / "cmake-arguments.jsonl"

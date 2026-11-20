@@ -850,7 +850,7 @@ class BuildTestsDriverTests(unittest.TestCase):
     def makeDriver(self, checkout):
         self.makeSource(checkout, "core")
         scripts = checkout / "Scripts"
-        for name in ("build-jobs.sh", "build-root.sh", "ccache-env.sh"):
+        for name in ("build-jobs.sh", "build-root.sh", "ccache-env.sh", "default-compiler.sh"):
             (scripts / name).symlink_to(ROOT / "Scripts" / name)
         shutil.copyfile(ROOT / "Scripts/ubq_roots.py", scripts / "ubq_roots.py")
         driver = scripts / "build-tests.sh"
