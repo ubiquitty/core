@@ -669,6 +669,9 @@ public:
     static constexpr std::uint8_t packedRowMarker = 0xFF;
     /// The most pens a packed row carries; a row of more is stored as cells.
     static constexpr int maxPackedRowPens = 16;
+    /// The count of live blocks from which the history is taken to be larger
+    /// than the cache: 32 slabs of cells are 8 MB.
+    static constexpr std::size_t blocksBeyondCache = 32;
 
     /// Packs a row the grid already holds as code points and template ids.
     ///
@@ -693,6 +696,17 @@ public:
     ///   - cells: Where the row's cells go; may be `packed` itself.
     ///   - length: The row's cell count.
     static void expandPackedRow(const Cell* packed, Cell* cells, int length);
+
+    /// Opens a run of appends no other thread reads until ``endBatch``.
+    ///
+    /// A history larger than the cache is written past it, with stores that
+    /// reach other threads only after a fence, and the fence waits for
+    /// memory. Inside a batch the rows share one, at its end; outside one
+    /// each row is fenced as it is stored. The caller holds whatever keeps
+    /// readers out for the whole batch.
+    void beginBatch() { m_isInBatch = true; }
+    /// Closes the batch, making every row appended in it visible to other threads.
+    void endBatch();
 
     /// Appends a row the grid holds as code points and template ids, without
     /// making its cells.
@@ -940,6 +954,11 @@ private:
     static constexpr std::uint64_t lineIndexStride = 64;
 
     BlockDirectory m_blocks;
+    /// Whether the caller has opened a batch; see ``beginBatch``.
+    bool m_isInBatch = false;
+    /// Whether a row of the open batch was stored past the cache and waits
+    /// for the batch's fence.
+    bool m_hasUnfencedStores = false;
     // One drained slab parked for reuse so steady-state flood recycles a
     // 256 KiB allocation per block cycle instead of a new/delete pair.
     // Freed on clear/dispose/dropNewest so an idle store holds no spare slab.

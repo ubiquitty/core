@@ -43,8 +43,20 @@ namespace Ubiquitty {
 // Tests/Performance/bench_cellops.cpp, Apple M5 Pro). stnp is only a cache
 // allocation hint — unlike x86 MOVNT it keeps normal store ordering and
 // coherency, so the cross-thread handoff under the Ubiquitty::Terminal lock is unaffected.
+/// How ``copyCellsIntoSlab`` stores a row.
+enum class SlabStore : std::uint8_t {
+    /// Through the cache.
+    Cached,
+    /// Past the cache, each row made visible to other threads as it is stored.
+    Streamed,
+    /// Past the cache, visible to other threads once the caller fences.
+    StreamedUnfenced,
+};
+
 #if defined(__aarch64__)
-static inline void copyCellsIntoSlab(Cell* destination, const Cell* source, int cellCount)
+// The pair store below is a hint that keeps ordinary ordering, so every row
+// is stored the one way here.
+static inline void copyCellsIntoSlab(Cell* destination, const Cell* source, int cellCount, SlabStore = SlabStore::Cached)
 {
     static_assert(sizeof(Cell) == 32, "the copy kernel walks 32-byte cells");
     constexpr int cellsPerStep = 4; // 128 B, one Apple Silicon cache line
@@ -80,8 +92,33 @@ static inline void copyCellsIntoSlab(Cell* destination, const Cell* source, int 
         destinationBytes += 32;
     }
 }
+#elif defined(__x86_64__) || defined(_M_X64)
+static inline void copyCellsIntoSlab(Cell* destination, const Cell* source, int cellCount, SlabStore store = SlabStore::Cached)
+{
+    static_assert(sizeof(Cell) == 32 && alignof(Cell) >= 4, "the copy kernel walks 32-byte cells");
+    // A history that fits in the cache is written there fastest. One that
+    // does not is written at memory's speed, and an ordinary store first
+    // reads each line it is about to replace: streamed, the row is only
+    // written. A short row is not worth a write-combining buffer's flush.
+    constexpr int minStreamedCells = 16;
+    if (store == SlabStore::Cached || cellCount < minStreamedCells || (reinterpret_cast<std::uintptr_t>(destination) & 15) != 0) {
+        std::memcpy(destination, source, static_cast<std::size_t>(cellCount) * sizeof(Cell));
+        return;
+    }
+    const auto* sourceHalves = reinterpret_cast<const __m128i*>(source);
+    auto* destinationHalves = reinterpret_cast<__m128i*>(destination);
+    for (int index = 0; index < cellCount * 2; index += 2) {
+        _mm_stream_si128(destinationHalves + index, _mm_loadu_si128(sourceHalves + index));
+        _mm_stream_si128(destinationHalves + index + 1, _mm_loadu_si128(sourceHalves + index + 1));
+    }
+    // Streamed stores are weakly ordered: a fence makes them visible, in
+    // order, to another thread. It also waits for them to reach memory, so a
+    // run of rows shares one where its caller can vouch for the run.
+    if (store == SlabStore::Streamed)
+        _mm_sfence();
+}
 #else
-static inline void copyCellsIntoSlab(Cell* destination, const Cell* source, int cellCount) { std::memcpy(destination, source, static_cast<std::size_t>(cellCount) * sizeof(Cell)); }
+static inline void copyCellsIntoSlab(Cell* destination, const Cell* source, int cellCount, SlabStore = SlabStore::Cached) { std::memcpy(destination, source, static_cast<std::size_t>(cellCount) * sizeof(Cell)); }
 #endif
 
 namespace {
@@ -728,9 +765,27 @@ void LineStore::append(const Cell* cells, int length, uint8_t lineAttribute, uin
     if (!cells || length < 0)
         return;
     length = std::min(length, maxColumns);
-    appendStoredRow(length, lineAttribute, mark, wrapped, needsShaping, [cells, length](Block&, Cell* destination) {
-        copyCellsIntoSlab(destination, cells, length);
+    // Every slab but the one being filled has left the cache once the
+    // history is several times its size.
+    SlabStore slabStore = SlabStore::Cached;
+    if (m_blocks.size() >= blocksBeyondCache) {
+        slabStore = m_isInBatch ? SlabStore::StreamedUnfenced : SlabStore::Streamed;
+        m_hasUnfencedStores = m_hasUnfencedStores || m_isInBatch;
+    }
+    appendStoredRow(length, lineAttribute, mark, wrapped, needsShaping, [cells, length, slabStore](Block&, Cell* destination) {
+        copyCellsIntoSlab(destination, cells, length, slabStore);
         return false; }, false);
+}
+
+void LineStore::endBatch()
+{
+    m_isInBatch = false;
+    if (!m_hasUnfencedStores)
+        return;
+    m_hasUnfencedStores = false;
+#if defined(__x86_64__) || defined(_M_X64)
+    _mm_sfence();
+#endif
 }
 
 void LineStore::appendStyledRow(std::span<const std::uint32_t> codePoints, std::span<const std::uint16_t> ids, const Cell* templates, uint8_t lineAttribute, uint8_t mark, bool wrapped, bool needsShaping) // bool-ok: wrap and shaping are row facts, as on append

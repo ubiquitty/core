@@ -8297,6 +8297,32 @@ void settlePasswordPrompt(Terminal& terminal, PAL::ProcessFacts* process)
     VT::evaluatePasswordPromptAtCursor(terminal, process);
 }
 
+// The rows one pass scrolls into the history are read by no other thread
+// until the pass ends: its caller holds the terminal for all of it.
+namespace {
+class HistoryBatch {
+public:
+    explicit HistoryBatch(Ubiquitty::Terminal& terminal)
+        : m_terminal(terminal)
+    {
+        if (m_terminal.lineStore)
+            m_terminal.lineStore->beginBatch();
+    }
+    ~HistoryBatch()
+    {
+        // A store made, or made anew, during the pass was never told of it
+        // and fenced each row; ending a batch it did not open changes nothing.
+        if (m_terminal.lineStore)
+            m_terminal.lineStore->endBatch();
+    }
+    HistoryBatch(const HistoryBatch&) = delete;
+    HistoryBatch& operator=(const HistoryBatch&) = delete;
+
+private:
+    Ubiquitty::Terminal& m_terminal;
+};
+} // namespace
+
 void processBytes(Ubiquitty::Terminal* t, std::string_view buffer)
 {
     if (!t)
@@ -8318,7 +8344,11 @@ void processBytes(Ubiquitty::Terminal* t, std::string_view buffer, PAL::ProcessF
     // is measured.
     if (t->modes.shouldReportAmbiguousWidth)
         VT::announceAmbiguousWidthIfMoved(*t);
-    const int consumed = processEncodedBytesImpl<false>(*t, buffer, nullptr);
+    int consumed = 0;
+    {
+        const HistoryBatch historyBatch(*t);
+        consumed = processEncodedBytesImpl<false>(*t, buffer, nullptr);
+    }
     if (consumed > 0) {
         if (t->modes.shouldSaveCRT || t->isCRTBlanked) {
             if (const auto now = terminalNow(*t))
@@ -8350,7 +8380,11 @@ int processBytesUpToSyncClear(Ubiquitty::Terminal* t, std::string_view buffer, b
         *stoppedAtSyncClear = false;
     if (!t || t->asyncDecodes.isFenced())
         return 0;
-    int consumed = processEncodedBytesImpl<true>(*t, buffer, stoppedAtSyncClear);
+    int consumed = 0;
+    {
+        const HistoryBatch historyBatch(*t);
+        consumed = processEncodedBytesImpl<true>(*t, buffer, stoppedAtSyncClear);
+    }
     if (consumed > 0) {
         if (t->modes.shouldSaveCRT || t->isCRTBlanked) {
             if (const auto now = terminalNow(*t))
