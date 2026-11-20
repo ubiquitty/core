@@ -257,11 +257,16 @@ private:
 // reaches its quiet budget. The burst stays open for as long as the test runs.
 class PausedEndpoint final : public PollableByteStream {
 public:
-    PausedEndpoint(UnixFileDescriptor file, UnixFileDescriptor readiness)
+    PausedEndpoint(UnixFileDescriptor file, UnixFileDescriptor readiness, int handOverBytes = std::numeric_limits<int>::max())
         : m_file(std::move(file))
         , m_readiness(std::move(readiness))
+        , m_handOverBytes(handOverBytes)
     {
     }
+
+    // How much of a burst a pass carries before the pipeline takes the rest,
+    // as a transport that knows its own floods says it.
+    [[nodiscard]] int burstHandOverBytes() const override { return m_handOverBytes; }
 
     int read(std::span<char> buffer) override
     {
@@ -284,19 +289,20 @@ public:
         UnixFileDescriptor readiness(::dup(m_readiness.get()));
         if (!file || !readiness)
             return nullptr;
-        return std::make_unique<PausedEndpoint>(std::move(file), std::move(readiness));
+        return std::make_unique<PausedEndpoint>(std::move(file), std::move(readiness), m_handOverBytes);
     }
 
 private:
     UnixFileDescriptor m_file;
     UnixFileDescriptor m_readiness;
+    int m_handOverBytes;
 };
 
 class PausedStream final : public Stream, private ProcessFacts {
 public:
-    PausedStream(UnixFileDescriptor file, UnixFileDescriptor readiness)
+    PausedStream(UnixFileDescriptor file, UnixFileDescriptor readiness, int handOverBytes = std::numeric_limits<int>::max())
         : m_rawReadiness(readiness.get())
-        , m_endpoint(std::move(file), std::move(readiness))
+        , m_endpoint(std::move(file), std::move(readiness), handOverBytes)
     {
     }
 
@@ -1143,6 +1149,121 @@ TEST(testAPipelinedPauseOnAPassBoundaryDeliversBeforeTheBurstEnds)
     loop.raiseWake();
     ingest.join();
     runtime.close();
+}
+
+// A burst held in a file whose writer then pauses, on a loop that is running:
+// what the two tests below share.
+struct PausedBurst {
+    TerminalRuntime runtime;
+    LockOnlyDrainHost host;
+    std::unique_ptr<Ubiquitty::PAL::PollableByteStream> loopEndpoint;
+    std::unique_ptr<Ubiquitty::PAL::PollableByteStream> floodEndpoint;
+    Ubiquitty::PAL::UnixFileDescriptor readinessWrite;
+    bool isReady = false;
+
+    PausedBurst(const std::string& burst, int handOverBytes)
+    {
+        const char* directory = std::getenv("TMPDIR");
+        std::string path = std::string(directory && *directory ? directory : "/tmp") + "/ubiquitty-paused-XXXXXX";
+        Ubiquitty::PAL::UnixFileDescriptor file(::mkstemp(path.data()));
+        if (!file)
+            return;
+        ::unlink(path.c_str());
+        if (::write(file.get(), burst.data(), burst.size()) != static_cast<ssize_t>(burst.size()) || ::lseek(file.get(), 0, SEEK_SET) != 0)
+            return;
+        int readinessPipe[2] = { -1, -1 };
+        if (::pipe(readinessPipe) != 0)
+            return;
+        Ubiquitty::PAL::UnixFileDescriptor readinessRead(readinessPipe[0]);
+        readinessWrite = Ubiquitty::PAL::UnixFileDescriptor(readinessPipe[1]);
+        if (::write(readinessWrite.get(), "r", 1) != 1)
+            return;
+        RuntimeInitParameters parameters;
+        parameters.rows = 24;
+        parameters.columns = 80;
+        parameters.allowReflowOnInit = false;
+        runtime.init(parameters);
+        auto stream = std::make_unique<Ubiquitty::PAL::PausedStream>(std::move(file), Ubiquitty::PAL::UnixFileDescriptor(::dup(readinessRead.get())), handOverBytes);
+        loopEndpoint = stream->duplicateAsPollableStream();
+        floodEndpoint = stream->duplicateAsPollableStream();
+        if (!loopEndpoint || !floodEndpoint || !prepareAdoptionBeforeIngest(runtime))
+            return;
+        isReady = runtime.adoptStream(std::move(stream)).has_value();
+    }
+};
+
+// A program that asks the terminal something at the end of its output and
+// waits for the answer has paused for that answer. The pipeline closes a pass,
+// which is where replies are otherwise written, only once the ring has stayed
+// empty across a nap; the reply must not wait for that nap. Both observations
+// are the parser thread's own: the nap count as the last bite is handed to the
+// tap, and the nap count as the reply is written.
+TEST(testAQueryThatEndsAPipelinedBurstIsAnsweredBeforeTheNextNap)
+{
+    constexpr std::size_t textBytes = 3 * static_cast<std::size_t>(TerminalRuntime::drainPassCapacityBytes) + 4096;
+    std::string burst;
+    constexpr std::string_view line = "0123456789abcdefghijklmnopqrstuvwxyz\n";
+    while (burst.size() < textBytes)
+        burst += line;
+    burst.resize(textBytes);
+    burst += "\x1b[5n"; // a status report, which is answered "\x1b[0n"
+
+    PausedBurst paused(burst, std::numeric_limits<int>::max());
+    REQUIRE(paused.isReady);
+    IngestLoop loop(paused.runtime, paused.host);
+    struct Watch {
+        IngestLoop& loop;
+        std::size_t burstBytes;
+        std::size_t tappedBytes = 0; // the parser thread's own
+        std::atomic<std::uint64_t> napsAtLastBite { UINT64_MAX };
+        std::atomic<std::uint64_t> napsAtReply { UINT64_MAX };
+        std::mutex lock;
+        std::string reply;
+
+        Watch(IngestLoop& watched, std::size_t bytes)
+            : loop(watched)
+            , burstBytes(bytes)
+        {
+        }
+    } watch(loop, burst.size());
+    paused.runtime.setRawByteTap(
+        [](void* context, std::string_view bytes) {
+            auto& observed = *static_cast<Watch*>(context);
+            observed.tappedBytes += bytes.size();
+            if (observed.tappedBytes == observed.burstBytes)
+                observed.napsAtLastBite.store(observed.loop.floodNapCount(), std::memory_order_release);
+        },
+        &watch);
+    paused.runtime.setOutboundByteTap(
+        [](void* context, std::string_view bytes) {
+            auto& observed = *static_cast<Watch*>(context);
+            std::uint64_t unset = UINT64_MAX;
+            observed.napsAtReply.compare_exchange_strong(unset, observed.loop.floodNapCount());
+            const std::lock_guard guard(observed.lock);
+            observed.reply.append(bytes);
+        },
+        &watch);
+    (void)loop.prepare();
+    loop.adoptFloodEndpoint(std::move(paused.floodEndpoint));
+    std::jthread ingest([&loop, &paused] { loop.run(paused.loopEndpoint->handle()); });
+
+    for (int waited = 0; waited < 10000 && watch.napsAtReply.load(std::memory_order_acquire) == UINT64_MAX; ++waited)
+        ::usleep(1000);
+    ::usleep(20000); // whatever else the terminal has to say
+    CHECK_MSG(loop.floodBurstCount() == 1, "the burst rode the pipeline and is still open");
+    {
+        const std::lock_guard guard(watch.lock);
+        CHECK_MSG(watch.reply == "\x1b[0n", "the report was answered once");
+    }
+    REQUIRE(watch.napsAtLastBite.load() != UINT64_MAX && watch.napsAtReply.load() != UINT64_MAX);
+    CHECK_MSG(watch.napsAtReply.load() == watch.napsAtLastBite.load(),
+        std::format("the answer waited {} naps behind the bite that asked", watch.napsAtReply.load() - watch.napsAtLastBite.load()).c_str());
+    loop.requestStop();
+    loop.raiseWake();
+    ingest.join();
+    paused.runtime.setRawByteTap(nullptr, nullptr);
+    paused.runtime.setOutboundByteTap(nullptr, nullptr);
+    paused.runtime.close();
 }
 
 TEST(testATimedPipelinePauseReleasesAHeldFrameBeforeTheBurstEnds)

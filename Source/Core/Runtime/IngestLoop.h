@@ -1141,6 +1141,7 @@ private:
         // A decode fenced the parse inside the burst: the ring's rest is carried.
         bool isDecodeFenced = false;
         bool didNapOnEmptyRing = false;
+        bool hasParsedSinceReplyFlush = false;
         std::uint32_t heldFrameAskedAt = 0;
         std::uint32_t heldFrameWaitMicros = 0;
         for (;;) {
@@ -1155,6 +1156,18 @@ private:
             if (available == 0) {
                 if (producerRaw & floodRingDoneBit)
                     break; // reader exited and the ring is drained
+                // The writer has paused behind what was just parsed. A
+                // program that asked something and now waits for the answer
+                // has paused for exactly that, and a pass closes only once
+                // the ring has stayed empty across a nap: the replies are
+                // written at this first empty look, not a nap later.
+                if (hasParsedSinceReplyFlush) {
+                    hasParsedSinceReplyFlush = false;
+                    m_host.lockModel();
+                    m_runtime.flushReplies();
+                    m_host.unlockModel();
+                    m_runtime.drainPendingWrite();
+                }
                 if (!m_runtime.isFrameHeld())
                     budgetStartMicros = PAL::monotonicMicros();
                 // Ring empty across a whole nap with a partial pass in hand:
@@ -1227,6 +1240,7 @@ private:
             const int biteBytes = static_cast<int>(bite);
             int parsedBytes = 0;
             const bool isFenced = parseFloodBite(readIndex, biteBytes, parsedBytes, noteParsed);
+            hasParsedSinceReplyFlush = true;
             m_floodRingControl->consumer.store(consumer + static_cast<std::uint64_t>(isFenced ? parsedBytes : biteBytes), std::memory_order_release);
             // Wake a reader parked on ring-full (uncontended notify: no syscall).
             m_floodRingControl->consumer.notify_one();
