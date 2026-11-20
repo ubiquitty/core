@@ -332,9 +332,13 @@ public:
     [[nodiscard]] int burstHandOverBytes() const override
     {
 #if defined(__linux__)
-        // One read here returns tens of kilobytes, so two reads' worth
-        // arriving without a pause is already a flood.
-        return 128 * 1024;
+        // A read here returns four kilobytes at the most, so this is eight
+        // of them arriving without a pause: more than a prompt or a page of
+        // a listing, which a pass carries whole. Behind it the pass reads
+        // and parses on one thread at a third of what the pipeline moves,
+        // and a megabyte that arrives at once is over before a larger
+        // share of it has been handed on.
+        return 32 * 1024;
 #else
         return PollableByteStream::burstHandOverBytes();
 #endif
