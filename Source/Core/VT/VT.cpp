@@ -495,13 +495,7 @@ static inline void displaySetCell(Ubiquitty::Terminal& t, int row, int column, c
 {
     if (!t.grid)
         return;
-    Ubiquitty::Cell cell;
-    cell.codePoint = ch;
-    Pen cellPenValue = *pen;
-    cellPenValue.attributes = attributes;
-    Ubiquitty::cellSetPen(cell, cellPenValue);
-    Ubiquitty::Screen::clearCluster(&cell);
-    cell.setLinkID(t.currentLinkID);
+    const Ubiquitty::Cell cell = Ubiquitty::cellFromPen(*pen, attributes, t.currentLinkID, ch);
     // Both callers reach here only inside their `!same` idempotency branch,
     // so the new value is known to differ — skip setCell's redundant memcmp.
     t.grid->setCellKnownDiff(Ubiquitty::Row(row), Ubiquitty::Column(column), cell);
@@ -530,6 +524,34 @@ static inline void clusterOpen(Ubiquitty::Terminal& t, int row, int column, uint
     t.parser.clusterScreen = t.screens.isUsingAlternateScreen ? 1u : 0u;
     t.parser.clusterLast = base;
     Ubiquitty::Unicode::graphemeStateReset(&t.parser.clusterState, base);
+    t.parser.clusterAtX = s->cursorX;
+    t.parser.clusterAtY = s->cursorY;
+    t.parser.clusterAtWrap = s->wrapPending;
+    t.parser.clusterCodePoints[0] = base;
+    t.parser.clusterCodepointLength = 1;
+}
+
+/// Opens the cluster a run of printable ASCII ends on.
+///
+/// What ``clusterOpen`` leaves, without the call it makes to reset the
+/// segmenter: an ASCII base has no break class, is no pictograph and no
+/// linker, so its state is the empty one.
+///
+/// - Parameters:
+///   - t: The terminal.
+///   - row: The row of the run's last cell.
+///   - column: Its column.
+///   - base: The run's last byte.
+static inline void clusterOpenAfterASCII(Ubiquitty::Terminal& t, int row, int column, uint32_t base)
+{
+    assert(base < 0x80);
+    Ubiquitty::Screen::State* s = t.screens.active;
+    t.parser.clusterActive = true;
+    t.parser.clusterRow = row;
+    t.parser.clusterColumn = column;
+    t.parser.clusterScreen = t.screens.isUsingAlternateScreen ? 1u : 0u;
+    t.parser.clusterLast = base;
+    t.parser.clusterState = {};
     t.parser.clusterAtX = s->cursorX;
     t.parser.clusterAtY = s->cursorY;
     t.parser.clusterAtWrap = s->wrapPending;
@@ -5570,11 +5592,7 @@ template<GraphicCapture Capture> static int emitASCIICombiningRun(Ubiquitty::Ter
     Ubiquitty::CellScratchBuffer<Ubiquitty::maxColumns> spanStorage;
     Ubiquitty::Cell* span = spanStorage.data();
 
-    Ubiquitty::Cell tmpl;
-    tmpl.codePoint = 0;
-    cellSetPenFromScreen(tmpl, s);
-    Ubiquitty::Screen::clearCluster(&tmpl);
-    tmpl.setLinkID(t.currentLinkID);
+    Ubiquitty::Cell tmpl = Ubiquitty::cellFromPen(s->pen, t.currentLinkID);
 
     while (nCells < maxPairs && p + 2 < length) {
         const unsigned char base = static_cast<unsigned char>(buffer[p]);
@@ -5653,6 +5671,19 @@ template<GraphicCapture Capture> static int emitASCIICombiningRun(Ubiquitty::Ter
     return p - start;
 }
 
+/// How ``emitLineSpan`` is entered.
+enum class LineSpanEntry : std::uint8_t {
+    /// At the final byte of an SGR the parser holds and has not dispatched.
+    PendingSGR,
+    /// At the first byte of a short printable ASCII run a multibyte lead follows.
+    Text,
+};
+template<GraphicCapture Capture> static int emitLineSpan(Ubiquitty::Terminal& t, const char* buffer, int start, int length, LineSpanEntry entry, int& resumeIndex);
+
+/// The longest printable ASCII piece ``emitLineSpan`` stages; a longer one is
+/// a run in its own right, which the run writer stores straight into the row.
+constexpr int maxLineSpanPieceCells = 24;
+
 template<GraphicCapture Capture> static int emitASCIIRun(Ubiquitty::Terminal& t, const char* buffer, int start, int length)
 {
     Ubiquitty::Screen::State* s = t.screens.active;
@@ -5687,6 +5718,17 @@ template<GraphicCapture Capture> static int emitASCIIRun(Ubiquitty::Terminal& t,
     if (maxN > avail)
         maxN = avail;
     int n = columnsBeforeLowerTextBand(t, s->cursorY, column, countByteRun(buffer + start, maxN, 0x20, 0x7E));
+    // A word with text of another script behind it is a piece of a mixed
+    // line, which is staged and written whole. The leads passed over open
+    // the scripts and pictographs that are mostly clusters, and the marks.
+    if (n >= 2 && n <= maxLineSpanPieceCells && !translation && start + n + 4 <= length) {
+        const auto next = static_cast<unsigned char>(buffer[start + n]);
+        if (next >= 0xC2 && next < 0xF0 && next != 0xE0 && next != 0xE1 && next != 0xEF) {
+            int unusedResumeIndex = 0;
+            if (const int end = emitLineSpan<Capture>(t, buffer, start, length, LineSpanEntry::Text, unusedResumeIndex); end > 0)
+                return end - start;
+        }
+    }
     // HT replaces the data-screen predecessor, so CCH cannot undo this run's
     // last graphic afterward. Batch eligibility excludes the status line,
     // whose tab handler preserves the graphic predecessor.
@@ -5701,21 +5743,20 @@ template<GraphicCapture Capture> static int emitASCIIRun(Ubiquitty::Terminal& t,
     const int lastColumn = column + n - 1;
 
     // setRowSpan overwrites the whole [column..lastColumn] interior, so only the
-    // two edges can orphan a wide-pair half — the edge-only clear is O(1).
-    Ubiquitty::Cell blank;
-    Ubiquitty::Screen::eraseCell(&blank, s);
+    // two edges can orphan a wide-pair half — the edge-only clear is O(1). A
+    // row with no wide pair has no half to orphan, and the blank is not made.
     if (t.grid->hasSizedCellHint()) [[unlikely]]
         eraseOverwrittenTextBands(t, row, column, lastColumn);
-    t.grid->clearWideOverlapEdges(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::Column(lastColumn), blank);
+    if (t.grid->mayRowHoldWidePair(Ubiquitty::Row(row))) {
+        Ubiquitty::Cell blank;
+        Ubiquitty::Screen::eraseCell(&blank, s);
+        t.grid->clearWideOverlapEdges(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::Column(lastColumn), blank);
+    }
 
     // Every cell in the run shares one pen, an empty cluster, and the active link
     // id. Hand that template + raw bytes to the display, which writes straight into
     // the row store — no staging buffer, no second copy.
-    Ubiquitty::Cell tmpl;
-    tmpl.codePoint = 0;
-    cellSetPenFromScreen(tmpl, s);
-    Ubiquitty::Screen::clearCluster(&tmpl);
-    tmpl.setLinkID(t.currentLinkID);
+    Ubiquitty::Cell tmpl = Ubiquitty::cellFromPen(s->pen, t.currentLinkID);
     const std::string_view runText { buffer + start, static_cast<std::size_t>(n) };
     if (translation)
         t.grid->writeTranslatedRun(Ubiquitty::Row(row), Ubiquitty::Column(column), tmpl, runText, translation);
@@ -5736,9 +5777,11 @@ template<GraphicCapture Capture> static int emitASCIIRun(Ubiquitty::Terminal& t,
     // A combining mark arriving next attaches to the run's last cell.
     uint32_t lastCharacter = static_cast<uint32_t>(static_cast<unsigned char>(buffer[start + n - 1]));
     t.parser.precedingItem.setGraphic(lastCharacter, lastCharacter, 0);
-    clusterOpen(t, row, lastColumn, lastCharacter);
+    clusterOpenAfterASCII(t, row, lastColumn, lastCharacter);
     return n;
 }
+
+static int scanCSIParameters(Ubiquitty::Terminal& t, const char* buffer, int start, int length);
 
 // Uniform-fill sibling of emitASCIIRun for REP expansion: same eligibility gate,
 // margin clamp, wide-edge clear, and cursor/wrap tail; the cell write goes through
@@ -5760,17 +5803,15 @@ static int emitASCIIFill(Ubiquitty::Terminal& t, uint8_t ch, int count)
     const int row = s->cursorY;
     const int lastColumn = column + n - 1;
 
-    Ubiquitty::Cell blank;
-    Ubiquitty::Screen::eraseCell(&blank, s);
     if (t.grid->hasSizedCellHint()) [[unlikely]]
         eraseOverwrittenTextBands(t, row, column, lastColumn);
-    t.grid->clearWideOverlapEdges(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::Column(lastColumn), blank);
+    if (t.grid->mayRowHoldWidePair(Ubiquitty::Row(row))) {
+        Ubiquitty::Cell blank;
+        Ubiquitty::Screen::eraseCell(&blank, s);
+        t.grid->clearWideOverlapEdges(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::Column(lastColumn), blank);
+    }
 
-    Ubiquitty::Cell cell;
-    cell.codePoint = ch;
-    cellSetPenFromScreen(cell, s);
-    Ubiquitty::Screen::clearCluster(&cell);
-    cell.setLinkID(t.currentLinkID);
+    const Ubiquitty::Cell cell = Ubiquitty::cellFromPen(s->pen, t.currentLinkID, ch);
     t.grid->fillCellRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cell, n);
 
     if (lastColumn >= rightMargin) {
@@ -6001,6 +6042,11 @@ static inline bool shouldPeekClusterLead(const char* buffer, int start, int leng
         return true; // VS15/VS16, supplementary emoji, RI flags, skin tones, tag chars
     if (lead == 0xCC || lead == 0xCD)
         return true; // common U+0300..036F combining diacritics
+    // U+0800..1FFF: the Indic scripts, Thai, Tibetan, Myanmar, the jamo and
+    // Khmer. A word of these mostly starts on a code point with a break class
+    // of its own, which the text run decodes a stretch to find it cannot place.
+    if (lead == 0xE0 || lead == 0xE1)
+        return true;
     if (lead != 0xE2 || start + 1 >= length)
         return false;
 
@@ -6079,6 +6125,20 @@ constexpr int textRunMinimumDecodeBytes = 24;
 
 /// A decode budget that never ends a run's decode before the row does.
 constexpr int textRunUnlimitedDecodeBytes = 1 << 28;
+
+/// What one text run tells the next within a parse call.
+struct TextRunPacing {
+    /// How many bytes the next run may decode; see ``nextTextRunDecodeBudget``.
+    int decodeBudget = textRunUnlimitedDecodeBytes;
+    /// Whether the last run placed glyphs of mixed widths. Text like that
+    /// mixes sequence lengths from one character to the next, which the
+    /// decoder that branches on a lead's length cannot predict.
+    bool isMixed = false; // bool-ok: a fact about the last run, not a parameter
+};
+
+/// How many consecutive ASCII bytes a text run takes in between multibyte
+/// glyphs; a longer piece, or one nothing multibyte follows, is an ASCII run's.
+constexpr int maxAbsorbedASCII = 5;
 
 /// The bytes the next batched text run may decode, after a run that placed
 /// `placedBytes` of the `decodedBytes` it decoded.
@@ -6223,6 +6283,446 @@ static inline int nextTextRunDecodeBudget(int budget, int placedBytes, int decod
     return 0;
 }
 
+/// Whether the four characters at twelve readable bytes are multibyte and of
+/// one length, as a stretch of one script's text is.
+///
+/// - Parameter bytes: Twelve readable bytes, a lead first.
+/// - Returns: Whether leads stand where four characters of the first one's
+///   length would put them.
+[[gnu::always_inline]] static inline bool isUniformMultibyteStretch(const char* bytes)
+{
+    const auto at = [bytes](int index) { return static_cast<std::uint8_t>(bytes[index]); };
+    const std::uint8_t lead = at(0);
+    if (lead >= 0xF0)
+        return at(4) >= 0xF0 && at(8) >= 0xF0;
+    if (lead >= 0xE0)
+        return (at(3) & 0xF0) == 0xE0 && (at(6) & 0xF0) == 0xE0 && (at(9) & 0xF0) == 0xE0;
+    return lead >= 0xC2 && (at(2) & 0xE0) == 0xC0 && (at(4) & 0xE0) == 0xC0 && (at(6) & 0xE0) == 0xC0;
+}
+
+/// The tables of the decoder that reads four bytes for every character.
+namespace MixedDecode {
+// By the lead's top five bits: 1 for ASCII from space up, 0 for a control,
+// a continuation byte and F8 upward, which lead nothing.
+inline constexpr std::array<std::uint8_t, 32> lengthByLead { 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 3, 3, 4, 0 };
+inline constexpr std::array<std::uint8_t, 5> leadMask { 0x00, 0x7F, 0x1F, 0x0F, 0x07 };
+inline constexpr std::array<std::uint8_t, 5> scalarShift { 0, 18, 12, 6, 0 };
+inline constexpr std::array<std::uint8_t, 5> errorShift { 0, 6, 4, 2, 0 };
+// Below these a sequence of the length is overlong; length 0 fails always.
+inline constexpr std::array<std::uint32_t, 5> lowestScalar { 0x400000, 0, 0x80, 0x800, 0x10000 };
+
+/// Decodes the character at four readable bytes, without a branch on its
+/// length.
+///
+/// - Parameters:
+///   - bytes: Four readable bytes, the character's first among them.
+///   - scalar: Receives the code point.
+/// - Returns: The bytes the character takes, or zero for a control, DEL, a
+///   byte that leads nothing, and every malformed sequence.
+[[gnu::always_inline]] inline int decodeScalar(const char* bytes, std::uint32_t& scalar)
+{
+    std::uint32_t word;
+    std::memcpy(&word, bytes, sizeof word);
+    const std::uint32_t b0 = word & 0xFF;
+    const std::uint32_t b1 = (word >> 8) & 0xFF;
+    const std::uint32_t b2 = (word >> 16) & 0xFF;
+    const std::uint32_t b3 = word >> 24;
+    const std::size_t sequenceLength = lengthByLead[b0 >> 3];
+    scalar = ((b0 & leadMask[sequenceLength]) << 18 | (b1 & 0x3F) << 12 | (b2 & 0x3F) << 6 | (b3 & 0x3F)) >> scalarShift[sequenceLength];
+    // Each continuation's top two bits must be 10; the shift drops the bytes
+    // past the sequence, which are not its own.
+    std::uint32_t error = ((b1 & 0xC0) >> 2 | (b2 & 0xC0) >> 4 | b3 >> 6) ^ 0x2A;
+    error >>= errorShift[sequenceLength];
+    error |= static_cast<std::uint32_t>(scalar < lowestScalar[sequenceLength]) | static_cast<std::uint32_t>((scalar >> 11) == 0x1B)
+        | static_cast<std::uint32_t>(scalar > 0x10FFFF) | static_cast<std::uint32_t>(b0 == 0x7F);
+    return error ? 0 : static_cast<int>(sequenceLength);
+}
+} // namespace MixedDecode
+
+/// Decodes text that mixes ASCII and multibyte sequences of every length,
+/// without a branch on which one comes next.
+///
+/// Four bytes are read for every character, whatever its length, and tables
+/// indexed by the lead select how many of them it takes. A character costs
+/// the same whichever it is, where ``decodeShortUTF8Stretch`` and the ASCII
+/// loop beside it pay a misprediction for most characters of such text and
+/// nothing for text in one script. The decode stops, leaving the rest to the
+/// caller, at a control, at DEL, at any malformed sequence, at a combining
+/// diacritic, within three bytes of the input's end, and at an ASCII piece
+/// the run does not take in (``maxAbsorbedASCII``).
+///
+/// - Parameters:
+///   - input: The bytes to decode.
+///   - out: Receives the code points; its size bounds the decode.
+///   - bytesConsumed: Receives the bytes the stored code points stood for.
+/// - Returns: The code points stored.
+[[gnu::noinline]] static int decodeMixedTextStretch(std::span<const char> input, std::span<std::uint32_t> out, int* bytesConsumed)
+{
+    const char* in = input.data();
+    const int length = static_cast<int>(input.size());
+    const int maxOut = static_cast<int>(out.size());
+    int p = 0;
+    int n = 0;
+    int asciiTail = 0; // the ASCII code points the decode currently ends on
+    while (p + 4 <= length && n < maxOut) {
+        std::uint32_t scalar;
+        const int sequenceLength = MixedDecode::decodeScalar(in + p, scalar);
+        // A combining diacritic ends the placement where it stands, so the
+        // decode ends there too: what it read past one would be read again.
+        if (sequenceLength == 0 || scalar - 0x300u < 0x70u) [[unlikely]]
+            break;
+        out[n++] = scalar;
+        p += sequenceLength;
+        asciiTail = sequenceLength == 1 ? asciiTail + 1 : 0;
+        if (asciiTail > maxAbsorbedASCII) [[unlikely]]
+            break;
+    }
+    // An ASCII piece belongs to the run only when it is short and a multibyte
+    // sequence follows it.
+    if (asciiTail > 0 && (asciiTail > maxAbsorbedASCII || p >= length || static_cast<std::uint8_t>(in[p]) < 0x80)) {
+        n -= asciiTail;
+        p -= asciiTail;
+    }
+    *bytesConsumed = p;
+    return n;
+}
+
+/// Writes a stretch of a line made of short pieces as one span of the row.
+///
+/// The pieces are an SGR, a short run of printable ASCII, and a stretch of
+/// plain glyphs of other scripts, in any order. Coloured output is words a
+/// few characters long with a pen change before each, and a line that mixes
+/// scripts is a word of one after a word of another; written a piece at a
+/// time, every piece pays for a whole write: eligibility, the row's lookup,
+/// the probe of what it holds, the cluster it leaves open. Here the checks
+/// are made once, every SGR goes through the dispatcher it would have
+/// reached anyway, the cells are staged from the stamps of the pen in force,
+/// and the row is written and the cursor moved once.
+///
+/// It ends, leaving the rest to the ground loop, at anything else: another
+/// control, a code point with a break class or a pictograph, which the
+/// cluster writers own, a malformed sequence, a long ASCII run, the right
+/// margin, sized text, and default-pen ASCII that nothing here keeps out of
+/// a compact row.
+///
+/// - Parameters:
+///   - t: The terminal, in the ground state with no sequence pending.
+///   - buffer: The input.
+///   - start: Where the stretch starts, as `entry` says.
+///   - length: The input's length.
+///   - entry: What `start` indexes.
+///   - resumeIndex: The index before which no SGR opens a stretch, as the
+///     calls before this one found; kept by the caller for one parse.
+/// - Returns: The index after the last byte consumed, or zero when nothing
+///   was done, with a pending SGR still the caller's to dispatch.
+template<GraphicCapture Capture> [[gnu::noinline]] static int emitLineSpan(Ubiquitty::Terminal& t, const char* buffer, int start, int length, LineSpanEntry entry, int& resumeIndex)
+{
+    const auto isPrintable = [](char byte) { return static_cast<unsigned char>(byte) - 0x20u <= 0x7Eu - 0x20u; };
+    // The index after the SGR at `from`, when it is one, whole, with text
+    // after it; -1 otherwise.
+    const auto textAfterSGR = [&](int from) -> int {
+        if (from + 2 >= length || buffer[from] != 0x1B || buffer[from + 1] != '[')
+            return -1;
+        int index = from + 2;
+        while (index < length && static_cast<unsigned char>(buffer[index]) - 0x30u <= 0x3Bu - 0x30u)
+            ++index;
+        if (index + 1 >= length || buffer[index] != 'm' || (!isPrintable(buffer[index + 1]) && static_cast<unsigned char>(buffer[index + 1]) < 0xC2))
+            return -1;
+        return index + 1;
+    };
+    if (entry == LineSpanEntry::PendingSGR) {
+        // A piece already read and found to be the run writer's is not read again.
+        if (start < resumeIndex)
+            return 0;
+        // A stretch of styled ASCII pays for itself from the third piece on:
+        // two cost about what two runs do, staged and then copied. Each of
+        // the three must be short, so each ends at an ESC within reach, and
+        // that is all that is read of them to decide.
+        const auto escapeWithinReach = [&](int from) -> int {
+            const auto reach = static_cast<std::size_t>(std::min(length - from, maxLineSpanPieceCells + 1));
+            const void* found = std::memchr(buffer + from, 0x1B, reach);
+            return found ? static_cast<int>(static_cast<const char*>(found) - buffer) : -1;
+        };
+        const int firstTextStart = start + 1;
+        resumeIndex = firstTextStart;
+        const int secondSGR = escapeWithinReach(firstTextStart);
+        if (secondSGR < 0)
+            return 0;
+        const int secondTextStart = textAfterSGR(secondSGR);
+        if (secondTextStart < 0)
+            return 0;
+        const int thirdSGR = escapeWithinReach(secondTextStart);
+        if (thirdSGR < 0) {
+            resumeIndex = secondTextStart;
+            return 0;
+        }
+        const int thirdTextStart = textAfterSGR(thirdSGR);
+        if (thirdTextStart < 0)
+            return 0;
+        if (countByteRun(buffer + thirdTextStart, std::min(length - thirdTextStart, maxLineSpanPieceCells + 1), 0x20, 0x7E) > maxLineSpanPieceCells) {
+            resumeIndex = thirdTextStart;
+            return 0;
+        }
+    }
+    Ubiquitty::Screen::State* s = t.screens.active;
+    if (s->wrapPending || !batchedWriteEligible(t, s) || t.characterSetG[t.characterSetActive] != characterSetUSASCII || t.grid->hasSizedCellHint())
+        return 0;
+    const int rightMargin = Ubiquitty::Screen::effectiveRight(t);
+    const int column = s->cursorX;
+    if (column < 0 || column > rightMargin)
+        return 0;
+    const int row = s->cursorY;
+    const int room = columnsBeforeLowerTextBand(t, row, column, rightMargin - column + 1);
+
+    // A wide glyph's two cells under a pen: the pen's own with the attribute
+    // of each half. Made when a pen first stages one, which most never do.
+    struct WideStamps {
+        Ubiquitty::CellStamp lead;
+        Ubiquitty::CellStamp continuation;
+    };
+    const auto wideStampsOf = [](const Ubiquitty::Cell& cellTemplate) {
+        const VT::AttributeSet attributes = cellPen(cellTemplate).attributes - VT::Attribute::Emoji;
+        return WideStamps { Ubiquitty::CellStamp(Ubiquitty::cellFromPen(cellPen(cellTemplate), attributes | VT::Attribute::Wide, cellTemplate.linkID(), 0)),
+            Ubiquitty::CellStamp(Ubiquitty::cellFromPen(cellPen(cellTemplate), attributes | VT::Attribute::WideContinuation, cellTemplate.linkID(), 0)) };
+    };
+    constexpr std::uint8_t clusterMask = Ubiquitty::Unicode::detail::PropEmojiPresentationField::mask
+        | Ubiquitty::Unicode::detail::PropGCBClassField::mask | Ubiquitty::Unicode::detail::PropExtPictField::mask;
+
+    Ubiquitty::CellScratchBuffer<Ubiquitty::maxColumns> spanStorage;
+    Ubiquitty::Cell* span = spanStorage.data();
+    int cellCount = 0;
+    int pieceCount = 0;
+    int firstPieceCells = 0;
+    int lastPieceStart = 0;
+    // A row with no wide pair has no half for an edge to orphan, and the
+    // blanks that would replace one are not made.
+    const bool mayOrphanWidePair = t.grid->mayRowHoldWidePair(Ubiquitty::Row(row));
+    Ubiquitty::Cell firstBlank;
+    Ubiquitty::Cell lastBlank;
+    // The last glyph staged: its cells and bytes come off again if it can
+    // still be cancelled.
+    int lastGlyphCells = 0;
+    int lastGlyphBytes = 0;
+    // The combining diacritic the last glyph carries, or zero. A narrow glyph
+    // takes one mark in its own cell; a second is the cluster writers'.
+    std::uint32_t lastMark = 0;
+    bool didAttachMark = false;
+    // Whether an SGR has been dispatched since the last glyph or mark staged.
+    bool didDispatchAfterLastGlyph = false;
+    // A row a compact form could hold is left to the writers that keep it:
+    // set once a cell staged here is one that form cannot.
+    bool doesRowNeedCells = false;
+    bool didDispatch = false;
+    const Ubiquitty::CellStamp defaultPenProbe(t.grid->defaultBlank());
+    Ubiquitty::CellGrid::SpanFacts spanFacts;
+    int position = start;
+    if (entry == LineSpanEntry::PendingSGR) {
+        // The parameters are the ones the caller scanned.
+        actCSIDispatch(t, 'm');
+        didDispatch = true;
+        position = start + 1;
+    }
+    while (position < length && cellCount < room) {
+        if (buffer[position] == 0x1B) {
+            if (position + 3 >= length || buffer[position + 1] != '[')
+                break;
+            // The parameters are read once, by the scan the ground loop would
+            // have made of them. A sequence that turns out not to be an SGR
+            // with text behind it is left where it stands: the ground loop
+            // starts it again from its introducer, which resets what this read.
+            resetCSI(t);
+            const int final = position + 2 + scanCSIParameters(t, buffer, position + 2, length);
+            if (final + 1 >= length || buffer[final] != 'm'
+                || (!isPrintable(buffer[final + 1]) && static_cast<unsigned char>(buffer[final + 1]) < 0xC2))
+                break;
+            // The dispatcher the ground loop would have reached with these bytes.
+            actCSIDispatch(t, 'm');
+            didDispatch = true;
+            didDispatchAfterLastGlyph = true;
+            position = final + 1;
+        }
+        const Ubiquitty::Cell cellTemplate = Ubiquitty::cellFromPen(s->pen, t.currentLinkID);
+        if (cellPen(cellTemplate).extendedAttributes.textSizeSpecID() != 0)
+            break;
+        const bool isDefaultPen = defaultPenProbe.matches(&cellTemplate, 0);
+        spanFacts.attributes.add(cellPen(cellTemplate).attributes);
+        const bool isMultibyteAllowed = !s->pen.attributes.contains(VT::Attribute::ForceEmojiPresentation);
+        const Ubiquitty::CellStamp narrowStamp(cellTemplate);
+        std::optional<WideStamps> wideStamps;
+        // The pieces under this pen, up to the next SGR.
+        const int cellsBeforePen = cellCount;
+        bool isStretchOver = false;
+        while (position < length && cellCount < room) {
+            const auto byte = static_cast<unsigned char>(buffer[position]);
+            const int pieceStart = cellCount;
+            const int positionBeforePiece = position;
+            if (isPrintable(buffer[position])) {
+                const int runLength = countByteRun(buffer + position, std::min(length - position, room - cellCount), 0x20, 0x7E);
+                if (runLength > maxLineSpanPieceCells) {
+                    resumeIndex = position;
+                    isStretchOver = true;
+                    break;
+                }
+                // Default-pen ASCII is what a compact row holds, unless the
+                // row already holds, or is about to hold, what one cannot.
+                if (isDefaultPen && !doesRowNeedCells
+                    && !(position + runLength < length && static_cast<unsigned char>(buffer[position + runLength]) >= 0xC2)) {
+                    isStretchOver = true;
+                    break;
+                }
+                for (int index = 0; index < runLength; ++index)
+                    narrowStamp.store(span + cellCount + index, static_cast<unsigned char>(buffer[position + index]));
+                cellCount += runLength;
+                position += runLength;
+                lastGlyphCells = 1;
+                lastGlyphBytes = 1;
+                lastMark = 0;
+                didDispatchAfterLastGlyph = false;
+                doesRowNeedCells = doesRowNeedCells || !isDefaultPen;
+            } else if (byte >= 0xC2 && isMultibyteAllowed && !isGRGraphicByte(t, byte)) {
+                // Plain glyphs, each of the table's width. The decode reads
+                // four bytes a glyph, so it stops three short of the input's
+                // end and leaves that tail to the ground loop.
+                while (position + 4 <= length && cellCount < room) {
+                    std::uint32_t codePoint;
+                    const int sequenceLength = MixedDecode::decodeScalar(buffer + position, codePoint);
+                    if (sequenceLength < 2 || codePoint < 0xA0)
+                        break; // ASCII, a control, a C1 code point, or malformed
+                    if (codePoint - 0x300u < 0x70u) {
+                        // A combining diacritic joins the narrow glyph before
+                        // it, in that glyph's own cell.
+                        // Only one that directly follows its base: across an
+                        // SGR the two are not one stretch of bytes to take back.
+                        if (cellCount == 0 || lastGlyphCells != 1 || lastMark != 0 || didDispatchAfterLastGlyph)
+                            break;
+                        Ubiquitty::Cell& base = span[cellCount - 1];
+                        base.combining[0] = codePoint;
+                        base.setCombiningLength(1);
+                        // The open cluster's second slot holds the last mark
+                        // taken, as it does after the character path: the
+                        // slot is carried in a handover record as it stands.
+                        t.parser.clusterCodePoints[1] = codePoint;
+                        lastMark = codePoint;
+                        lastGlyphBytes += sequenceLength;
+                        position += sequenceLength;
+                        didAttachMark = true;
+                        didDispatchAfterLastGlyph = false;
+                        continue;
+                    }
+                    const std::uint8_t properties = Ubiquitty::Unicode::Width::classify(codePoint);
+                    const bool isBoxOrBlock = isNarrowGraphicFast(codePoint);
+                    if ((properties & clusterMask) != 0 && !isBoxOrBlock)
+                        break; // the cluster writers' own
+                    const int width = isBoxOrBlock ? 1
+                                                   : Ubiquitty::Unicode::Width::cellsForWidthClass(Ubiquitty::Unicode::detail::PropWidthField::get(properties), t.ambiguousWidth);
+                    if ((width != 1 && width != 2) || cellCount + width > room)
+                        break;
+                    if (width == 2) {
+                        if (!wideStamps)
+                            wideStamps.emplace(wideStampsOf(cellTemplate));
+                        spanFacts.attributes.add(VT::AttributeSet { VT::Attribute::Wide } | VT::Attribute::WideContinuation);
+                        wideStamps->lead.store(span + cellCount, codePoint);
+                        wideStamps->continuation.store(span + cellCount + 1, Ubiquitty::wideContinuationSentinelCodePoint);
+                    } else {
+                        narrowStamp.store(span + cellCount, codePoint);
+                    }
+                    spanFacts.mayNeedShaping |= Ubiquitty::Unicode::mayNeedShaping(codePoint);
+                    cellCount += width;
+                    position += sequenceLength;
+                    lastGlyphCells = width;
+                    lastGlyphBytes = sequenceLength;
+                    lastMark = 0;
+                    didDispatchAfterLastGlyph = false;
+                }
+                doesRowNeedCells = doesRowNeedCells || didAttachMark || cellCount != pieceStart;
+                if (cellCount == pieceStart) {
+                    // Nothing new staged: the stretch goes on only if a mark
+                    // was taken and more text follows it.
+                    if (position == positionBeforePiece) {
+                        isStretchOver = true;
+                        break;
+                    }
+                    continue;
+                }
+            } else {
+                // An SGR opens the next pen; anything else ends the stretch.
+                isStretchOver = byte != 0x1B;
+                break;
+            }
+            if (mayOrphanWidePair) {
+                Ubiquitty::Screen::eraseCell(&lastBlank, s);
+                if (pieceCount == 0)
+                    firstBlank = lastBlank;
+            }
+            if (pieceCount == 0)
+                firstPieceCells = cellCount - pieceStart;
+            lastPieceStart = pieceStart;
+            ++pieceCount;
+        }
+        // Nothing staged under a pen whose SGR is not the last thing here
+        // means the text behind it is another writer's.
+        if (isStretchOver || cellCount == cellsBeforePen)
+            break;
+    }
+    // A word alone, with nothing of its line joined to it, is a run.
+    if (entry == LineSpanEntry::Text && !didDispatch && pieceCount < 2 && !didAttachMark)
+        return 0;
+    // The last glyph can still be cancelled while nothing is known to follow
+    // it, and the character path journals it; a tab replaces the predecessor.
+    // An SGR dispatched after the last glyph has already made it final, as it
+    // would have a character at a time: only a glyph the stretch ends on can
+    // come off.
+    const bool doesStretchEndOnGlyph = !didDispatchAfterLastGlyph;
+    if (cellCount > 0 && doesStretchEndOnGlyph && !(position < length && buffer[position] == '\t')
+        && graphicCaptureBefore<Capture>(buffer, position, length) == GraphicCapture::Retain) {
+        cellCount -= lastGlyphCells;
+        position -= lastGlyphBytes;
+        lastMark = cellCount > 0 && span[cellCount - 1].combiningLength() ? span[cellCount - 1].combining[0] : 0;
+    }
+    // With nothing staged, the stretch is the SGRs it dispatched.
+    if (cellCount == 0)
+        return didDispatch ? position : 0;
+    lastPieceStart = std::min(lastPieceStart, cellCount - 1);
+    firstPieceCells = std::min(firstPieceCells, cellCount);
+
+    dropWrapTrigger(t, s);
+    discardGraphicCancellation(t);
+    const int lastColumn = column + cellCount - 1;
+    // Each piece clears the wide pair its own edges would orphan, with the
+    // blank of its own pen. Between two pieces the next one overwrites what
+    // the last one cleared, so only the outer two edges are left to clear.
+    if (mayOrphanWidePair) {
+        t.grid->clearWideOverlapEdges(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::Column(column + firstPieceCells - 1), firstBlank);
+        t.grid->clearWideOverlapEdges(Ubiquitty::Row(row), Ubiquitty::Column(column + lastPieceStart), Ubiquitty::Column(lastColumn), lastBlank);
+    }
+    t.grid->setRowSpan(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::RowView { span, cellCount }, &spanFacts);
+
+    // The last glyph's lead: a wide glyph's second cell is not its own.
+    const bool isLastWide = cellPen(span[cellCount - 1]).attributes.contains(VT::Attribute::WideContinuation);
+    const int lastLeadColumn = isLastWide ? lastColumn - 1 : lastColumn;
+    const uint32_t lastCodePoint = span[lastLeadColumn - column].codePoint;
+    if (lastColumn >= rightMargin) {
+        s->cursorX = lastLeadColumn;
+        s->wrapPending = true;
+        evaluateFilledRowTriggers(&t, row);
+    } else {
+        s->cursorX = lastColumn + 1;
+    }
+    if (lastMark) {
+        // The last received graphic is the mark, and the cluster it joined is
+        // open with it, as the per-character path leaves both.
+        t.parser.precedingItem.setGraphic(lastMark, lastMark, 0);
+        clusterOpenWithInlineContinuation(t, row, lastLeadColumn, lastCodePoint, lastMark);
+    } else {
+        t.parser.precedingItem.setGraphic(lastCodePoint, lastCodePoint, 0);
+        if (lastCodePoint < 0x80)
+            clusterOpenAfterASCII(t, row, lastLeadColumn, lastCodePoint);
+        else
+            clusterOpen(t, row, lastLeadColumn, lastCodePoint);
+    }
+    return position;
+}
+
 /// The index of the first code point of a grapheme break class in a decoded
 /// batch, or -1 when there is none.
 ///
@@ -6242,8 +6742,9 @@ static inline int nextTextRunDecodeBudget(int budget, int placedBytes, int decod
     return -1;
 }
 
-template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, const char* buffer, int start, int length, int& decodeBudget)
+template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, const char* buffer, int start, int length, TextRunPacing& pacing)
 {
+    int& decodeBudget = pacing.decodeBudget;
     Ubiquitty::Screen::State* s = t.screens.active;
     const auto firstCodePoint = peekMultibyteUTF8CodePoint({ buffer + start, static_cast<std::size_t>(length - start) });
     const bool isFirstPlainWide = firstCodePoint && isPlainWideGraphic(firstCodePoint->codePoint, t.ambiguousWidth);
@@ -6281,11 +6782,7 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
 
     // Per-glyph cells share this base (pen, empty cluster, active link id);
     // the placement loop copies it and patches only ch + attributes.
-    Ubiquitty::Cell tmpl;
-    tmpl.codePoint = 0;
-    cellSetPenFromScreen(tmpl, s);
-    Ubiquitty::Screen::clearCluster(&tmpl);
-    tmpl.setLinkID(t.currentLinkID);
+    Ubiquitty::Cell tmpl = Ubiquitty::cellFromPen(s->pen, t.currentLinkID);
 
     // The run's pen is fixed for the whole run, and every cell the placement
     // loop writes differs from the template in the attribute set alone: the
@@ -6318,10 +6815,10 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
     // point's follow from its value.
     std::array<std::uint8_t, Ubiquitty::maxColumns> byteLengths;
     bool hasSubstitutes = false;
+    // A sum of comparisons, not a chain of them: the placement asks this of
+    // every glyph, and text that mixes scripts gives a chain nothing to predict.
     const auto encodedLength = [](std::uint32_t codePoint) -> int {
-        return codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2
-            : codePoint < 0x10000                       ? 3
-                                                        : 4;
+        return 1 + static_cast<int>(codePoint >= 0x80) + static_cast<int>(codePoint >= 0x800) + static_cast<int>(codePoint >= 0x10000);
     };
     const auto noteDecodedLengths = [&](int first, int count) {
         for (int index = first; index < first + count; ++index)
@@ -6361,6 +6858,19 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
         // character set to US-ASCII, which is what lets a byte here be its own
         // code point rather than a designation to resolve.
         int offset = start;
+        // A long stretch whose first characters are all of one length is
+        // the batch decoder's whatever the last run was: box drawing and
+        // block art are that, and it converts them a vector at a time. A
+        // word of prose is shorter, and the space after it is this decoder's.
+        if (pacing.isMixed && !(decodeLimit - start >= 16 && isLongMultibyteStretch(buffer + start) && isUniformMultibyteStretch(buffer + start))) {
+            // What stops this decode is the loop's to settle: it meets the
+            // same byte and carries on, substitutes or ends the run. A mark
+            // among these code points ends the placement where it stands.
+            int mixedBytes = 0;
+            nDec = decodeMixedTextStretch({ buffer + start, static_cast<std::size_t>(decodeLimit - start) },
+                { codePoints.data(), static_cast<std::size_t>(codePointCapacity) }, &mixedBytes);
+            offset += mixedBytes;
+        }
         while (nDec < codePointCapacity && offset < decodeLimit) {
             const unsigned char lead = static_cast<unsigned char>(buffer[offset]);
             if (lead >= 0x20 && lead < 0x7F) {
@@ -6370,7 +6880,6 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
                 // word, or a tail that nothing multibyte follows, is left to
                 // emitASCIIRun, which writes it narrower than the whole cells
                 // this path stages, and a wide-led row keeps the wide path.
-                constexpr int maxAbsorbedASCII = 5;
                 int asciiEnd = offset + 1;
                 while (asciiEnd < decodeLimit && asciiEnd - offset <= maxAbsorbedASCII
                     && static_cast<unsigned char>(buffer[asciiEnd]) >= 0x20 && static_cast<unsigned char>(buffer[asciiEnd]) < 0x7F)
@@ -6550,6 +7059,8 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
         Ubiquitty::CellStamp(tmpl), stampWithAttributes(leadAttributes), stampWithAttributes(leadAttributes | VT::Attribute::Emoji)
     };
     const Ubiquitty::CellStamp continuationStamp = stampWithAttributes(continuationAttributes);
+    VT::AttributeSet stagedAttributes {};
+    bool mayStagedNeedShaping = false;
     for (int ci = 0; wideCodePointCount == 0 && narrowCodePointCount == 0 && ci < nDec; ++ci) {
         const uint32_t codePoint = codePoints[ci];
         if (isC1CodePoint(codePoint))
@@ -6558,21 +7069,20 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
         // One probe of the flat table answers width, presentation and break
         // class, and what the answer selects is computed rather than branched
         // on: text that mixes scripts glyph by glyph gives a chain of range
-        // tests nothing to predict. Three ranges are answered without the
-        // table. Printable ASCII and the box and block elements are one cell
-        // whatever the table holds for them, and a Hangul syllable carries a
-        // break class and is placed as a plain wide glyph all the same.
+        // tests nothing to predict. Printable ASCII and the box and block
+        // elements are one cell whatever the table holds for them, and a
+        // Hangul syllable carries a break class and is placed, at the table's
+        // width, as the plain wide glyph it is.
         const std::uint8_t wb = Ubiquitty::Unicode::Width::classify(codePoint);
         const bool isOneCellByRange = (ci < verifiedNarrowPrefixCount) | (codePoint < 0x80) | isNarrowGraphicFast(codePoint);
-        const bool isPlainWideByRange = isWideIdeographFast(codePoint);
-        assert(!isPlainWideByRange || (Ubiquitty::Unicode::Width::forCodePoint(codePoint, t.ambiguousWidth) == 2 && !Ubiquitty::Unicode::Width::isEmojiPresentation(codePoint)));
+        const bool isHangulSyllable = codePoint - 0xAC00u <= 0xD7A3u - 0xAC00u;
         assert(!isNarrowGraphicFast(codePoint) || (Ubiquitty::Unicode::Width::forCodePoint(codePoint, t.ambiguousWidth) == 1 && !Ubiquitty::Unicode::Width::isEmojiPresentation(codePoint) && !Ubiquitty::Unicode::isGraphemeRelevant(codePoint)));
         constexpr std::uint8_t clusterMask = Ubiquitty::Unicode::detail::PropEmojiPresentationField::mask
             | Ubiquitty::Unicode::detail::PropGCBClassField::mask | Ubiquitty::Unicode::detail::PropExtPictField::mask;
         // Beside the width because it comes from the same probe, and both are
         // per glyph.
         bool isEmojiPresentation = false;
-        if (((wb & clusterMask) != 0) & !isOneCellByRange & !isPlainWideByRange) [[unlikely]] {
+        if (((wb & clusterMask) != 0) & !isOneCellByRange & !isHangulSyllable) [[unlikely]] {
             isEmojiPresentation = (wb & Ubiquitty::Unicode::detail::PropEmojiPresentationField::mask) != 0;
             // Every question below comes from the byte already in hand: a break
             // class of its own is what lets a code point extend the cluster
@@ -6602,8 +7112,7 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
             }
         }
         const int tableWidth = Ubiquitty::Unicode::Width::cellsForWidthClass(Ubiquitty::Unicode::detail::PropWidthField::get(wb), t.ambiguousWidth);
-        const int width = isOneCellByRange ? 1 : isPlainWideByRange ? 2
-                                                                    : tableWidth;
+        const int width = isOneCellByRange ? 1 : tableWidth;
         if (width != 1 && width != 2) [[unlikely]]
             break; // zero-width control etc.: not a plain glyph
         const int glyphEndColumn = currentColumn + width - 1;
@@ -6617,6 +7126,10 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
         // buffer keeps a cell for it. resolveCodePoint is identity for
         // codePoint >= 0x80, and the decode admits no ASCII it would change.
         assert(nCells >= 0 && nCells + 1 <= Ubiquitty::maxColumns);
+        if (width == 2)
+            stagedAttributes.add(isEmojiPresentation ? (VT::AttributeSet { VT::Attribute::Wide } | VT::Attribute::WideContinuation | VT::Attribute::Emoji)
+                                                     : (VT::AttributeSet { VT::Attribute::Wide } | VT::Attribute::WideContinuation));
+        mayStagedNeedShaping |= Ubiquitty::Unicode::mayNeedShaping(codePoint);
         stagedStamps[static_cast<std::size_t>(isEmojiPresentation ? 2 : width - 1)].store(span + nCells, codePoint);
         continuationStamp.store(span + nCells + 1, Ubiquitty::wideContinuationSentinelCodePoint);
         nCells += width;
@@ -6684,8 +7197,14 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
         t.grid->writeWideCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), tmpl, { codePoints.data(), static_cast<std::size_t>(wideCodePointCount) });
     else if (narrowCodePointCount)
         t.grid->writeNarrowCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), tmpl, { codePoints.data(), static_cast<std::size_t>(narrowCodePointCount) });
-    else
-        t.grid->setRowSpan(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::RowView { span, nCells });
+    else {
+        // What a pass over the staged cells would find, which staging them
+        // already established: each carries a code point, and their
+        // attributes are the pen's with the halves and presentation staged.
+        Ubiquitty::CellGrid::SpanFacts facts { penAttributes | stagedAttributes, mayStagedNeedShaping };
+        const bool isSized = s->pen.extendedAttributes.textSizeSpecID() != 0;
+        t.grid->setRowSpan(Ubiquitty::Row(row), Ubiquitty::Column(column), Ubiquitty::RowView { span, nCells }, isSized ? nullptr : &facts);
+    }
 
     if (wrapAfter) {
         s->cursorX = lastLeadColumn; // emitCharacter leaves the cursor on the lead
@@ -6700,6 +7219,7 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
     t.parser.precedingItem.setGraphic(lastCodePoint, lastCodePoint, 0);
     clusterOpen(t, row, lastLeadColumn, lastCodePoint);
     decodeBudget = nextTextRunDecodeBudget(decodeBudget, p - start, decodedEnd - start);
+    pacing.isMixed = wideCodePointCount == 0;
     return p - start;
 }
 
@@ -7204,7 +7724,8 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
         // sync clear (replies only grow through a dispatch), sharing the
         // sites' break-out plumbing. Folds away when !StopAtSyncClear.
         [[maybe_unused]] bool didHitReplyPressure = false;
-        int textRunDecodeBudget = VT::textRunUnlimitedDecodeBytes;
+        VT::TextRunPacing textRunPacing;
+        int styledResumeIndex = 0;
         while (i < length) {
             if (t.printMode == 5) [[unlikely]] {
                 const auto consumed = VT::consumePrinterBytes(t, input.subspan(static_cast<std::size_t>(i)));
@@ -7265,6 +7786,7 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                             // means CSI entry — skip the two per-byte transition()
                             // round-trips (Ground->Escape, Escape->CSI).
                             if (c == 0x1B && i + 1 < length && static_cast<uint8_t>(buffer[i + 1]) == '[') {
+
                                 // Blank-invariant SGR continuation: a plain SGR
                                 // (parameter bytes then final 'm', both in this
                                 // buffer) mutates only the pen — it cannot observe
@@ -7331,8 +7853,17 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                                 int consumed = 0;
                                 if (VT::shouldPeekClusterLead(buffer, i, length) && VT::shouldRouteUTF8LeadToClusterRun(t, buffer, i, length))
                                     consumed = VT::emitClusterRun<Capture>(t, buffer, i, length); // emoji/combining
+                                // Text that mixes scripts word by word is written a
+                                // line at a time, marks and all.
+                                // A stretch of one script is the text run's, which
+                                // decodes it a vector at a time.
+                                if (consumed == 0 && textRunPacing.isMixed && !(length - i >= 16 && VT::isUniformMultibyteStretch(buffer + i))) {
+                                    int unusedResumeIndex = 0;
+                                    if (const int end = VT::emitLineSpan<Capture>(t, buffer, i, length, VT::LineSpanEntry::Text, unusedResumeIndex); end > 0)
+                                        consumed = end - i;
+                                }
                                 if (consumed == 0) {
-                                    consumed = VT::emitTextRun<Capture>(t, buffer, i, length, textRunDecodeBudget);
+                                    consumed = VT::emitTextRun<Capture>(t, buffer, i, length, textRunPacing);
                                     if (consumed == 0)
                                         consumed = VT::emitClusterRun<Capture>(t, buffer, i, length); // emoji/combining
                                 }
@@ -7350,7 +7881,9 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                                     const unsigned char c1 = static_cast<unsigned char>(buffer[i + 1]);
                                     if (c1 >= 0x20 && c1 < 0x7F) [[likely]] {
                                         int consumed = VT::emitASCIIRun<Capture>(t, buffer, i, length);
-                                        if (consumed >= 2) {
+                                        // A stretch can end one byte in, when its last
+                                        // glyph was left for the character path.
+                                        if (consumed > 0) {
                                             i += consumed - 1;
                                             continue;
                                         }
@@ -7384,6 +7917,16 @@ template<bool StopAtSyncClear, VT::GraphicCapture Capture> static int processByt
                                     if (finalByte >= 0x40 && finalByte <= 0x7E) {
                                         VT::recordTraceByte(t, finalByte);
                                         t.parser.parseState = VT::ParserState::Ground;
+                                        // An SGR with text behind it may open a stretch of
+                                        // styled pieces, which is written as one span.
+                                        if (finalByte == 'm' && i + consumed + 1 < length
+                                            && (static_cast<unsigned char>(buffer[i + consumed + 1]) - 0x20u <= 0x7Eu - 0x20u
+                                                || static_cast<unsigned char>(buffer[i + consumed + 1]) >= 0xC2)) {
+                                            if (const int end = VT::emitLineSpan<Capture>(t, buffer, i + consumed, length, VT::LineSpanEntry::PendingSGR, styledResumeIndex); end > 0) {
+                                                i = end - 1;
+                                                continue;
+                                            }
+                                        }
                                         VT::actCSIDispatch(t, finalByte);
                                         i += consumed; // loop's i++ steps past the final byte
                                         // A second site (besides VT::processByteInner) where a

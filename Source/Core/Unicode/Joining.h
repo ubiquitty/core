@@ -88,13 +88,13 @@ void shapeRun(const std::uint32_t* in, std::uint32_t* outputBuffer, int n);
 // isStrongRTL.
 [[nodiscard]] inline bool mayNeedShaping(std::uint32_t codePoint)
 {
-    // Nothing below U+0590 shapes (Hebrew is the lowest block; ZWNJ/ZWJ at
-    // U+200C/D are above the cut).
-    if (codePoint < 0x0590)
-        return false;
-    return codePoint <= 0x08FF // Hebrew + Arabic / Supplement / Extended-A
-        || codePoint == 0x200C || codePoint == 0x200D // ZWNJ / ZWJ
-        || (codePoint >= 0xFB1D && codePoint <= 0xFEFF); // Arabic Presentation Forms-A/B
+    // Three ranges, each one unsigned comparison, joined without a branch:
+    // the grid asks this of every cell it stores, and a row that mixes scripts
+    // gives a chain of tests nothing to predict. Nothing below U+0590 shapes
+    // (Hebrew is the lowest block).
+    return static_cast<bool>(static_cast<unsigned>(codePoint - 0x0590 <= 0x08FF - 0x0590) // Hebrew + Arabic / Supplement / Extended-A
+        | static_cast<unsigned>(codePoint - 0x200C <= 1) // ZWNJ / ZWJ
+        | static_cast<unsigned>(codePoint - 0xFB1D <= 0xFEFF - 0xFB1D)); // Arabic Presentation Forms-A/B
 }
 
 // Shape one DISPLAY ROW of logical codePoints into visual paint order: shapeRun

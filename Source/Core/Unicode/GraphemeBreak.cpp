@@ -5,6 +5,7 @@
 #include "Core/Unicode/RangeTable.h"
 #include "Core/Unicode/Width.h"
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstring>
 #include <mutex>
@@ -52,9 +53,23 @@ inline bool incbBlockMayHold(std::uint32_t codePoint)
     const std::uint32_t block = codePoint >> 8;
     return block <= incbHighestBlock && (incbBlockBitmap[block >> 3] & (1u << (block & 7))) != 0;
 }
+/// One bit per code point up to the last block that holds a linker, set for
+/// the linkers. Built once from the range table: a word of an Indic script
+/// asks this of every code point in it, and the table answers by search.
+static const std::array<std::uint64_t, ((incbHighestBlock + 1) << 8) / 64>& incbLinkerBits()
+{
+    static const std::array<std::uint64_t, ((incbHighestBlock + 1) << 8) / 64> bits = [] {
+        std::array<std::uint64_t, ((incbHighestBlock + 1) << 8) / 64> built {};
+        for (const Range& range : incbLinker)
+            for (std::uint32_t codePoint = range.first; codePoint <= range.last && codePoint < built.size() * 64; ++codePoint)
+                built[codePoint >> 6] |= std::uint64_t { 1 } << (codePoint & 63);
+        return built;
+    }();
+    return bits;
+}
 bool isIncbLinker(std::uint32_t codePoint)
 {
-    return incbBlockMayHold(codePoint) && member(incbLinker, codePoint);
+    return incbBlockMayHold(codePoint) && ((incbLinkerBits()[codePoint >> 6] >> (codePoint & 63)) & 1) != 0;
 }
 // U+00A9 is the lowest Extended_Pictographic codePoint; anything below it can
 // never be pictographic (lets callers skip the probe on the ASCII/Latin-1 path).
