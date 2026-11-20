@@ -999,10 +999,57 @@ int main(int argc, char** argv)
                 case 3:
                 case 4:
                 case 5:
-                case 6:
                     for (int k = 0; k < length; ++k)
                         out.push_back(static_cast<char>('a' + (pick >> (k + 3)) % 26));
                     out += " ";
+                    break;
+                case 6:
+                    // Pictographs, alone and in runs, and each thing that
+                    // makes one more than a cluster of its own: a selector, a
+                    // modifier, a joiner with another behind it, a keycap, a
+                    // pair of regional indicators.
+                    switch ((pick >> 5) % 9) {
+                    case 0:
+                        for (int k = 0; k < length; ++k)
+                            appendUTF8(out, 0x1F600 + (pick >> (k + 9)) % 48);
+                        break;
+                    case 1:
+                        appendUTF8(out, 0x1F44D);
+                        appendUTF8(out, 0x1F3FB + (pick >> 9) % 5);
+                        break;
+                    case 2:
+                        appendUTF8(out, 0x2764);
+                        appendUTF8(out, 0xFE0F);
+                        break;
+                    case 3:
+                        appendUTF8(out, 0x1F469);
+                        appendUTF8(out, 0x200D);
+                        appendUTF8(out, 0x1F4BB);
+                        break;
+                    case 4:
+                        out += "1";
+                        appendUTF8(out, 0xFE0F);
+                        appendUTF8(out, 0x20E3);
+                        break;
+                    case 5:
+                        appendUTF8(out, 0x1F1E6 + (pick >> 9) % 26);
+                        appendUTF8(out, 0x1F1E6 + (pick >> 14) % 26);
+                        break;
+                    case 6:
+                        appendUTF8(out, 0xA9);
+                        appendUTF8(out, 0xAE);
+                        appendUTF8(out, 0x2122);
+                        break;
+                    case 7:
+                        appendUTF8(out, 0x231A); // a pictograph of the basic plane that draws as emoji
+                        appendUTF8(out, 0x2614);
+                        break;
+                    default:
+                        appendUTF8(out, 0x1F680);
+                        appendUTF8(out, 0xFE0E); // and one told to draw as text
+                        break;
+                    }
+                    out += (pick & 16) ? " " : "";
                     break;
                 case 7:
                     for (int k = 0; k < length; ++k)
@@ -1085,9 +1132,20 @@ int main(int argc, char** argv)
             "\x1bT", // a cancel
             "\xEF\xB8\x8F", // a selector
             "\xE2\x80\x8D", // a joiner
+            "\xF0\x9F\x8F\xBB", // a modifier
         };
         for (const char* follower : followers) {
             std::string edges;
+            // A pictograph with each follower behind it: in a run, alone, at
+            // the margin, behind a wrap, before a tab and before a line end.
+            edges += std::string("ok \xF0\x9F\x98\x80\xF0\x9F\x9A\x80") + follower + "\r\n";
+            edges += std::string("\xF0\x9F\x98\x80") + follower + "\r\n";
+            edges += fullRow.substr(0, 156) + "\xF0\x9F\x98\x80" + follower + "\r\n";
+            edges += fullRow + "\xF0\x9F\x98\x80\xF0\x9F\x9A\x80" + follower + "\r\n";
+            edges += fullRow.substr(0, 158) + "\xF0\x9F\x98\x80" + follower + "\r\n"; // one cell left where a pair has to go
+            edges += std::string("\xC2\xA9\xC2\xAE") + follower + "\r\n";
+            edges += std::string("\xF0\x9F\x98\x80\t") + follower + "\r\n";
+            edges += std::string("\xF0\x9F\x98\x80\n") + follower + "\r\n";
             edges += std::string("\xC3\xA9t\xC3\xA9") + follower + "\r\n";
             edges += fullRow + follower + "\r\n";
             edges += fullRow + "\xC3\xA9\xC3\xA8" + follower + "\r\n";

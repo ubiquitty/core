@@ -1521,7 +1521,7 @@ void CellGrid::writeASCIIRun(Row r, Column firstColumn, const Cell& tmpl, std::s
     writeRun<false>(r, firstColumn, tmpl, text, nullptr);
 }
 
-void CellGrid::writeWideCodePointRun(Row rowValue, Column firstColumnValue, const Cell& cellTemplate, std::span<const uint32_t> codePoints)
+void CellGrid::writeWideCodePointRun(Row rowValue, Column firstColumnValue, const Cell& cellTemplate, std::span<const uint32_t> codePoints, WidePresentation presentation)
 {
     const int row = rowValue.value();
     const int firstColumn = firstColumnValue.value();
@@ -1533,7 +1533,7 @@ void CellGrid::writeWideCodePointRun(Row rowValue, Column firstColumnValue, cons
     assert(cellTemplate.combiningLength() == 0 && cellTemplate.clusterID() == 0);
     const auto attributes = cellPen(cellTemplate).attributes - VT::Attribute::Emoji;
     Cell lead = cellTemplate;
-    cellSetPenAttributes(lead, attributes | VT::Attribute::Wide);
+    cellSetPenAttributes(lead, presentation == WidePresentation::Emoji ? attributes | VT::Attribute::Wide | VT::Attribute::Emoji : attributes | VT::Attribute::Wide);
     Cell continuation = cellTemplate;
     continuation.codePoint = wideContinuationSentinelCodePoint;
     cellSetPenAttributes(continuation, attributes | VT::Attribute::WideContinuation);

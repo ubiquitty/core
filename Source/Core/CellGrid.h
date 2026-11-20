@@ -372,7 +372,14 @@ public:
         bumpRow(row.value());
         return true;
     }
-    /// Writes unclustered, non-shaping, non-emoji code points as wide cell pairs.
+    /// How a run of wide glyphs draws.
+    enum class WidePresentation : uint8_t {
+        /// As text, in the pen's colours.
+        Text,
+        /// As emoji: each lead carries the presentation a colour sheet reads.
+        Emoji
+    };
+    /// Writes unclustered, non-shaping code points as wide cell pairs.
     ///
     /// The caller establishes width and clears partners overlapping the run's
     /// outer edges. The entire run must fit; invalid geometry writes nothing.
@@ -385,7 +392,9 @@ public:
     ///   - firstColumn: First lead cell's column.
     ///   - cellTemplate: Shared pen and hyperlink values.
     ///   - codePoints: Nonzero, non-shaping code points, each two columns wide.
-    void writeWideCodePointRun(Row row, Column firstColumn, const Cell& cellTemplate, std::span<const uint32_t> codePoints);
+    ///   - presentation: Whether the run's leads carry the emoji presentation,
+    ///     which the template's own is replaced by either way.
+    void writeWideCodePointRun(Row row, Column firstColumn, const Cell& cellTemplate, std::span<const uint32_t> codePoints, WidePresentation presentation = WidePresentation::Text);
     /// Writes unclustered, non-shaping code points as single-width cells.
     ///
     /// The caller establishes width and clears partners overlapping the run's

@@ -7367,7 +7367,10 @@ template<GraphicCapture Capture> static int continueWideFlow(Ubiquitty::Terminal
                 bytes += codePoints[count] < 0x10000 ? 3 : 4;
                 ++count;
             }
-            if (count > 0 && !isFollowedByWholeThreeByteGlyph(buffer, position + bytes, length)
+            // A tab behind a glyph becomes the predecessor on the data
+            // screen, which a flow is on, so nothing can cancel the glyph.
+            const bool isFollowedByTab = position + bytes < length && buffer[position + bytes] == '\t';
+            if (count > 0 && !isFollowedByTab && !isFollowedByWholeThreeByteGlyph(buffer, position + bytes, length)
                 && graphicCaptureBefore<Capture>(buffer, position + bytes, length) == GraphicCapture::Retain) {
                 --count;
                 bytes -= codePoints[count] < 0x10000 ? 3 : 4;
@@ -7458,10 +7461,66 @@ struct FlowGlyph {
     int length = 0;
     /// The cells it takes, or zero for a glyph that is not the flow's.
     int width = 0;
+    /// Whether it is a pictograph, which is the flow's only where the glyph
+    /// behind it leaves it alone; see ``doesLeavePictographAlone``.
+    bool isPictograph = false; // bool-ok: a fact about the glyph read
 };
 
+/// Whether the code point at `next` is known to leave a pictograph before it
+/// alone, as a cluster of its own.
+///
+/// What joins a pictograph has a break class: a selector, a modifier, a mark
+/// or a joiner. A code point with none starts a cluster of its own, and so
+/// does a control. A sequence the input does not hold whole says nothing yet:
+/// the joiner that decides may arrive in the next read.
+///
+/// - Parameters:
+///   - buffer: The input.
+///   - next: The first byte behind the pictograph.
+///   - length: The input's length.
+/// - Returns: Whether the pictograph before `next` is a whole cluster.
+[[gnu::always_inline]] static inline bool doesLeavePictographAlone(const char* buffer, int next, int length)
+{
+    if (next >= length)
+        return false;
+    if (static_cast<unsigned char>(buffer[next]) < 0x80)
+        return true;
+    const std::optional<PeekedCodePoint> peeked = peekMultibyteUTF8CodePoint({ buffer + next, static_cast<std::size_t>(length - next) });
+    return peeked && (Unicode::Width::classify(peeked->codePoint) & Ubiquitty::Unicode::detail::PropGCBClassField::mask) == 0;
+}
+
+/// Reads a code point's property byte as a pictograph a flow of text places.
+///
+/// A pictograph carries the pictograph bit, or the presentation bit with a
+/// width of two, and no break class: one that draws as text takes a cell like
+/// a letter, and one that draws as emoji takes two. Out of line, so the
+/// letters the reader mostly meets do not carry it.
+///
+/// - Parameters:
+///   - codePoint: The code point, which is not a plain narrow glyph.
+///   - bytes: The bytes that carry it.
+///   - properties: Its byte of the property table.
+///   - ambiguous: The width class an ambiguous glyph takes a cell under, or
+///     the one-cell class on a terminal that draws the ambiguous wide.
+/// - Returns: The glyph, with a width of zero when it is not the flow's.
+[[gnu::noinline]] static FlowGlyph pictographFlowGlyph(uint32_t codePoint, int bytes, std::uint8_t properties, std::uint8_t ambiguous)
+{
+    constexpr std::uint8_t oneCell = 1;
+    constexpr std::uint8_t twoCells = 2;
+    constexpr std::uint8_t pictograph = Ubiquitty::Unicode::detail::PropExtPictField::mask;
+    constexpr std::uint8_t presentation = Ubiquitty::Unicode::detail::PropEmojiPresentationField::mask;
+    if (Ubiquitty::Unicode::mayNeedShaping(codePoint))
+        return {};
+    if (properties == (pictograph | oneCell) || properties == (pictograph | ambiguous))
+        return { codePoint, bytes, 1, true };
+    if ((properties & ~pictograph) == (presentation | twoCells))
+        return { codePoint, bytes, 2, true };
+    return {};
+}
+
 /// Reads the multibyte glyph at `position` if a flow of text places it: a
-/// plain narrow one, or a wide one of the ranges that stand alone.
+/// plain narrow one, a wide one of the ranges that stand alone, or a
+/// pictograph.
 ///
 /// Those are the glyphs that extend nothing, are extended by nothing the
 /// flow places, need no shaping and take the width the table gives them, so
@@ -7483,21 +7542,23 @@ struct FlowGlyph {
     // table holds: no presentation, no break class and no pictograph leaves
     // the width alone, which is one cell, or ambiguous on a terminal that
     // draws the ambiguous narrow.
-    const auto isPlainNarrow = [ambiguousWidth](uint32_t codePoint) {
+    const auto glyphOutsideTheRanges = [ambiguousWidth](uint32_t codePoint, int bytes) -> FlowGlyph {
         constexpr std::uint8_t oneCell = 1;
         const std::uint8_t ambiguous = ambiguousWidth == Unicode::Width::AmbiguousWidth::Narrow ? Unicode::Width::ambiguousWidthClass : oneCell;
         const std::uint8_t properties = Unicode::Width::classify(codePoint);
         const bool isPlain = static_cast<bool>(static_cast<unsigned>(properties == oneCell) | static_cast<unsigned>(properties == ambiguous))
             && !Ubiquitty::Unicode::mayNeedShaping(codePoint);
         assert(isPlain == isPlainNarrowGraphic(codePoint, ambiguousWidth));
-        return isPlain;
+        if (isPlain) [[likely]]
+            return { codePoint, bytes, 1, false };
+        return pictographFlowGlyph(codePoint, bytes, properties, ambiguous);
     };
     if (lead <= 0xDF) {
         if (lead < 0xC2 || position + 1 >= length || continuationBits(1) > 0x3F)
             return {};
         const uint32_t codePoint = ((lead & 0x1Fu) << 6) | continuationBits(1);
         // Below U+00A0 are the C1 controls.
-        return codePoint >= 0xA0 && isPlainNarrow(codePoint) ? FlowGlyph { codePoint, 2, 1 } : FlowGlyph {};
+        return codePoint >= 0xA0 ? glyphOutsideTheRanges(codePoint, 2) : FlowGlyph {};
     }
     if (lead <= 0xEF) {
         if (position + 2 >= length || (continuationBits(1) | continuationBits(2)) > 0x3F)
@@ -7507,13 +7568,18 @@ struct FlowGlyph {
         if (codePoint < 0x800 || codePoint - 0xD800u < 0x800u)
             return {};
         if (isWideIdeographFast(codePoint))
-            return { codePoint, 3, 2 };
-        return isPlainNarrow(codePoint) ? FlowGlyph { codePoint, 3, 1 } : FlowGlyph {};
+            return { codePoint, 3, 2, false };
+        return glyphOutsideTheRanges(codePoint, 3);
     }
-    if (lead != 0xF0 || position + 3 >= length || (continuationBits(1) | continuationBits(2) | continuationBits(3)) > 0x3F)
+    if (lead > 0xF4 || position + 3 >= length || (continuationBits(1) | continuationBits(2) | continuationBits(3)) > 0x3F)
         return {};
-    const uint32_t codePoint = (continuationBits(1) << 12) | (continuationBits(2) << 6) | continuationBits(3);
-    return codePoint >= 0x10000 && isWideIdeographFast(codePoint) ? FlowGlyph { codePoint, 4, 2 } : FlowGlyph {};
+    const uint32_t codePoint = ((lead & 0x07u) << 18) | (continuationBits(1) << 12) | (continuationBits(2) << 6) | continuationBits(3);
+    // An overlong form, or a value past the last code point.
+    if (codePoint - 0x10000u > 0x10FFFFu - 0x10000u)
+        return {};
+    if (isWideIdeographFast(codePoint))
+        return { codePoint, 4, 2, false };
+    return glyphOutsideTheRanges(codePoint, 4);
 }
 
 /// Carries text on behind a piece already written: through the line feeds,
@@ -7564,6 +7630,10 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
     const int wrapColumn = std::min(std::max(t.lineHome, 0), rightMargin);
     const bool isDefaultPen = t.grid->isDefaultBlankButCodePoint(cellTemplate);
     const Unicode::Width::AmbiguousWidth ambiguousWidth = t.ambiguousWidth;
+    // The property bytes of a plain narrow glyph: one cell and nothing else,
+    // or ambiguous and nothing else where the ambiguous is drawn narrow.
+    constexpr std::uint8_t plainProperties = 1;
+    const std::uint8_t ambiguousPlainProperties = ambiguousWidth == Unicode::Width::AmbiguousWidth::Narrow ? Unicode::Width::ambiguousWidthClass : plainProperties;
     // A row a feed has just scrolled in holds no pair for a piece's ends to cut.
     bool isRowFresh = false;
     std::array<std::uint32_t, Ubiquitty::maxColumns> codePoints;
@@ -7630,6 +7700,42 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
             if (column < 0 || column + first.width - 1 > rightMargin)
                 break;
             const int room = rightMargin - column + 1;
+            if (first.width == 2 && first.isPictograph) {
+                // Pictographs that draw as emoji, each a cluster of its own
+                // because the glyph behind it joins nothing: two cells with
+                // the presentation on the lead.
+                int count = 0;
+                int end = position;
+                int lastLength = 0;
+                while (count < room / 2 && end < length && static_cast<unsigned char>(buffer[end]) >= 0xC2) {
+                    const FlowGlyph glyph = peekFlowGlyph(buffer, end, length, ambiguousWidth);
+                    if (glyph.width != 2 || !glyph.isPictograph)
+                        break;
+                    codePoints[count++] = glyph.codePoint;
+                    lastLength = glyph.length;
+                    end += glyph.length;
+                }
+                const bool isFollowedByTab = end < length && buffer[end] == '\t';
+                if (!doesLeavePictographAlone(buffer, end, length)
+                    || (!isFollowedByTab && graphicCaptureBefore<Capture>(buffer, end, length) == GraphicCapture::Retain)) {
+                    --count;
+                    end -= lastLength;
+                }
+                if (count < 1)
+                    break;
+                if (isWrapping && !didCommitWrap(column))
+                    break;
+                beginWrite();
+                const int row = s->cursorY;
+                const int lastColumn = column + count * 2 - 1;
+                if (!isRowFresh)
+                    eraseWidePartnersBesideRun(t, s, row, column, lastColumn);
+                t.grid->writeWideCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, { codePoints.data(), static_cast<std::size_t>(count) },
+                    Ubiquitty::CellGrid::WidePresentation::Emoji);
+                finishPiece(row, lastColumn, lastColumn - 1, codePoints[count - 1]);
+                position = end;
+                continue;
+            }
             if (first.width == 2) {
                 // Wide glyphs: every one of these ranges is three bytes long,
                 // or four past the basic plane.
@@ -7704,29 +7810,56 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
             }
             // Cells: plain narrow glyphs and the ASCII between them, to the
             // end of the row or the first byte that is neither.
+            //
+            // A pictograph among them that draws as text is a cell like a
+            // letter where the glyph behind it joins nothing. Every glyph the
+            // piece takes joins nothing, so only its last one is in question.
             int count = 0;
             int end = position;
             int lastLength = 0;
+            bool isLastPictograph = false;
             while (count < room && end < length) {
                 const auto next = static_cast<unsigned char>(buffer[end]);
                 if (next - 0x20u <= 0x7Eu - 0x20u) {
                     codePoints[count++] = next;
                     lastLength = 1;
+                    isLastPictograph = false;
                     ++end;
                     continue;
                 }
                 if (next < 0xC2)
                     break;
+                // A letter of two bytes, which most text of other alphabets
+                // is made of, read where it stands: the reader below answers
+                // for every glyph there is and returns more than a loop this
+                // short should carry. Below U+0590 nothing shapes, and below
+                // U+00A0 are the C1 controls.
+                if (next <= 0xDF && end + 1 < length) {
+                    const unsigned continuation = static_cast<unsigned char>(buffer[end + 1]) ^ 0x80u;
+                    const uint32_t codePoint = ((next & 0x1Fu) << 6) | continuation;
+                    const std::uint8_t properties = Unicode::Width::classify(codePoint);
+                    if (continuation <= 0x3F && codePoint - 0xA0u < 0x590u - 0xA0u && (properties == plainProperties || properties == ambiguousPlainProperties)) {
+                        assert(isPlainNarrowGraphic(codePoint, ambiguousWidth));
+                        codePoints[count++] = codePoint;
+                        lastLength = 2;
+                        isLastPictograph = false;
+                        end += 2;
+                        continue;
+                    }
+                }
                 const FlowGlyph glyph = peekFlowGlyph(buffer, end, length, ambiguousWidth);
                 if (glyph.width != 1)
                     break;
                 codePoints[count++] = glyph.codePoint;
                 lastLength = glyph.length;
+                isLastPictograph = glyph.isPictograph;
                 end += glyph.length;
             }
             const bool isFollowedByTab = end < length && buffer[end] == '\t';
-            if (count > 0 && !isFollowedByTab && !isFollowedByWholeThreeByteGlyph(buffer, end, length)
-                && graphicCaptureBefore<Capture>(buffer, end, length) == GraphicCapture::Retain) {
+            if (count > 0
+                && ((isLastPictograph && !doesLeavePictographAlone(buffer, end, length))
+                    || (!isFollowedByTab && !isFollowedByWholeThreeByteGlyph(buffer, end, length)
+                        && graphicCaptureBefore<Capture>(buffer, end, length) == GraphicCapture::Retain))) {
                 --count;
                 end -= lastLength;
             }
@@ -7809,7 +7942,8 @@ static bool isFlowGlyphAt(const Ubiquitty::Terminal& t, const char* buffer, int 
 /// - Returns: Whether one starts there, whole.
 static bool isPlainNarrowGlyphAt(const Ubiquitty::Terminal& t, const char* buffer, int position, int length)
 {
-    return peekFlowGlyph(buffer, position, length, t.ambiguousWidth).width == 1;
+    const FlowGlyph glyph = peekFlowGlyph(buffer, position, length, t.ambiguousWidth);
+    return glyph.width == 1 && !glyph.isPictograph;
 }
 
 /// Opens a flow of text on a multibyte glyph the flow places.
@@ -7831,15 +7965,20 @@ template<GraphicCapture Capture> static int emitTextFlow(Ubiquitty::Terminal& t,
     // A page of wide glyphs is opened by the text run, whose own flow is the
     // one such a page stays in.
     const FlowGlyph first = peekFlowGlyph(buffer, start, length, t.ambiguousWidth);
-    if (first.width != 1 || !t.grid)
+    if (first.width == 0 || (first.width == 2 && !first.isPictograph) || !t.grid)
         return 0;
     Ubiquitty::Screen::State* s = t.screens.active;
     if (!isTextFlowScreen(t, s) || !batchedWriteEligibleIgnoringWrap(t, s) || t.characterSetG[t.characterSetActive] != characterSetUSASCII
         || s->pen.attributes.contains(VT::Attribute::ForceEmojiPresentation))
         return 0;
-    // A plain narrow glyph has no break class, so it extends no cluster,
-    // live or not.
-    assert(!Ubiquitty::Unicode::isGraphemeRelevant(first.codePoint));
+    // A pictograph is what a joiner extends a cluster with: behind a live one
+    // that ends on a joiner it is no cluster of its own. A plain glyph has no
+    // break class and extends nothing.
+    if (first.isPictograph && clusterIsLive(t)) {
+        Ubiquitty::Unicode::GraphemeState probe = t.parser.clusterState;
+        if (Ubiquitty::Unicode::graphemeExtends(&probe, t.parser.clusterLast, first.codePoint))
+            return 0;
+    }
     const Ubiquitty::Cell cellTemplate = Ubiquitty::cellFromPen(s->pen, t.currentLinkID);
     return continueTextFlow<Capture>(t, s, buffer, start, length, cellTemplate, {}, FlowEntry::Opening) - start;
 }
