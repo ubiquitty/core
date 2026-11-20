@@ -135,6 +135,10 @@ struct AppearanceInputs {
     uint32_t lastActivityTick = 0;
     uint32_t holdTicks = activityHoldTicks;
     uint32_t periodTicks = Blink::caretPeriodTicks;
+    /// The blink period the reader configured, in milliseconds, zero for
+    /// none: what `periodTicks` was derived from, for a frontend whose caret
+    /// follows its toolkit's clock and not the tick.
+    uint32_t periodMilliseconds = 0;
 };
 
 /// Copies the cursor clock's complete inputs while the model is stable.
@@ -154,6 +158,7 @@ struct AppearanceInputs {
         .lastActivityTick = terminal->lastActivityTick,
         .holdTicks = terminal->cursorHoldFrames ? terminal->cursorHoldFrames : activityHoldTicks,
         .periodTicks = blinkPeriodTicks(terminal->cursorBlinkPeriodMilliseconds),
+        .periodMilliseconds = terminal->cursorBlinkPeriodMilliseconds,
     };
 }
 

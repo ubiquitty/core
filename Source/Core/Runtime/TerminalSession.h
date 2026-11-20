@@ -8096,6 +8096,15 @@ public:
         return facts;
     }
 
+    /// The cursor's appearance as the writer last published it, without the
+    /// model lock: what a frontend that resolves its own caret, on its
+    /// toolkit's blink clock, reads at a display tick where the frame clock's
+    /// facts would not do.
+    ///
+    /// - Returns: The published inputs; `hasTerminal` is false when no model
+    ///   has been published.
+    [[nodiscard]] Cursor::AppearanceInputs cursorAppearance() UBIQUITTY_EXCLUDES(modelLockRole) { return framePresentationState().cursor; }
+
     /// Records the rows of history the surface presents above the tail.
     ///
     /// Written on the main thread at scroll edges, read relaxed by the

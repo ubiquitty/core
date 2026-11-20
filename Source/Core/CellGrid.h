@@ -1427,18 +1427,28 @@ private:
     friend class PaintSession;
 };
 
-// Animation pump: called once per frame with current + last-painted ticks. True iff a time-dependent bit
-// of CellGrid state changed across the interval and a repaint is required. Hides blink phase math.
-static inline bool needsAnimationRedraw(const CellGrid* d, uint32_t monotonicTicks, uint32_t lastPaintedTicks)
+/// Whether a blink phase stepped between two ticks, for a caller that knows
+/// from published state that blinking text is on display and holds no grid.
+///
+/// - Parameters:
+///   - monotonicTicks: The current tick on the presentation clock.
+///   - lastPaintedTicks: The tick the last frame was painted at.
+/// - Returns: Whether either text-blink period changed its step.
+static inline bool needsAnimationRedraw(uint32_t monotonicTicks, uint32_t lastPaintedTicks)
 {
-    if (!d)
-        return false;
     // Sample both blink periods (SGR 5 = 8 steps/cycle, SGR 6 = 16); any step change is a frame to draw.
     if (blinkAlpha(monotonicTicks, Cursor::Blink::caretPeriodTicks) != blinkAlpha(lastPaintedTicks, Cursor::Blink::caretPeriodTicks))
         return true;
     if (blinkAlpha(monotonicTicks, Cursor::Blink::caretPeriodTicks / 2) != blinkAlpha(lastPaintedTicks, Cursor::Blink::caretPeriodTicks / 2))
         return true;
     return false;
+}
+
+// Animation pump: called once per frame with current + last-painted ticks. True iff a time-dependent bit
+// of CellGrid state changed across the interval and a repaint is required. Hides blink phase math.
+static inline bool needsAnimationRedraw(const CellGrid* d, uint32_t monotonicTicks, uint32_t lastPaintedTicks)
+{
+    return d && needsAnimationRedraw(monotonicTicks, lastPaintedTicks);
 }
 
 /// Returns the next transition of either text-blink period.

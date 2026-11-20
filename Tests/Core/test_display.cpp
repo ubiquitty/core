@@ -2923,6 +2923,9 @@ TEST(testNeedsAnimationRedrawMatchesBothCurves)
                 const bool didSlowCross = Cursor::Blink::alphaAt(now) != Cursor::Blink::alphaAt(last);
                 const bool didFastCross = Cursor::Blink::alphaAt(2 * now) != Cursor::Blink::alphaAt(2 * last);
                 CHECK(needsAnimationRedraw(&d, now, last) == (didSlowCross || didFastCross));
+                // The same answer without a grid, for a caller that knows
+                // from published state that blinking text is on display.
+                CHECK(needsAnimationRedraw(now, last) == (didSlowCross || didFastCross));
             }
         }
     }

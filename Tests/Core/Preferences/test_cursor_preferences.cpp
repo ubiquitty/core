@@ -46,6 +46,10 @@ TEST(publishedCursorInputsKeepTheirClockAcrossTickWrapAndModelChanges)
     terminal.cursorBlinkPeriodMilliseconds = 1000;
     terminal.lastActivityTick = UINT32_MAX - 5;
     const auto inputs = Cursor::appearanceInputs(&terminal);
+    // The period goes out as configured too, for a caret on a toolkit's
+    // clock, which the tick count rounds away.
+    CHECK_EQ(inputs.periodMilliseconds, 1000u);
+    CHECK_EQ(Cursor::appearanceInputs(nullptr).periodMilliseconds, 0u);
     const auto previousAnimation = Cursor::Blink::animation();
     Cursor::Blink::setAnimation(Cursor::Blink::Animation::Fade);
     CHECK(Cursor::resolve(inputs, terminal.lastActivityTick + 8).shape == Cursor::Shape::Bar);
