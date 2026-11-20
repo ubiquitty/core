@@ -18,7 +18,7 @@ budget gate-self-tests-uncovered 44
 budget census-undated 13
 budget vocabulary-span 11
 budget vocabulary-array 161
-budget model-lock-holds 189
+budget model-lock-holds 190
 budget frame-decision-holds 1
 budget per-tick-waits 4
 budget plain-model-lock-holds 21
@@ -38,3 +38,4 @@ raised model-lock-holds 190 193 the ingest thread integrates an image decode a w
 raised model-lock-holds 189 190 a pane no ingest loop drains has no owner turn to serve its view's demand, so the asking thread serves it under a try-lock of the model, which it never waits for (serveFrameDemandHere)
 raised model-lock-holds 190 191 the ingest loop rewraps the history a width drag left stale a slice per turn, each slice under one acquisition of its own on the owner's thread, as the cold-scrollback fold does (advanceHistoryRewrap)
 raised model-lock-holds 191 192 a still (a picture, snapshot or detached render) is captured from the model under one acquisition, off the display tick, so the frontend's live read and its lock names can go (captureStill)
+raised model-lock-holds 189 190 the flood pipeline's parser flushes the replies it has parsed at the first pause of a burst, under one acquisition on the owner's thread as a pass's end takes, so a query that ends a burst is answered before the next nap and not behind it (IngestLoop's consumer)
