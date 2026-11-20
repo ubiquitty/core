@@ -130,10 +130,30 @@ public:
     [[nodiscard]] int slotHeightInPixels() const { return m_slotHeightInPixels; }
     /// How many strips the sheet holds.
     [[nodiscard]] int slotCapacity() const { return m_capacity; }
+    /// How many slots one row of the sheet holds: slot `s` is the rectangle
+    /// of ``slotWidthInPixels`` by ``slotHeightInPixels`` in column
+    /// `s % slotColumns()` of row `s / slotColumns()`.
+    [[nodiscard]] int slotColumns() const { return m_columns; }
     /// Whether a slot changed since the last upload.
     [[nodiscard]] bool isDirty() const { return m_isDirty; }
+    /// The slots drawn since the last upload, each named once.
+    ///
+    /// What an upload has to copy once the device holds the rest. The cache
+    /// hands a run the slot its key hashes to, so the strips of one frame lie
+    /// all over the sheet: the rows between the first and the last of them are
+    /// nearly the whole of it, megabytes copied for the kilobytes that
+    /// changed, and it is the slots themselves that say what did.
+    ///
+    /// - Returns: The slots, in the order each was first drawn.
+    [[nodiscard]] std::span<const int> dirtySlots() const { return m_dirtySlots; }
     /// Marks the mirror uploaded.
-    void clearDirty() { m_isDirty = false; }
+    void clearDirty()
+    {
+        m_isDirty = false;
+        for (const int slot : m_dirtySlots)
+            m_isSlotListed[static_cast<std::size_t>(slot)] = 0;
+        m_dirtySlots.clear();
+    }
 
     /// The rect a slot occupies, in ATLAS PIXELS.
     ///
@@ -257,6 +277,23 @@ private:
     int m_sheetHeightInPixels = 0;
     bool m_isUsable = false;
     bool m_isDirty = true;
+    // The slots drawn since the last upload and, a byte a slot, which of them
+    // are already on the list. Both hold room for every slot from the start,
+    // so a frame that draws strips allocates nothing for them.
+    std::vector<int> m_dirtySlots;
+    std::vector<std::uint8_t> m_isSlotListed;
+    /// Records that a slot's coverage changed, for the next upload.
+    ///
+    /// - Parameter slot: The slot just drawn into.
+    void noteSlotDrawn(int slot)
+    {
+        m_isDirty = true;
+        std::uint8_t& isListed = m_isSlotListed[static_cast<std::size_t>(slot)];
+        if (isListed)
+            return;
+        isListed = 1;
+        m_dirtySlots.push_back(slot);
+    }
     // The Core interface, not the FreeType class: the sheet needs a rasterizer
     // that shapes, and which one it is belongs to whoever built it. Holding the
     // concrete type would also make this sheet unusable to the CPU arm, which is

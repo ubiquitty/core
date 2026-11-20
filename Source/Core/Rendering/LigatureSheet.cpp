@@ -138,6 +138,8 @@ LigatureSheet::LigatureSheet(int marginXInPixels, GlyphRasterizer* rasterizer, S
     m_coverage.resize(static_cast<std::size_t>(m_sheetWidthInPixels) * static_cast<std::size_t>(m_sheetHeightInPixels));
     m_slotScratch.resize(static_cast<std::size_t>(m_slotWidthInPixels) * static_cast<std::size_t>(m_slotHeightInPixels));
     m_slotDidSubstitute.resize(static_cast<std::size_t>(m_capacity));
+    m_isSlotListed.resize(static_cast<std::size_t>(m_capacity));
+    m_dirtySlots.reserve(static_cast<std::size_t>(m_capacity));
     m_cache.enableOwnedInkRecords(stripSlotCells, m_slotWidthInPixels);
     // A face with no shaper draws no ligature, and saying so here is what makes
     // the caller leave rows unligatured rather than draw them wrongly. A face
@@ -317,7 +319,7 @@ LigatureSheet::RunOutcome LigatureSheet::rasteriseRunInto(int slot, std::span<co
         std::copy_n(m_slotScratch.begin() + static_cast<std::ptrdiff_t>(source),
             static_cast<std::size_t>(m_slotWidthInPixels), m_coverage.begin() + static_cast<std::ptrdiff_t>(destination));
     }
-    m_isDirty = true;
+    noteSlotDrawn(slot);
     return RunOutcome::Drawn;
 }
 
@@ -400,7 +402,7 @@ ProportionalStripPlacement LigatureSheet::proportionalStrip(std::span<const std:
             std::copy_n(m_slotScratch.begin() + static_cast<std::ptrdiff_t>(source),
                 static_cast<std::size_t>(m_slotWidthInPixels), m_coverage.begin() + static_cast<std::ptrdiff_t>(destination));
         }
-        m_isDirty = true;
+        noteSlotDrawn(slot);
     }
     placement.strip = rectForSlot(slot);
     placement.strip.minUV.x += layout.rasterInsetInPixels;

@@ -242,6 +242,67 @@ TEST(testARunAnswersByIdentityBesideItsStripAndStaysAnswered)
     CHECK_EQ(face.rasterCalls, rastersAfterFirst);
 }
 
+TEST(testASheetNamesEachSlotDrawnSinceItsUpload)
+{
+    // An upload copies the slots drawn since the last one, so the sheet has to
+    // name each of them: a slot it leaves out stays on the device as it was,
+    // and the run drawn into it shows the strip that stood there before.
+    ScriptedFace face(FaceSubstitution::OneForOne);
+    LigatureSheet sheet(cellWidth, cellHeight, marginX, marginY, &face);
+    REQUIRE(sheet.isUsable());
+    const auto shape = [&](const char* text) {
+        const std::vector<LigatureCell> row = operatorRow(text);
+        std::vector<LigatureRun> runs(row.size());
+        sheet.beginFrame();
+        sheet.shapeRow(std::span<const LigatureCell>(row.data(), row.size()), static_cast<float>(cellWidth),
+            std::span<LigatureRun>(runs.data(), runs.size()));
+        return runs;
+    };
+    // The slot a row's strip is in, read off its rect, which is atlas pixels.
+    const auto slotOf = [&](const std::vector<LigatureRun>& runs) {
+        for (const LigatureRun& run : runs) {
+            if (run.length > 0)
+                return static_cast<int>(run.strip.minUV.y) / sheet.slotHeightInPixels() * sheet.slotColumns()
+                    + static_cast<int>(run.strip.minUV.x) / sheet.slotWidthInPixels();
+        }
+        return -1;
+    };
+
+    // A sheet never uploaded owes all of itself, with nothing drawn to name.
+    CHECK(sheet.isDirty());
+    CHECK(sheet.dirtySlots().empty());
+    sheet.clearDirty();
+    CHECK(!sheet.isDirty());
+
+    const int arrow = slotOf(shape("a->b"));
+    REQUIRE(arrow >= 0);
+    CHECK(sheet.isDirty());
+    REQUIRE(sheet.dirtySlots().size() == 1);
+    CHECK_EQ(sheet.dirtySlots()[0], arrow);
+
+    // A second run is a second slot. The first again is a hit: it draws
+    // nothing and names nothing, so its slot is not on the list twice.
+    const int fatArrow = slotOf(shape("c=>d"));
+    REQUIRE(fatArrow >= 0);
+    REQUIRE(fatArrow != arrow);
+    const int rastersBeforeTheHit = face.rasterCalls;
+    CHECK_EQ(slotOf(shape("a->b")), arrow);
+    CHECK_EQ(face.rasterCalls, rastersBeforeTheHit);
+    REQUIRE(sheet.dirtySlots().size() == 2);
+    CHECK_EQ(sheet.dirtySlots()[0], arrow);
+    CHECK_EQ(sheet.dirtySlots()[1], fatArrow);
+
+    // Told of the upload, the sheet names no slot until one is drawn again.
+    sheet.clearDirty();
+    CHECK(!sheet.isDirty());
+    CHECK(sheet.dirtySlots().empty());
+    const int notEqual = slotOf(shape("e!=f"));
+    REQUIRE(notEqual >= 0);
+    CHECK(sheet.isDirty());
+    REQUIRE(sheet.dirtySlots().size() == 1);
+    CHECK_EQ(sheet.dirtySlots()[0], notEqual);
+}
+
 // Monaspace's slash pair shapes as an advancing blank followed by a wide
 // glyph in the same cluster. An independent cluster beside it keeps the
 // native pen and the terminal grid distinguishable in the assertion.
