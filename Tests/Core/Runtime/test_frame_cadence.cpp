@@ -523,6 +523,9 @@ struct CadenceCase {
     int maxRegistrations = 1;
     Ticking ticking = Ticking::EveryRefresh;
     Feeding feeding = Feeding::Ingest;
+    // The longest stretch without a fresh frame the flow may show, for a case
+    // that holds it under the cadence's own bound.
+    std::optional<Clock::duration> maxFreshGap {};
 };
 
 std::int64_t microsecondsOf(Clock::time_point at) { return std::chrono::duration_cast<std::chrono::microseconds>(at.time_since_epoch()).count(); }
@@ -1391,9 +1394,10 @@ void checkCadence(const CadenceCase& cadenceCase, const CadenceRun& run, double 
         Clock::time_point gapEnd;
         const Clock::duration gap = longestGap(run.presents, from, to, gapEnd);
         longestFlowGap = std::max(longestFlowGap, gap);
-        CHECK_MSG(gap <= cadenceBound,
+        const Clock::duration gapBound = cadenceCase.maxFreshGap.value_or(cadenceBound);
+        CHECK_MSG(gap <= gapBound,
             std::format("{}: the longest stretch without a fresh frame was {:.1f} ms, ending {:.0f} ms into the writer, against {:.1f} ms",
-                name, millisecondsOf(gap), millisecondsOf(gapEnd - run.writerStartedAt), millisecondsOf(cadenceBound))
+                name, millisecondsOf(gap), millisecondsOf(gapEnd - run.writerStartedAt), millisecondsOf(gapBound))
                 .c_str());
         presentsInWindows += static_cast<int>(std::ranges::count_if(
             run.presents, [&](const Present& present) { return present.isFresh && present.at >= from && present.at < to; }));
@@ -1637,6 +1641,24 @@ std::function<void(Writer&)> starvedWriter()
     };
 }
 
+// A writer that prints a line every ten milliseconds, as a build or a log
+// being followed does: the drain is idle between two of them, and a refresh
+// interval never passes without one.
+std::function<void(Writer&)> steadyLineWriter()
+{
+    int counter = 0;
+    std::vector<std::string> lines;
+    for (int line = 0; line < 512; ++line)
+        lines.push_back(asciiLines(1, counter));
+    return [lines = std::move(lines)](Writer& writer) {
+        for (std::size_t line = 0; !writer.isStopping(); line = (line + 1) % lines.size()) {
+            if (!writer.write(lines[line]))
+                return;
+            writer.sleepFor(10ms);
+        }
+    };
+}
+
 constexpr int paneRows = 24;
 constexpr int paneColumns = 80;
 
@@ -1756,6 +1778,23 @@ TEST(cadenceOfAStarvedWriter)
         .duration = 1500ms,
         .write = starvedWriter(),
         .maxLiveReads = floodLiveReads,
+    });
+}
+
+// Lines printed a hundred a second below a selection on the row outside their
+// region. Each frame is a settle's, which a view has to ask for when none was
+// captured: asked at one tick and taken at the next, the lines reach the glass
+// at half the display's rate. A view that is taking frames is captured for at
+// the settle, so every tick finds one: the stretch without a fresh frame is a
+// refresh interval, held here to one and a half where the cadence allows two.
+TEST(cadenceOfLinesPrintedSteadily)
+{
+    runAndCheck({
+        .name = "steady lines",
+        .prologue = protectedRowScreen(paneRows),
+        .selection = protectedSelection,
+        .write = steadyLineWriter(),
+        .maxFreshGap = isCoreInstrumented ? cadenceBound : refreshInterval * 3 / 2,
     });
 }
 

@@ -6930,6 +6930,27 @@ public:
         return capture;
     }
 
+    /// How long after the view took a frame the drain keeps capturing for it
+    /// without being asked: as long as the presentation driver calls output
+    /// live (``FrameDriver::defaultIdleTimeoutSeconds``), after which the
+    /// view's own ask is served on its thread.
+    static constexpr std::uint32_t frameTakingWindowMicros = 100'000;
+
+    /// Whether the view is drawing output as it arrives: ``takeFrame`` gave
+    /// it a captured frame inside ``frameTakingWindowMicros``.
+    ///
+    /// The drain asks at a settle. A view that is taking frames will ask for
+    /// this one at its next tick, and a frame captured only then reaches the
+    /// glass a tick later than the output did; captured here, it is waiting
+    /// when the tick comes. Reads atomics only.
+    ///
+    /// - Returns: Whether a settle's frame is captured without a demand.
+    [[nodiscard]] bool isViewTakingFrames() const noexcept
+    {
+        return m_hasViewTakenFrame.load(std::memory_order_acquire)
+            && PAL::monotonicMicros() - m_lastFrameTakeMicros.load(std::memory_order_relaxed) < frameTakingWindowMicros;
+    }
+
     /// A capture of the model as it stands, for a still: a picture, a
     /// snapshot or a detached render of a view that has no presented frame
     /// to draw.
@@ -7039,6 +7060,9 @@ public:
             Rendering::FrameCapture* capture = takeSyncFrame();
             if (!capture)
                 return nullptr;
+            // The drain keeps a view that takes frames supplied with them.
+            m_lastFrameTakeMicros.store(PAL::monotonicMicros(), std::memory_order_relaxed);
+            m_hasViewTakenFrame.store(true, std::memory_order_release);
             supply.route = FrameRoute::Captured;
             supply.selection = selectionForTakenFrame(demand.selection, *capture, demand.selectionSpans, supply.selectionEnds);
             return capture;
@@ -9892,9 +9916,15 @@ private:
                 }
                 if (isStandingCaptureStale)
                     session->m_staleCaptureReplacedCount.fetch_add(1, std::memory_order_relaxed);
+                // A view that is taking frames is owed this one as it would
+                // be owed one it asked for, when the model has moved past the
+                // last frame captured: its next tick finds the frame waiting.
+                const Ubiquitty::Terminal* settled = isCopyReason ? nullptr : session->modelTerm();
+                const bool isViewDrawingOutput = settled && settled->modelEpoch != session->m_lastCapturedModelEpoch
+                    && session->isViewTakingFrames();
                 // A view's outstanding demand is served at any frame the rule
                 // admits.
-                if (isCopyReason || isStandingCaptureStale || session->m_frameLane.isDemandOutstanding())
+                if (isCopyReason || isStandingCaptureStale || isViewDrawingOutput || session->m_frameLane.isDemandOutstanding())
                     session->captureSyncFrame();
                 session->m_frameReady.store(true, std::memory_order_release);
             },
@@ -10445,6 +10475,7 @@ private:
             return;
         }
         target->capture->captureTube(*term);
+        m_lastCapturedModelEpoch = term->modelEpoch;
         m_lastSyncFrameSequence = header.sequence;
         m_nextSyncFrameSequence = m_nextSyncFrameSequence == std::numeric_limits<std::uint64_t>::max()
             ? 1
@@ -14425,6 +14456,13 @@ private:
     // meaningful once the publication count is nonzero, which is stored after it.
     std::atomic<std::uint32_t> m_lastSyncFramePublicationMicroseconds { 0 };
     std::atomic<std::uint64_t> m_syncFrameNoSlotCount { 0 };
+    // When the view last took a captured frame, and whether it ever has; the
+    // view's to write, the drain's to read (``isViewTakingFrames``).
+    std::atomic<std::uint32_t> m_lastFrameTakeMicros { 0 };
+    std::atomic<bool> m_hasViewTakenFrame { false };
+    // The model the newest capture froze; the capturing thread's alone, under
+    // the model lock.
+    std::uint64_t m_lastCapturedModelEpoch = 0;
     std::atomic<std::uint64_t> m_syncFrameBoundaryAnnounceCount { 0 };
     std::uint64_t m_wideLinkScanCount = 0;
     std::atomic<std::uint64_t> m_drainedBytes { 0 };
