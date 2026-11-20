@@ -6,6 +6,7 @@
 #include "Core/Cell.h"
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 #if defined(__aarch64__)
 #include <arm_neon.h>
@@ -65,6 +66,36 @@ public:
 #endif
     }
 
+    /// Whether a cell already holds the template with a code point.
+    ///
+    /// Compared from registers. A cell patched on the stack and then
+    /// compared whole is a narrow store read back by a wide load, which the
+    /// processor cannot forward: every such compare waits for the store to
+    /// retire, and a repaint asks it of every cell.
+    ///
+    /// - Parameters:
+    ///   - destination: The cell to read.
+    ///   - codePoint: The code point the template would be stored with.
+    /// - Returns: Whether storing would change nothing.
+    [[nodiscard]] bool matches(const Cell* destination, uint32_t codePoint) const
+    {
+#if defined(__aarch64__)
+        const auto* bytes = reinterpret_cast<const uint8_t*>(destination);
+        const uint8x16_t low = vceqq_u8(vld1q_u8(bytes), vreinterpretq_u8_u32(vsetq_lane_u32(codePoint, m_low, 0)));
+        const uint8x16_t high = vceqq_u8(vld1q_u8(bytes + 16), m_high);
+        return vminvq_u8(vandq_u8(low, high)) == 0xFF;
+#elif defined(__x86_64__) || defined(_M_X64)
+        const auto* halves = reinterpret_cast<const __m128i*>(destination);
+        const __m128i low = _mm_cmpeq_epi8(_mm_loadu_si128(halves), _mm_or_si128(m_low, _mm_cvtsi32_si128(static_cast<int>(codePoint))));
+        const __m128i high = _mm_cmpeq_epi8(_mm_loadu_si128(halves + 1), m_high);
+        return _mm_movemask_epi8(_mm_and_si128(low, high)) == 0xFFFF;
+#else
+        Cell cell = m_cell;
+        cell.codePoint = codePoint;
+        return std::memcmp(destination, &cell, sizeof(Cell)) == 0;
+#endif
+    }
+
 private:
 #if defined(__aarch64__)
     uint32x4_t m_low;
@@ -77,5 +108,74 @@ private:
     Cell m_cell;
 #endif
 };
+
+/// A cell of a pen and a hyperlink, with no cluster.
+///
+/// Assembled in registers and stored as the two halves a ``CellStamp`` and a
+/// whole-cell copy read back. A cell filled a field at a time is narrow
+/// stores, and the wide load that reads it next cannot be forwarded from
+/// them: it waits for every one to retire, on each write of a run.
+///
+/// - Parameters:
+///   - pen: The pen the cell carries.
+///   - linkID: The hyperlink the cell names, or zero.
+///   - codePoint: The cell's code point; zero for a run's template.
+/// - Returns: The cell.
+[[nodiscard]] inline Cell cellFromPen(const Pen& pen, uint16_t linkID, uint32_t codePoint = 0)
+{
+    static_assert(offsetof(Cell, pen) == 4 && sizeof(Pen) == 20 && offsetof(Cell, linkIDLo) == 28 && offsetof(Cell, linkIDHi) == 29,
+        "the template is assembled at the cell's own offsets");
+    Cell cell;
+#if defined(__x86_64__) || defined(_M_X64)
+    const __m128i penLow = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&pen));
+    std::uint32_t penTail;
+    std::memcpy(&penTail, reinterpret_cast<const char*>(&pen) + 16, sizeof penTail);
+    const __m128i low = _mm_or_si128(_mm_slli_si128(penLow, 4), _mm_cvtsi32_si128(static_cast<int>(codePoint)));
+    __m128i high = _mm_or_si128(_mm_srli_si128(penLow, 12), _mm_slli_si128(_mm_cvtsi32_si128(static_cast<int>(penTail)), 4));
+    high = _mm_insert_epi16(high, linkID, 6);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(&cell), low);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(&cell) + 1, high);
+#else
+    cell.codePoint = codePoint;
+    cell.pen = pen;
+    cell.combining = {};
+    cell.setLinkID(linkID);
+    cell.clusterPacked = 0;
+#endif
+    return cell;
+}
+
+/// A cell of a pen under another attribute set, with no cluster.
+///
+/// What a glyph placed a character at a time is: the pen in force with the
+/// attributes of the glyph's own width. Assembled as ``cellFromPen`` is, for
+/// the reason given there.
+///
+/// - Parameters:
+///   - pen: The pen whose colours and styles the cell carries.
+///   - attributes: The attribute set that replaces the pen's own.
+///   - linkID: The hyperlink the cell names, or zero.
+///   - codePoint: The cell's code point.
+/// - Returns: The cell.
+[[nodiscard]] inline Cell cellFromPen(const Pen& pen, Ubiquitty::VT::AttributeSet attributes, uint16_t linkID, uint32_t codePoint)
+{
+    static_assert(offsetof(Pen, attributes) == 0 && sizeof(pen.attributes) == 2, "the attribute set is the pen's first word");
+#if defined(__x86_64__) || defined(_M_X64)
+    Cell cell;
+    const __m128i penLow = _mm_insert_epi16(_mm_loadu_si128(reinterpret_cast<const __m128i*>(&pen)), attributes.toRaw(), 0);
+    std::uint32_t penTail;
+    std::memcpy(&penTail, reinterpret_cast<const char*>(&pen) + 16, sizeof penTail);
+    const __m128i low = _mm_or_si128(_mm_slli_si128(penLow, 4), _mm_cvtsi32_si128(static_cast<int>(codePoint)));
+    __m128i high = _mm_or_si128(_mm_srli_si128(penLow, 12), _mm_slli_si128(_mm_cvtsi32_si128(static_cast<int>(penTail)), 4));
+    high = _mm_insert_epi16(high, linkID, 6);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(&cell), low);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(&cell) + 1, high);
+    return cell;
+#else
+    Cell cell = cellFromPen(pen, linkID, codePoint);
+    cell.pen.attributes = attributes;
+    return cell;
+#endif
+}
 
 } // namespace Ubiquitty

@@ -23,6 +23,7 @@
 #include <cstring>
 #include <functional>
 #include <iterator>
+#include <new>
 #include <type_traits>
 #include <utility>
 
@@ -477,22 +478,187 @@ void CellGrid::materializeCompactRow(int screen, int slot)
     if (!m_rowState[screen])
         return;
     assert(slot >= 0 && slot < m_rowCapacity);
-    if (m_rowState[screen][slot].storage != RowStorage::DefaultASCII)
+    if (m_rowState[screen][slot].storage == RowStorage::Cells)
         return;
     assert(slot != m_deferredBlankSlot[screen]);
     auto& state = m_rowState[screen][slot];
     Cell* row = m_rowPtrs[screen][slot];
+    if (state.storage == RowStorage::StyledASCII) {
+        // The cells are stored over the bytes and ids they are made from, so
+        // both are lifted out first.
+        assert(m_styledTemplates && state.filled >= 0 && state.filled <= m_columns);
+        std::array<std::uint8_t, maxColumns> text;
+        std::array<std::uint16_t, maxColumns> ids;
+        std::memcpy(text.data(), row, static_cast<std::size_t>(state.filled));
+        std::memcpy(ids.data(), styledIDs(row), static_cast<std::size_t>(state.filled) * sizeof(std::uint16_t));
+        for (int column = 0; column < state.filled;) {
+            const std::uint16_t id = ids[static_cast<std::size_t>(column)];
+            const CellStamp stamp(m_styledTemplates->cells[id]);
+            do {
+                // A column never written holds no code point, and is the blank whatever id it was left.
+                if (text[static_cast<std::size_t>(column)] == 0)
+                    row[column] = m_defaultBlank;
+                else
+                    stamp.store(row + column, text[static_cast<std::size_t>(column)]);
+                ++column;
+            } while (column < state.filled && ids[static_cast<std::size_t>(column)] == id);
+        }
+        fillBlank(row + state.filled, m_defaultBlank, m_columns - state.filled);
+        state.compactBlankStart = unknownCompactBlankStart;
+        state.storage = RowStorage::Cells;
+        return;
+    }
     const auto* bytes = reinterpret_cast<const std::uint8_t*>(row);
     assert(state.filled >= 0 && state.filled <= m_columns);
     // Expand backwards: each destination begins at 32 * column, so it can
     // overwrite only compact bytes that have already been consumed.
-    for (int column = state.filled - 1; column >= 0; --column) {
-        Cell cell = m_defaultBlank;
-        cell.codePoint = bytes[column];
-        row[column] = cell;
-    }
-    fillBlank(row + state.filled, m_defaultBlank, m_columns - state.filled);
+    const CellStamp stamp(m_defaultBlank);
+    for (int column = state.filled - 1; column >= 0; --column)
+        stamp.store(row + column, bytes[column]);
+    // The cells past the content are stored unless they are known to be
+    // blank already; the bytes lay over cells the expansion has just rewritten.
+    const int blankEnd = std::min<int>(state.compactBlankStart, m_columns);
+    fillBlank(row + state.filled, m_defaultBlank, blankEnd - state.filled);
+    state.compactBlankStart = unknownCompactBlankStart;
     state.storage = RowStorage::Cells;
+}
+
+bool CellGrid::didReplaceCellsWithCompactASCIIRun(int slot, int row, int lastColumn, const Cell& cellTemplate, const char* source)
+{
+    auto& state = m_rowState[m_activeIndex][slot];
+    // A deferred row's cells are not what the row holds, and its own writer
+    // decides what becomes of it.
+    if (state.storage != RowStorage::Cells || slot == m_deferredBlankSlot[m_activeIndex])
+        return false;
+    Cell* backing = m_rowPtrs[m_activeIndex][slot];
+    const std::less<const void*> precedes;
+    const auto overlapsBacking = [&](const void* first, const void* end) {
+        return precedes(first, backing + m_columnCapacity) && precedes(backing, end);
+    };
+    if (overlapsBacking(&cellTemplate, &cellTemplate + 1) || overlapsBacking(source, source + (lastColumn + 1)))
+        return false;
+    Cell cell = cellTemplate;
+    cell.codePoint = 0;
+    const auto id = isDefaultBlank(cell) ? std::optional<std::uint16_t> { 0 } : styledTemplateID(cell);
+    if (!id)
+        return false;
+    // An identical repaint changes nothing, and is left to the writer that
+    // says so without touching the row: the cells are read before the bytes
+    // that replace them are stored.
+    bool hasDifference = false;
+    const CellStamp probe(cell);
+    for (int column = 0; !hasDifference && column <= lastColumn; ++column)
+        hasDifference = !probe.matches(backing + column, static_cast<unsigned char>(source[column]));
+    if (!hasDifference)
+        return false;
+    // The cells past the run are the default blank already, which is what a
+    // compact row's cells past its bytes are expanded to.
+    const int cellsUnderBytes = (lastColumn + 1 + static_cast<int>(sizeof(Cell)) - 1) / static_cast<int>(sizeof(Cell));
+    state.compactBlankStart = *id ? unknownCompactBlankStart : static_cast<std::uint16_t>(std::max(state.filled, cellsUnderBytes));
+    std::memcpy(backing, source, static_cast<std::size_t>(lastColumn + 1));
+    if (*id)
+        std::fill_n(styledIDs(backing), lastColumn + 1, *id);
+    state.filled = lastColumn + 1;
+    state.storage = *id ? RowStorage::StyledASCII : RowStorage::DefaultASCII;
+    if (cellPen(cellTemplate).attributes.contains(Ubiquitty::VT::Attribute::Blink))
+        noteBlinkWrite();
+    m_anyMutationsSinceLastPaint = true;
+    bumpRow(row);
+    return true;
+}
+
+std::optional<std::uint16_t> CellGrid::styledTemplateID(const Cell& cellTemplate)
+{
+    assert(cellTemplate.codePoint == 0);
+    if (cellPen(cellTemplate).extendedAttributes.textSizeSpecID() != 0 || cellTemplate.clusterPacked != 0)
+        return std::nullopt;
+    if (!m_styledTemplates) {
+        m_styledTemplates.reset(new (std::nothrow) StyledTemplates);
+        if (!m_styledTemplates)
+            return std::nullopt;
+        m_styledTemplates->slots.fill(0xFFFF);
+        m_styledTemplates->cells[0] = m_defaultBlank;
+        m_styledTemplates->count = 1;
+        m_lastStyledTemplateID = 0;
+    }
+    const StyledTemplates& table = *m_styledTemplates;
+    if (m_lastStyledTemplateID < table.count && cellEqual(table.cells[m_lastStyledTemplateID], cellTemplate))
+        return m_lastStyledTemplateID;
+    if (cellEqual(table.cells[0], cellTemplate))
+        return m_lastStyledTemplateID = 0;
+    std::uint64_t words[4];
+    std::memcpy(words, &cellTemplate, sizeof words);
+    const std::uint64_t hash = (words[0] * 0x9E3779B97F4A7C15ull) ^ (words[1] * 0xC2B2AE3D27D4EB4Full) ^ (words[2] * 0x165667B19E3779F9ull) ^ (words[3] * 0x27D4EB2F165667C5ull);
+    for (std::size_t slot = (hash >> 40) & (styledTemplateSlots - 1);; slot = (slot + 1) & (styledTemplateSlots - 1)) {
+        const std::uint16_t id = table.slots[slot];
+        if (id == 0xFFFF) {
+            if (table.count >= styledTemplateCapacity)
+                return std::nullopt;
+            // A table another grid also holds is that grid's too: this one
+            // adds to a copy of its own.
+            if (m_styledTemplates.use_count() > 1) {
+                std::shared_ptr<StyledTemplates> own(new (std::nothrow) StyledTemplates(table));
+                if (!own)
+                    return std::nullopt;
+                m_styledTemplates = std::move(own);
+            }
+            StyledTemplates& mine = *m_styledTemplates;
+            mine.cells[static_cast<std::size_t>(mine.count)] = cellTemplate;
+            mine.slots[slot] = static_cast<std::uint16_t>(mine.count);
+            return m_lastStyledTemplateID = static_cast<std::uint16_t>(mine.count++);
+        }
+        if (cellEqual(table.cells[id], cellTemplate))
+            return m_lastStyledTemplateID = id;
+    }
+}
+
+bool CellGrid::writeStyledASCIIRun(int slot, int row, int firstColumn, int lastColumn, const Cell& cellTemplate, const char* source)
+{
+    auto& state = m_rowState[m_activeIndex][slot];
+    assert(state.storage != RowStorage::Cells && slot != m_deferredBlankSlot[m_activeIndex]);
+    Cell* backing = m_rowPtrs[m_activeIndex][slot];
+    const std::less<const void*> precedes;
+    const auto overlapsBacking = [&](const void* first, const void* end) {
+        return precedes(first, backing + m_columnCapacity) && precedes(backing, end);
+    };
+    if (overlapsBacking(&cellTemplate, &cellTemplate + 1) || overlapsBacking(source, source + (lastColumn - firstColumn + 1)))
+        return false;
+    Cell key = cellTemplate;
+    key.codePoint = 0;
+    const auto id = styledTemplateID(key);
+    if (!id)
+        return false;
+    auto* bytes = reinterpret_cast<std::uint8_t*>(backing);
+    std::uint16_t* ids = styledIDs(backing);
+    const int count = lastColumn - firstColumn + 1;
+    bool hasDifference = false;
+    if (state.storage == RowStorage::DefaultASCII) {
+        // The row's cells so far are the default pen's, which is id zero.
+        std::memset(ids, 0, static_cast<std::size_t>(state.filled) * sizeof(std::uint16_t));
+        state.storage = RowStorage::StyledASCII;
+        state.compactBlankStart = unknownCompactBlankStart;
+        hasDifference = true;
+    }
+    if (!hasDifference && lastColumn < state.filled) {
+        hasDifference = std::memcmp(bytes + firstColumn, source, static_cast<std::size_t>(count)) != 0;
+        std::uint16_t idDifference = 0;
+        for (int index = 0; index < count; ++index)
+            idDifference |= static_cast<std::uint16_t>(ids[firstColumn + index] ^ *id);
+        if (!hasDifference && idDifference == 0)
+            return true; // an identical repaint
+    }
+    if (firstColumn > state.filled) {
+        std::memset(bytes + state.filled, 0, static_cast<std::size_t>(firstColumn - state.filled));
+        std::memset(ids + state.filled, 0, static_cast<std::size_t>(firstColumn - state.filled) * sizeof(std::uint16_t));
+    }
+    std::memcpy(bytes + firstColumn, source, static_cast<std::size_t>(count));
+    std::fill_n(ids + firstColumn, count, *id);
+    state.filled = std::max(state.filled, lastColumn + 1);
+    m_anyMutationsSinceLastPaint = true;
+    bumpRow(row);
+    if (cellPen(cellTemplate).attributes.contains(Ubiquitty::VT::Attribute::Blink))
+        noteBlinkWrite();
+    return true;
 }
 
 void CellGrid::materializeCompactRows(int screen)
@@ -561,13 +727,15 @@ bool CellGrid::writeCompactASCIIRun(int slot, int row, int firstColumn, int last
         m_deferredBlankSlot[m_activeIndex] = -1;
         m_deferredBlankStart[m_activeIndex] = 0;
         m_deferredBlankCount[m_activeIndex] = 0;
+        state.compactBlankStart = unknownCompactBlankStart;
         state.storage = RowStorage::DefaultASCII;
     }
     auto* bytes = reinterpret_cast<std::uint8_t*>(backing);
     bool hasDifference = isRecycled || comparison == CompactWriteComparison::KnownDifferent;
-    for (int column = firstColumn; !hasDifference && column <= lastColumn; ++column) {
-        const auto old = column < state.filled ? bytes[column] : 0;
-        hasDifference = old != static_cast<std::uint8_t>(source[column - firstColumn]);
+    if (!hasDifference) {
+        // Past the row's width there is nothing, which no byte of a run equals.
+        const int compared = std::min(lastColumn + 1, state.filled) - firstColumn;
+        hasDifference = lastColumn >= state.filled || (compared > 0 && std::memcmp(bytes + firstColumn, source, static_cast<std::size_t>(compared)) != 0);
     }
     if (!hasDifference)
         return true;
@@ -575,6 +743,8 @@ bool CellGrid::writeCompactASCIIRun(int slot, int row, int firstColumn, int last
         std::memset(bytes + state.filled, 0, static_cast<std::size_t>(firstColumn - state.filled));
     std::memcpy(bytes + firstColumn, source, static_cast<std::size_t>(lastColumn - firstColumn + 1));
     state.filled = std::max(state.filled, lastColumn + 1);
+    const int cellsUnderBytes = (state.filled + static_cast<int>(sizeof(Cell)) - 1) / static_cast<int>(sizeof(Cell));
+    state.compactBlankStart = std::max(state.compactBlankStart, static_cast<std::uint16_t>(cellsUnderBytes));
     m_anyMutationsSinceLastPaint = true;
     bumpRow(row);
     return true;
@@ -655,6 +825,8 @@ void CellGrid::init(int rows, int columns)
     for (auto& state : m_rowState)
         for (int r = 0; r < m_rowCapacity; ++r)
             state[r] = RowState { 0, RowMeta { lineAttributeNormal, 0, {}, 0 }, RowStorage::DefaultASCII };
+    // No row is styled any more, so no id is in use: the table starts over.
+    m_styledTemplates.reset();
     m_activeIndex = 0;
     m_bbShadowValid = true;
     m_fullRedrawRequested = false;
@@ -778,8 +950,6 @@ bool CellGrid::restoreRowContentWidth(ScreenMode screen, Row row, int width)
 // --- Per-row metadata -------------------------------------------------
 // rowMeta(r) is the active-screen shorthand over rowMetaAt (inline, in
 // CellGrid.h). The setters write the active screen's record.
-RowMeta& CellGrid::rowMeta(int r) { return rowMetaAt(m_activeIndex, r); }
-const RowMeta& CellGrid::rowMeta(int r) const { return rowMetaAt(m_activeIndex, r); }
 
 void CellGrid::setLineAttribute(int r, uint8_t a)
 {
@@ -870,6 +1040,8 @@ void CellGrid::setCellKnownDiff(Row r, Column c, const Cell& cell)
         setCellKnownDiffCompact(r, c, cell);
         return;
     }
+    // A styled row takes single cells as cells.
+    materializeCompactRow(m_activeIndex, slot);
     setCellKnownDiffOrdinary(r, c, cell);
 }
 
@@ -895,7 +1067,7 @@ void CellGrid::setCellKnownDiffOrdinary(Row r, Column c, const Cell& cell)
     const int ri = r.value();
     const int ci = c.value();
     const int slot = physicalRowSlot(m_activeIndex, ri);
-    assert(m_rowState[m_activeIndex][slot].storage != RowStorage::DefaultASCII);
+    assert(m_rowState[m_activeIndex][slot].storage == RowStorage::Cells);
     Cell* row;
     if (slot == m_deferredBlankSlot[m_activeIndex] && ci < m_deferredBlankStart[m_activeIndex]) [[unlikely]] {
         // Below the stale window: these columns already hold cells this run
@@ -940,7 +1112,9 @@ void CellGrid::setCellKnownDiffOrdinary(Row r, Column c, const Cell& cell)
         filled = ci + 1;
 }
 
-void CellGrid::setRowSpan(Row r, Column firstColumn, RowView span)
+void CellGrid::setRowSpan(Row r, Column firstColumn, RowView span) { setRowSpan(r, firstColumn, span, nullptr); }
+
+void CellGrid::setRowSpan(Row r, Column firstColumn, RowView span, const SpanFacts* facts)
 {
     const int ri = r.value();
     const int fc = firstColumn.value();
@@ -998,23 +1172,31 @@ void CellGrid::setRowSpan(Row r, Column firstColumn, RowView span)
     bool hasShape = false;
     std::uint8_t extendedRaw = 0;
     bool doesSpanDifferFromBlank = false;
-    for (int c = lo; c <= hi; ++c) {
-        const Cell& srcCell = src[c - lo];
-        // Loop-invariant guard (unswitched at -O3): only the deferred lane
-        // needs the against-blank probe standing in for the skipped memcmp.
-        if (isDestinationLogicallyBlank)
-            doesSpanDifferFromBlank |= !cellEqual(srcCell, m_defaultBlank);
-        dst[c] = srcCell;
-        // The union, not three tests: every question asked after this loop is
-        // about whether any cell carried a bit, so one or per cell answers all of
-        // them and the masking happens once.
-        spanAttributes.add(cellPen(srcCell).attributes);
-        hasShape |= Unicode::mayNeedShaping(srcCell.codePoint);
-        // Ored raw like the rest and not folded into spanAttributes: the
-        // specification id is a subfield of the EXTENDED attributes, so the
-        // union above does not carry it, and the field is read once below.
-        extendedRaw |= cellPen(srcCell).extendedAttributes.flags.toRaw();
-    }
+    if (facts) {
+        // The caller staged these cells and says what a pass over them would
+        // find: none is blank, so the span differs from a blank row.
+        std::memcpy(dst + lo, src, spanBytes);
+        spanAttributes = facts->attributes;
+        hasShape = facts->mayNeedShaping;
+        doesSpanDifferFromBlank = true;
+    } else
+        for (int c = lo; c <= hi; ++c) {
+            const Cell& srcCell = src[c - lo];
+            // Loop-invariant guard (unswitched at -O3): only the deferred lane
+            // needs the against-blank probe standing in for the skipped memcmp.
+            if (isDestinationLogicallyBlank)
+                doesSpanDifferFromBlank |= !cellEqual(srcCell, m_defaultBlank);
+            dst[c] = srcCell;
+            // The union, not three tests: every question asked after this loop is
+            // about whether any cell carried a bit, so one or per cell answers all of
+            // them and the masking happens once.
+            spanAttributes.add(cellPen(srcCell).attributes);
+            hasShape |= Unicode::mayNeedShaping(srcCell.codePoint);
+            // Ored raw like the rest and not folded into spanAttributes: the
+            // specification id is a subfield of the EXTENDED attributes, so the
+            // union above does not carry it, and the field is read once below.
+            extendedRaw |= cellPen(srcCell).extendedAttributes.flags.toRaw();
+        }
     const bool hasSizedCell = Ubiquitty::VT::ExtendedAttributes::TextSizeSpecField::get(extendedRaw) != 0;
     // Blanks stored over a logically blank row: the physical bytes now match
     // what materializing would have written, and the hints stay untouched
@@ -1225,7 +1407,7 @@ void CellGrid::writeRun(Row r, Column firstColumnValue, const Cell& tmpl, std::s
         return;
     }
     const int slot = physicalRowSlot(m_activeIndex, ri);
-    if (m_rowState[m_activeIndex][slot].storage == RowStorage::DefaultASCII) {
+    if (m_rowState[m_activeIndex][slot].storage != RowStorage::Cells) {
         const Cell* row = m_rowPtrs[m_activeIndex][slot];
         const std::less<const void*> precedes;
         if (precedes(src, row + m_columnCapacity) && precedes(row, src + (hi - lo + 1))) [[unlikely]] {
@@ -1235,6 +1417,13 @@ void CellGrid::writeRun(Row r, Column firstColumnValue, const Cell& tmpl, std::s
     }
     if constexpr (!Translated) {
         if (isCompactASCIIWriteCandidate(slot) && writeCompactASCIIRun(slot, ri, lo, hi, tmpl, src))
+            return;
+        if (m_rowState[m_activeIndex][slot].storage != RowStorage::Cells && slot != m_deferredBlankSlot[m_activeIndex]
+            && writeStyledASCIIRun(slot, ri, lo, hi, tmpl, src))
+            return;
+        // A run from the first column that reaches the end of what the row
+        // holds leaves nothing of the row but itself.
+        if (lo == 0 && hi + 1 >= m_rowState[m_activeIndex][slot].filled && didReplaceCellsWithCompactASCIIRun(slot, ri, hi, tmpl, src))
             return;
     }
     materializeCompactRow(m_activeIndex, slot);
@@ -1255,12 +1444,14 @@ void CellGrid::writeRun(Row r, Column firstColumnValue, const Cell& tmpl, std::s
     const Cell& cellTemplate = tmpl;
     const char* source = src;
     Cell* destination = m_rowPtrs[m_activeIndex][slot];
-    Cell cell = cellTemplate;
+    // The template is read into registers once: the probe below, the stores
+    // and the compares of a repaint all work from them.
+    const Cell cell = cellTemplate;
+    const CellStamp stamp(cell);
     // Fresh-run fast path: probe the first cell. New text landing on blank/old cells differs, so stream the
     // run with stores only, skipping the idempotency read. A fully-identical repaint starts with an
     // identical first cell, so it falls to the careful per-cell path.
-    cell.codePoint = runCodePoint<Translated>(source, 0, translation);
-    if (skipsRunIdempotencyProbe || !cellEqual(destination[firstColumn], cell)) {
+    if (skipsRunIdempotencyProbe || !stamp.matches(destination + firstColumn, runCodePoint<Translated>(source, 0, translation))) {
         // The first difference already requires mutation bookkeeping. Store the
         // remaining cells directly without inspecting their old pens or clusters.
         storeRunCells<Translated>({ &destination[firstColumn], static_cast<std::size_t>(lastColumn - firstColumn + 1) }, cell, source, translation);
@@ -1277,9 +1468,9 @@ void CellGrid::writeRun(Row r, Column firstColumnValue, const Cell& tmpl, std::s
     // Careful path (may be an identical repaint): per-cell compare keeps dirty/blink/filled idempotent.
     bool changed = false;
     for (int column = firstColumn; column <= lastColumn; ++column) {
-        cell.codePoint = runCodePoint<Translated>(source, column - firstColumn, translation);
-        if (!cellEqual(destination[column], cell)) {
-            destination[column] = cell;
+        const uint32_t codePoint = runCodePoint<Translated>(source, column - firstColumn, translation);
+        if (!stamp.matches(destination + column, codePoint)) {
+            stamp.store(destination + column, codePoint);
             changed = true;
         }
     }
@@ -1333,11 +1524,11 @@ void CellGrid::writeWideCodePointRun(Row rowValue, Column firstColumnValue, cons
     Cell* destination = m_rowPtrs[m_activeIndex][slot];
     if (!isDestinationLogicallyBlank) {
         bool hasDifference = false;
+        const CellStamp leadProbe(lead);
         for (std::size_t index = 0; index < codePoints.size(); ++index) {
             const int column = firstColumn + static_cast<int>(index) * 2;
             assert(column >= 0 && column + 1 < m_columns);
-            lead.codePoint = codePoints[index];
-            if (!cellEqual(destination[column], lead) || !cellEqual(destination[column + 1], continuation)) {
+            if (!leadProbe.matches(destination + column, codePoints[index]) || !cellEqual(destination[column + 1], continuation)) {
                 hasDifference = true;
                 break;
             }
@@ -1394,11 +1585,11 @@ void CellGrid::writeNarrowCodePointRun(Row rowValue, Column firstColumnValue, co
     Cell* destination = m_rowPtrs[m_activeIndex][slot];
     if (!isDestinationLogicallyBlank) {
         bool hasDifference = false;
+        const CellStamp probe(cell);
         for (std::size_t index = 0; index < codePoints.size(); ++index) {
             const int column = firstColumn + static_cast<int>(index);
             assert(column >= 0 && column < m_columns);
-            cell.codePoint = codePoints[index];
-            if (!cellEqual(destination[column], cell)) {
+            if (!probe.matches(destination + column, codePoints[index])) {
                 hasDifference = true;
                 break;
             }
@@ -1443,6 +1634,56 @@ void CellGrid::fillCellRun(Row r, Column firstColumnValue, const Cell& cell, int
     if (hi < lo)
         return;
     const int slot = physicalRowSlot(m_activeIndex, ri);
+    // A fill of one ASCII character over a row that is compact, or that the
+    // fill replaces whole, is a run of that character: the run writer keeps
+    // such a row at a byte a cell, where filling here would expand it.
+    if (cell.codePoint >= 0x20 && cell.codePoint <= 0x7E && cell.clusterPacked == 0
+        && (m_rowState[m_activeIndex][slot].storage != RowStorage::Cells || isCompactASCIIWriteCandidate(slot)
+            || (lo == 0 && hi + 1 >= m_rowState[m_activeIndex][slot].filled))) {
+        std::array<char, maxColumns> text;
+        std::memset(text.data(), static_cast<int>(cell.codePoint), static_cast<std::size_t>(hi - lo + 1));
+        Cell cellTemplate = cell;
+        cellTemplate.codePoint = 0;
+        writeRun<false>(r, Column(lo), cellTemplate, std::string_view(text.data(), static_cast<std::size_t>(hi - lo + 1)), nullptr);
+        return;
+    }
+    // A default-pen ASCII fill to the end of what a row of cells holds, behind
+    // a short prefix of default-pen ASCII, leaves a row a byte a cell can
+    // say. It is made one here even when the fill changes nothing: a screen
+    // repainted the same way every frame is read once more as cells, and
+    // from then on as bytes.
+    if (RowState& state = m_rowState[m_activeIndex][slot]; state.storage == RowStorage::Cells && slot != m_deferredBlankSlot[m_activeIndex]
+        && cell.codePoint >= 0x20 && cell.codePoint <= 0x7E && lo <= 32 && hi + 1 >= state.filled) {
+        Cell pattern = cell;
+        pattern.codePoint = 0;
+        Cell* row = m_rowPtrs[m_activeIndex][slot];
+        const std::less<const void*> precedes;
+        const bool isBorrowed = precedes(&cell, row + m_columnCapacity) && precedes(row, &cell + 1);
+        if (!isBorrowed && isDefaultBlank(pattern)) {
+            std::array<std::uint8_t, maxColumns> text;
+            const CellStamp probe(m_defaultBlank);
+            bool isPrefixPlain = true;
+            for (int column = 0; isPrefixPlain && column < lo; ++column) {
+                const std::uint32_t codePoint = row[column].codePoint;
+                isPrefixPlain = codePoint >= 0x20 && codePoint <= 0x7E && probe.matches(row + column, codePoint);
+                text[static_cast<std::size_t>(column)] = static_cast<std::uint8_t>(codePoint);
+            }
+            if (isPrefixPlain) {
+                const bool hasDifference = hi >= state.filled || firstDifferingCell(row, lo, hi, cell) <= hi;
+                std::memset(text.data() + lo, static_cast<int>(cell.codePoint), static_cast<std::size_t>(hi - lo + 1));
+                const int cellsUnderBytes = (hi + 1 + static_cast<int>(sizeof(Cell)) - 1) / static_cast<int>(sizeof(Cell));
+                state.compactBlankStart = static_cast<std::uint16_t>(std::max(state.filled, cellsUnderBytes));
+                std::memcpy(row, text.data(), static_cast<std::size_t>(hi + 1));
+                state.filled = hi + 1;
+                state.storage = RowStorage::DefaultASCII;
+                if (hasDifference) {
+                    m_anyMutationsSinceLastPaint = true;
+                    bumpRow(ri);
+                }
+                return;
+            }
+        }
+    }
     materializeCompactRow(m_activeIndex, slot);
     // A deferred-blank destination is logically blank regardless of stale storage; skip the equality scan
     // (byte-matching stale bytes must not select the no-op path).
@@ -1497,6 +1738,48 @@ void CellGrid::eraseRowRange(Row r, Column c0, Column c1, const Cell& blank)
         hi = m_columns - 1;
     if (hi < lo)
         return;
+    // A default-blank erase of the whole row leaves a row with no content,
+    // which a compact row says in its width alone. The cells stay as they
+    // are until something needs them: a row of plain text written after the
+    // erase never does, and one that does stores then what this would have.
+    // Not while the grid may hold a blinking cell: the blink scan reads the
+    // screen's cells as they stand, and must find a cleared row cleared.
+    if (lo == 0 && hi == m_columns - 1 && !m_blinkHint && isDefaultBlank(blank)) {
+        const int slot = physicalRowSlot(m_activeIndex, ri);
+        if (slot != m_deferredBlankSlot[m_activeIndex]) {
+            RowState& state = m_rowState[m_activeIndex][slot];
+            bool hasContent = state.filled > 0;
+            if (hasContent && state.storage == RowStorage::Cells) {
+                // An erase of blanks changes nothing and leaves the hints alone.
+                hasContent = firstDifferingCell(m_rowPtrs[m_activeIndex][slot], 0, state.filled - 1, blank) < state.filled;
+                if (hasContent) {
+                    state.compactBlankStart = static_cast<std::uint16_t>(state.filled);
+                    state.storage = RowStorage::DefaultASCII;
+                }
+            }
+            state.filled = 0;
+            if (hasContent) {
+                m_anyMutationsSinceLastPaint = true;
+                bumpRow(ri);
+            }
+            rowMeta(ri).set(Ubiquitty::RowFlag::NeedsShaping, Unicode::mayNeedShaping(blank.codePoint));
+            return;
+        }
+    }
+    // A default-blank erase to the end of a compact row shortens it: the
+    // bytes past its width are not read.
+    if (hi == m_columns - 1 && isDefaultBlank(blank)) {
+        const int slot = physicalRowSlot(m_activeIndex, ri);
+        RowState& state = m_rowState[m_activeIndex][slot];
+        if (state.storage != RowStorage::Cells && slot != m_deferredBlankSlot[m_activeIndex]) {
+            if (lo < state.filled) {
+                state.filled = lo;
+                m_anyMutationsSinceLastPaint = true;
+                bumpRow(ri);
+            }
+            return;
+        }
+    }
     // A default-blank erase can stop at the content-width bound: [filled, columns) already equals
     // m_defaultBlank. A range entirely inside that tail returns before rowPtrAt (no deferred-blank
     // materialization to verify blanks).
@@ -1606,7 +1889,13 @@ void CellGrid::clearWideOverlapEdges(Row r, Column from, Column to, const Cell& 
     if (lo == 0 && hi + 1 == m_columns)
         return;
     const int slot = physicalRowSlot(m_activeIndex, ri);
-    if (m_rowState[m_activeIndex][slot].storage == RowStorage::DefaultASCII)
+    // Only a row that holds a wide pair has a half for an edge to orphan, and
+    // the flag is latched by every write of one and is never stale-false.
+    // Most rows hold none, and most writes are a word of such a row.
+    // A recycled row is the exception: its flags were reset with it, and
+    // the cells past its deferred window are still what they were.
+    const RowState& state = m_rowState[m_activeIndex][slot];
+    if (state.storage != RowStorage::Cells || (slot != m_deferredBlankSlot[m_activeIndex] && !state.meta.has(Ubiquitty::RowFlag::HasMulticell)))
         return;
     if (slot == m_deferredBlankSlot[m_activeIndex]) [[unlikely]] {
         // Neither edge inside the remaining blank window can carry a wide half. Outside it, check
@@ -1815,7 +2104,12 @@ void CellGrid::scrollRegion(Row topR, Row botR, int n, const Cell& blank)
         scrollFullViewportUpOne(blank);
         return;
     }
-    materializeCompactRows(m_activeIndex);
+    // A band's rows move as pointers, compact or not, and the row a band
+    // recycles is blanked in whichever form it is in. The whole-viewport arms
+    // below install deferrals and fill in place, which are made on cells.
+    const bool isBand = !(top == 0 && bot == m_rows - 1);
+    if (!isBand || shift >= region)
+        materializeCompactRows(m_activeIndex);
     bool fullRegionClear = false;
     if (shift >= region) {
         // Full-region erase: wipe row by row and drop the pending scroll before coalescing — a prior shift
@@ -1829,6 +2123,26 @@ void CellGrid::scrollRegion(Row topR, Row botR, int n, const Cell& blank)
         fullRegionClear = true;
     }
     const bool blankDefault = isDefaultBlank(blank);
+    // Blanks a row a band recycled, whose state `recycled` already is.
+    const auto blankRecycledRow = [&](Cell* row, RowState& recycled) {
+        if (recycled.storage != RowStorage::Cells) {
+            if (blankDefault) {
+                recycled.filled = 0; // a compact row with no width is a blank one
+            } else {
+                recycled.storage = RowStorage::Cells;
+                recycled.compactBlankStart = unknownCompactBlankStart;
+                fillBlank(row, blank, m_columns);
+                recycled.filled = m_columns;
+            }
+        } else if (blankDefault) {
+            fillBlank(row, blank, recycled.filled);
+            recycled.filled = 0;
+        } else {
+            fillBlank(row, blank, m_columns);
+            recycled.filled = m_columns;
+        }
+        recycled.meta = RowMeta { lineAttributeNormal, 0, {}, 0 };
+    };
     bool narrowedDirtyHints = false;
     if (!fullRegionClear && top == 0 && bot == m_rows - 1 && shift == 1) {
         if (n > 0) {
@@ -1969,14 +2283,8 @@ void CellGrid::scrollRegion(Row topR, Row botR, int n, const Cell& blank)
         const int blankSlot = slotOf(bot + 1 == rows ? 0 : bot + 1);
         rowPointers[blankSlot] = recycledRow;
         m_rowOrigin[m_activeIndex] = (origin + 1 == rows) ? 0 : origin + 1;
-        if (blankDefault) {
-            fillBlank(recycledRow, blank, recycledState.filled);
-            rowState[blankSlot].filled = 0;
-        } else {
-            fillBlank(recycledRow, blank, m_columns);
-            rowState[blankSlot].filled = m_columns;
-        }
-        rowState[blankSlot].meta = RowMeta { lineAttributeNormal, 0, {}, 0 };
+        rowState[blankSlot] = recycledState;
+        blankRecycledRow(recycledRow, rowState[blankSlot]);
         markDirtyRange(top, bot);
         narrowedDirtyHints = true;
     } else {
@@ -2003,27 +2311,13 @@ void CellGrid::scrollRegion(Row topR, Row botR, int n, const Cell& blank)
             rows[bot] = recycledRow;
             state[bot] = recycledState;
             for (int r = bot - shift + 1; r <= bot; ++r) {
-                if (blankDefault) {
-                    fillBlank(rows[r], blank, state[r].filled);
-                    state[r].filled = 0;
-                } else {
-                    fillBlank(rows[r], blank, m_columns);
-                    state[r].filled = m_columns;
-                }
-                state[r].meta = RowMeta { lineAttributeNormal, 0, {}, 0 };
+                blankRecycledRow(rows[r], state[r]);
             }
         } else if (n > 0) {
             std::rotate(rows + top, rows + top + shift, rows + bot + 1);
             std::rotate(state + top, state + top + shift, state + bot + 1);
             for (int r = bot - shift + 1; r <= bot; ++r) {
-                if (blankDefault) {
-                    fillBlank(rows[r], blank, state[r].filled);
-                    state[r].filled = 0;
-                } else {
-                    fillBlank(rows[r], blank, m_columns);
-                    state[r].filled = m_columns;
-                }
-                state[r].meta = RowMeta { lineAttributeNormal, 0, {}, 0 };
+                blankRecycledRow(rows[r], state[r]);
             }
         } else if (shift == 1) {
             Cell* recycledRow = rows[bot];
@@ -2043,28 +2337,14 @@ void CellGrid::scrollRegion(Row topR, Row botR, int n, const Cell& blank)
             rows[top] = recycledRow;
             state[top] = recycledState;
             for (int r = top; r < top + shift; ++r) {
-                if (blankDefault) {
-                    fillBlank(rows[r], blank, state[r].filled);
-                    state[r].filled = 0;
-                } else {
-                    fillBlank(rows[r], blank, m_columns);
-                    state[r].filled = m_columns;
-                }
-                state[r].meta = RowMeta { lineAttributeNormal, 0, {}, 0 };
+                blankRecycledRow(rows[r], state[r]);
             }
         } else {
             const int region = bot - top + 1;
             std::rotate(rows + top, rows + top + (region - shift), rows + bot + 1);
             std::rotate(state + top, state + top + (region - shift), state + bot + 1);
             for (int r = top; r < top + shift; ++r) {
-                if (blankDefault) {
-                    fillBlank(rows[r], blank, state[r].filled);
-                    state[r].filled = 0;
-                } else {
-                    fillBlank(rows[r], blank, m_columns);
-                    state[r].filled = m_columns;
-                }
-                state[r].meta = RowMeta { lineAttributeNormal, 0, {}, 0 };
+                blankRecycledRow(rows[r], state[r]);
             }
         }
     }
@@ -2438,7 +2718,7 @@ void CellGrid::scrollLaneRotateOnly(const Cell& blank)
         materializeCompactRow(m_activeIndex, bottomSlot);
     Cell* row = m_rowPtrs[m_activeIndex][bottomSlot];
     int& filled = m_rowState[m_activeIndex][bottomSlot].filled;
-    if (isBlankDefault && m_rowState[m_activeIndex][bottomSlot].storage == RowStorage::DefaultASCII) {
+    if (isBlankDefault && m_rowState[m_activeIndex][bottomSlot].storage != RowStorage::Cells) {
         resolveDeferredBlankSlot(m_activeIndex);
         filled = 0;
     } else if (isBlankDefault) {
@@ -2497,7 +2777,7 @@ void CellGrid::scrollFullViewportUpOneWithBlank(const Cell& blank, bool blankDef
         materializeCompactRow(m_activeIndex, bottomSlot);
     Cell* row = m_rowPtrs[m_activeIndex][bottomSlot];
     int& filled = m_rowState[m_activeIndex][bottomSlot].filled;
-    if (blankDefault && m_rowState[m_activeIndex][bottomSlot].storage == RowStorage::DefaultASCII) {
+    if (blankDefault && m_rowState[m_activeIndex][bottomSlot].storage != RowStorage::Cells) {
         resolveDeferredBlankSlot(m_activeIndex);
         filled = 0;
     } else if (blankDefault) {
@@ -2575,7 +2855,7 @@ const Cell* CellGrid::logicalCellAt(Row r, Column c) const
         return nullptr;
     assert(m_rowState[m_activeIndex]);
     const int slot = physicalRowSlot(m_activeIndex, row);
-    if (m_rowState[m_activeIndex][slot].storage == RowStorage::DefaultASCII)
+    if (m_rowState[m_activeIndex][slot].storage != RowStorage::Cells)
         return materializedLogicalCellAt(m_activeIndex, slot, column);
     return logicalCellAtSlot(m_activeIndex, slot, column);
 }
@@ -2596,12 +2876,17 @@ CellRead CellGrid::logicalCellReadAt(Row row, Column column) const
     assert(m_rowState[m_activeIndex]);
     const int slot = physicalRowSlot(m_activeIndex, row.value());
     const auto& state = m_rowState[m_activeIndex][slot];
-    if (state.storage != RowStorage::DefaultASCII)
+    if (state.storage == RowStorage::Cells)
         return CellRead(logicalCellAtSlot(m_activeIndex, slot, column.value()));
     assert(slot != m_deferredBlankSlot[m_activeIndex]);
     Cell cell = m_defaultBlank;
-    if (column.value() < state.filled)
-        cell.codePoint = reinterpret_cast<const std::uint8_t*>(m_rowPtrs[m_activeIndex][slot])[column.value()];
+    if (column.value() < state.filled) {
+        Cell* backing = m_rowPtrs[m_activeIndex][slot];
+        const std::uint8_t byte = reinterpret_cast<const std::uint8_t*>(backing)[column.value()];
+        if (state.storage == RowStorage::StyledASCII && byte != 0)
+            cell = m_styledTemplates->cells[styledIDs(backing)[column.value()]];
+        cell.codePoint = byte;
+    }
     return CellRead(cell);
 }
 

@@ -27,11 +27,13 @@
 #include <algorithm>
 #include <vector>
 
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstring>
 #include <expected>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -54,8 +56,16 @@ enum class RectangleScrollDirection : uint8_t {
 /// The authoritative representation in a physical row's backing storage.
 enum class RowStorage : std::uint8_t {
     Cells,
+    /// One byte a cell, every cell the default pen.
     DefaultASCII,
+    /// One byte a cell and, beside the bytes, a two-byte id a cell naming the
+    /// pen and hyperlink it carries in the grid's table of them.
+    StyledASCII,
 };
+
+/// ``RowState::compactBlankStart`` for a row whose backing cells are not known
+/// to be blank anywhere.
+inline constexpr std::uint16_t unknownCompactBlankStart = 0xFFFF;
 
 /// A logical cell borrowed from its row or reconstructed from compact bytes.
 ///
@@ -113,6 +123,12 @@ struct alignas(8) RowState {
     int filled;
     RowMeta meta;
     RowStorage storage = RowStorage::Cells;
+    /// For a compact row, the first column from which the backing cells
+    /// already hold the default blank, so expanding the row need not store
+    /// them again. Unknown unless the row became compact from cells whose
+    /// blank tail was known; a compact row's bytes lie over its first cells,
+    /// and this never falls below where they end.
+    std::uint16_t compactBlankStart = unknownCompactBlankStart;
 };
 
 /// Which way a row shift carries the cells in its window: `InsertRight` opens
@@ -262,6 +278,29 @@ public:
     // Bulk row write from `span` at firstColumn; amortises per-call bounds + idempotency overhead.
     // Idempotent: a byte-matching cell is skipped without bumping dirty. Used by Screen::insertCharacters/Screen::deleteCharacters.
     void setRowSpan(Row r, Column firstColumn, RowView span);
+    /// What a pass over a staged span would find, from the writer that staged it.
+    struct SpanFacts {
+        /// The union of the cells' attribute sets.
+        Ubiquitty::VT::AttributeSet attributes;
+        /// Whether any cell's code point may need shaping.
+        bool mayNeedShaping = false; // bool-ok: a fact about the span
+    };
+    /// ``setRowSpan`` for a span whose writer knows its facts.
+    ///
+    /// Every cell must carry a code point, none may be sized text, and the
+    /// facts must cover every cell; the span is then copied without being
+    /// read a cell at a time.
+    ///
+    /// - Parameters:
+    ///   - r: The row, on the active screen.
+    ///   - firstColumn: The span's first column.
+    ///   - span: The cells.
+    ///   - facts: The span's facts, or null to have them read from the cells.
+    void setRowSpan(Row r, Column firstColumn, RowView span, const SpanFacts* facts);
+    /// The cell an unwritten position holds.
+    ///
+    /// - Returns: The default blank.
+    [[nodiscard]] const Cell& defaultBlank() const { return m_defaultBlank; }
     // setRowSpan to a SPECIFIC screen (write mirror of cellAt(ScreenMode)); snapshot apply reconstructs the
     // frozen primary while alternate is active. Active screen → paint-tracked path; inactive → off the
     // paint-dirty path (later setAlternateActive supplies the repaint).
@@ -430,8 +469,23 @@ public:
     // m_rowState[screen] is addressed through the same logical-row mapping as m_rowPtrs, so metadata travels
     // with its cells on scroll. rowMeta(r) etc. act on the active screen; rowMetaAt addresses a specific
     // screen (0 primary, 1 alternate) so each Screen's read-through views see its own record.
-    [[nodiscard]] RowMeta& rowMeta(int r);
-    [[nodiscard]] const RowMeta& rowMeta(int r) const;
+    /// Whether a row on the active screen may hold a wide pair.
+    ///
+    /// The flag behind this is latched by every write of one, so a row
+    /// answering no has no half for a write's edges to orphan, and the blank
+    /// that would replace one need not be made.
+    ///
+    /// - Parameter row: The row, in [0, rows).
+    /// - Returns: Whether a write to the row must mind its edges.
+    [[nodiscard]] bool mayRowHoldWidePair(Row row) const
+    {
+        // A recycled row's flags were reset with it, while the cells past
+        // its deferred window are still what they were.
+        return rowMetaAt(m_activeIndex, row.value()).has(RowFlag::HasMulticell)
+            || physicalRowSlot(m_activeIndex, row.value()) == m_deferredBlankSlot[m_activeIndex];
+    }
+    [[nodiscard]] RowMeta& rowMeta(int r) { return rowMetaAt(m_activeIndex, r); }
+    [[nodiscard]] const RowMeta& rowMeta(int r) const { return rowMetaAt(m_activeIndex, r); }
     // Inline (for header-only view consumers that don't link CellGrid.cpp). Valid callers stay in [0, rows);
     // an out-of-range row is a caller bug (asserted). Release resolves to a scratch slot so a stray index
     // can't dereference past the allocation.
@@ -480,6 +534,14 @@ public:
     // Upper bound on the active row's live content width: [rowContentWidth(r), columns()) are all default
     // blank. Scroll path copies only this prefix. Returns columns() when unknown (conservative).
     [[nodiscard]] int rowContentWidth(Row r) const;
+    /// Whether a cell is the default blank, byte for byte.
+    ///
+    /// A row with no content width holds nothing else, so an erase that
+    /// stores this cell has nothing to change there.
+    ///
+    /// - Parameter cell: The cell to compare.
+    /// - Returns: Whether it equals the grid's default blank.
+    [[nodiscard]] bool isDefaultBlank(const Cell& cell) const;
 
     /// Reads the exact history-capture width of either screen.
     /// - Parameters:
@@ -859,8 +921,6 @@ private:
     int m_activeIndex;
     // Set row r's content-width bound (active screen), clamped to columns.
     void noteFilled(int ri, int width);
-    // True iff `c` byte-equals m_defaultBlank.
-    bool isDefaultBlank(const Cell& c) const;
     void resetRowPointers();
     // Deferred recycle blank (one row per screen). A full-viewport scroll recycles the departing row as
     // the new edge; the slot is recorded here and the row's filled width drops to 0 (logically blank), and
@@ -920,6 +980,65 @@ private:
     ///   - comparison: Whether the caller already established a difference.
     /// - Returns: Whether the compact path handled the write.
     [[nodiscard]] bool writeCompactASCIIRun(int slot, int row, int firstColumn, int lastColumn, const Cell& cellTemplate, const char* source, CompactWriteComparison comparison = CompactWriteComparison::Compare);
+    /// Writes an ASCII run into a compact row under any plain pen.
+    ///
+    /// A default row becomes a styled one when the pen is not the default.
+    ///
+    /// - Parameters:
+    ///   - slot: The physical row in the active screen, compact and not deferred.
+    ///   - row: The logical row for mutation tracking.
+    ///   - firstColumn: The clipped inclusive destination start.
+    ///   - lastColumn: The clipped inclusive destination end.
+    ///   - cellTemplate: The pen and non-codepoint fields shared by the run.
+    ///   - source: One borrowed byte per destination column.
+    /// - Returns: Whether the write was made; `false` leaves the row untouched.
+    [[nodiscard]] bool writeStyledASCIIRun(int slot, int row, int firstColumn, int lastColumn, const Cell& cellTemplate, const char* source);
+    /// The id of a run template in the styled rows' table, interning it.
+    ///
+    /// - Parameter cellTemplate: A cell with no code point and no cluster.
+    /// - Returns: The id, or nothing when the table is full, cannot be
+    ///   allocated, or the template is sized text, which no compact row holds.
+    [[nodiscard]] std::optional<std::uint16_t> styledTemplateID(const Cell& cellTemplate);
+    /// Where a styled row keeps its ids: past the bytes, inside the row's own storage.
+    ///
+    /// - Parameter backing: The row's storage.
+    /// - Returns: The first column's id.
+    [[nodiscard]] std::uint16_t* styledIDs(Cell* backing) const { return reinterpret_cast<std::uint16_t*>(reinterpret_cast<std::uint8_t*>(backing) + 4 * static_cast<std::size_t>(m_columnCapacity)); }
+    /// How many templates the styled rows' table holds; a grid that has
+    /// used them all keeps further styled runs as cells.
+    static constexpr int styledTemplateCapacity = 4096;
+    /// The table's hash slots, twice its capacity so a probe stays short.
+    static constexpr int styledTemplateSlots = 8192;
+    /// The styled rows' templates. Allocated on first use; ids are stable
+    /// until the grid is reinitialised.
+    struct StyledTemplates {
+        /// The templates by id, id zero the default blank.
+        std::array<Cell, styledTemplateCapacity> cells;
+        /// Open-addressed ids by template hash; 0xFFFF marks a free slot.
+        std::array<std::uint16_t, styledTemplateSlots> slots;
+        /// How many ids are in use.
+        int count = 0;
+    };
+    /// Shared with the grids copied from this one, whose rows name the same
+    /// ids, and cloned before this grid adds to it while another holds it.
+    std::shared_ptr<StyledTemplates> m_styledTemplates;
+    /// The id the last lookup returned: most runs repeat the one before.
+    std::uint16_t m_lastStyledTemplateID = 0;
+    /// Replaces a row of cells with a default ASCII run that covers all it holds.
+    ///
+    /// The caller has established that the run starts at the first column and
+    /// reaches the row's content width. The row becomes compact when the run
+    /// carries the default pen, differs from the cells it covers and borrows
+    /// nothing from the row's storage.
+    ///
+    /// - Parameters:
+    ///   - slot: The physical row in the active screen.
+    ///   - row: The logical row for mutation tracking.
+    ///   - lastColumn: The clipped inclusive end of the run.
+    ///   - cellTemplate: The pen and non-codepoint fields shared by the run.
+    ///   - source: One borrowed byte per column, from the first.
+    /// - Returns: Whether the row was replaced; `false` leaves it untouched.
+    [[nodiscard]] bool didReplaceCellsWithCompactASCIIRun(int slot, int row, int lastColumn, const Cell& cellTemplate, const char* source);
     /// Writes a known-different cell after compact storage has been excluded.
     ///
     /// The caller validates bounds and expands compact storage before entering.

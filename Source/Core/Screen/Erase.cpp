@@ -245,8 +245,12 @@ void eraseInDisplay(Ubiquitty::Terminal& t, int mode)
     {
         Ubiquitty::Cell blank;
         Ubiquitty::Screen::eraseCell(&blank, t);
+        // A row with no content holds nothing a default erase would change,
+        // guarded or not, and a screen cleared twice is mostly such rows.
+        const bool isBlankDefault = t.grid && t.grid->isDefaultBlank(blank);
         for (r = rfrom; r <= rto; r++) {
-            eraseSpanRespectingGuard(t, r, 0, t.columns - 1, blank);
+            if (!isBlankDefault || t.grid->rowContentWidth(Ubiquitty::Row(r)) != 0)
+                eraseSpanRespectingGuard(t, r, 0, t.columns - 1, blank);
             // An erased row loses its DECDWL/DECDHL line-attribute and
             // soft-wrap join, else a DHL banner keeps drawing at 2×.
             s->lineAttribute[r] = lineAttributeNormal;
