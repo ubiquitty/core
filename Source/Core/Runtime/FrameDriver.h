@@ -54,19 +54,6 @@ public:
     // milliseconds apart, so this window is wider than the drain one.
     static constexpr double adaptiveNetChangeIntervalFactor = 30.0;
 
-    // The least time between two frames of a flood, for a frontend that paces
-    // them (``IngestLoop::isFloodUnderway``). Output that arrives faster than
-    // it can be read is not read, and on hardware whose processor and
-    // graphics share a power budget a frame costs the parser its clock for
-    // long after the frame's own time. The interval is that recovery time,
-    // not a frame rate chosen for the eye: a shorter one buys nothing back.
-    static constexpr double floodFrameIntervalSeconds = 0.2;
-    // The same for a flood whose program holds synchronized output. It asked
-    // for no frame while it holds, and blocks sent back to back release the
-    // hold only for an instant, so what it is owed is what an unbroken hold is
-    // owed: a frame when the hold's watchdog would have forced one.
-    static constexpr double synchronizedFloodFrameIntervalSeconds = 1.0;
-
     // Default-constructible so it can be a plain ObjC++ ivar.
     FrameDriver()
         : FrameDriver(defaultIdleTimeoutSeconds)

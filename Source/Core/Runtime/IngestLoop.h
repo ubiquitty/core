@@ -346,8 +346,10 @@ public:
     /// than frames could show it: the reader is ahead of the parser by a
     /// backlog, or ``floodPacingOnsetBytes`` were parsed within the last two
     /// rate spans and the last pass filled or closed less than
-    /// ``floodQuietMicros`` ago. A frontend paces its frames by this
-    /// (``FrameDriver::floodFrameIntervalSeconds``). False again within
+    /// ``floodQuietMicros`` ago. No frame is paced by this: a flood is drawn
+    /// at the display's rate as any output is. A frontend asks it to leave
+    /// alone what a flood undoes before it is seen, such as the run under a
+    /// resting pointer. False again within
     /// ``floodQuietMicros`` of the writer stopping, well before the reader's
     /// quiet budget ends the burst, so the flood's last state is not held,
     /// and false throughout for a burst that is a screen's worth of output
