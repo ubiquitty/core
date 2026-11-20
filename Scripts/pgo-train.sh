@@ -128,6 +128,15 @@ if ! grep -q '"training_mode": "fixed-input-counts"' "$BUILD/training-run.json";
     echo "pgo-train: FAILED — bench_stack did not run with fixed training input counts" >&2
     exit 1
 fi
+# The deferred scroll lanes ship switched on, and the parse lanes above run
+# with them off: every line feed at the bottom of their grids takes the
+# immediate scroll, and the lane a session scrolls through is counted at zero.
+# The same lanes again with the lanes on, and the lanes that hold a run open
+# across a control sequence, which run by name only.
+env -u UBQ_BENCH_STREAM "$BUILD/bench_stack_instrumented" --platform "$(uname -s)-$(uname -m)" \
+    --commit "$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
+    --scroll-lane --only parse,sgr_scroll \
+    > "$BUILD/training-run-scroll-lanes.json"
 
 # The corpora battery is the second half of the training corpus. bench_stack's
 # parse lanes are ASCII/SGR/scroll shaped: the wide, cluster and multibyte emit
@@ -145,6 +154,10 @@ $CXX_LAUNCHED -std=c++23 $INSTRUMENT_FLAGS -fno-exceptions -fno-rtti -pthread \
     "$BUILD/bench_corpora_driver.o" "$BUILD/bench_pal_stub.cpp" \
     "$PORTABLE_CORE_ARCHIVE" -o "$BUILD/bench_corpora_instrumented"
 env -u UBQ_BENCH_STREAM "$BUILD/bench_corpora_instrumented" --repetitions 2 > "$BUILD/training-corpora.json"
+# A session parses through the entry that stops at a synchronized update's end,
+# in the pieces its model lock is held for: another instantiation of the
+# parser, which the pass above never enters.
+env -u UBQ_BENCH_STREAM "$BUILD/bench_corpora_instrumented" --repetitions 1 --entry sync --chunk 4096 > "$BUILD/training-corpora-session.json"
 
 # One lane per shipping configuration: the list is the claim about what the
 # corpus reaches. A configuration with no lane trains to zero counts, and
@@ -157,8 +170,12 @@ for lane in $REQUIRED_LANES; do
     grep -q "\"$lane\"" "$BUILD/training-run.json" || MISSING="$MISSING $lane"
 done
 # The corpora half, asserted the same way and for the same reason.
-for lane in ascii latin1_multibyte cjk_wide combining sgr_truecolor legacy_graphics session_ideographs session_mixed_scripts session_tabbed_ascii; do
+for lane in ascii latin1_multibyte cjk_wide combining sgr_truecolor legacy_graphics session_ideographs session_mixed_scripts session_tabbed_ascii raw_mode_ascii raw_mode_ideographs raw_mode_mixed_scripts; do
     grep -q "\"$lane\"" "$BUILD/training-corpora.json" || MISSING="$MISSING $lane"
+    grep -q "\"$lane\"" "$BUILD/training-corpora-session.json" || MISSING="$MISSING $lane(session)"
+done
+for lane in parse_plain parse_scroll parse_sgr_scroll_full parse_sgr_scroll_band parse_sgr_scroll_full_syncfeed; do
+    grep -q "\"$lane\"" "$BUILD/training-run-scroll-lanes.json" || MISSING="$MISSING $lane(scroll-lanes)"
 done
 if [ -n "$MISSING" ]; then
     echo "pgo-train: FAILED — the corpus never ran:$MISSING" >&2

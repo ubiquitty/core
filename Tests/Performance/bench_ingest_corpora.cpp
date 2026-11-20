@@ -165,6 +165,20 @@ std::string tabbedASCIILines()
     return unit;
 }
 
+// What a program in raw mode writes to the alternate screen: a line feed
+// returns no carriage there, so each line starts under the end of the last
+// one and every row fills and wraps. The same lines as a session's, for the
+// writers a session's lines reach with a carriage return in between.
+std::string rawModeText(const std::string& lines)
+{
+    std::string unit = "\x1b[?1049h";
+    for (const char byte : lines) {
+        if (byte != '\r')
+            unit += byte;
+    }
+    return unit;
+}
+
 // Letters with a combining mark on about one in six, the way decomposed text
 // carries them, in words, each line short of the grid.
 std::string sparseMarks()
@@ -301,6 +315,12 @@ std::vector<Corpus> buildCorpora(std::size_t targetBytes)
     corpora.push_back({ "session_ideographs", repeatToBytes(wrappedIdeographLines(), targetBytes), 24, 80, sessionHistoryLines });
     corpora.push_back({ "session_mixed_scripts", repeatToBytes(mixedScriptLines(), targetBytes), 48, 200, sessionHistoryLines });
     corpora.push_back({ "session_tabbed_ascii", repeatToBytes(tabbedASCIILines(), targetBytes), 24, 80, sessionHistoryLines });
+
+    // The same text from a program in raw mode on the alternate screen, which
+    // keeps no history and scrolls in place.
+    corpora.push_back({ "raw_mode_ascii", repeatToBytes(rawModeText(tabbedASCIILines()), targetBytes), 24, 80 });
+    corpora.push_back({ "raw_mode_ideographs", repeatToBytes(rawModeText(wrappedIdeographLines()), targetBytes), 24, 80 });
+    corpora.push_back({ "raw_mode_mixed_scripts", repeatToBytes(rawModeText(mixedScriptLines()), targetBytes), 24, 80 });
 
     // Marks scattered through words: the batched writer hands each mark to the
     // cluster path and takes the row back after it, the hand-off a corpus with
