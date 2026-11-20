@@ -242,11 +242,13 @@ void feed(Ubiquitty::Terminal& term, const std::string& bytes, std::size_t chunk
         Ubiquitty::processBytes(&term, std::string_view(bytes).substr(offset, chunkBytes));
 }
 
-double bestMegabytesPerSecond(const Corpus& corpus, int repetitions, std::size_t chunkBytes)
+double bestMegabytesPerSecond(const Corpus& corpus, int repetitions, std::size_t chunkBytes, int scrollbackLines)
 {
     const auto& bytes = corpus.bytes;
     Ubiquitty::Terminal term;
     Ubiquitty::hardReset(term);
+    if (scrollbackLines > 0)
+        Ubiquitty::setScrollbackLimit(&term, scrollbackLines);
     Ubiquitty::resize(term, corpus.rows, corpus.columns);
     // One untimed pass so first-touch faults and table init stay out of the sample.
     feed(term, bytes, chunkBytes);
@@ -288,6 +290,9 @@ int main(int argc, char** argv)
     int streamRows = benchRows;
     int streamColumns = benchColumns;
     const char* loopCorpus = nullptr;
+    // A history as long as a session's is larger than the cache, and what a
+    // scrolled row costs to keep depends on that; zero keeps the terminal's own.
+    int scrollbackLines = 0;
     for (int index = 1; index < argc; ++index) {
         if (std::strcmp(argv[index], "--stream") == 0 && index + 1 < argc)
             streamPath = argv[++index];
@@ -305,8 +310,10 @@ int main(int argc, char** argv)
             loopCorpus = argv[++index];
         else if (std::strcmp(argv[index], "--repetitions") == 0 && index + 1 < argc)
             repetitions = std::atoi(argv[++index]);
+        else if (std::strcmp(argv[index], "--scrollback") == 0 && index + 1 < argc)
+            scrollbackLines = std::max(0, std::atoi(argv[++index]));
         else {
-            std::fprintf(stderr, "usage: bench_ingest_corpora [--repetitions N] [--loop <corpus>] [--chunk BYTES] [--stream <file> [--stream-grid COLUMNSxROWS]]\n");
+            std::fprintf(stderr, "usage: bench_ingest_corpora [--repetitions N] [--loop <corpus>] [--chunk BYTES] [--scrollback LINES] [--stream <file> [--stream-grid COLUMNSxROWS]]\n");
             return 2;
         }
     }
@@ -339,6 +346,8 @@ int main(int argc, char** argv)
                 continue;
             Ubiquitty::Terminal term;
             Ubiquitty::hardReset(term);
+            if (scrollbackLines > 0)
+                Ubiquitty::setScrollbackLimit(&term, scrollbackLines);
             Ubiquitty::resize(term, corpus.rows, corpus.columns);
             for (;;)
                 Ubiquitty::processBytes(&term, corpus.bytes);
@@ -356,7 +365,7 @@ int main(int argc, char** argv)
     std::printf(R"({"benchmarks":[)");
     bool first = true;
     for (const Corpus& corpus : corpora) {
-        const double megabytesPerSecond = bestMegabytesPerSecond(corpus, repetitions, chunkBytes);
+        const double megabytesPerSecond = bestMegabytesPerSecond(corpus, repetitions, chunkBytes, scrollbackLines);
         std::fprintf(stderr, "%-18s %4dx%-4d %12.1f\n", corpus.name, corpus.columns, corpus.rows, megabytesPerSecond);
         std::printf(R"(%s{"name":"%s","value":%.3f,"unit":"MB/s","rows":%d,"columns":%d})", first ? "" : ",", corpus.name, megabytesPerSecond, corpus.rows, corpus.columns);
         first = false;
