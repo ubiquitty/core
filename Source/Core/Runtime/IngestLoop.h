@@ -1319,6 +1319,7 @@ private:
             // a Darwin pthread starts in the default class whatever its
             // creator's is.
             PAL::raiseCurrentThreadToInteractivePriority();
+            PAL::nameCurrentThread("pty-reader");
             for (;;) {
                 m_floodReaderStarts.wait(served, std::memory_order_acquire);
                 if (m_shouldFloodReaderExit.load(std::memory_order_acquire))

@@ -6456,6 +6456,7 @@ public:
             // ingest queue names: the two drivers run the same Core loop and
             // must differ only in who owns the thread.
             PAL::raiseCurrentThreadToInteractivePriority();
+            PAL::nameCurrentThread("ingest");
             m_loop.run(m_pollableEndpoint->handle());
             m_didIngestFinish.store(true, std::memory_order_release);
         });

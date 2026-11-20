@@ -239,6 +239,17 @@ void raiseCurrentThreadToInteractivePriority()
 #endif
 }
 
+void nameCurrentThread(const char* name)
+{
+#if defined(__APPLE__)
+    (void)::pthread_setname_np(name);
+#elif defined(__linux__)
+    (void)::pthread_setname_np(::pthread_self(), name);
+#else
+    (void)name;
+#endif
+}
+
 void lowerCurrentThreadToUtilityPriority()
 {
 #if defined(__APPLE__)

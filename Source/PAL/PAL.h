@@ -351,6 +351,15 @@ void schedulerYield();
 /// nothing measurable.
 void raiseCurrentThreadToInteractivePriority();
 
+/// Names the calling thread for the tools that list threads.
+///
+/// A profiler, a debugger and the system's own process views show a thread
+/// by this name; without one every thread carries the program's. A hint
+/// only: a backend with no thread names does nothing.
+///
+/// - Parameter name: The name, at most 15 bytes, which is all Linux keeps.
+void nameCurrentThread(const char* name);
+
 /// Places the calling thread in the band background work runs in.
 ///
 /// The mirror of ``raiseCurrentThreadToInteractivePriority``, called once by a
