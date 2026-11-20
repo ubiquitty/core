@@ -146,6 +146,7 @@
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "Core/Runtime/TerminalSessionReference.h"
@@ -6504,6 +6505,15 @@ public:
         std::uint64_t ingestMicroseconds = 0;
         /// The slowest single delivery's parse time.
         std::uint32_t longestIngestMicroseconds = 0;
+        /// Releases of the model lock that handed it to a waiting reader:
+        /// what the threads reading the model cost the one writing it.
+        std::uint64_t lockHandoffs = 0;
+        /// The writer's time in those handoffs.
+        std::uint64_t lockHandoffMicroseconds = 0;
+        /// Frames captured for the view.
+        std::uint64_t framesCaptured = 0;
+        /// Captured frames a newer one replaced before the view took them.
+        std::uint64_t framesReplaced = 0;
     };
 
     /// Starts tallying deliveries for the perf log.
@@ -6521,6 +6531,13 @@ public:
         tally.deliveries = m_perfDrainDeliveries.exchange(0, std::memory_order_acquire);
         tally.ingestMicroseconds = m_perfDrainIngestMicroseconds.exchange(0, std::memory_order_acquire);
         tally.longestIngestMicroseconds = m_perfDrainLongestIngestMicroseconds.exchange(0, std::memory_order_acquire);
+        // The counters these are read from only grow; the tally is what they
+        // grew by since the last take, kept on the one thread that takes it.
+        const auto growth = [](std::uint64_t now, std::uint64_t& seen) { return now - std::exchange(seen, now); };
+        tally.lockHandoffs = growth(m_host.donationCount(), m_perfSeenLockHandoffs);
+        tally.lockHandoffMicroseconds = growth(m_host.donationMicros(), m_perfSeenLockHandoffMicroseconds);
+        tally.framesCaptured = growth(m_syncFramePublicationCount.load(std::memory_order_relaxed), m_perfSeenFramesCaptured);
+        tally.framesReplaced = growth(m_frameLane.overwriteCount(), m_perfSeenFramesReplaced);
         return tally;
     }
 
@@ -14417,6 +14434,12 @@ private:
     std::atomic<std::uint32_t> m_perfDrainDeliveries { 0 };
     std::atomic<std::uint64_t> m_perfDrainIngestMicroseconds { 0 };
     std::atomic<std::uint32_t> m_perfDrainLongestIngestMicroseconds { 0 };
+    // What the tally last saw of the counters it reports the growth of; the
+    // taking thread's alone.
+    std::uint64_t m_perfSeenLockHandoffs = 0;
+    std::uint64_t m_perfSeenLockHandoffMicroseconds = 0;
+    std::uint64_t m_perfSeenFramesCaptured = 0;
+    std::uint64_t m_perfSeenFramesReplaced = 0;
     // Rows of history the surface presents above the tail; the animation
     // schedule's conservative blink arm reads it (see setPresentedViewOffset).
     std::atomic<int> m_presentedViewOffset { 0 };
