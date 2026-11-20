@@ -144,6 +144,12 @@ inline constexpr std::size_t floodBiteCapacityBytes = 64 * 1024;
 // costs more in wake/sleep transitions than the batching returns.
 inline constexpr std::uint32_t floodConsumerNapMicros = 200;
 
+// How long a burst may sit closed before a frontend stops pacing its frames
+// for a flood. Longer than the gap a program leaves between two bursts it
+// sends back to back, which arrive as one flood, and shorter than a frame, so
+// a flood's last state is drawn on the tick that follows it.
+inline constexpr std::uint32_t floodQuietMicros = 5000;
+
 /// The sequential ingest loop over one session's transport.
 ///
 /// `run` parks in ``PAL::waitForReadiness`` with the waker joined into the
@@ -323,6 +329,30 @@ public:
     ///
     /// - Returns: The burst count since construction.
     [[nodiscard]] std::uint64_t floodBurstCount() const { return m_floodBurstCount.load(std::memory_order_relaxed); }
+
+    /// Whether output is arriving as a flood as of `nowMicros`.
+    ///
+    /// True while the pipeline carries a burst that is still being fed: its
+    /// last pass filled, or closed less than ``floodQuietMicros`` ago, or the
+    /// reader is ahead of the parser by a backlog. A frontend paces its frames
+    /// by this (``FrameDriver::floodFrameIntervalSeconds``). False again within
+    /// ``floodQuietMicros`` of the writer stopping, well before the reader's
+    /// quiet budget ends the burst, so the flood's last state is not held.
+    ///
+    /// Reads atomics only, from any thread.
+    ///
+    /// - Parameter nowMicros: The monotonic time to judge against.
+    /// - Returns: Whether a flood is underway.
+    [[nodiscard]] bool isFloodUnderway(std::uint32_t nowMicros) const
+    {
+        if (!m_isFloodBurstLive.load(std::memory_order_acquire))
+            return false;
+        if (m_runtime.isDrainSaturated() || nowMicros - m_floodLastPassMicros.load(std::memory_order_relaxed) < floodQuietMicros)
+            return true;
+        const std::uint64_t produced = m_floodRingControl->producer.load(std::memory_order_relaxed) & floodRingPositionMask;
+        const std::uint64_t consumed = m_floodRingControl->consumer.load(std::memory_order_relaxed) & floodRingPositionMask;
+        return produced - consumed >= floodAccumulateBacklogBytes;
+    }
 
     /// How many short-read accumulate waits the flood reader has taken,
     /// cumulatively.
@@ -1069,6 +1099,8 @@ private:
         constexpr int passCapacity = TerminalRuntime::drainPassCapacityBytes;
         long passBytes = 0;
         std::uint32_t passStartMicros = PAL::monotonicMicros();
+        m_floodLastPassMicros.store(passStartMicros, std::memory_order_relaxed);
+        m_isFloodBurstLive.store(true, std::memory_order_release);
         // The presentation budget runs while the frame stays held, across the
         // passes a would-block closes: a writer the machine starves arrives in
         // slices a nap apart, and restarting the budget at each slice's close
@@ -1082,6 +1114,9 @@ private:
             coalesce(out, pendingOutcome, havePendingOutcome, pendingIngestMicros, now - passStartMicros, now, lastDeliverMicros);
             passBytes = 0;
             passStartMicros = now;
+            // A pass that closed on bytes says the writer was still there.
+            if (out.bytesDrained > 0)
+                m_floodLastPassMicros.store(now, std::memory_order_relaxed);
             if (end != DrainPassEnd::WouldBlock)
                 budgetStartMicros = now;
             m_runtime.serviceFrontend(m_host);
@@ -1264,6 +1299,7 @@ private:
             const std::uint32_t now = PAL::monotonicMicros();
             coalesce(out, pendingOutcome, havePendingOutcome, pendingIngestMicros, now - passStartMicros, now, lastDeliverMicros);
         }
+        m_isFloodBurstLive.store(false, std::memory_order_release);
         // Burst over: publish a complete settled frame (coherent-gated) so
         // the render has one to promote the instant the hold below lifts,
         // then drop the hold. On a stop the publish is skipped (the residue
@@ -1379,6 +1415,10 @@ private:
     std::atomic<std::uint64_t> m_floodNapCount { 0 };
     /// Pipelined bursts, cumulatively; see ``floodBurstCount()``.
     std::atomic<std::uint64_t> m_floodBurstCount { 0 };
+    // Set while runFloodPipeline carries a burst, and when its last pass with
+    // bytes closed: what isFloodUnderway reads from the frontend's thread.
+    std::atomic<bool> m_isFloodBurstLive { false };
+    std::atomic<std::uint32_t> m_floodLastPassMicros { 0 };
     /// Short-read accumulate waits, cumulatively; see ``floodAccumulateWaitCount()``.
     std::atomic<std::uint64_t> m_floodAccumulateWaitCount { 0 };
     /// The burst ring, allocated on the first flood and kept.

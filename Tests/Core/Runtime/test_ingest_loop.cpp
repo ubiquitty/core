@@ -1122,14 +1122,23 @@ TEST(testAPipelinedPauseOnAPassBoundaryDeliversBeforeTheBurstEnds)
     loop.adoptFloodEndpoint(std::move(floodEndpoint));
     std::jthread ingest([&loop, &loopEndpoint] { loop.run(loopEndpoint->handle()); });
 
+    // A frontend paces its frames while a flood is underway, and draws the
+    // flood's last state once it is not: the query has to say yes while the
+    // burst is fed and no once its writer has paused, with the burst still
+    // open behind it.
     bool isDelivered = false;
-    for (int waited = 0; waited < 10000 && !isDelivered; waited += 5) {
+    bool wasFloodUnderway = false;
+    for (int waited = 0; waited < 10000 && !isDelivered; ++waited) {
+        wasFloodUnderway = wasFloodUnderway || loop.isFloodUnderway(Ubiquitty::PAL::monotonicMicros());
         isDelivered = deliveredBytes.load(std::memory_order_relaxed) == burstBytes && !runtime.isDrainSaturated();
         if (!isDelivered)
-            ::usleep(5 * 1000);
+            ::usleep(1000);
     }
     CHECK_MSG(loop.floodBurstCount() == 1, "the burst rode the pipeline and is still open");
     CHECK_MSG(isDelivered, "the burst's last pass waited for the burst to end");
+    CHECK_MSG(wasFloodUnderway, "a burst being fed is a flood underway");
+    ::usleep(2 * Ubiquitty::Runtime::floodQuietMicros);
+    CHECK_MSG(!loop.isFloodUnderway(Ubiquitty::PAL::monotonicMicros()), "a paused writer is not a flood, however long its burst stays open");
     loop.requestStop();
     loop.raiseWake();
     ingest.join();

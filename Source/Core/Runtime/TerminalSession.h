@@ -6278,6 +6278,10 @@ public:
     /// ``TerminalRuntime::isDrainSaturated``.
     [[nodiscard]] bool isDrainSaturated() const noexcept UBIQUITTY_NONBLOCKING { return m_runtime->isDrainSaturated(); }
 
+    /// Whether output is arriving as a flood right now; see
+    /// ``IngestLoop::isFloodUnderway``. Reads atomics only.
+    [[nodiscard]] bool isFloodUnderway() const { return m_loop.isFloodUnderway(PAL::monotonicMicros()); }
+
     /// Whether a render tick that found no capture waiting in the sync slot
     /// may present nothing rather than read the live model.
     ///
