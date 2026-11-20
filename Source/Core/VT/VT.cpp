@@ -5872,11 +5872,18 @@ static int emitASCIIFill(Ubiquitty::Terminal& t, uint8_t ch, int count)
 // assert pins these ranges so they can't drift.
 [[gnu::always_inline]] static inline bool isWideIdeographFast(uint32_t codePoint)
 {
-    return (codePoint >= 0x4E00 && codePoint <= 0x9FFF) // CJK Unified Ideographs
-        || (codePoint >= 0x3400 && codePoint <= 0x4DBF) // CJK Extension A
-        || (codePoint >= 0xAC00 && codePoint <= 0xD7A3) // Hangul Syllables
-        || (codePoint >= 0xF900 && codePoint <= 0xFAFF) // CJK Compatibility Ideographs
-        || (codePoint >= 0x20000 && codePoint <= 0x2FA1F); // CJK Ext B–F + compat suppl
+    // The first range is most of what East Asian text is made of, so it
+    // alone decides nearly every glyph: enclosed and compatibility forms,
+    // CJK Extension A, the unified ideographs and Yi.
+    if (codePoint - 0x329Au <= 0xA48Cu - 0x329Au) [[likely]]
+        return true;
+    return codePoint - 0x2FF0u <= 0x3029u - 0x2FF0u // description characters, CJK punctuation
+        || codePoint - 0x3041u <= 0x3096u - 0x3041u // Hiragana
+        || codePoint - 0x309Bu <= 0x30FFu - 0x309Bu // Katakana
+        || codePoint - 0xFF01u <= 0xFF60u - 0xFF01u // fullwidth forms
+        || codePoint - 0xAC00u <= 0xD7A3u - 0xAC00u // Hangul Syllables
+        || codePoint - 0xF900u <= 0xFAFFu - 0xF900u // CJK Compatibility Ideographs
+        || codePoint - 0x20000u <= 0x2FA1Fu - 0x20000u; // CJK Ext B–F + compat suppl
 }
 
 static inline bool isPlainWideGraphic(uint32_t codePoint, Unicode::Width::AmbiguousWidth ambiguousWidth)
