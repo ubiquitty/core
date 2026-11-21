@@ -99,10 +99,12 @@ TEST(testTextRunChunkingComparisonSeesADifference)
 namespace {
 
 // Every cell whole, pen and marks included, and where the cursor stands.
-std::vector<Ubiquitty::Cell> feedCellsInChunks(std::string_view bytes, int chunkSize, int& cursorX, int& cursorY)
+std::vector<Ubiquitty::Cell> feedCellsInChunks(std::string_view bytes, int chunkSize, int& cursorX, int& cursorY,
+    Ubiquitty::Unicode::Width::AmbiguousWidth ambiguousWidth = Ubiquitty::Unicode::Width::AmbiguousWidth::Narrow)
 {
     Ubiquitty::Terminal t;
     Ubiquitty::hardReset(t);
+    t.ambiguousWidth = ambiguousWidth;
     std::size_t offset = 0;
     while (offset < bytes.size()) {
         const std::size_t take = std::min(static_cast<std::size_t>(chunkSize), bytes.size() - offset);
@@ -154,6 +156,47 @@ TEST(testTextPresentedPictographsPlaceTheSameCellsWholeOrSplit)
             CHECK(isSame);
             CHECK_EQ(splitX, wholeX);
             CHECK_EQ(splitY, wholeY);
+        }
+    }
+}
+
+// Symbols of three bytes from U+2000 up, a box's lines, blocks, arrows and
+// dashes, are read in the flow where they stand. Fed whole they take that
+// path; fed a byte at a time, each glyph is placed by itself. The cells and
+// the cursor must agree with ambiguous glyphs narrow and wide, beside the
+// format characters below U+2010, a pictograph of the same lead, a mark behind
+// a symbol, and a malformed sequence.
+TEST(testThreeByteSymbolsPlaceTheSameCellsWholeOrSplit)
+{
+    std::string box;
+    for (int index = 0; index < 30; ++index)
+        box += "\xE2\x94\x8C\xE2\x94\x80\xE2\x95\xAC\xE2\x96\x88"; // corner, line, cross, full block
+    std::string arrows = "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80";
+    for (int index = 0; index < 10; ++index)
+        arrows += "\xE2\x86\x92\xE2\x80\x94\xE2\x80\xA2"; // ambiguous: arrow, em dash, bullet
+    const std::string cases[] = {
+        box,
+        arrows,
+        "\xE2\x86\x92\xE2\x80\x94\xE2\x80\xA2 ok \xE2\x86\x90", // arrow, em dash, bullet, ASCII
+        "\xE2\x94\x80\xE2\x80\x8D\xE2\x94\x80\xE2\x80\x8B\xE2\x94\x80", // a joiner and a zero-width space
+        "\xE2\x94\x80\xE2\x98\x80\xE2\x94\x80", // a pictograph between lines
+        "\xE2\x94\x80\xCC\x81\xE2\x94\x82", // a mark behind a line
+        "\xE2\x94\x80\xE2\x94\xE2\x94\x82", // a truncated sequence
+    };
+    for (const auto ambiguousWidth : { Ubiquitty::Unicode::Width::AmbiguousWidth::Narrow, Ubiquitty::Unicode::Width::AmbiguousWidth::Wide }) {
+        for (const std::string& text : cases) {
+            int wholeX = 0, wholeY = 0;
+            const std::vector<Ubiquitty::Cell> whole = feedCellsInChunks(text, static_cast<int>(text.size()), wholeX, wholeY, ambiguousWidth);
+            for (const int chunkSize : { 1, 2, 5 }) {
+                int splitX = 0, splitY = 0;
+                const std::vector<Ubiquitty::Cell> split = feedCellsInChunks(text, chunkSize, splitX, splitY, ambiguousWidth);
+                bool isSame = split.size() == whole.size();
+                for (std::size_t index = 0; isSame && index < whole.size(); ++index)
+                    isSame = std::memcmp(&split[index], &whole[index], sizeof(Ubiquitty::Cell)) == 0;
+                CHECK(isSame);
+                CHECK_EQ(splitX, wholeX);
+                CHECK_EQ(splitY, wholeY);
+            }
         }
     }
 }

@@ -8236,6 +8236,32 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
                             continue;
                         }
                     }
+                    // A symbol of three bytes from U+2010 to U+2FFF, a line of
+                    // a box, a block, an arrow or a dash, read where it stands
+                    // as a letter of two bytes is. Its lead rules out an
+                    // overlong form and a surrogate, nothing there shapes, and
+                    // the joiners and the other format characters below U+2010
+                    // are left to the reader below.
+                    if (next == 0xE2 && end + 2 < length) {
+                        const unsigned high = static_cast<unsigned char>(buffer[end + 1]) ^ 0x80u;
+                        const unsigned low = static_cast<unsigned char>(buffer[end + 2]) ^ 0x80u;
+                        if ((high | low) <= 0x3F) {
+                            const uint32_t codePoint = 0x2000u | (high << 6) | low;
+                            const std::uint8_t properties = Unicode::Width::classify(codePoint);
+                            if (codePoint >= 0x2010 && (properties == plainProperties || properties == ambiguousPlainProperties)) {
+                                assert(isPlainNarrowGraphic(codePoint, ambiguousWidth));
+                                codePoints[count++] = codePoint;
+                                ++glyphs;
+                                lastLength = 3;
+                                lastWidth = 1;
+                                isLastPictograph = false;
+                                end += 3;
+                                if (isMarkBehind())
+                                    takeMarkBehind();
+                                continue;
+                            }
+                        }
+                    }
                     const FlowGlyph glyph = peekFlowGlyph(buffer, end, length, ambiguousWidth);
                     if (glyph.width == 2) {
                         // A pair that does not fit ends the piece, and the wrap
