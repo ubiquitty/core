@@ -1766,7 +1766,7 @@ void CellGrid::writeNarrowCodePointRun(Row rowValue, Column firstColumnValue, co
     noteFilled(row, lastColumn + 1);
 }
 
-void CellGrid::writeMixedCodePointRun(Row rowValue, Column firstColumnValue, const Cell& cellTemplate, std::span<const uint32_t> columnEntries)
+void CellGrid::writeMixedCodePointRun(Row rowValue, Column firstColumnValue, const Cell& cellTemplate, std::span<const uint32_t> columnEntries, std::span<const ColumnMark> marks)
 {
     const int row = rowValue.value();
     const int firstColumn = firstColumnValue.value();
@@ -1821,6 +1821,13 @@ void CellGrid::writeMixedCodePointRun(Row rowValue, Column firstColumnValue, con
         stamps[entry >> mixedColumnShift].store(destination + index, entry & mixedCodePointMask);
     }
     const bool hasPair = (kinds & (1u << static_cast<int>(MixedColumn::RightHalf))) != 0;
+    for (const ColumnMark& mark : marks) {
+        assert(mark.column >= 0 && mark.column < count && columnEntries[mark.column] >> mixedColumnShift == static_cast<uint32_t>(MixedColumn::Narrow));
+        static_assert(cellMaxCombining >= 1, "a mark is held inline");
+        Cell& cell = destination[mark.column];
+        cell.combining[0] = mark.mark;
+        cell.setCombiningLength(1);
+    }
     m_anyMutationsSinceLastPaint = true;
     bumpRow(row);
     if (attributes.contains(VT::Attribute::Blink))

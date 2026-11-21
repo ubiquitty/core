@@ -443,6 +443,13 @@ public:
     static constexpr int mixedColumnShift = 29;
     /// The code point bits of an entry of ``writeMixedCodePointRun``.
     static constexpr uint32_t mixedCodePointMask = (1u << mixedColumnShift) - 1;
+    /// A combining mark ``writeMixedCodePointRun`` gives a narrow glyph's
+    /// cell, inline, as the character path attaches one.
+    struct ColumnMark {
+        /// The glyph's column, from the run's first.
+        int column;
+        std::uint32_t mark;
+    };
     /// An entry of ``writeMixedCodePointRun``.
     ///
     /// - Parameters:
@@ -474,7 +481,9 @@ public:
     ///   - columnEntries: One ``mixedColumnEntry`` a column. A glyph's code
     ///     point is nonzero and needs no shaping; a right half's is zero, the
     ///     continuation's, and follows a lead.
-    void writeMixedCodePointRun(Row row, Column firstColumn, const Cell& cellTemplate, std::span<const uint32_t> columnEntries);
+    ///   - marks: The narrow glyphs that carry a combining mark, each once,
+    ///     in column order.
+    void writeMixedCodePointRun(Row row, Column firstColumn, const Cell& cellTemplate, std::span<const uint32_t> columnEntries, std::span<const ColumnMark> marks = {});
     /// Writes a run of printable ASCII translated through a character set.
     ///
     /// The companion to `writeASCIIRun` for a designated GL set: one byte still

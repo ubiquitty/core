@@ -5794,6 +5794,8 @@ struct PlacedGlyph {
     int cursorX = 0;
     int cursorY = 0;
     bool isWrapPending = false;
+    /// The combining mark its cell holds inline, or zero.
+    uint32_t continuation = 0;
 };
 
 /// Tells the parser what a piece of text ended on: the item a repeat replays,
@@ -5824,6 +5826,15 @@ static inline void notePlacedGlyph(Ubiquitty::Terminal& t, const PlacedGlyph& pl
     t.parser.clusterAtWrap = placed.isWrapPending;
     t.parser.clusterCodePoints[0] = placed.codePoint;
     t.parser.clusterCodepointLength = 1;
+    if (placed.continuation != 0) {
+        // The last received graphic is the mark, and the cluster it joined is
+        // open with it, as the per-character path leaves both.
+        t.parser.precedingItem.setGraphic(placed.continuation, placed.continuation, 0);
+        (void)Ubiquitty::Unicode::graphemeExtends(&t.parser.clusterState, placed.codePoint, placed.continuation);
+        t.parser.clusterLast = placed.continuation;
+        t.parser.clusterCodePoints[1] = placed.continuation;
+        t.parser.clusterCodepointLength = 2;
+    }
 }
 
 /// Whether the cursor's row takes a run the way the row above it did.
@@ -5865,6 +5876,23 @@ enum class FlowEntry : uint8_t {
 template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal& t, Ubiquitty::Screen::State* s, const char* buffer, int position, int length, const Ubiquitty::Cell& cellTemplate, PlacedGlyph placed, FlowEntry entry);
 static bool isPlainNarrowGlyphAt(const Ubiquitty::Terminal& t, const char* buffer, int position, int length);
 static bool isFlowGlyphAt(const Ubiquitty::Terminal& t, const char* buffer, int position, int length);
+
+/// Whether a combining diacritic of U+0300 to U+036F starts at `position`,
+/// which the flow's cells join to the plain narrow glyph before it.
+///
+/// - Parameters:
+///   - buffer: The input.
+///   - position: A byte of the input.
+///   - length: The input's length.
+/// - Returns: Whether one starts there, whole.
+[[gnu::always_inline]] static inline bool isCombiningDiacriticAt(const char* buffer, int position, int length)
+{
+    if (position + 1 >= length)
+        return false;
+    const auto lead = static_cast<unsigned char>(buffer[position]);
+    const auto trail = static_cast<unsigned char>(buffer[position + 1]);
+    return (lead | 1u) == 0xCDu && (trail & 0xC0) == 0x80 && !(lead == 0xCD && trail > 0xAF);
+}
 
 /// Carries printable ASCII on past its first run: through the line feeds,
 /// returns and tabs between runs, and through the wrap a full row causes.
@@ -5927,7 +5955,7 @@ template<GraphicCapture Capture> static int continueASCIIFlow(Ubiquitty::Termina
                 // letters among ASCII, which the general flow places as
                 // cells; with any other text behind it, it is the first
                 // run's to hand to the writer that stages a mixed line.
-                if (count < rightMargin - column + 1 && isPlainNarrowGlyphAt(t, buffer, position + count, length))
+                if (count < rightMargin - column + 1 && (isPlainNarrowGlyphAt(t, buffer, position + count, length) || isCombiningDiacriticAt(buffer, position + count, length)))
                     return continueTextFlow<Capture>(t, s, buffer, position, length, cellTemplate, placed, hasUnnotedRun ? FlowEntry::BehindPiece : FlowEntry::BehindNotedPiece);
                 if (count >= 2 && position + count + 4 <= length && static_cast<unsigned char>(buffer[position + count]) != 0xEF)
                     break;
@@ -7854,7 +7882,7 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
             s->cursorX = lastColumn + 1;
         }
         isRowFresh = false;
-        placed = { row, leadColumn, lastCodePoint, s->cursorX, s->cursorY, s->wrapPending };
+        placed = { row, leadColumn, lastCodePoint, s->cursorX, s->cursorY, s->wrapPending, 0 };
         hasUnnotedGlyph = true;
     };
     while (position < length) {
@@ -7927,7 +7955,8 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
                 asciiCount = countByteRun(buffer + position, std::min(length - position, room), 0x20, 0x7E);
                 const int behind = position + asciiCount;
                 if (asciiCount < room && asciiCount <= maxLineSpanPieceCells && behind < length && static_cast<unsigned char>(buffer[behind]) >= 0xC2) {
-                    isCells = peekFlowGlyph(buffer, behind, length, ambiguousWidth).width != 0 || substituteLengthAt(behind) > 0;
+                    isCells = peekFlowGlyph(buffer, behind, length, ambiguousWidth).width != 0 || substituteLengthAt(behind) > 0
+                        || isCombiningDiacriticAt(buffer, behind, length);
                     // A word with any other text behind it is the first
                     // write's to hand to the writer that stages a mixed line.
                     if (!isCells && asciiCount >= 2 && behind + 4 <= length && static_cast<unsigned char>(buffer[behind]) != 0xEF)
@@ -7974,6 +8003,27 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
             int lastWidth = 1;
             bool isLastPictograph = false;
             bool hasPair = false;
+            // A combining diacritic behind a plain narrow glyph joins it in
+            // the glyph's own cell, as the character path attaches one, when
+            // the code point behind the mark joins nothing: the cluster is
+            // whole here. A second mark, or what may join, ends the piece at
+            // the glyph, and the mark is the cluster writers'.
+            std::array<Ubiquitty::CellGrid::ColumnMark, Ubiquitty::maxColumns> marks;
+            int markCount = 0;
+            const auto didTakeMarkBehind = [&] [[gnu::always_inline]] () -> bool {
+                const auto lead = static_cast<unsigned char>(buffer[end]);
+                const auto trail = static_cast<unsigned char>(buffer[end + 1]);
+                // U+0300 to U+036F: CC 80 to CD AF.
+                if ((trail & 0xC0) != 0x80 || (lead == 0xCD && trail > 0xAF))
+                    return true;
+                if (!doesLeavePictographAlone(buffer, end + 2, length))
+                    return false;
+                marks[static_cast<std::size_t>(markCount++)] = { count - 1, ((lead & 0x1Fu) << 6) | (trail & 0x3Fu) };
+                lastLength += 2;
+                end += 2;
+                return true;
+            };
+            const auto isMarkBehind = [&] [[gnu::always_inline]] { return end + 1 < length && (static_cast<unsigned char>(buffer[end]) | 1u) == 0xCDu; };
             while (count < room && end < length) {
                 const auto next = static_cast<unsigned char>(buffer[end]);
                 if (next - 0x20u <= 0x7Eu - 0x20u) {
@@ -7983,6 +8033,8 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
                     lastWidth = 1;
                     isLastPictograph = false;
                     ++end;
+                    if (isMarkBehind() && !didTakeMarkBehind())
+                        break;
                     continue;
                 }
                 if (next < 0xC2) {
@@ -8014,6 +8066,8 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
                         lastWidth = 1;
                         isLastPictograph = false;
                         end += 2;
+                        if (isMarkBehind() && !didTakeMarkBehind())
+                            break;
                         continue;
                     }
                 }
@@ -8046,6 +8100,8 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
                 lastWidth = glyph.width;
                 isLastPictograph = glyph.isPictograph;
                 end += glyph.length;
+                if (glyph.width == 1 && !glyph.isPictograph && isMarkBehind() && !didTakeMarkBehind())
+                    break;
             }
             const bool isFollowedByTab = end < length && buffer[end] == '\t';
             if (glyphs > 0
@@ -8055,6 +8111,8 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
                 --glyphs;
                 count -= lastWidth;
                 end -= lastLength;
+                if (markCount > 0 && marks[static_cast<std::size_t>(markCount - 1)].column == count)
+                    --markCount;
             }
             if (glyphs < 1)
                 break;
@@ -8067,13 +8125,23 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
                 eraseWidePartnersBesideRun(t, s, row, column, lastColumn);
             // Without a pair every entry is a narrow glyph's bare code point.
             const std::span<const uint32_t> columnEntries { codePoints.data(), static_cast<std::size_t>(count) };
-            if (hasPair)
-                t.grid->writeMixedCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, columnEntries);
+            if (hasPair || markCount > 0)
+                t.grid->writeMixedCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, columnEntries,
+                    { marks.data(), static_cast<std::size_t>(markCount) });
             else
                 t.grid->writeNarrowCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, columnEntries);
             const bool doesEndOnPair = codePoints[count - 1] >> Ubiquitty::CellGrid::mixedColumnShift == static_cast<uint32_t>(Ubiquitty::CellGrid::MixedColumn::RightHalf);
             const int leadColumn = doesEndOnPair ? lastColumn - 1 : lastColumn;
             finishPiece(row, lastColumn, leadColumn, codePoints[leadColumn - column] & Ubiquitty::CellGrid::mixedCodePointMask);
+            if (markCount > 0) {
+                // The open cluster's second slot holds the last mark taken, as
+                // the character path leaves it; the slot travels in a handover
+                // record as it stands.
+                const Ubiquitty::CellGrid::ColumnMark& lastMark = marks[static_cast<std::size_t>(markCount - 1)];
+                t.parser.clusterCodePoints[1] = lastMark.mark;
+                if (lastMark.column == leadColumn - column)
+                    placed.continuation = lastMark.mark;
+            }
             position = end;
             continue;
         }
