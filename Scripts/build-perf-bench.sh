@@ -63,14 +63,18 @@ done < <(ubiquitty_bench_include_flags "$ROOT")
 # ThinLTO is clang's spelling; g++ rejects it. The probe lives with the
 # archive builder so every driver asks the same question of the same compiler.
 UBQ_LTO_FLAG="$(ubiquitty_lto_flag)"
-# UBQ_BENCH_DEBUG_INFO=1 adds -g and keeps the LTO backend objects, so a trace
-# of this binary attributes to file:line instead of to a symbol name. Off by
-# default: the objects are large and nothing but a profiler reads them.
+# UBQ_BENCH_DEBUG_INFO=1 adds -g, so a trace of this binary attributes to
+# file:line instead of to a symbol name. Off by default: the debug info is
+# large and nothing but a profiler reads it. Apple's linker leaves the LTO
+# backend objects that hold it only where it is told to keep them; an ELF
+# linker writes it into the binary.
 SHIPPING_FLAGS="-O3 $UBQ_LTO_FLAG -DNDEBUG"
 if [ "${UBQ_BENCH_DEBUG_INFO:-}" = "1" ]; then
-    mkdir -p "$BUILD/lto-objects"
     SHIPPING_FLAGS="$SHIPPING_FLAGS -g"
-    LDFLAGS_EXTRA="-Wl,-object_path_lto,$BUILD/lto-objects"
+    if [ "$(uname -s)" = Darwin ]; then
+        mkdir -p "$BUILD/lto-objects"
+        LDFLAGS_EXTRA="-Wl,-object_path_lto,$BUILD/lto-objects"
+    fi
 fi
 # The Core profile must not change the benchmark's workload or contention
 # controller. Both arms compile that driver alike; Core retains shipping PGO.
