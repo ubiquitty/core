@@ -577,7 +577,9 @@ void scrollPlacementsUp(Ubiquitty::Terminal& t, int n)
 
 void clearPlacementsInRows(Ubiquitty::Terminal& t, int fromRow, int toRow)
 {
-    if (fromRow > toRow)
+    // A screen cleared with no image on it, which is every `clear`, walks no
+    // table: each slot is a cache line.
+    if (fromRow > toRow || t.images.livePlacementCount == 0)
         return;
     const bool alternateActive = t.screens.isUsingAlternateScreen;
     for (int i = 0; i < maxTerminalImagePlacementCount; i++) {

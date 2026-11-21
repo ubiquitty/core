@@ -201,6 +201,20 @@ void eraseInArea(Ubiquitty::Terminal& t, int mode)
     }
 }
 
+// Clears what an erased row keeps besides its cells: its line attribute, its
+// soft-wrap join and its prompt mark. The three are fields of one record the
+// row's metadata views each look up again, slot and bounds included; an erase
+// of the screen asks it of every row.
+static void clearErasedRowMetadata(Ubiquitty::Screen::State& s, int row)
+{
+    assert(s.lineWrapped.owner == s.lineAttribute.owner && s.lineWrapped.screen == s.lineAttribute.screen);
+    assert(s.mark.owner == s.lineAttribute.owner && s.mark.screen == s.lineAttribute.screen);
+    Ubiquitty::RowMeta& meta = Ubiquitty::detail::rowMetaOrFallback(s.lineAttribute.owner, s.lineAttribute.screen, row);
+    meta.lineAttribute = lineAttributeNormal;
+    meta.set(Ubiquitty::RowFlag::Wrapped, false);
+    meta.oscMark = 0;
+}
+
 void eraseInDisplay(Ubiquitty::Terminal& t, int mode)
 {
     Ubiquitty::Screen::State* s = t.screens.active;
@@ -252,13 +266,11 @@ void eraseInDisplay(Ubiquitty::Terminal& t, int mode)
             if (!isBlankDefault || t.grid->rowContentWidth(Ubiquitty::Row(r)) != 0)
                 eraseSpanRespectingGuard(t, r, 0, t.columns - 1, blank);
             // An erased row loses its DECDWL/DECDHL line-attribute and
-            // soft-wrap join, else a DHL banner keeps drawing at 2×.
-            s->lineAttribute[r] = lineAttributeNormal;
-            s->lineWrapped[r] = false;
-            // The OSC 133 prompt mark dies with the cells too, or the renderer
-            // keeps drawing edge brackets on a blanked row (the stray brackets
+            // soft-wrap join, else a DHL banner keeps drawing at 2×. The OSC
+            // 133 prompt mark dies with the cells too, or the renderer keeps
+            // drawing edge brackets on a blanked row (the stray brackets
             // surviving `clear`).
-            s->mark[r] = 0;
+            clearErasedRowMetadata(*s, r);
         }
         // Clear the join into the topmost cleared row so the surviving
         // predecessor doesn't claim continuation into a blank.
