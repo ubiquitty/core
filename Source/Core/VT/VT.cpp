@@ -6892,6 +6892,14 @@ inline constexpr std::array<std::uint32_t, 5> lowestScalar { 0x400000, 0, 0x80, 
     return n;
 }
 
+/// Whether `codePoint` joins a glyph that is all its cluster holds.
+static bool joinsGlyph(std::uint32_t glyph, std::uint32_t codePoint)
+{
+    Ubiquitty::Unicode::GraphemeState state {};
+    Ubiquitty::Unicode::graphemeStateReset(&state, glyph);
+    return Ubiquitty::Unicode::graphemeExtends(&state, glyph, codePoint);
+}
+
 /// A cluster ``didStageLineSpanCluster`` staged: its cells, its bytes, and its
 /// code points, which the parser is left holding if the stretch ends on it.
 struct StagedCluster {
@@ -6900,7 +6908,18 @@ struct StagedCluster {
     int count = 0;
     std::array<std::uint32_t, Ubiquitty::clusterPoolMaximumCodePoints> codePoints;
 };
-[[gnu::noinline]] static bool didStageLineSpanCluster(Ubiquitty::Terminal& t, std::string_view input, int from, std::uint32_t base, int baseLength, std::uint8_t properties, const Ubiquitty::Cell& cellTemplate, Ubiquitty::Cell* destination, int cellsLeft, StagedCluster& staged)
+
+/// Whether ``didStageLineSpanCluster`` stages a base that nothing joins.
+enum class LoneBase : std::uint8_t {
+    /// Refused, for the cluster writers.
+    Refused,
+    /// Staged as a cell of its own: the caller has seen that it joins
+    /// nothing before it.
+    Staged,
+};
+
+[[gnu::noinline]] static bool didStageLineSpanCluster(Ubiquitty::Terminal& t, std::string_view input, int from, std::uint32_t base, int baseLength, std::uint8_t properties, const Ubiquitty::Cell& cellTemplate, Ubiquitty::Cell* destination, int cellsLeft, StagedCluster& staged,
+    LoneBase loneBase)
 {
     const char* const buffer = input.data();
     const int length = static_cast<int>(input.size());
@@ -6933,7 +6952,7 @@ struct StagedCluster {
         if (!Ubiquitty::Unicode::isGraphemeRelevant(codePoint) || !Ubiquitty::Unicode::graphemeExtendsHot(&nextState, cluster[count - 1], codePoint)) {
             // Asked last: most code points of a break class stand alone,
             // and those are refused before the width is looked up.
-            if (count < 2 || Ubiquitty::Unicode::Width::forCodePoint(codePoint, t.ambiguousWidth) <= 0)
+            if ((count < 2 && loneBase == LoneBase::Refused) || Ubiquitty::Unicode::Width::forCodePoint(codePoint, t.ambiguousWidth) <= 0)
                 return false;
             break;
         }
@@ -6949,9 +6968,11 @@ struct StagedCluster {
         cluster[count++] = codePoint;
         bytes += sequenceLength;
     }
-    if (count < 2)
+    // A base alone is a cell like a letter, but for those the cluster
+    // writers draw otherwise: a pictograph, and a flag's half.
+    if (count < 2 && (loneBase == LoneBase::Refused || isPictographic || isEmoji || base - 0x1F1E6u < 26u))
         return false;
-    const bool hasWideSelector = isPictographic && cluster[1] == Ubiquitty::Unicode::Width::variationSelector16;
+    const bool hasWideSelector = isPictographic && count > 1 && cluster[1] == Ubiquitty::Unicode::Width::variationSelector16;
     const int width = hasWideSelector ? 2
                                       : Ubiquitty::Unicode::Width::cellsForWidthClass(Ubiquitty::Unicode::detail::PropWidthField::get(properties), t.ambiguousWidth);
     // The bases the cluster writers place differently are declined.
@@ -6962,8 +6983,10 @@ struct StagedCluster {
     Ubiquitty::Cell lead = cellTemplate;
     lead.codePoint = base;
     Ubiquitty::cellSetPenAttributes(lead, attributes | (width == 2 ? VT::AttributeSet { VT::Attribute::Wide } : VT::AttributeSet {}) | (isEmoji ? VT::AttributeSet { VT::Attribute::Emoji } : VT::AttributeSet {}));
-    lead.combining[0] = cluster[1];
-    lead.setCombiningLength(1);
+    if (count > 1) {
+        lead.combining[0] = cluster[1];
+        lead.setCombiningLength(1);
+    }
     if (count > 2)
         lead.setClusterID(t.clusterPool.intern(std::span<const std::uint32_t> { cluster.data(), count }));
     destination[0] = lead;
@@ -7052,12 +7075,12 @@ struct FlowClusterStep {
         return { cursor, FlowClusterOutcome::Ends };
     // Stages the cluster that starts at `from` with `base` into the entries
     // from `column` on.
-    const auto didStage = [&](int from, int column, std::uint32_t base, int baseLength) -> bool {
+    const auto didStage = [&] [[gnu::always_inline]] (int from, int column, std::uint32_t base, int baseLength, LoneBase loneBase) -> bool {
         const int spare = 1 - clusters.latest;
         StagedCluster& record = clusters.records[static_cast<std::size_t>(spare)];
         const int cellsLeft = std::min(room - column, FlowClusters::capacity - clusters.count);
         if (!didStageLineSpanCluster(t, input, from, base, baseLength, Ubiquitty::Unicode::Width::classify(base), cellTemplate, clusters.cells.data() + clusters.count, cellsLeft,
-                record))
+                record, loneBase))
             return false;
         clusters.columns[static_cast<std::size_t>(spare)] = column;
         clusters.latest = spare;
@@ -7066,51 +7089,27 @@ struct FlowClusterStep {
         cursor = { column + record.cells, from + record.bytes, record.bytes, record.cells };
         return true;
     };
-    // A glyph that took a mark is a cluster already, whole.
+    // What follows a glyph that took a mark, or a substitute, is the
+    // cluster writers' to join or not. A staged cluster ends where nothing
+    // joins it; a glyph alone may take what follows it as its cluster's.
+    LoneBase loneBase = LoneBase::Refused;
     if (glyphs > 0 && (markCount == 0 || marks[static_cast<std::size_t>(markCount - 1)].column != cursor.count - 1)) {
         const int leadColumn = cursor.count - cursor.lastWidth;
         const uint32_t lastEntry = entries[static_cast<std::size_t>(leadColumn)];
         const std::uint32_t lastBase = lastEntry & Ubiquitty::CellGrid::mixedCodePointMask;
-        Ubiquitty::Unicode::GraphemeState probe {};
-        Ubiquitty::Unicode::graphemeStateReset(&probe, lastBase);
-        if (lastEntry >> Ubiquitty::CellGrid::mixedColumnShift != static_cast<uint32_t>(Ubiquitty::CellGrid::MixedColumn::Staged) && lastBase != 0xFFFD
-            && Ubiquitty::Unicode::graphemeExtends(&probe, lastBase, peeked->codePoint)) {
-            if (!didStage(end - cursor.lastLength, leadColumn, lastBase, cursor.lastLength))
-                return { cursor, FlowClusterOutcome::Ends };
-            return { cursor, FlowClusterOutcome::Restaged };
+        if (lastEntry >> Ubiquitty::CellGrid::mixedColumnShift == static_cast<uint32_t>(Ubiquitty::CellGrid::MixedColumn::Staged))
+            loneBase = LoneBase::Staged;
+        else if (lastBase != 0xFFFD) {
+            if (joinsGlyph(lastBase, peeked->codePoint)) {
+                if (!didStage(end - cursor.lastLength, leadColumn, lastBase, cursor.lastLength, LoneBase::Refused))
+                    return { cursor, FlowClusterOutcome::Ends };
+                return { cursor, FlowClusterOutcome::Restaged };
+            }
+            loneBase = LoneBase::Staged;
         }
     }
     const std::uint32_t base = peeked->codePoint;
-    const Ubiquitty::Unicode::Width::AmbiguousWidth ambiguousWidth = t.ambiguousWidth;
-    // A code point of a break class stands alone as a narrow cell when
-    // nothing behind it joins it and it is none of the bases the cluster
-    // writers place differently.
-    const auto isLoneNarrowBase = [&] {
-        if (Ubiquitty::Unicode::isGraphemePrepend(base) || Ubiquitty::Unicode::isExtendedPictographic(base) || Ubiquitty::Unicode::isKeycapBase(base)
-            || Ubiquitty::Unicode::mayNeedShaping(base) || Ubiquitty::Unicode::Width::forCodePoint(base, ambiguousWidth) != 1)
-            return false;
-        const int next = end + peeked->length;
-        if (next >= length)
-            return false;
-        if (static_cast<unsigned char>(buffer[next]) - 0x20u <= 0x7Eu - 0x20u)
-            return true;
-        if (static_cast<unsigned char>(buffer[next]) < 0xC2 || next + 4 > length)
-            return false;
-        std::uint32_t nextCodePoint;
-        const int nextLength = MixedDecode::decodeScalar(buffer + next, nextCodePoint);
-        if (nextLength < 2 || nextCodePoint < 0xA0)
-            return false;
-        Ubiquitty::Unicode::GraphemeState state {};
-        Ubiquitty::Unicode::graphemeStateReset(&state, base);
-        if (Ubiquitty::Unicode::isGraphemeRelevant(nextCodePoint) && Ubiquitty::Unicode::graphemeExtendsHot(&state, base, nextCodePoint))
-            return false;
-        return Ubiquitty::Unicode::Width::forCodePoint(nextCodePoint, ambiguousWidth) > 0;
-    };
-    if (isLoneNarrowBase()) {
-        entries[static_cast<std::size_t>(cursor.count)] = base;
-        return { { cursor.count + 1, end + peeked->length, peeked->length, 1 }, FlowClusterOutcome::Added };
-    }
-    if (!didStage(end, cursor.count, base, peeked->length))
+    if (!didStage(end, cursor.count, base, peeked->length, loneBase))
         return { cursor, FlowClusterOutcome::Ends };
     return { cursor, FlowClusterOutcome::Added };
 }
@@ -7408,7 +7407,7 @@ template<GraphicCapture Capture> [[gnu::noinline]] static int emitLineSpan(Ubiqu
                             const int basePosition = position - lastGlyphBytes;
                             StagedCluster& cluster = clusters[static_cast<std::size_t>(spareCluster)];
                             if (!didStageLineSpanCluster(t, std::string_view(buffer, static_cast<std::size_t>(length)), basePosition, base, lastGlyphBytes - 2,
-                                    Ubiquitty::Unicode::Width::classify(base), cellTemplate, span + cellCount - 1, 1, cluster))
+                                    Ubiquitty::Unicode::Width::classify(base), cellTemplate, span + cellCount - 1, 1, cluster, LoneBase::Refused))
                                 break;
                             noteCluster(cellCount);
                             position = basePosition + cluster.bytes;
@@ -7439,8 +7438,15 @@ template<GraphicCapture Capture> [[gnu::noinline]] static int emitLineSpan(Ubiqu
                     // selector pair, a syllable.
                     if (isClusterBase) {
                         StagedCluster& cluster = clusters[static_cast<std::size_t>(spareCluster)];
+                        // Alone, it is a cell of its own when the glyph before
+                        // it is here to ask and does not take it: a cluster
+                        // staged here ends where nothing joins it, and a
+                        // glyph without a mark is all its cluster holds.
+                        const bool isPrecededByWholeGlyph = cellCount > 0 && lastMark == 0
+                            && (cellCount == latestClusterEndCells || !joinsGlyph(span[cellCount - lastGlyphCells].codePoint, codePoint));
                         if (isClusterStagingAllowed
-                            && didStageLineSpanCluster(t, std::string_view(buffer, static_cast<std::size_t>(length)), position, codePoint, sequenceLength, properties, cellTemplate, span + cellCount, room - cellCount, cluster)) {
+                            && didStageLineSpanCluster(t, std::string_view(buffer, static_cast<std::size_t>(length)), position, codePoint, sequenceLength, properties, cellTemplate, span + cellCount, room - cellCount, cluster,
+                                isPrecededByWholeGlyph ? LoneBase::Staged : LoneBase::Refused)) {
                             spanFacts.attributes.add(cellPen(span[cellCount]).attributes);
                             cellCount += cluster.cells;
                             noteCluster(cellCount);

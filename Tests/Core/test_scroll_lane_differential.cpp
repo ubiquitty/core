@@ -1197,9 +1197,11 @@ int main(int argc, char** argv)
         // Glyphs of both widths one at a time, as text that mixes scripts is:
         // a letter, an ideograph, a syllable, a pictograph and ASCII, each
         // beside any other, in lines that wrap with a pair at the margin; now
-        // and then what can join the glyph before it, with a letter behind;
-        // whole clusters of every kind the cluster writers stage; and a
-        // malformed sequence of each kind the decoder substitutes for.
+        // and then what can join the glyph before it, a spacing vowel among
+        // them, with a letter behind; whole clusters of every kind the
+        // cluster writers stage; a pen change between words, which hands a
+        // line to the writer that stages mixed lines; and a malformed
+        // sequence of each kind the decoder substitutes for.
         const char* const clusters[] = {
             "\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x92\xBB", // a joined pair
             "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7", // a family
@@ -1211,6 +1213,9 @@ int main(int argc, char** argv)
             "\xE0\xA4\xA8\xE0\xA4\xAE\xE0\xA4\xB8\xE0\xA5\x8D\xE0\xA4\xA4\xE0\xA5\x87", // a conjunct and a vowel sign
             "\xE0\xA4\x95\xE0\xA5\x8D\xE0\xA4\xB7", // a conjunct alone
             "\xE0\xA4\x95", // a consonant alone
+            "\xE0\xA4\x95\xE0\xA4\xBE", // a consonant and a spacing vowel sign
+            "\xE0\xB8\x81\xE0\xB8\xB3", // a Thai consonant and a spacing vowel
+            "\xE0\xB8\x81", // a Thai consonant alone
             "\xE1\x84\x80\xE1\x85\xA1\xE1\x86\xA8", // jamo that make a syllable
             "e\xCC\x81\xCC\xA3", // two marks
             "o\xCC\x88\xCC\x81\xCC\xA3", // three
@@ -1241,7 +1246,7 @@ int main(int argc, char** argv)
                     out.push_back(static_cast<char>('a' + (pick >> 8) % 26));
                     break;
                 case 2:
-                    out += " ";
+                    out += (pick & 0x700) != 0 ? std::string(" ") : "\x1b[3" + std::to_string((pick >> 11) % 8) + "m";
                     break;
                 case 3:
                 case 4:
@@ -1270,7 +1275,7 @@ int main(int argc, char** argv)
                     appendUTF8(out, (pick & 256) ? 0xA9 : 0x2122); // one drawn as text
                     break;
                 case 13:
-                    switch ((pick >> 8) % 5) {
+                    switch ((pick >> 8) % 7) {
                     case 0:
                         appendUTF8(out, 0x301); // a mark
                         break;
@@ -1282,6 +1287,12 @@ int main(int argc, char** argv)
                         break;
                     case 3:
                         appendUTF8(out, 0x11A8 + (pick >> 11) % 27); // a trailing jamo
+                        break;
+                    case 4:
+                        appendUTF8(out, (pick & 0x800) ? 0x93E : 0xE33); // a spacing vowel
+                        break;
+                    case 5:
+                        appendUTF8(out, (pick & 0x800) ? 0x903 : 0xBBE); // another
                         break;
                     default:
                         appendUTF8(out, 0x1F3FB); // a modifier
