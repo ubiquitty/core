@@ -735,9 +735,25 @@ private:
         std::vector<Pen> pens;
     };
 
+    /// Frees a slab ``allocateSlab`` gave.
+    struct SlabRelease {
+        void operator()(Cell* slab) const noexcept;
+    };
+    using Slab = std::unique_ptr<Cell[], SlabRelease>;
+
+    /// Storage for a block's cells, not constructed.
+    ///
+    /// A cell is an aggregate, so each comes to life where a row writes it;
+    /// constructing a slab wrote all of its 256 KB, and a row stored as bytes
+    /// never writes its cells at all. A history cleared and refilled took
+    /// every slab's pages fresh from the kernel and wrote them whole.
+    ///
+    /// - Returns: The slab, or null when the heap refuses it.
+    [[nodiscard]] static Cell* allocateSlab() noexcept;
+
     struct Block {
         // The raw slab, or null once folded. Freed by parkSlab() or dispose().
-        std::unique_ptr<Cell[]> base;
+        Slab base;
         // A byte per slab cell, allocated by the first compact row: a row
         // appended as bytes keeps them here at its cells' offset until a read
         // expands them. Null until then, and once folded.

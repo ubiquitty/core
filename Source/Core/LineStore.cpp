@@ -374,6 +374,16 @@ void LineStore::init(int capacity)
     m_frontLine = m_headLine;
 }
 
+void LineStore::SlabRelease::operator()(Cell* slab) const noexcept
+{
+    ::operator delete[](slab);
+}
+
+Cell* LineStore::allocateSlab() noexcept
+{
+    return static_cast<Cell*>(::operator new[](sizeof(Cell) * static_cast<std::size_t>(blockCells), std::nothrow));
+}
+
 Cell* LineStore::takeSlab()
 {
     // Every slab is exactly blockCells, so a parked retired slab is a
@@ -383,7 +393,7 @@ Cell* LineStore::takeSlab()
         m_retiredSlab = nullptr;
         return slab;
     }
-    return new Cell[static_cast<std::size_t>(blockCells)];
+    return static_cast<Cell*>(::operator new[](sizeof(Cell) * static_cast<std::size_t>(blockCells)));
 }
 
 void LineStore::parkSlab(Cell* slab)
@@ -395,12 +405,12 @@ void LineStore::parkSlab(Cell* slab)
     if (!m_retiredSlab)
         m_retiredSlab = slab;
     else
-        delete[] slab;
+        SlabRelease {}(slab);
 }
 
 void LineStore::releaseRetiredSlab()
 {
-    delete[] m_retiredSlab;
+    SlabRelease {}(m_retiredSlab);
     m_retiredSlab = nullptr;
     delete[] m_retiredText;
     m_retiredText = nullptr;
@@ -577,7 +587,7 @@ void LineStore::retireFrontBlock(Block& b)
         if (m_gate->hazardSequence.load(std::memory_order_seq_cst) == b.sequence) [[unlikely]] {
             // The reader reading this block frees it when its read ends; the
             // next block takes a fresh slab rather than this one.
-            delete[] m_gate->deferredSlab.exchange(b.base.release(), std::memory_order_acq_rel);
+            SlabRelease {}(m_gate->deferredSlab.exchange(b.base.release(), std::memory_order_acq_rel));
             delete[] m_gate->deferredText.exchange(b.text.release(), std::memory_order_acq_rel);
             delete m_gate->deferredForms.exchange(b.folded.release(), std::memory_order_acq_rel);
             b.capacity = 0;
@@ -719,7 +729,7 @@ void LineStore::appendStoredRow(int length, uint8_t lineAttribute, uint8_t mark,
     // A compact row needs the back block's text slab, which a block gets on
     // its first compact row: secured here like the cell slab.
     const bool needsText = storesBytes && length > 0 && (needsBlock || !m_blocks.back().text);
-    std::unique_ptr<Cell[]> readySlab;
+    Slab readySlab;
     std::unique_ptr<std::uint8_t[]> readyText;
     // A reader may hold a hazard on the front block, and then its slabs are
     // the reader's to free rather than this append's to reuse: they are
@@ -736,7 +746,7 @@ void LineStore::appendStoredRow(int length, uint8_t lineAttribute, uint8_t mark,
     if (needsBlock) {
         const bool reusesReleasedSlab = releasesFront && m_blocks.front().base && !hasReader;
         if (!m_retiredSlab && !reusesReleasedSlab) {
-            readySlab.reset(new (std::nothrow) Cell[static_cast<std::size_t>(blockCells)]);
+            readySlab.reset(allocateSlab());
             if (!readySlab)
                 return;
         }
@@ -1033,7 +1043,7 @@ bool LineStore::prepend(std::span<const StoredLine> rows, FrontLine front, int n
             continue;
         if (!nextBlock || row.length > blocks[nextBlock - 1].capacity - blocks[nextBlock - 1].used) {
             auto& block = blocks[nextBlock];
-            block.base.reset(new (std::nothrow) Cell[static_cast<std::size_t>(blockCells)]);
+            block.base.reset(allocateSlab());
             if (!block.base)
                 return false;
             block.capacity = blockCells;
@@ -1387,7 +1397,7 @@ void LineStore::foldBlock(std::size_t index)
 
     // The slab goes only once its decode reproduced every live cell. A check
     // slab the heap refuses leaves the block raw, to be offered again.
-    Cell* scratch = m_retiredSlab ? std::exchange(m_retiredSlab, nullptr) : new (std::nothrow) Cell[static_cast<std::size_t>(blockCells)];
+    Cell* scratch = m_retiredSlab ? std::exchange(m_retiredSlab, nullptr) : allocateSlab();
     if (!scratch) {
         b.folded.reset();
         return;
@@ -1739,7 +1749,7 @@ LineStore::ReaderGate::~ReaderGate() { releaseDeferred(); }
 
 void LineStore::ReaderGate::releaseDeferred()
 {
-    delete[] deferredSlab.exchange(nullptr, std::memory_order_acq_rel);
+    SlabRelease {}(deferredSlab.exchange(nullptr, std::memory_order_acq_rel));
     delete[] deferredText.exchange(nullptr, std::memory_order_acq_rel);
     delete deferredForms.exchange(nullptr, std::memory_order_acq_rel);
 }
