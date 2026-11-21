@@ -427,6 +427,54 @@ public:
     ///   - cellTemplate: Shared pen and hyperlink values.
     ///   - codePoints: Nonzero, non-shaping code points, each one column wide.
     void writeNarrowCodePointRun(Row row, Column firstColumn, const Cell& cellTemplate, std::span<const uint32_t> codePoints);
+    /// What a column of ``writeMixedCodePointRun`` holds.
+    enum class MixedColumn : uint8_t {
+        /// A narrow glyph.
+        Narrow,
+        /// A wide glyph's lead, drawn as text.
+        Lead,
+        /// A wide glyph's right half.
+        RightHalf,
+        /// A wide glyph's lead, drawn as emoji.
+        EmojiLead
+    };
+    /// Where an entry of ``writeMixedCodePointRun`` keeps its column's kind,
+    /// above every bit a code point uses.
+    static constexpr int mixedColumnShift = 29;
+    /// The code point bits of an entry of ``writeMixedCodePointRun``.
+    static constexpr uint32_t mixedCodePointMask = (1u << mixedColumnShift) - 1;
+    /// An entry of ``writeMixedCodePointRun``.
+    ///
+    /// - Parameters:
+    ///   - codePoint: The glyph's code point, or zero for a right half.
+    ///   - column: What its column holds.
+    /// - Returns: The entry.
+    static constexpr uint32_t mixedColumnEntry(uint32_t codePoint, MixedColumn column)
+    {
+        return codePoint | static_cast<uint32_t>(column) << mixedColumnShift;
+    }
+    /// Writes unclustered, non-shaping code points of both widths, a cell or a
+    /// pair each, in one pass.
+    ///
+    /// Text that mixes scripts changes width every glyph or two, and a run of
+    /// one width at a time pays a writer's setup for each. Each entry says
+    /// what its column holds, so a column is stored without a branch on its
+    /// neighbours, which such text gives nothing to predict. The caller
+    /// establishes the widths and clears partners overlapping the run's outer
+    /// edges, as for the one-width writers. The entire run must fit; invalid
+    /// geometry writes nothing. The template supplies the pen and hyperlink
+    /// and carries no cluster data or wide-cell attributes; a pair's halves
+    /// take the width attributes as ``writeWideCodePointRun`` gives them, and
+    /// an emoji lead the emoji presentation.
+    ///
+    /// - Parameters:
+    ///   - row: Destination row.
+    ///   - firstColumn: The run's first column.
+    ///   - cellTemplate: Shared pen and hyperlink values.
+    ///   - columnEntries: One ``mixedColumnEntry`` a column. A glyph's code
+    ///     point is nonzero and needs no shaping; a right half's is zero, the
+    ///     continuation's, and follows a lead.
+    void writeMixedCodePointRun(Row row, Column firstColumn, const Cell& cellTemplate, std::span<const uint32_t> columnEntries);
     /// Writes a run of printable ASCII translated through a character set.
     ///
     /// The companion to `writeASCIIRun` for a designated GL set: one byte still

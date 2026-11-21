@@ -1181,6 +1181,120 @@ int main(int argc, char** argv)
         segments.push_back("\x1b[H\x1b[2J\x1b[6;1H\x1b#6\x1b[1;1H" + lettersPage(600, false));
         segments.push_back("\x1b(0" + lettersPage(600, false) + "\x1b(B"); // a designated set translates the ASCII among them
         runCorpus("letters-flow", segments);
+
+        // Glyphs of both widths one at a time, as text that mixes scripts is:
+        // a letter, an ideograph, a syllable, a pictograph and ASCII, each
+        // beside any other, in lines that wrap with a pair at the margin, and
+        // now and then what can join the glyph before it, with a letter
+        // behind so no cluster grows past one continuation, and a malformed
+        // sequence of each kind the decoder substitutes for.
+        const char* const malformed[] = {
+            "\x80",
+            "\xBF", // stray continuations
+            "\xC0\xAF",
+            "\xC1\xBF", // overlong leads
+            "\xC3",
+            "\xE4\xB8",
+            "\xF0\x9F\x98", // truncated sequences
+            "\xE0\x80\xAF",
+            "\xF0\x80\x80\xAF", // overlong forms
+            "\xED\xA0\x80", // a surrogate
+            "\xF4\x90\x80\x80", // past the last code point
+            "\xF8",
+            "\xFF", // bytes no sequence starts with
+        };
+        const auto mixedPage = [&](int glyphs) {
+            std::string out;
+            for (int i = 0; i < glyphs; ++i) {
+                const uint32_t pick = rnd();
+                switch (pick % 17) {
+                case 0:
+                case 1:
+                    out.push_back(static_cast<char>('a' + (pick >> 8) % 26));
+                    break;
+                case 2:
+                    out += " ";
+                    break;
+                case 3:
+                case 4:
+                    appendUTF8(out, 0xC0 + (pick >> 8) % 0x40); // a Latin-1 letter
+                    break;
+                case 5:
+                    appendUTF8(out, 0x430 + (pick >> 8) % 32); // a Cyrillic one
+                    break;
+                case 6:
+                case 7:
+                    appendUTF8(out, 0x4E00 + (pick >> 8) % 0x5000); // an ideograph
+                    break;
+                case 8:
+                    appendUTF8(out, 0x3041 + (pick >> 8) % 0x56); // a kana
+                    break;
+                case 9:
+                    appendUTF8(out, 0xAC00 + (pick >> 8) % 11172); // a Hangul syllable
+                    break;
+                case 10:
+                    appendUTF8(out, 0x20000 + (pick >> 8) % 0xA6D7); // an ideograph past the basic plane
+                    break;
+                case 11:
+                    appendUTF8(out, 0x1F600 + (pick >> 8) % 0x50); // a pictograph drawn as emoji
+                    break;
+                case 12:
+                    appendUTF8(out, (pick & 256) ? 0xA9 : 0x2122); // one drawn as text
+                    break;
+                case 13:
+                    switch ((pick >> 8) % 5) {
+                    case 0:
+                        appendUTF8(out, 0x301); // a mark
+                        break;
+                    case 1:
+                        appendUTF8(out, 0xFE0F); // a selector
+                        break;
+                    case 2:
+                        appendUTF8(out, 0x200D); // a joiner
+                        break;
+                    case 3:
+                        appendUTF8(out, 0x11A8 + (pick >> 11) % 27); // a trailing jamo
+                        break;
+                    default:
+                        appendUTF8(out, 0x1F3FB); // a modifier
+                        break;
+                    }
+                    out += "x";
+                    break;
+                case 14:
+                    out += (pick & 256) ? "\r\n" : "\n";
+                    break;
+                case 15:
+                    out += malformed[(pick >> 8) % std::size(malformed)];
+                    out += (pick & 0x80000) ? "y" : "";
+                    break;
+                default:
+                    out += "\t";
+                    break;
+                }
+            }
+            return out;
+        };
+        std::vector<std::string> mixed;
+        for (int page = 0; page < 6; ++page)
+            mixed.push_back(mixedPage(4000));
+        mixed.emplace_back("\x1b[?1049h\x1b[H\x1b[2J");
+        mixed.push_back(mixedPage(4000));
+        mixed.push_back("\x1b[33m" + mixedPage(1500) + "\x1b[m");
+        mixed.emplace_back("\x1b[?1049l");
+        // A pair where one cell is left, where two are, and behind a wrap.
+        for (int narrow = 76; narrow <= 80; ++narrow) {
+            std::string edge(static_cast<std::size_t>(narrow), 'n');
+            appendUTF8(edge, 0x5B57);
+            appendUTF8(edge, 0xE9);
+            appendUTF8(edge, 0xAC00);
+            appendUTF8(edge, 0x5B57);
+            appendUTF8(edge, 0x1F600);
+            mixed.push_back(edge + "\r\n");
+        }
+        mixed.push_back("\x1b[?7l" + mixedPage(1200) + "\x1b[?7h");
+        mixed.push_back("\x1b[4h" + mixedPage(600) + "\x1b[4l");
+        runCorpus("mixed-widths-flow", mixed);
     }
 
     // Corpus 21: control sequences of every shape, read whole against read a

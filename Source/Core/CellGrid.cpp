@@ -1766,6 +1766,74 @@ void CellGrid::writeNarrowCodePointRun(Row rowValue, Column firstColumnValue, co
     noteFilled(row, lastColumn + 1);
 }
 
+void CellGrid::writeMixedCodePointRun(Row rowValue, Column firstColumnValue, const Cell& cellTemplate, std::span<const uint32_t> columnEntries)
+{
+    const int row = rowValue.value();
+    const int firstColumn = firstColumnValue.value();
+    if (row < 0 || row >= m_rows || firstColumn < 0 || firstColumn >= m_columns || columnEntries.empty()
+        || columnEntries.size() > static_cast<std::size_t>(m_columns - firstColumn)
+        || columnEntries.front() >> mixedColumnShift == static_cast<uint32_t>(MixedColumn::RightHalf))
+        return;
+    assert(cellTemplate.combiningLength() == 0 && cellTemplate.clusterID() == 0);
+    assert(!cellPen(cellTemplate).attributes.containsAny(multicellHalves));
+    static_assert(wideContinuationSentinelCodePoint == 0, "a right half's entry carries the continuation's code point");
+    const auto attributes = cellPen(cellTemplate).attributes - VT::Attribute::Emoji;
+    Cell lead = cellTemplate;
+    cellSetPenAttributes(lead, attributes | VT::Attribute::Wide);
+    Cell emojiLead = cellTemplate;
+    cellSetPenAttributes(emojiLead, attributes | VT::Attribute::Wide | VT::Attribute::Emoji);
+    Cell continuation = cellTemplate;
+    continuation.codePoint = wideContinuationSentinelCodePoint;
+    cellSetPenAttributes(continuation, attributes | VT::Attribute::WideContinuation);
+    const int count = static_cast<int>(columnEntries.size());
+    const int lastColumn = firstColumn + count - 1;
+    const int slot = physicalRowSlot(m_activeIndex, row);
+    materializeCompactRow(m_activeIndex, slot);
+    bool isDestinationLogicallyBlank = slot == m_deferredBlankSlot[m_activeIndex];
+    if (isDestinationLogicallyBlank) {
+        isDestinationLogicallyBlank = firstColumn >= m_deferredBlankStart[m_activeIndex]
+            && lastColumn < std::min(m_deferredBlankCount[m_activeIndex], m_columnCapacity);
+        if (isDestinationLogicallyBlank)
+            materializeDeferredBlankAroundWindow(slot, firstColumn, lastColumn);
+        else
+            resolveDeferredBlankSlot(m_activeIndex);
+    }
+
+    // A stamp a kind of column, in the order MixedColumn names them.
+    const std::array<CellStamp, 4> stamps { CellStamp(cellTemplate), CellStamp(lead), CellStamp(continuation), CellStamp(emojiLead) };
+    static_assert(static_cast<int>(MixedColumn::EmojiLead) == 3, "a stamp for each kind of column");
+    Cell* destination = m_rowPtrs[m_activeIndex][slot] + firstColumn;
+    if (!isDestinationLogicallyBlank) {
+        bool hasDifference = false;
+        for (int index = 0; index < count && !hasDifference; ++index) {
+            const uint32_t entry = columnEntries[index];
+            hasDifference = !stamps[entry >> mixedColumnShift].matches(destination + index, entry & mixedCodePointMask);
+        }
+        if (!hasDifference)
+            return;
+    }
+    uint32_t kinds = 0;
+    for (int index = 0; index < count; ++index) {
+        const uint32_t entry = columnEntries[index];
+        assert((entry & mixedCodePointMask) == 0 ? entry >> mixedColumnShift == static_cast<uint32_t>(MixedColumn::RightHalf) : !Unicode::mayNeedShaping(entry & mixedCodePointMask));
+        assert(entry >> mixedColumnShift != static_cast<uint32_t>(MixedColumn::RightHalf) || (columnEntries[index - 1] >> mixedColumnShift) % 2 == 1);
+        kinds |= 1u << (entry >> mixedColumnShift);
+        stamps[entry >> mixedColumnShift].store(destination + index, entry & mixedCodePointMask);
+    }
+    const bool hasPair = (kinds & (1u << static_cast<int>(MixedColumn::RightHalf))) != 0;
+    m_anyMutationsSinceLastPaint = true;
+    bumpRow(row);
+    if (attributes.contains(VT::Attribute::Blink))
+        noteBlinkWrite();
+    if (cellPen(cellTemplate).extendedAttributes.textSizeSpecID() != 0)
+        noteSizedWrite();
+    if (firstColumn == 0 && lastColumn + 1 == m_columns)
+        rowMeta(row).set(RowFlag::NeedsShaping, false);
+    if (hasPair)
+        rowMeta(row).set(RowFlag::HasMulticell, true);
+    noteFilled(row, lastColumn + 1);
+}
+
 void CellGrid::writeTranslatedRun(Row r, Column firstColumn, const Cell& tmpl, std::string_view text, const std::uint16_t* translation)
 {
     writeRun<true>(r, firstColumn, tmpl, text, translation);

@@ -7799,6 +7799,16 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
     const std::uint8_t ambiguousPlainProperties = ambiguousWidth == Unicode::Width::AmbiguousWidth::Narrow ? Unicode::Width::ambiguousWidthClass : plainProperties;
     // A row a feed has just scrolled in holds no pair for a piece's ends to cut.
     bool isRowFresh = false;
+    // A malformed sequence is one U+FFFD for its lead and the continuations
+    // the lead accepts, or one for each stray byte, as the per-byte decoder
+    // makes them under the policy that substitutes; the flow places it where
+    // it takes a cell. Zero for a byte that starts no malformed sequence, and
+    // for one the input ends inside, which the decoder carries across.
+    const bool doesSubstituteInCells = t.parser.invalidUTF8Policy == Ubiquitty::Unicode::InvalidUTF8Policy::FFFD
+        && isPlainNarrowGraphic(0xFFFD, ambiguousWidth);
+    const auto substituteLengthAt = [&] [[gnu::always_inline]] (int at) -> int {
+        return doesSubstituteInCells ? malformedUTF8SubpartLength(buffer + at, length - at) : 0;
+    };
     std::array<std::uint32_t, Ubiquitty::maxColumns> codePoints;
     const auto noteGlyph = [&] [[gnu::always_inline]] {
         if (hasUnnotedGlyph) {
@@ -7850,10 +7860,15 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
     while (position < length) {
         const auto byte = static_cast<unsigned char>(buffer[position]);
         const bool isASCII = byte - 0x20u <= 0x7Eu - 0x20u;
-        if (isASCII || byte >= 0xC2) {
-            const FlowGlyph first = isASCII ? FlowGlyph { byte, 1, 1 } : peekFlowGlyph(buffer, position, length, ambiguousWidth);
-            if (first.width == 0)
-                break;
+        if (isASCII || byte >= 0x80) {
+            FlowGlyph first = isASCII ? FlowGlyph { byte, 1, 1 } : byte >= 0xC2 ? peekFlowGlyph(buffer, position, length, ambiguousWidth)
+                                                                                : FlowGlyph {};
+            if (first.width == 0) {
+                const int substituteLength = substituteLengthAt(position);
+                if (substituteLength == 0)
+                    break;
+                first = { 0xFFFD, substituteLength, 1, false };
+            }
             // A pending wrap, or one cell left where a pair has to go.
             const bool isWrapping = s->wrapPending || (first.width == 2 && s->cursorX >= rightMargin);
             if (isWrapping && !canWrap)
@@ -7863,43 +7878,14 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
             if (column < 0 || column + first.width - 1 > rightMargin)
                 break;
             const int room = rightMargin - column + 1;
-            if (first.width == 2 && first.isPictograph) {
-                // Pictographs that draw as emoji, each a cluster of its own
-                // because the glyph behind it joins nothing: two cells with
-                // the presentation on the lead.
-                int count = 0;
-                int end = position;
-                int lastLength = 0;
-                while (count < room / 2 && end < length && static_cast<unsigned char>(buffer[end]) >= 0xC2) {
-                    const FlowGlyph glyph = peekFlowGlyph(buffer, end, length, ambiguousWidth);
-                    if (glyph.width != 2 || !glyph.isPictograph)
-                        break;
-                    codePoints[count++] = glyph.codePoint;
-                    lastLength = glyph.length;
-                    end += glyph.length;
-                }
-                const bool isFollowedByTab = end < length && buffer[end] == '\t';
-                if (!doesLeavePictographAlone(buffer, end, length)
-                    || (!isFollowedByTab && graphicCaptureBefore<Capture>(buffer, end, length) == GraphicCapture::Retain)) {
-                    --count;
-                    end -= lastLength;
-                }
-                if (count < 1)
-                    break;
-                if (isWrapping && !didCommitWrap(column))
-                    break;
-                beginWrite();
-                const int row = s->cursorY;
-                const int lastColumn = column + count * 2 - 1;
-                if (!isRowFresh)
-                    eraseWidePartnersBesideRun(t, s, row, column, lastColumn);
-                t.grid->writeWideCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, { codePoints.data(), static_cast<std::size_t>(count) },
-                    Ubiquitty::CellGrid::WidePresentation::Emoji);
-                finishPiece(row, lastColumn, lastColumn - 1, codePoints[count - 1]);
-                position = end;
-                continue;
-            }
-            if (first.width == 2) {
+            // A run of wide glyphs is decoded and written as one; a lone one
+            // is among the cells below.
+            const bool isWideRun = first.width == 2 && !first.isPictograph && position + first.length < length
+                && static_cast<unsigned char>(buffer[position + first.length]) >= 0xC2 && [&] {
+                       const FlowGlyph second = peekFlowGlyph(buffer, position + first.length, length, ambiguousWidth);
+                       return second.width == 2 && !second.isPictograph;
+                   }();
+            if (isWideRun) {
                 // Wide glyphs: every one of these ranges is three bytes long,
                 // or four past the basic plane.
                 int decodedBytes = 0;
@@ -7917,19 +7903,21 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
                     --count;
                     bytes -= codePoints[count] < 0x10000 ? 3 : 4;
                 }
-                if (count < 2)
-                    break;
-                if (isWrapping && !didCommitWrap(column))
-                    break;
-                beginWrite();
-                const int row = s->cursorY;
-                const int lastColumn = column + count * 2 - 1;
-                if (!isRowFresh)
-                    eraseWidePartnersBesideRun(t, s, row, column, lastColumn);
-                t.grid->writeWideCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, { codePoints.data(), static_cast<std::size_t>(count) });
-                finishPiece(row, lastColumn, lastColumn - 1, codePoints[count - 1]);
-                position += bytes;
-                continue;
+                // A lone wide glyph is the cells' below, among the narrow text
+                // around it.
+                if (count >= 2) {
+                    if (isWrapping && !didCommitWrap(column))
+                        break;
+                    beginWrite();
+                    const int row = s->cursorY;
+                    const int lastColumn = column + count * 2 - 1;
+                    if (!isRowFresh)
+                        eraseWidePartnersBesideRun(t, s, row, column, lastColumn);
+                    t.grid->writeWideCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, { codePoints.data(), static_cast<std::size_t>(count) });
+                    finishPiece(row, lastColumn, lastColumn - 1, codePoints[count - 1]);
+                    position += bytes;
+                    continue;
+                }
             }
             // Narrow: a run of ASCII by itself goes to the row as bytes, and a
             // word with a plain narrow glyph behind it opens a piece of cells.
@@ -7939,7 +7927,7 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
                 asciiCount = countByteRun(buffer + position, std::min(length - position, room), 0x20, 0x7E);
                 const int behind = position + asciiCount;
                 if (asciiCount < room && asciiCount <= maxLineSpanPieceCells && behind < length && static_cast<unsigned char>(buffer[behind]) >= 0xC2) {
-                    isCells = peekFlowGlyph(buffer, behind, length, ambiguousWidth).width == 1;
+                    isCells = peekFlowGlyph(buffer, behind, length, ambiguousWidth).width != 0 || substituteLengthAt(behind) > 0;
                     // A word with any other text behind it is the first
                     // write's to hand to the writer that stages a mixed line.
                     if (!isCells && asciiCount >= 2 && behind + 4 <= length && static_cast<unsigned char>(buffer[behind]) != 0xEF)
@@ -7971,27 +7959,44 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
                 position += count;
                 continue;
             }
-            // Cells: plain narrow glyphs and the ASCII between them, to the
-            // end of the row or the first byte that is neither.
+            // Cells: plain narrow glyphs, the ASCII between them and the wide
+            // glyphs of the ranges that stand alone, to the end of the row or
+            // the first byte that is none of them. One entry a column: a
+            // wide glyph's code point at its lead and zero at its right half.
             //
             // A pictograph among them that draws as text is a cell like a
             // letter where the glyph behind it joins nothing. Every glyph the
             // piece takes joins nothing, so only its last one is in question.
             int count = 0;
+            int glyphs = 0;
             int end = position;
             int lastLength = 0;
+            int lastWidth = 1;
             bool isLastPictograph = false;
+            bool hasPair = false;
             while (count < room && end < length) {
                 const auto next = static_cast<unsigned char>(buffer[end]);
                 if (next - 0x20u <= 0x7Eu - 0x20u) {
                     codePoints[count++] = next;
+                    ++glyphs;
                     lastLength = 1;
+                    lastWidth = 1;
                     isLastPictograph = false;
                     ++end;
                     continue;
                 }
-                if (next < 0xC2)
-                    break;
+                if (next < 0xC2) {
+                    // A stray continuation, an overlong lead or a control.
+                    if (next < 0x80 || !doesSubstituteInCells)
+                        break;
+                    codePoints[count++] = 0xFFFD;
+                    ++glyphs;
+                    lastLength = 1;
+                    lastWidth = 1;
+                    isLastPictograph = false;
+                    ++end;
+                    continue;
+                }
                 // A letter of two bytes, which most text of other alphabets
                 // is made of, read where it stands: the reader below answers
                 // for every glyph there is and returns more than a loop this
@@ -8004,29 +8009,54 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
                     if (continuation <= 0x3F && codePoint - 0xA0u < 0x590u - 0xA0u && (properties == plainProperties || properties == ambiguousPlainProperties)) {
                         assert(isPlainNarrowGraphic(codePoint, ambiguousWidth));
                         codePoints[count++] = codePoint;
+                        ++glyphs;
                         lastLength = 2;
+                        lastWidth = 1;
                         isLastPictograph = false;
                         end += 2;
                         continue;
                     }
                 }
                 const FlowGlyph glyph = peekFlowGlyph(buffer, end, length, ambiguousWidth);
-                if (glyph.width != 1)
+                if (glyph.width == 2) {
+                    // A pair that does not fit ends the piece, and the wrap
+                    // the next piece starts with takes it to the next row.
+                    // A pictograph that is a pair draws as emoji.
+                    if (count + 2 > room)
+                        break;
+                    codePoints[count++] = Ubiquitty::CellGrid::mixedColumnEntry(glyph.codePoint,
+                        glyph.isPictograph ? Ubiquitty::CellGrid::MixedColumn::EmojiLead : Ubiquitty::CellGrid::MixedColumn::Lead);
+                    codePoints[count++] = Ubiquitty::CellGrid::mixedColumnEntry(0, Ubiquitty::CellGrid::MixedColumn::RightHalf);
+                    hasPair = true;
+                } else if (glyph.width == 1) {
+                    codePoints[count++] = glyph.codePoint;
+                } else if (const int substituteLength = substituteLengthAt(end); substituteLength > 0) {
+                    codePoints[count++] = 0xFFFD;
+                    ++glyphs;
+                    lastLength = substituteLength;
+                    lastWidth = 1;
+                    isLastPictograph = false;
+                    end += substituteLength;
+                    continue;
+                } else {
                     break;
-                codePoints[count++] = glyph.codePoint;
+                }
+                ++glyphs;
                 lastLength = glyph.length;
+                lastWidth = glyph.width;
                 isLastPictograph = glyph.isPictograph;
                 end += glyph.length;
             }
             const bool isFollowedByTab = end < length && buffer[end] == '\t';
-            if (count > 0
+            if (glyphs > 0
                 && ((isLastPictograph && !doesLeavePictographAlone(buffer, end, length))
                     || (!isFollowedByTab && !isFollowedByWholeThreeByteGlyph(buffer, end, length)
                         && graphicCaptureBefore<Capture>(buffer, end, length) == GraphicCapture::Retain))) {
-                --count;
+                --glyphs;
+                count -= lastWidth;
                 end -= lastLength;
             }
-            if (count < 2)
+            if (glyphs < 1)
                 break;
             if (isWrapping && !didCommitWrap(column))
                 break;
@@ -8035,8 +8065,15 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
             const int lastColumn = column + count - 1;
             if (!isRowFresh)
                 eraseWidePartnersBesideRun(t, s, row, column, lastColumn);
-            t.grid->writeNarrowCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, { codePoints.data(), static_cast<std::size_t>(count) });
-            finishPiece(row, lastColumn, lastColumn, codePoints[count - 1]);
+            // Without a pair every entry is a narrow glyph's bare code point.
+            const std::span<const uint32_t> columnEntries { codePoints.data(), static_cast<std::size_t>(count) };
+            if (hasPair)
+                t.grid->writeMixedCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, columnEntries);
+            else
+                t.grid->writeNarrowCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, columnEntries);
+            const bool doesEndOnPair = codePoints[count - 1] >> Ubiquitty::CellGrid::mixedColumnShift == static_cast<uint32_t>(Ubiquitty::CellGrid::MixedColumn::RightHalf);
+            const int leadColumn = doesEndOnPair ? lastColumn - 1 : lastColumn;
+            finishPiece(row, lastColumn, leadColumn, codePoints[leadColumn - column] & Ubiquitty::CellGrid::mixedCodePointMask);
             position = end;
             continue;
         }
@@ -8126,18 +8163,28 @@ static bool isPlainNarrowGlyphAt(const Ubiquitty::Terminal& t, const char* buffe
 template<GraphicCapture Capture> static int emitTextFlow(Ubiquitty::Terminal& t, const char* buffer, int start, int length)
 {
     // A page of wide glyphs is opened by the text run, whose own flow is the
-    // one such a page stays in.
-    const FlowGlyph first = peekFlowGlyph(buffer, start, length, t.ambiguousWidth);
-    if (first.width == 0 || (first.width == 2 && !first.isPictograph) || !t.grid)
+    // one such a page stays in; a wide glyph among others is this flow's.
+    FlowGlyph first = peekFlowGlyph(buffer, start, length, t.ambiguousWidth);
+    if (first.width == 0 && t.parser.invalidUTF8Policy == Ubiquitty::Unicode::InvalidUTF8Policy::FFFD && isPlainNarrowGraphic(0xFFFD, t.ambiguousWidth)) {
+        // A malformed sequence: the substitute the flow places for it.
+        if (const int substituteLength = malformedUTF8SubpartLength(buffer + start, length - start); substituteLength > 0)
+            first = { 0xFFFD, substituteLength, 1, false };
+    }
+    if (first.width == 0 || !t.grid)
         return 0;
+    if (first.width == 2 && !first.isPictograph && start + first.length < length && static_cast<unsigned char>(buffer[start + first.length]) >= 0xC2) {
+        const FlowGlyph second = peekFlowGlyph(buffer, start + first.length, length, t.ambiguousWidth);
+        if (second.width == 2 && !second.isPictograph)
+            return 0;
+    }
     Ubiquitty::Screen::State* s = t.screens.active;
     if (!isTextFlowScreen(t, s) || !batchedWriteEligibleIgnoringWrap(t, s) || t.characterSetG[t.characterSetActive] != characterSetUSASCII
         || s->pen.attributes.contains(VT::Attribute::ForceEmojiPresentation))
         return 0;
-    // A pictograph is what a joiner extends a cluster with: behind a live one
-    // that ends on a joiner it is no cluster of its own. A plain glyph has no
-    // break class and extends nothing.
-    if (first.isPictograph && clusterIsLive(t)) {
+    // A live cluster can take the glyph: a joiner extends it with a
+    // pictograph, and a leading jamo with the syllable behind it. A plain
+    // narrow glyph has no break class and extends nothing.
+    if ((first.isPictograph || first.width == 2) && clusterIsLive(t)) {
         Ubiquitty::Unicode::GraphemeState probe = t.parser.clusterState;
         if (Ubiquitty::Unicode::graphemeExtends(&probe, t.parser.clusterLast, first.codePoint))
             return 0;
