@@ -35,6 +35,8 @@
 #include <chrono>
 #include <cstdlib>
 #include <format>
+#include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -106,6 +108,19 @@ struct ReadBands {
     }
 };
 
+// The largest read each thread asked a transport for.
+struct ReadAsks {
+    std::mutex lock;
+    std::map<std::thread::id, std::size_t> largest;
+
+    void note(std::size_t asked)
+    {
+        std::lock_guard guard(lock);
+        std::size_t& entry = largest[std::this_thread::get_id()];
+        entry = std::max(entry, asked);
+    }
+};
+
 struct ReadShape {
     // Most bytes a read returns while the slab is still landing; 0 for no cap.
     int quantumBytes = 0;
@@ -120,6 +135,10 @@ struct ReadShape {
     int pauseReads = 0;
     ShortReadWaitStrategy shortReadWaitStrategy = ShortReadWaitStrategy::Accumulate;
     ReadinessWaitStrategy readinessWaitStrategy = ReadinessWaitStrategy::ProbeBeforeWait;
+    // The most a dedicated reader asks one read for, as the transport says.
+    std::size_t burstReadBytes = std::numeric_limits<std::size_t>::max();
+    // Where the reads' sizes are recorded, if anywhere.
+    ReadAsks* asks = nullptr;
 };
 
 // What the stream's program reads back: every reply the runtime writes.
@@ -153,6 +172,8 @@ public:
     int read(std::span<char> buffer) override
     {
         std::size_t length = buffer.size();
+        if (m_shape.asks)
+            m_shape.asks->note(length);
         if (m_shape.pauseEveryBytes > 0) {
             if (m_pauseReadsLeft > 0) {
                 --m_pauseReadsLeft;
@@ -197,6 +218,7 @@ public:
     [[nodiscard]] FileDescriptor& handle() override { return m_descriptor; }
     [[nodiscard]] ShortReadWaitStrategy shortReadWaitStrategy() const override { return m_shape.shortReadWaitStrategy; }
     [[nodiscard]] ReadinessWaitStrategy readinessWaitStrategy() const override { return m_shape.readinessWaitStrategy; }
+    [[nodiscard]] std::size_t burstReadBytes() const override { return m_shape.burstReadBytes; }
 
     // Duplicates share the file offset, so the loop's endpoint, the reader's
     // endpoint and the Stream all consume one sequence, as the PTY's do.
@@ -2564,6 +2586,8 @@ struct ShapedFloodOutcome {
     int continuingFrames = 0;
     int budgetedMidSequenceFrames = 0;
     bool didReachTail = false;
+    // The loop's own thread, which reads the passes before a flood.
+    std::thread::id ingestThread;
 };
 
 // What a shaped flood carries.
@@ -2639,6 +2663,7 @@ ShapedFloodOutcome runShapedFlood(Ubiquitty::PAL::ReadShape shape, FramePacing p
     (void)loop.prepare();
     loop.adoptFloodEndpoint(std::move(floodEndpoint));
     std::jthread ingest([&loop, &loopEndpoint] { loop.run(loopEndpoint->handle()); });
+    outcome.ingestThread = ingest.get_id();
     for (int waited = 0; waited < 20000 && deliveredBytes.load(std::memory_order_relaxed) < outcome.totalBytes; waited += 5)
         ::usleep(5 * 1000);
     loop.requestStop();
@@ -2708,6 +2733,27 @@ TEST(testImmediateShortReadsDrainWithoutAccumulateWaits)
             CHECK(outcome.didReachTail);
         }
     }
+}
+
+// A Linux pty wakes a writer that filled it only between reads, so its flood
+// reader moves more asking each read for less than the ring has room for. No
+// read the reader makes asks for more than the transport's bound.
+TEST(testTheFloodReaderAsksNoReadForMoreThanTheTransportsBound)
+{
+    constexpr std::size_t bound = 12 * 1024;
+    Ubiquitty::PAL::ReadAsks asks;
+    const ShapedFloodOutcome outcome = runShapedFlood({ .burstReadBytes = bound, .asks = &asks });
+    CHECK_EQ(outcome.deliveredBytes, outcome.totalBytes);
+    CHECK_MSG(outcome.bursts >= 1, "the flood rode the pipeline, so its reader read");
+    std::lock_guard guard(asks.lock);
+    bool didReaderRead = false;
+    for (const auto& [thread, largest] : asks.largest) {
+        if (thread == outcome.ingestThread)
+            continue;
+        didReaderRead = true;
+        CHECK_MSG(largest <= bound, std::format("the reader asked a read for {} bytes", largest).c_str());
+    }
+    CHECK(didReaderRead);
 }
 
 TEST(testTimedPipelinePassesKeepTheReaderAndEveryUnreadByte)

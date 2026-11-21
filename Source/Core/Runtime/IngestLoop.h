@@ -991,6 +991,7 @@ private:
         // admits more bytes, while waiting cannot enlarge the kernel ring.
         bool isAccumulateWaitRefuted = m_floodEndpoint->shortReadWaitStrategy() == PAL::ShortReadWaitStrategy::ReadImmediately;
         const std::size_t hotRingBytes = m_floodEndpoint->burstHotRingBytes();
+        const std::size_t readBytes = m_floodEndpoint->burstReadBytes();
         std::uint64_t rewoundTo = 0; // where this burst's last restart resumed; zero before the first
         for (;;) {
             if (m_stop.load(std::memory_order_relaxed) || m_runtime.isIngestHeld() || m_runtime.isDecodeFenceRaised())
@@ -1026,7 +1027,7 @@ private:
                 continue;
             }
             const std::size_t writeIndex = static_cast<std::size_t>(producer) & (m_floodRingCapacity - 1);
-            const std::size_t contiguous = std::min(freeBytes, m_floodRingCapacity - writeIndex);
+            const std::size_t contiguous = std::min({ freeBytes, m_floodRingCapacity - writeIndex, readBytes });
             const int bytesRead = m_floodEndpoint->read({ ring + writeIndex, contiguous });
             if (bytesRead > 0) {
                 // No notify: the consumer polls this counter on a timed nap

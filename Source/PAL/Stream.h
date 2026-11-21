@@ -318,6 +318,17 @@ public:
     ///   reader use the buffer whole, which is the default.
     [[nodiscard]] virtual std::size_t burstHotRingBytes() const { return std::numeric_limits<std::size_t>::max(); }
 
+    /// The most a dedicated reader asks one read for.
+    ///
+    /// A transport may serve the writer better when its reader asks for
+    /// less than the buffer holds: one that wakes the writer only between
+    /// reads keeps a writer that filled it asleep for as long as a read
+    /// keeps finding bytes.
+    ///
+    /// - Returns: The byte count, or the largest `size_t` to let a read take
+    ///   all the room the buffer has, which is the default.
+    [[nodiscard]] virtual std::size_t burstReadBytes() const { return std::numeric_limits<std::size_t>::max(); }
+
 protected:
     PollableByteStream() = default;
 };

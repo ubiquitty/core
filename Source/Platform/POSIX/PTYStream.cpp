@@ -356,6 +356,21 @@ public:
 #endif
     }
 
+    [[nodiscard]] std::size_t burstReadBytes() const override
+    {
+#if defined(__linux__)
+        // The line discipline wakes a writer that filled the pty from the
+        // reading side, as a read starts and as it runs out of bytes, not
+        // while it copies: a read that keeps finding bytes keeps the writer
+        // asleep to its end. Unbounded, a read here took eleven kilobytes on
+        // average and the transport moved a twentieth less than with reads
+        // of three of the discipline's four-kilobyte rings at the most.
+        return 12 * 1024;
+#else
+        return PollableByteStream::burstReadBytes();
+#endif
+    }
+
     [[nodiscard]] std::unique_ptr<PollableByteStream> duplicateAsPollableStream() override
     {
         // The duplicate of a duplicate keeps the guard: a caller that got here
