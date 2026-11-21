@@ -3088,6 +3088,8 @@ void CellGrid::shiftRowCells(int row, int from, int rightBound, int n, const Cel
         n = rightBound - from;
     if (n <= 0)
         return;
+    if (isDefaultBlank(blank) && didShiftCompactRow(row, from, rightBound, n, direction))
+        return;
     Cell* cells = rowPtrAt(m_activeIndex, row);
     if (!cells)
         return;
@@ -3114,6 +3116,48 @@ void CellGrid::shiftRowCells(int row, int from, int rightBound, int n, const Cel
         rowMeta(row).set(Ubiquitty::RowFlag::NeedsShaping, true);
     // A shift is content, as the span store it replaces was: the live width reaches past the window.
     noteFilled(row, rightBound);
+}
+
+bool CellGrid::didShiftCompactRow(int row, int from, int rightBound, int n, RowShiftDirection direction)
+{
+    const int slot = physicalRowSlot(m_activeIndex, row);
+    RowState& state = m_rowState[m_activeIndex][slot];
+    if (state.storage == RowStorage::Cells || slot == m_deferredBlankSlot[m_activeIndex] || state.filled < 0 || state.filled > m_columns)
+        return false;
+    Cell* backing = m_rowPtrs[m_activeIndex][slot];
+    auto* bytes = reinterpret_cast<std::uint8_t*>(backing);
+    std::uint16_t* ids = styledIDs(backing);
+    if (state.storage == RowStorage::DefaultASCII) {
+        // A default row's cells are the default pen's, which is id zero, and
+        // its blank columns are bytes of zero in a styled row.
+        if (!styledTemplateID(m_defaultBlank))
+            return false;
+        std::memset(ids, 0, static_cast<std::size_t>(state.filled) * sizeof(std::uint16_t));
+        state.storage = RowStorage::StyledASCII;
+        state.compactBlankStart = unknownCompactBlankStart;
+    }
+    // The window may reach past the row's width, where every column is the
+    // blank a byte of zero stands for.
+    if (state.filled < rightBound) {
+        std::memset(bytes + state.filled, 0, static_cast<std::size_t>(rightBound - state.filled));
+        std::memset(ids + state.filled, 0, static_cast<std::size_t>(rightBound - state.filled) * sizeof(std::uint16_t));
+    }
+    const auto moved = static_cast<std::size_t>(rightBound - from - n);
+    const int blankFrom = direction == RowShiftDirection::InsertRight ? from : rightBound - n;
+    if (direction == RowShiftDirection::InsertRight) {
+        std::memmove(bytes + from + n, bytes + from, moved);
+        std::memmove(ids + from + n, ids + from, moved * sizeof(std::uint16_t));
+    } else {
+        std::memmove(bytes + from, bytes + from + n, moved);
+        std::memmove(ids + from, ids + from + n, moved * sizeof(std::uint16_t));
+    }
+    std::memset(bytes + blankFrom, 0, static_cast<std::size_t>(n));
+    std::memset(ids + blankFrom, 0, static_cast<std::size_t>(n) * sizeof(std::uint16_t));
+    // A shift is content, as it is on a row of cells: the width reaches past the window.
+    state.filled = std::max(state.filled, rightBound);
+    m_anyMutationsSinceLastPaint = true;
+    bumpRow(row);
+    return true;
 }
 
 // Rotation core of scrollFullViewportUpOneWithBlank without the per-scroll bookkeeping (see

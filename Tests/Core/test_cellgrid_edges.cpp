@@ -438,6 +438,49 @@ TEST(aColouredScrollBlankReplacesACompactRecycledRow)
     }
 }
 
+// An insert or a delete on a compact row moves its bytes and ids where they
+// stand, plain or styled, at either end of the row's width, over the ids an
+// erased styled line left, and reads back what the same shift on cells would
+// have left. A blank in a colour still takes cells.
+TEST(insertAndDeleteShiftACompactRowInPlace)
+{
+    for (const bool isStyled : { false, true }) {
+        for (const auto direction : { RowShiftDirection::InsertRight, RowShiftDirection::DeleteLeft }) {
+            for (const int rightBound : { 12, 20 }) {
+                CellGrid grid;
+                CellGrid expected;
+                Cell pen = grid.defaultBlank();
+                if (isStyled)
+                    pen.pen.foregroundIndex = 2;
+                Cell red = grid.defaultBlank();
+                red.pen.foregroundIndex = 1;
+                for (auto* each : { &grid, &expected }) {
+                    each->init(2, 20);
+                    // Styled text erased leaves its ids under the row.
+                    each->writeASCIIRun(Row(0), Column(0), red, "xxxxxxxxxxxxxxxxxxxx");
+                    each->eraseRowRange(Row(0), Column(0), Column(19), each->defaultBlank());
+                    each->writeASCIIRun(Row(0), Column(0), pen, "the quick brown");
+                }
+                (void)expected.rowCells(Row(0));
+                for (auto* each : { &grid, &expected })
+                    each->shiftRowCells(0, 4, rightBound, 3, each->defaultBlank(), direction);
+                CHECK(grid.styledRow(Row(0)).has_value());
+                CHECK_EQ(grid.rowContentWidth(Row(0)), expected.rowContentWidth(Row(0)));
+                for (int column = 0; column < 20; ++column)
+                    CHECK(std::memcmp(grid.cellAt(Row(0), Column(column)), expected.cellAt(Row(0), Column(column)), sizeof(Cell)) == 0);
+            }
+        }
+    }
+    CellGrid grid;
+    grid.init(2, 20);
+    grid.writeASCIIRun(Row(0), Column(0), grid.defaultBlank(), "the quick brown");
+    Cell tinted = grid.defaultBlank();
+    tinted.pen.backgroundIndex = 4;
+    grid.shiftRowCells(0, 4, 20, 3, tinted, RowShiftDirection::InsertRight);
+    CHECK(!grid.styledRow(Row(0)).has_value());
+    CHECK(std::memcmp(grid.cellAt(Row(0), Column(5)), &tinted, sizeof(Cell)) == 0);
+}
+
 TEST(shortASCIIPrefixesDoNotCompactLongerRecycledRows)
 {
     for (const auto screen : { ScreenMode::Primary, ScreenMode::Alternate }) {

@@ -1207,6 +1207,23 @@ private:
     ///   - source: One borrowed byte per column, from the first.
     /// - Returns: Whether the row was replaced; `false` leaves it untouched.
     [[nodiscard]] bool didReplaceCellsWithCompactASCIIRun(int slot, int row, int lastColumn, const Cell& cellTemplate, const char* source);
+    /// Shifts a compact row's bytes and ids for an insert or a delete whose
+    /// freed columns take the default blank.
+    ///
+    /// An editor inserts and deletes characters on lines it writes whole, and
+    /// a row turned into cells to move them, and made compact again by the
+    /// next line, costs more than the move. A default row becomes a styled one
+    /// with every id the default pen's.
+    ///
+    /// - Parameters:
+    ///   - row: The active screen's logical row.
+    ///   - from: The window's first column.
+    ///   - rightBound: One past the window's last column, within the row.
+    ///   - n: How many columns to shift by, at least one and at most the
+    ///     window's width.
+    ///   - direction: Which end the blanks open at.
+    /// - Returns: Whether the row was shifted; `false` leaves it untouched.
+    [[nodiscard]] bool didShiftCompactRow(int row, int from, int rightBound, int n, RowShiftDirection direction);
     /// Writes one printable ASCII cell into a compact row as a byte and an id.
     ///
     /// A line padded to the last column takes that column as a single cell,
