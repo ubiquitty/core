@@ -19,11 +19,13 @@
 #include "Core/Unicode/Joining.h"
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <cstring>
 #include <functional>
 #include <iterator>
 #include <new>
+#include <span>
 #include <type_traits>
 #include <utility>
 
@@ -629,49 +631,67 @@ bool CellGrid::didReplaceCellsWithCompactASCIIRun(int slot, int row, int lastCol
     return true;
 }
 
+/// The slot a template's probe starts at.
+///
+/// The top bits of a product depend on every bit of its operand: a pen's
+/// colours sit in the high half of a template's first word, and templates
+/// that differ only there still start apart.
+static std::size_t styledTemplateSlot(const Cell& cellTemplate, std::size_t slots)
+{
+    std::array<std::uint64_t, 4> words;
+    std::memcpy(words.data(), &cellTemplate, sizeof words);
+    const std::uint64_t hash = (words[0] * 0x9E3779B97F4A7C15ull) ^ (words[1] * 0xC2B2AE3D27D4EB4Full) ^ (words[2] * 0x165667B19E3779F9ull) ^ (words[3] * 0x27D4EB2F165667C5ull);
+    return static_cast<std::size_t>(hash >> (64 - std::countr_zero(slots)));
+}
+
 std::optional<std::uint16_t> CellGrid::styledTemplateID(const Cell& cellTemplate)
 {
+    static_assert(std::has_single_bit(static_cast<unsigned>(styledTemplateSlots)));
     assert(cellTemplate.codePoint == 0);
     if (cellPen(cellTemplate).extendedAttributes.textSizeSpecID() != 0 || cellTemplate.clusterPacked != 0)
         return std::nullopt;
+    if (!m_styledTemplates) [[unlikely]]
+        return internStyledTemplate(cellTemplate, 0);
+    const StyledTemplates& table = *m_styledTemplates;
+    if (m_lastStyledTemplateID < table.count && cellEqual(table.cells[m_lastStyledTemplateID], cellTemplate))
+        return m_lastStyledTemplateID;
+    for (std::size_t slot = styledTemplateSlot(cellTemplate, styledTemplateSlots);; slot = (slot + 1) & (styledTemplateSlots - 1)) {
+        const std::uint16_t id = table.slots[slot];
+        if (id == 0xFFFF) [[unlikely]]
+            return internStyledTemplate(cellTemplate, slot);
+        if (cellEqual(table.cells[id], cellTemplate))
+            return m_lastStyledTemplateID = id;
+    }
+}
+
+std::optional<std::uint16_t> CellGrid::internStyledTemplate(const Cell& cellTemplate, std::size_t freeSlot)
+{
     if (!m_styledTemplates) {
         m_styledTemplates.reset(new (std::nothrow) StyledTemplates);
         if (!m_styledTemplates)
             return std::nullopt;
         m_styledTemplates->slots.fill(0xFFFF);
         m_styledTemplates->cells[0] = m_defaultBlank;
+        m_styledTemplates->slots[styledTemplateSlot(m_defaultBlank, styledTemplateSlots)] = 0;
         m_styledTemplates->count = 1;
         m_lastStyledTemplateID = 0;
+        return styledTemplateID(cellTemplate);
     }
     const StyledTemplates& table = *m_styledTemplates;
-    if (m_lastStyledTemplateID < table.count && cellEqual(table.cells[m_lastStyledTemplateID], cellTemplate))
-        return m_lastStyledTemplateID;
-    if (cellEqual(table.cells[0], cellTemplate))
-        return m_lastStyledTemplateID = 0;
-    std::array<std::uint64_t, 4> words;
-    std::memcpy(words.data(), &cellTemplate, sizeof words);
-    const std::uint64_t hash = (words[0] * 0x9E3779B97F4A7C15ull) ^ (words[1] * 0xC2B2AE3D27D4EB4Full) ^ (words[2] * 0x165667B19E3779F9ull) ^ (words[3] * 0x27D4EB2F165667C5ull);
-    for (std::size_t slot = (hash >> 40) & (styledTemplateSlots - 1);; slot = (slot + 1) & (styledTemplateSlots - 1)) {
-        const std::uint16_t id = table.slots[slot];
-        if (id == 0xFFFF) {
-            if (table.count >= styledTemplateCapacity)
-                return std::nullopt;
-            // A table another grid also holds is that grid's too: this one
-            // adds to a copy of its own.
-            if (m_styledTemplates.use_count() > 1) {
-                std::shared_ptr<StyledTemplates> own(new (std::nothrow) StyledTemplates(table));
-                if (!own)
-                    return std::nullopt;
-                m_styledTemplates = std::move(own);
-            }
-            StyledTemplates& mine = *m_styledTemplates;
-            mine.cells[static_cast<std::size_t>(mine.count)] = cellTemplate;
-            mine.slots[slot] = static_cast<std::uint16_t>(mine.count);
-            return m_lastStyledTemplateID = static_cast<std::uint16_t>(mine.count++);
-        }
-        if (cellEqual(table.cells[id], cellTemplate))
-            return m_lastStyledTemplateID = id;
+    if (table.count >= styledTemplateCapacity)
+        return std::nullopt;
+    // A table another grid also holds is that grid's too: this one adds to a
+    // copy of its own.
+    if (m_styledTemplates.use_count() > 1) {
+        std::shared_ptr<StyledTemplates> own(new (std::nothrow) StyledTemplates(table));
+        if (!own)
+            return std::nullopt;
+        m_styledTemplates = std::move(own);
     }
+    StyledTemplates& mine = *m_styledTemplates;
+    mine.cells[static_cast<std::size_t>(mine.count)] = cellTemplate;
+    mine.slots[freeSlot] = static_cast<std::uint16_t>(mine.count);
+    return m_lastStyledTemplateID = static_cast<std::uint16_t>(mine.count++);
 }
 
 std::optional<CellGrid::StyledRow> CellGrid::styledRow(Row row) const
@@ -686,6 +706,58 @@ std::optional<CellGrid::StyledRow> CellGrid::styledRow(Row row) const
     const auto length = static_cast<std::size_t>(state.filled);
     Cell* backing = m_rowPtrs[m_activeIndex][slot];
     return StyledRow { { reinterpret_cast<const std::uint8_t*>(backing), length }, { styledIDs(backing), length }, m_styledTemplates->cells.data() };
+}
+
+/// Whether two short byte spans match, and their copy, for the runs a styled
+/// row mostly takes: a word, a number, a keyword, where a library call costs
+/// more than the bytes it moves. Two loads that overlap cover any length
+/// between one width and twice it.
+static bool areBytesEqual(std::span<const std::uint8_t> first, std::span<const char> second)
+{
+    assert(first.size() == second.size());
+    const std::size_t count = first.size();
+    const auto differs = [&]<typename Word>(Word) {
+        Word headFirst, headSecond, tailFirst, tailSecond;
+        std::memcpy(&headFirst, first.data(), sizeof(Word));
+        std::memcpy(&headSecond, second.data(), sizeof(Word));
+        std::memcpy(&tailFirst, first.data() + (count - sizeof(Word)), sizeof(Word));
+        std::memcpy(&tailSecond, second.data() + (count - sizeof(Word)), sizeof(Word));
+        return ((headFirst ^ headSecond) | (tailFirst ^ tailSecond)) != 0;
+    };
+    if (count > 16)
+        return std::memcmp(first.data(), second.data(), count) == 0;
+    if (count >= 8)
+        return !differs(std::uint64_t {});
+    if (count >= 4)
+        return !differs(std::uint32_t {});
+    for (std::size_t index = 0; index < count; ++index) {
+        if (first[index] != static_cast<std::uint8_t>(second[index]))
+            return false;
+    }
+    return true;
+}
+
+static void copyBytes(std::span<std::uint8_t> destination, std::span<const char> source)
+{
+    assert(destination.size() == source.size());
+    const std::size_t count = source.size();
+    const auto copy = [&]<typename Word>(Word) {
+        Word head, tail;
+        std::memcpy(&head, source.data(), sizeof(Word));
+        std::memcpy(&tail, source.data() + (count - sizeof(Word)), sizeof(Word));
+        std::memcpy(destination.data(), &head, sizeof(Word));
+        std::memcpy(destination.data() + (count - sizeof(Word)), &tail, sizeof(Word));
+    };
+    if (count > 16)
+        std::memcpy(destination.data(), source.data(), count);
+    else if (count >= 8)
+        copy(std::uint64_t {});
+    else if (count >= 4)
+        copy(std::uint32_t {});
+    else {
+        for (std::size_t index = 0; index < count; ++index)
+            destination[index] = static_cast<std::uint8_t>(source[index]);
+    }
 }
 
 bool CellGrid::writeStyledASCIIRun(int slot, int row, int firstColumn, int lastColumn, const Cell& cellTemplate, const char* source)
@@ -712,6 +784,8 @@ bool CellGrid::writeStyledASCIIRun(int slot, int row, int firstColumn, int lastC
     auto* bytes = reinterpret_cast<std::uint8_t*>(backing);
     std::uint16_t* ids = styledIDs(backing);
     const int count = lastColumn - firstColumn + 1;
+    const std::span<std::uint8_t> rowBytes { bytes + firstColumn, static_cast<std::size_t>(count) };
+    const std::span<const char> runBytes { source, static_cast<std::size_t>(count) };
     bool hasDifference = false;
     if (state.storage == RowStorage::DefaultASCII) {
         // The row's cells so far are the default pen's, which is id zero.
@@ -722,14 +796,13 @@ bool CellGrid::writeStyledASCIIRun(int slot, int row, int firstColumn, int lastC
     }
     // The ids are read only behind bytes that match: text that differs is
     // most of what is written, and its bytes say so first.
-    if (!hasDifference && lastColumn < state.filled && std::memcmp(bytes + firstColumn, source, static_cast<std::size_t>(count)) == 0
-        && areStyledIDsAll(ids + firstColumn, count, *id))
+    if (!hasDifference && lastColumn < state.filled && areBytesEqual(rowBytes, runBytes) && areStyledIDsAll(ids + firstColumn, count, *id))
         return true; // an identical repaint
     if (firstColumn > state.filled) {
         std::memset(bytes + state.filled, 0, static_cast<std::size_t>(firstColumn - state.filled));
         std::memset(ids + state.filled, 0, static_cast<std::size_t>(firstColumn - state.filled) * sizeof(std::uint16_t));
     }
-    std::memcpy(bytes + firstColumn, source, static_cast<std::size_t>(count));
+    copyBytes(rowBytes, runBytes);
     fillStyledIDs(ids + firstColumn, count, *id);
     state.filled = std::max(state.filled, lastColumn + 1);
     m_anyMutationsSinceLastPaint = true;

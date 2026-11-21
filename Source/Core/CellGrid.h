@@ -1156,6 +1156,17 @@ private:
     /// - Returns: The id, or nothing when the table is full, cannot be
     ///   allocated, or the template is sized text, which no compact row holds.
     [[nodiscard]] std::optional<std::uint16_t> styledTemplateID(const Cell& cellTemplate);
+    /// Adds a template the table does not hold, making the table first when
+    /// the grid has none: the part of a lookup it rarely takes, kept apart so
+    /// a lookup that finds its template saves no registers for it.
+    ///
+    /// - Parameters:
+    ///   - cellTemplate: A cell with no code point and no cluster.
+    ///   - freeSlot: The free slot the template's probe ended at; ignored
+    ///     when there is no table yet.
+    /// - Returns: The id, or nothing when the table is full or cannot be
+    ///   allocated.
+    [[gnu::noinline]] [[nodiscard]] std::optional<std::uint16_t> internStyledTemplate(const Cell& cellTemplate, std::size_t freeSlot);
     /// Where a styled row keeps its ids: past the bytes, inside the row's own storage.
     ///
     /// - Parameter backing: The row's storage.
