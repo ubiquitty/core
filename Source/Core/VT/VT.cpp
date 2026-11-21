@@ -6145,6 +6145,13 @@ template<GraphicCapture Capture> static int emitASCIIRun(Ubiquitty::Terminal& t,
     }
     // A combining mark arriving next attaches to the run's last cell.
     const PlacedGlyph placed { row, lastColumn, static_cast<uint32_t>(static_cast<unsigned char>(buffer[start + n - 1])), s->cursorX, s->cursorY, s->wrapPending };
+    // An escape behind the run, a pen change or a cursor move in coloured
+    // output, or the end of the input, leaves the flow nothing to take, and
+    // its setup costs more than the run's note it would end on.
+    if (start + n >= length || buffer[start + n] == '\x1b') {
+        notePlacedGlyph(t, placed);
+        return n;
+    }
     if (!translation && isTextFlowScreen(t, s))
         return continueASCIIFlow<Capture>(t, s, buffer, start + n, length, tmpl, placed) - start;
     notePlacedGlyph(t, placed);
