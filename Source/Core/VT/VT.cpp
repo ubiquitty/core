@@ -8078,12 +8078,9 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
                 const int decoded = Ubiquitty::Unicode::utf8DecodeRun(
                     std::span { buffer + position, static_cast<std::size_t>(length - position) },
                     std::span { codePoints.data(), static_cast<std::size_t>(room / 2) }, &decodedBytes);
-                int count = 0;
-                int bytes = 0;
-                while (count < decoded && isWideIdeographFast(codePoints[count])) {
-                    bytes += codePoints[count] < 0x10000 ? 3 : 4;
-                    ++count;
-                }
+                const WideIdeographRun run = leadingWideIdeographs(codePoints.data(), decoded);
+                int count = run.count;
+                int bytes = run.bytes;
                 if (count > 0 && !isFollowedByWholeThreeByteGlyph(buffer, position + bytes, length)
                     && graphicCaptureBefore<Capture>(buffer, position + bytes, length) == GraphicCapture::Retain) {
                     --count;
