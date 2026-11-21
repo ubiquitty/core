@@ -45,8 +45,11 @@ inline void expandRangeToWholeRuns(const Ubiquitty::CellGrid* grid, int row, int
 {
     if (!grid)
         return;
+    // Read where the cell stands: a compact row holds no pair, and asking it
+    // must not turn it into cells ahead of an erase that would only shorten it.
     auto isContinuationAt = [&](int column) {
-        const Ubiquitty::Cell* cell = grid->cellAt(Ubiquitty::Row(row), Ubiquitty::Column(column));
+        const auto read = grid->logicalCellReadAt(Ubiquitty::Row(row), Ubiquitty::Column(column));
+        const Ubiquitty::Cell* cell = read.get();
         return cell && Ubiquitty::cellPen(*cell).attributes.contains(Ubiquitty::VT::Attribute::WideContinuation);
     };
     while (from > 0 && isContinuationAt(from))
