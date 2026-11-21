@@ -91,7 +91,19 @@ static uint64_t fingerprint(const Ubiquitty::Terminal& t)
         for (uint32_t continuation : cell.combining)
             mixInt(continuation);
         mixInt(cell.linkID());
-        mixInt(cell.clusterPacked);
+        // A pooled cluster by its code points, not its pool id: a cluster
+        // grown a code point at a time interns each of its prefixes, so the
+        // id the whole one gets depends on what was interned before it.
+        mixInt(cell.combiningLength());
+        if (cell.clusterID() != 0) {
+            std::array<uint32_t, Ubiquitty::clusterPoolMaximumCodePoints> codePoints {};
+            const int count = Ubiquitty::cellClusterCodePoints(&t, &cell, codePoints.data(), static_cast<int>(codePoints.size()));
+            mixInt(count);
+            for (int index = 0; index < count; ++index)
+                mixInt(codePoints[static_cast<std::size_t>(index)]);
+        } else {
+            mixInt(0);
+        }
     };
 
     const Ubiquitty::Screen::State* s = t.screens.active;
@@ -1184,10 +1196,26 @@ int main(int argc, char** argv)
 
         // Glyphs of both widths one at a time, as text that mixes scripts is:
         // a letter, an ideograph, a syllable, a pictograph and ASCII, each
-        // beside any other, in lines that wrap with a pair at the margin, and
-        // now and then what can join the glyph before it, with a letter
-        // behind so no cluster grows past one continuation, and a malformed
-        // sequence of each kind the decoder substitutes for.
+        // beside any other, in lines that wrap with a pair at the margin; now
+        // and then what can join the glyph before it, with a letter behind;
+        // whole clusters of every kind the cluster writers stage; and a
+        // malformed sequence of each kind the decoder substitutes for.
+        const char* const clusters[] = {
+            "\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x92\xBB", // a joined pair
+            "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7", // a family
+            "\xF0\x9F\x91\x8D\xF0\x9F\x8F\xBD", // a modifier
+            "\xE2\x9D\xA4\xEF\xB8\x8F", // a selector that widens
+            "\xE2\x9C\x8C\xEF\xB8\x8E", // one that keeps text
+            "\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8", // a flag
+            "1\xEF\xB8\x8F\xE2\x83\xA3", // a keycap
+            "\xE0\xA4\xA8\xE0\xA4\xAE\xE0\xA4\xB8\xE0\xA5\x8D\xE0\xA4\xA4\xE0\xA5\x87", // a conjunct and a vowel sign
+            "\xE0\xA4\x95\xE0\xA5\x8D\xE0\xA4\xB7", // a conjunct alone
+            "\xE0\xA4\x95", // a consonant alone
+            "\xE1\x84\x80\xE1\x85\xA1\xE1\x86\xA8", // jamo that make a syllable
+            "e\xCC\x81\xCC\xA3", // two marks
+            "o\xCC\x88\xCC\x81\xCC\xA3", // three
+            "\xE6\xBC\xA2\xCC\x81", // a mark on an ideograph
+        };
         const char* const malformed[] = {
             "\x80",
             "\xBF", // stray continuations
@@ -1265,6 +1293,10 @@ int main(int argc, char** argv)
                     out += (pick & 256) ? "\r\n" : "\n";
                     break;
                 case 15:
+                    if (pick & 0x100000) {
+                        out += clusters[(pick >> 8) % std::size(clusters)];
+                        break;
+                    }
                     out += malformed[(pick >> 8) % std::size(malformed)];
                     out += (pick & 0x80000) ? "y" : "";
                     break;

@@ -1766,7 +1766,8 @@ void CellGrid::writeNarrowCodePointRun(Row rowValue, Column firstColumnValue, co
     noteFilled(row, lastColumn + 1);
 }
 
-void CellGrid::writeMixedCodePointRun(Row rowValue, Column firstColumnValue, const Cell& cellTemplate, std::span<const uint32_t> columnEntries, std::span<const ColumnMark> marks)
+void CellGrid::writeMixedCodePointRun(Row rowValue, Column firstColumnValue, const Cell& cellTemplate, std::span<const uint32_t> columnEntries, std::span<const ColumnMark> marks,
+    std::span<const Cell> stagedCells)
 {
     const int row = rowValue.value();
     const int firstColumn = firstColumnValue.value();
@@ -1803,24 +1804,50 @@ void CellGrid::writeMixedCodePointRun(Row rowValue, Column firstColumnValue, con
     const std::array<CellStamp, 4> stamps { CellStamp(cellTemplate), CellStamp(lead), CellStamp(continuation), CellStamp(emojiLead) };
     static_assert(static_cast<int>(MixedColumn::EmojiLead) == 3, "a stamp for each kind of column");
     Cell* destination = m_rowPtrs[m_activeIndex][slot] + firstColumn;
-    if (!isDestinationLogicallyBlank) {
-        bool hasDifference = false;
-        for (int index = 0; index < count && !hasDifference; ++index) {
-            const uint32_t entry = columnEntries[index];
-            hasDifference = !stamps[entry >> mixedColumnShift].matches(destination + index, entry & mixedCodePointMask);
-        }
-        if (!hasDifference)
-            return;
-    }
+    constexpr uint32_t stagedKind = static_cast<uint32_t>(MixedColumn::Staged);
     uint32_t kinds = 0;
-    for (int index = 0; index < count; ++index) {
-        const uint32_t entry = columnEntries[index];
-        assert((entry & mixedCodePointMask) == 0 ? entry >> mixedColumnShift == static_cast<uint32_t>(MixedColumn::RightHalf) : !Unicode::mayNeedShaping(entry & mixedCodePointMask));
-        assert(entry >> mixedColumnShift != static_cast<uint32_t>(MixedColumn::RightHalf) || (columnEntries[index - 1] >> mixedColumnShift) % 2 == 1);
-        kinds |= 1u << (entry >> mixedColumnShift);
-        stamps[entry >> mixedColumnShift].store(destination + index, entry & mixedCodePointMask);
-    }
-    const bool hasPair = (kinds & (1u << static_cast<int>(MixedColumn::RightHalf))) != 0;
+    bool hasStagedPair = false;
+    // The loops twice over, with staged cells and without: the test for a
+    // staged entry would cost a run without one a branch a column.
+    const auto didWrite = [&] [[gnu::always_inline]] (auto hasStaged) -> bool {
+        const auto isStaged = [&] [[gnu::always_inline]] (uint32_t entry) {
+            if constexpr (decltype(hasStaged)::value)
+                return entry >> mixedColumnShift == stagedKind;
+            else
+                return false;
+        };
+        if (!isDestinationLogicallyBlank) {
+            bool hasDifference = false;
+            for (int index = 0; index < count && !hasDifference; ++index) {
+                const uint32_t entry = columnEntries[index];
+                hasDifference = isStaged(entry) ? !cellEqual(destination[index], stagedCells[entry & mixedCodePointMask])
+                                                : !stamps[entry >> mixedColumnShift].matches(destination + index, entry & mixedCodePointMask);
+            }
+            if (!hasDifference)
+                return false;
+        }
+        for (int index = 0; index < count; ++index) {
+            const uint32_t entry = columnEntries[index];
+            if (isStaged(entry)) [[unlikely]] {
+                const Cell& staged = stagedCells[entry & mixedCodePointMask];
+                destination[index] = staged;
+                hasStagedPair |= cellPen(staged).attributes.containsAny(multicellHalves);
+                kinds |= 1u << stagedKind;
+                continue;
+            }
+            assert((entry & mixedCodePointMask) == 0 ? entry >> mixedColumnShift == static_cast<uint32_t>(MixedColumn::RightHalf)
+                                                     : !Unicode::mayNeedShaping(entry & mixedCodePointMask));
+            assert(entry >> mixedColumnShift != static_cast<uint32_t>(MixedColumn::RightHalf) || (columnEntries[index - 1] >> mixedColumnShift) % 2 == 1);
+            kinds |= 1u << (entry >> mixedColumnShift);
+            stamps[entry >> mixedColumnShift].store(destination + index, entry & mixedCodePointMask);
+        }
+        return true;
+    };
+    if (!(stagedCells.empty() ? didWrite(std::false_type {}) : didWrite(std::true_type {})))
+        return;
+    const bool hasPair = (kinds & (1u << static_cast<int>(MixedColumn::RightHalf))) != 0 || hasStagedPair;
+    // A cluster may shape, as the line writer's staging says of its own.
+    const bool hasCluster = (kinds & (1u << stagedKind)) != 0;
     for (const ColumnMark& mark : marks) {
         assert(mark.column >= 0 && mark.column < count && columnEntries[mark.column] >> mixedColumnShift == static_cast<uint32_t>(MixedColumn::Narrow));
         static_assert(cellMaxCombining >= 1, "a mark is held inline");
@@ -1834,7 +1861,9 @@ void CellGrid::writeMixedCodePointRun(Row rowValue, Column firstColumnValue, con
         noteBlinkWrite();
     if (cellPen(cellTemplate).extendedAttributes.textSizeSpecID() != 0)
         noteSizedWrite();
-    if (firstColumn == 0 && lastColumn + 1 == m_columns)
+    if (hasCluster)
+        rowMeta(row).set(RowFlag::NeedsShaping, true);
+    else if (firstColumn == 0 && lastColumn + 1 == m_columns)
         rowMeta(row).set(RowFlag::NeedsShaping, false);
     if (hasPair)
         rowMeta(row).set(RowFlag::HasMulticell, true);

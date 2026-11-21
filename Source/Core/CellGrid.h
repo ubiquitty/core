@@ -436,7 +436,10 @@ public:
         /// A wide glyph's right half.
         RightHalf,
         /// A wide glyph's lead, drawn as emoji.
-        EmojiLead
+        EmojiLead,
+        /// A cell staged whole, a cluster's: the entry's code point bits
+        /// index the run's staged cells.
+        Staged
     };
     /// Where an entry of ``writeMixedCodePointRun`` keeps its column's kind,
     /// above every bit a code point uses.
@@ -483,7 +486,10 @@ public:
     ///     continuation's, and follows a lead.
     ///   - marks: The narrow glyphs that carry a combining mark, each once,
     ///     in column order.
-    void writeMixedCodePointRun(Row row, Column firstColumn, const Cell& cellTemplate, std::span<const uint32_t> columnEntries, std::span<const ColumnMark> marks = {});
+    ///   - stagedCells: The cells ``MixedColumn::Staged`` entries name, each a
+    ///     cluster's with the template's pen, link and width attributes.
+    void writeMixedCodePointRun(Row row, Column firstColumn, const Cell& cellTemplate, std::span<const uint32_t> columnEntries, std::span<const ColumnMark> marks = {},
+        std::span<const Cell> stagedCells = {});
     /// Writes a run of printable ASCII translated through a character set.
     ///
     /// The companion to `writeASCIIRun` for a designated GL set: one byte still

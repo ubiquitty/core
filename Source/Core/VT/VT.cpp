@@ -5796,6 +5796,8 @@ struct PlacedGlyph {
     bool isWrapPending = false;
     /// The combining mark its cell holds inline, or zero.
     uint32_t continuation = 0;
+    /// Whether it is a cluster the flow staged, which the flow opens itself.
+    bool isStagedCluster = false; // bool-ok: a fact about the placed glyph
 };
 
 /// Tells the parser what a piece of text ended on: the item a repeat replays,
@@ -5811,6 +5813,7 @@ struct PlacedGlyph {
 ///   - placed: The piece's last glyph and the cursor behind it.
 static inline void notePlacedGlyph(Ubiquitty::Terminal& t, const PlacedGlyph& placed)
 {
+    assert(!placed.isStagedCluster);
     t.parser.precedingItem.setGraphic(placed.codePoint, placed.codePoint, 0);
     t.parser.clusterActive = true;
     t.parser.clusterRow = placed.row;
@@ -6976,6 +6979,142 @@ struct StagedCluster {
     return true;
 }
 
+/// The clusters a piece of the flow's cells stages, and the records of the
+/// last two, for the parser: the piece can end on either.
+struct FlowClusters {
+    /// A piece stages at most this many cells of clusters; the rest are the
+    /// next piece's.
+    static constexpr int capacity = 128;
+    Ubiquitty::CellScratchBuffer<capacity> cells;
+    int count = 0;
+    std::array<StagedCluster, 2> records;
+    /// Each record's lead, as an entry of the piece.
+    std::array<int, 2> columns { -1, -1 };
+    int latest = 0;
+};
+
+/// Where a piece of the flow's cells stands: its entries, the end of its
+/// bytes, and the last glyph's bytes and cells.
+struct FlowCellsCursor {
+    int count = 0;
+    int end = 0;
+    int lastLength = 0;
+    int lastWidth = 1;
+};
+
+enum class FlowClusterOutcome : std::uint8_t {
+    /// Nothing placed: the piece ends where it stands.
+    Ends,
+    /// A glyph added: a lone base, or a cluster.
+    Added,
+    /// The last glyph replaced by the cluster it is the base of.
+    Restaged,
+};
+
+struct FlowClusterStep {
+    FlowCellsCursor cursor;
+    FlowClusterOutcome outcome = FlowClusterOutcome::Ends;
+};
+
+/// Places, in a piece of the flow's cells, what starts at `cursor.end` and
+/// is no glyph the piece reads itself: a code point that joins the glyph
+/// before it, which makes that glyph the base of a cluster staged again from
+/// its first byte; a code point of a break class that the one behind it
+/// leaves alone, as a narrow cell; or the base of a whole cluster, staged as
+/// the line writer stages one.
+///
+/// Out of line, and given the piece's state by value: the piece's loop keeps
+/// that state in registers only while nothing takes its address.
+///
+/// - Parameters:
+///   - t: The terminal.
+///   - input: The input.
+///   - cellTemplate: The cell the piece's cells are made from.
+///   - entries: The piece's entries, as many as its row has room for.
+///   - clusters: The clusters the piece has staged.
+///   - cursor: Where the piece stands.
+///   - glyphs: How many glyphs the piece holds.
+///   - marks: The marks the piece's glyphs took, the first `markCount`.
+///   - markCount: How many marks they took.
+/// - Returns: Where the piece stands after the step, and what it placed.
+[[gnu::noinline]] static FlowClusterStep placeFlowCluster(Ubiquitty::Terminal& t, std::string_view input, const Ubiquitty::Cell& cellTemplate, std::span<uint32_t> entries,
+    FlowClusters& clusters, FlowCellsCursor cursor, int glyphs, const std::array<Ubiquitty::CellGrid::ColumnMark, Ubiquitty::maxColumns>& marks, int markCount)
+{
+    const char* const buffer = input.data();
+    const int length = static_cast<int>(input.size());
+    const int room = static_cast<int>(entries.size());
+    const int end = cursor.end;
+    if (end + 4 > length)
+        return { cursor, FlowClusterOutcome::Ends };
+    const std::optional<PeekedCodePoint> peeked = peekMultibyteUTF8CodePoint({ buffer + end, static_cast<std::size_t>(length - end) });
+    // A C1 control is the dispatcher's.
+    if (!peeked || peeked->codePoint < 0xA0)
+        return { cursor, FlowClusterOutcome::Ends };
+    // Stages the cluster that starts at `from` with `base` into the entries
+    // from `column` on.
+    const auto didStage = [&](int from, int column, std::uint32_t base, int baseLength) -> bool {
+        const int spare = 1 - clusters.latest;
+        StagedCluster& record = clusters.records[static_cast<std::size_t>(spare)];
+        const int cellsLeft = std::min(room - column, FlowClusters::capacity - clusters.count);
+        if (!didStageLineSpanCluster(t, input, from, base, baseLength, Ubiquitty::Unicode::Width::classify(base), cellTemplate, clusters.cells.data() + clusters.count, cellsLeft,
+                record))
+            return false;
+        clusters.columns[static_cast<std::size_t>(spare)] = column;
+        clusters.latest = spare;
+        for (int cell = 0; cell < record.cells; ++cell)
+            entries[static_cast<std::size_t>(column + cell)] = Ubiquitty::CellGrid::mixedColumnEntry(static_cast<std::uint32_t>(clusters.count++), Ubiquitty::CellGrid::MixedColumn::Staged);
+        cursor = { column + record.cells, from + record.bytes, record.bytes, record.cells };
+        return true;
+    };
+    // A glyph that took a mark is a cluster already, whole.
+    if (glyphs > 0 && (markCount == 0 || marks[static_cast<std::size_t>(markCount - 1)].column != cursor.count - 1)) {
+        const int leadColumn = cursor.count - cursor.lastWidth;
+        const uint32_t lastEntry = entries[static_cast<std::size_t>(leadColumn)];
+        const std::uint32_t lastBase = lastEntry & Ubiquitty::CellGrid::mixedCodePointMask;
+        Ubiquitty::Unicode::GraphemeState probe {};
+        Ubiquitty::Unicode::graphemeStateReset(&probe, lastBase);
+        if (lastEntry >> Ubiquitty::CellGrid::mixedColumnShift != static_cast<uint32_t>(Ubiquitty::CellGrid::MixedColumn::Staged) && lastBase != 0xFFFD
+            && Ubiquitty::Unicode::graphemeExtends(&probe, lastBase, peeked->codePoint)) {
+            if (!didStage(end - cursor.lastLength, leadColumn, lastBase, cursor.lastLength))
+                return { cursor, FlowClusterOutcome::Ends };
+            return { cursor, FlowClusterOutcome::Restaged };
+        }
+    }
+    const std::uint32_t base = peeked->codePoint;
+    const Ubiquitty::Unicode::Width::AmbiguousWidth ambiguousWidth = t.ambiguousWidth;
+    // A code point of a break class stands alone as a narrow cell when
+    // nothing behind it joins it and it is none of the bases the cluster
+    // writers place differently.
+    const auto isLoneNarrowBase = [&] {
+        if (Ubiquitty::Unicode::isGraphemePrepend(base) || Ubiquitty::Unicode::isExtendedPictographic(base) || Ubiquitty::Unicode::isKeycapBase(base)
+            || Ubiquitty::Unicode::mayNeedShaping(base) || Ubiquitty::Unicode::Width::forCodePoint(base, ambiguousWidth) != 1)
+            return false;
+        const int next = end + peeked->length;
+        if (next >= length)
+            return false;
+        if (static_cast<unsigned char>(buffer[next]) - 0x20u <= 0x7Eu - 0x20u)
+            return true;
+        if (static_cast<unsigned char>(buffer[next]) < 0xC2 || next + 4 > length)
+            return false;
+        std::uint32_t nextCodePoint;
+        const int nextLength = MixedDecode::decodeScalar(buffer + next, nextCodePoint);
+        if (nextLength < 2 || nextCodePoint < 0xA0)
+            return false;
+        Ubiquitty::Unicode::GraphemeState state {};
+        Ubiquitty::Unicode::graphemeStateReset(&state, base);
+        if (Ubiquitty::Unicode::isGraphemeRelevant(nextCodePoint) && Ubiquitty::Unicode::graphemeExtendsHot(&state, base, nextCodePoint))
+            return false;
+        return Ubiquitty::Unicode::Width::forCodePoint(nextCodePoint, ambiguousWidth) > 0;
+    };
+    if (isLoneNarrowBase()) {
+        entries[static_cast<std::size_t>(cursor.count)] = base;
+        return { { cursor.count + 1, end + peeked->length, peeked->length, 1 }, FlowClusterOutcome::Added };
+    }
+    if (!didStage(end, cursor.count, base, peeked->length))
+        return { cursor, FlowClusterOutcome::Ends };
+    return { cursor, FlowClusterOutcome::Added };
+}
+
 // Leaves the cluster a stretch ended on open with all it holds, as the
 // cluster writers leave the last one they place.
 [[gnu::noinline]] static void openLineSpanCluster(Ubiquitty::Terminal& t, int row, int leadColumn, const StagedCluster& cluster)
@@ -7811,6 +7950,9 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
 {
     bool hasUnnotedGlyph = entry == FlowEntry::BehindPiece;
     bool hasDiscardedCancellation = entry != FlowEntry::Opening;
+    // The cluster the last piece ended on, when it ended on one: the parser
+    // is left holding it, as the line writer leaves its last.
+    StagedCluster placedCluster;
     const int rightMargin = t.columns - 1;
     // What commitWrapBeforePlainGlyph asks before it commits a wrap, for a
     // glyph that extends no cluster.
@@ -7840,7 +7982,10 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
     std::array<std::uint32_t, Ubiquitty::maxColumns> codePoints;
     const auto noteGlyph = [&] [[gnu::always_inline]] {
         if (hasUnnotedGlyph) {
-            notePlacedGlyph(t, placed);
+            if (placed.isStagedCluster) [[unlikely]]
+                openLineSpanCluster(t, placed.row, placed.column, placedCluster);
+            else
+                notePlacedGlyph(t, placed);
             hasUnnotedGlyph = false;
         }
     };
@@ -7882,7 +8027,7 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
             s->cursorX = lastColumn + 1;
         }
         isRowFresh = false;
-        placed = { row, leadColumn, lastCodePoint, s->cursorX, s->cursorY, s->wrapPending, 0 };
+        placed = { row, leadColumn, lastCodePoint, s->cursorX, s->cursorY, s->wrapPending, 0, false };
         hasUnnotedGlyph = true;
     };
     while (position < length) {
@@ -7988,10 +8133,12 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
                 position += count;
                 continue;
             }
-            // Cells: plain narrow glyphs, the ASCII between them and the wide
-            // glyphs of the ranges that stand alone, to the end of the row or
-            // the first byte that is none of them. One entry a column: a
-            // wide glyph's code point at its lead and zero at its right half.
+            // Cells: plain narrow glyphs, the ASCII between them, the wide
+            // glyphs of the ranges that stand alone and whole clusters, to
+            // the end of the row or the first byte that is none of them. One
+            // entry a column: a wide glyph's code point at its lead and zero
+            // at its right half, and a cluster's cells by their index among
+            // the staged.
             //
             // A pictograph among them that draws as text is a cell like a
             // letter where the glyph behind it joins nothing. Every glyph the
@@ -8006,102 +8153,122 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
             // A combining diacritic behind a plain narrow glyph joins it in
             // the glyph's own cell, as the character path attaches one, when
             // the code point behind the mark joins nothing: the cluster is
-            // whole here. A second mark, or what may join, ends the piece at
-            // the glyph, and the mark is the cluster writers'.
+            // whole here. Behind a second mark, or anything else that joins,
+            // the glyph is a cluster's base, staged below.
             std::array<Ubiquitty::CellGrid::ColumnMark, Ubiquitty::maxColumns> marks;
             int markCount = 0;
-            const auto didTakeMarkBehind = [&] [[gnu::always_inline]] () -> bool {
+            // Clusters whole here, which ``placeFlowCluster`` stages.
+            FlowClusters clusters;
+            const auto takeMarkBehind = [&] [[gnu::always_inline]] {
                 const auto lead = static_cast<unsigned char>(buffer[end]);
                 const auto trail = static_cast<unsigned char>(buffer[end + 1]);
                 // U+0300 to U+036F: CC 80 to CD AF.
-                if ((trail & 0xC0) != 0x80 || (lead == 0xCD && trail > 0xAF))
-                    return true;
-                if (!doesLeavePictographAlone(buffer, end + 2, length))
-                    return false;
+                if ((trail & 0xC0) != 0x80 || (lead == 0xCD && trail > 0xAF) || !doesLeavePictographAlone(buffer, end + 2, length))
+                    return;
                 marks[static_cast<std::size_t>(markCount++)] = { count - 1, ((lead & 0x1Fu) << 6) | (trail & 0x3Fu) };
                 lastLength += 2;
                 end += 2;
-                return true;
             };
             const auto isMarkBehind = [&] [[gnu::always_inline]] { return end + 1 < length && (static_cast<unsigned char>(buffer[end]) | 1u) == 0xCDu; };
-            while (count < room && end < length) {
-                const auto next = static_cast<unsigned char>(buffer[end]);
-                if (next - 0x20u <= 0x7Eu - 0x20u) {
-                    codePoints[count++] = next;
-                    ++glyphs;
-                    lastLength = 1;
-                    lastWidth = 1;
-                    isLastPictograph = false;
-                    ++end;
-                    if (isMarkBehind() && !didTakeMarkBehind())
-                        break;
-                    continue;
-                }
-                if (next < 0xC2) {
-                    // A stray continuation, an overlong lead or a control.
-                    if (next < 0x80 || !doesSubstituteInCells)
-                        break;
-                    codePoints[count++] = 0xFFFD;
-                    ++glyphs;
-                    lastLength = 1;
-                    lastWidth = 1;
-                    isLastPictograph = false;
-                    ++end;
-                    continue;
-                }
-                // A letter of two bytes, which most text of other alphabets
-                // is made of, read where it stands: the reader below answers
-                // for every glyph there is and returns more than a loop this
-                // short should carry. Below U+0590 nothing shapes, and below
-                // U+00A0 are the C1 controls.
-                if (next <= 0xDF && end + 1 < length) {
-                    const unsigned continuation = static_cast<unsigned char>(buffer[end + 1]) ^ 0x80u;
-                    const uint32_t codePoint = ((next & 0x1Fu) << 6) | continuation;
-                    const std::uint8_t properties = Unicode::Width::classify(codePoint);
-                    if (continuation <= 0x3F && codePoint - 0xA0u < 0x590u - 0xA0u && (properties == plainProperties || properties == ambiguousPlainProperties)) {
-                        assert(isPlainNarrowGraphic(codePoint, ambiguousWidth));
-                        codePoints[count++] = codePoint;
+            // The glyphs the inner loop reads itself, and between runs of
+            // them the clusters ``placeFlowCluster`` stages, outside it: the
+            // inner loop keeps its state in registers only while no call's
+            // results flow back into it.
+            for (;;) {
+                bool isAtCluster = false;
+                while (count < room && end < length) {
+                    const auto next = static_cast<unsigned char>(buffer[end]);
+                    if (next - 0x20u <= 0x7Eu - 0x20u) {
+                        codePoints[count++] = next;
                         ++glyphs;
-                        lastLength = 2;
+                        lastLength = 1;
                         lastWidth = 1;
                         isLastPictograph = false;
-                        end += 2;
-                        if (isMarkBehind() && !didTakeMarkBehind())
-                            break;
+                        ++end;
+                        if (isMarkBehind())
+                            takeMarkBehind();
                         continue;
                     }
-                }
-                const FlowGlyph glyph = peekFlowGlyph(buffer, end, length, ambiguousWidth);
-                if (glyph.width == 2) {
-                    // A pair that does not fit ends the piece, and the wrap
-                    // the next piece starts with takes it to the next row.
-                    // A pictograph that is a pair draws as emoji.
-                    if (count + 2 > room)
+                    if (next < 0xC2) {
+                        // A stray continuation, an overlong lead or a control.
+                        if (next < 0x80 || !doesSubstituteInCells)
+                            break;
+                        codePoints[count++] = 0xFFFD;
+                        ++glyphs;
+                        lastLength = 1;
+                        lastWidth = 1;
+                        isLastPictograph = false;
+                        ++end;
+                        continue;
+                    }
+                    // A letter of two bytes, which most text of other alphabets
+                    // is made of, read where it stands: the reader below answers
+                    // for every glyph there is and returns more than a loop this
+                    // short should carry. Below U+0590 nothing shapes, and below
+                    // U+00A0 are the C1 controls.
+                    if (next <= 0xDF && end + 1 < length) {
+                        const unsigned continuation = static_cast<unsigned char>(buffer[end + 1]) ^ 0x80u;
+                        const uint32_t codePoint = ((next & 0x1Fu) << 6) | continuation;
+                        const std::uint8_t properties = Unicode::Width::classify(codePoint);
+                        if (continuation <= 0x3F && codePoint - 0xA0u < 0x590u - 0xA0u && (properties == plainProperties || properties == ambiguousPlainProperties)) {
+                            assert(isPlainNarrowGraphic(codePoint, ambiguousWidth));
+                            codePoints[count++] = codePoint;
+                            ++glyphs;
+                            lastLength = 2;
+                            lastWidth = 1;
+                            isLastPictograph = false;
+                            end += 2;
+                            if (isMarkBehind())
+                                takeMarkBehind();
+                            continue;
+                        }
+                    }
+                    const FlowGlyph glyph = peekFlowGlyph(buffer, end, length, ambiguousWidth);
+                    if (glyph.width == 2) {
+                        // A pair that does not fit ends the piece, and the wrap
+                        // the next piece starts with takes it to the next row.
+                        // A pictograph that is a pair draws as emoji.
+                        if (count + 2 > room)
+                            break;
+                        codePoints[count++] = Ubiquitty::CellGrid::mixedColumnEntry(glyph.codePoint,
+                            glyph.isPictograph ? Ubiquitty::CellGrid::MixedColumn::EmojiLead : Ubiquitty::CellGrid::MixedColumn::Lead);
+                        codePoints[count++] = Ubiquitty::CellGrid::mixedColumnEntry(0, Ubiquitty::CellGrid::MixedColumn::RightHalf);
+                        hasPair = true;
+                    } else if (glyph.width == 1) {
+                        codePoints[count++] = glyph.codePoint;
+                    } else if (const int substituteLength = substituteLengthAt(end); substituteLength > 0) {
+                        codePoints[count++] = 0xFFFD;
+                        ++glyphs;
+                        lastLength = substituteLength;
+                        lastWidth = 1;
+                        isLastPictograph = false;
+                        end += substituteLength;
+                        continue;
+                    } else {
+                        isAtCluster = true;
                         break;
-                    codePoints[count++] = Ubiquitty::CellGrid::mixedColumnEntry(glyph.codePoint,
-                        glyph.isPictograph ? Ubiquitty::CellGrid::MixedColumn::EmojiLead : Ubiquitty::CellGrid::MixedColumn::Lead);
-                    codePoints[count++] = Ubiquitty::CellGrid::mixedColumnEntry(0, Ubiquitty::CellGrid::MixedColumn::RightHalf);
-                    hasPair = true;
-                } else if (glyph.width == 1) {
-                    codePoints[count++] = glyph.codePoint;
-                } else if (const int substituteLength = substituteLengthAt(end); substituteLength > 0) {
-                    codePoints[count++] = 0xFFFD;
+                    }
                     ++glyphs;
-                    lastLength = substituteLength;
-                    lastWidth = 1;
-                    isLastPictograph = false;
-                    end += substituteLength;
-                    continue;
-                } else {
-                    break;
+                    lastLength = glyph.length;
+                    lastWidth = glyph.width;
+                    isLastPictograph = glyph.isPictograph;
+                    end += glyph.length;
+                    if (glyph.width == 1 && !glyph.isPictograph && isMarkBehind())
+                        takeMarkBehind();
                 }
-                ++glyphs;
-                lastLength = glyph.length;
-                lastWidth = glyph.width;
-                isLastPictograph = glyph.isPictograph;
-                end += glyph.length;
-                if (glyph.width == 1 && !glyph.isPictograph && isMarkBehind() && !didTakeMarkBehind())
+                if (!isAtCluster)
                     break;
+                const FlowClusterStep step = placeFlowCluster(t, { buffer, static_cast<std::size_t>(length) }, cellTemplate,
+                    { codePoints.data(), static_cast<std::size_t>(room) }, clusters, { count, end, lastLength, lastWidth }, glyphs, marks, markCount);
+                if (step.outcome == FlowClusterOutcome::Ends)
+                    break;
+                count = step.cursor.count;
+                end = step.cursor.end;
+                lastLength = step.cursor.lastLength;
+                lastWidth = step.cursor.lastWidth;
+                isLastPictograph = false;
+                if (step.outcome == FlowClusterOutcome::Added)
+                    ++glyphs;
             }
             const bool isFollowedByTab = end < length && buffer[end] == '\t';
             if (glyphs > 0
@@ -8125,14 +8292,27 @@ template<GraphicCapture Capture> static int continueTextFlow(Ubiquitty::Terminal
                 eraseWidePartnersBesideRun(t, s, row, column, lastColumn);
             // Without a pair every entry is a narrow glyph's bare code point.
             const std::span<const uint32_t> columnEntries { codePoints.data(), static_cast<std::size_t>(count) };
-            if (hasPair || markCount > 0)
+            const Ubiquitty::Cell* const stagedCells = clusters.cells.data();
+            if (hasPair || markCount > 0 || clusters.count > 0)
                 t.grid->writeMixedCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, columnEntries,
-                    { marks.data(), static_cast<std::size_t>(markCount) });
+                    { marks.data(), static_cast<std::size_t>(markCount) }, { stagedCells, static_cast<std::size_t>(clusters.count) });
             else
                 t.grid->writeNarrowCodePointRun(Ubiquitty::Row(row), Ubiquitty::Column(column), cellTemplate, columnEntries);
-            const bool doesEndOnPair = codePoints[count - 1] >> Ubiquitty::CellGrid::mixedColumnShift == static_cast<uint32_t>(Ubiquitty::CellGrid::MixedColumn::RightHalf);
+            const uint32_t lastKind = codePoints[count - 1] >> Ubiquitty::CellGrid::mixedColumnShift;
+            const bool doesEndOnPair = lastKind == static_cast<uint32_t>(Ubiquitty::CellGrid::MixedColumn::RightHalf)
+                || (lastKind == static_cast<uint32_t>(Ubiquitty::CellGrid::MixedColumn::Staged)
+                    && cellPen(stagedCells[codePoints[count - 1] & Ubiquitty::CellGrid::mixedCodePointMask]).attributes.contains(VT::Attribute::WideContinuation));
             const int leadColumn = doesEndOnPair ? lastColumn - 1 : lastColumn;
-            finishPiece(row, lastColumn, leadColumn, codePoints[leadColumn - column] & Ubiquitty::CellGrid::mixedCodePointMask);
+            const uint32_t leadEntry = codePoints[leadColumn - column];
+            const bool doesEndOnCluster = leadEntry >> Ubiquitty::CellGrid::mixedColumnShift == static_cast<uint32_t>(Ubiquitty::CellGrid::MixedColumn::Staged);
+            finishPiece(row, lastColumn, leadColumn,
+                doesEndOnCluster ? stagedCells[leadEntry & Ubiquitty::CellGrid::mixedCodePointMask].codePoint : leadEntry & Ubiquitty::CellGrid::mixedCodePointMask);
+            if (doesEndOnCluster) {
+                const int record = clusters.columns[static_cast<std::size_t>(clusters.latest)] == leadColumn - column ? clusters.latest : 1 - clusters.latest;
+                assert(clusters.columns[static_cast<std::size_t>(record)] == leadColumn - column);
+                placedCluster = clusters.records[static_cast<std::size_t>(record)];
+                placed.isStagedCluster = true;
+            }
             if (markCount > 0) {
                 // The open cluster's second slot holds the last mark taken, as
                 // the character path leaves it; the slot travels in a handover
