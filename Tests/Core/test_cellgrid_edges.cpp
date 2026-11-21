@@ -335,6 +335,109 @@ TEST(shortRecycledASCIIRowsKeepNoncanonicalVisibleSuffixes)
     }
 }
 
+// A row a program rewrites in place, a progress line, stays cells once a
+// reader or a writer made it so. A run from the first column across half the
+// row or more makes a row holding only ASCII under pens the styled table names
+// bytes and ids again, reading back what it would have held as cells; a
+// shorter one, an editor's line number, leaves it cells. A row with a glyph
+// past ASCII, or a blank erased in a colour, which neither bytes nor ids can
+// hold, stays cells.
+TEST(aRowOfStyledASCIICellsIsHeldCompactlyAgain)
+{
+    CellGrid grid;
+    CellGrid expected;
+    Cell green = grid.defaultBlank();
+    green.pen.foregroundIndex = 2;
+    for (auto* each : { &grid, &expected }) {
+        each->init(4, 20);
+        each->writeASCIIRun(Row(1), Column(0), green, "[####------]");
+        each->writeASCIIRun(Row(1), Column(12), each->defaultBlank(), " 40%");
+    }
+    (void)grid.rowCells(Row(1));
+    grid.writeASCIIRun(Row(1), Column(0), green, "[####");
+    expected.writeASCIIRun(Row(1), Column(0), green, "[####");
+    CHECK(!grid.styledRow(Row(1)).has_value());
+    for (auto* each : { &grid, &expected })
+        each->writeASCIIRun(Row(1), Column(0), green, "[#####-----]");
+    CHECK(grid.styledRow(Row(1)).has_value());
+    CHECK_EQ(grid.rowContentWidth(Row(1)), expected.rowContentWidth(Row(1)));
+    for (int column = 0; column < 20; ++column)
+        CHECK(std::memcmp(grid.cellAt(Row(1), Column(column)), expected.cellAt(Row(1), Column(column)), sizeof(Cell)) == 0);
+
+    Cell accented = grid.defaultBlank();
+    accented.codePoint = 0xE9;
+    grid.writeASCIIRun(Row(2), Column(0), grid.defaultBlank(), "abcdefghijklmnop");
+    grid.setCell(Row(2), Column(15), accented);
+    grid.writeASCIIRun(Row(2), Column(0), green, "0123456789");
+    CHECK(!grid.styledRow(Row(2)).has_value());
+    CHECK(std::memcmp(grid.cellAt(Row(2), Column(15)), &accented, sizeof(Cell)) == 0);
+
+    Cell tinted = grid.defaultBlank();
+    tinted.pen.backgroundIndex = 4;
+    grid.writeASCIIRun(Row(3), Column(0), grid.defaultBlank(), "abcdefghijklmnop");
+    grid.eraseRowRange(Row(3), Column(12), Column(14), tinted);
+    (void)grid.rowCells(Row(3));
+    grid.writeASCIIRun(Row(3), Column(0), green, "0123456789");
+    CHECK(!grid.styledRow(Row(3)).has_value());
+    CHECK(std::memcmp(grid.cellAt(Row(3), Column(13)), &tinted, sizeof(Cell)) == 0);
+}
+
+// A line padded to the last column takes that column as a single cell, and a
+// styled row stays styled under it, reading back the cells it would have held.
+// A glyph past ASCII still turns the row into cells.
+TEST(aStyledRowTakesSingleASCIICellsCompactly)
+{
+    CellGrid grid;
+    grid.init(2, 12);
+    Cell green = grid.defaultBlank();
+    green.pen.foregroundIndex = 2;
+    Cell semicolon = green;
+    semicolon.codePoint = ';';
+    grid.writeASCIIRun(Row(0), Column(0), green, "value_01");
+    grid.setCellKnownDiff(Row(0), Column(11), semicolon);
+    grid.setCell(Row(0), Column(9), semicolon);
+    CHECK(grid.styledRow(Row(0)).has_value());
+    CHECK_EQ(grid.rowContentWidth(Row(0)), 12);
+    const std::string_view text = "value_01 ; ;";
+    for (int column = 0; column < 12; ++column) {
+        Cell expected = text[static_cast<std::size_t>(column)] == ' ' ? grid.defaultBlank() : green;
+        if (text[static_cast<std::size_t>(column)] != ' ')
+            expected.codePoint = static_cast<std::uint32_t>(text[static_cast<std::size_t>(column)]);
+        CHECK(std::memcmp(grid.cellAt(Row(0), Column(column)), &expected, sizeof(Cell)) == 0);
+    }
+
+    Cell accented = green;
+    accented.codePoint = 0xE9;
+    grid.writeASCIIRun(Row(1), Column(0), green, "abc");
+    grid.setCellKnownDiff(Row(1), Column(3), accented);
+    CHECK(!grid.styledRow(Row(1)).has_value());
+    CHECK(std::memcmp(grid.cellAt(Row(1), Column(3)), &accented, sizeof(Cell)) == 0);
+}
+
+// A scroll that brings in a blank in a colour, as a line wrapped under a
+// coloured pen does, turns the row it recycles into that blank whatever form
+// the row held text in.
+TEST(aColouredScrollBlankReplacesACompactRecycledRow)
+{
+    for (const bool isStyled : { false, true }) {
+        CellGrid grid;
+        grid.init(3, 10);
+        Cell pen = grid.defaultBlank();
+        if (isStyled)
+            pen.pen.foregroundIndex = 2;
+        grid.writeASCIIRun(Row(0), Column(0), pen, "scrolled away");
+        CHECK(isStyled ? grid.styledRow(Row(0)).has_value() : grid.compactASCIIRow(Row(0)).has_value());
+        Cell tinted = grid.defaultBlank();
+        tinted.pen.backgroundIndex = 4;
+        grid.scrollFullViewportUpOne(tinted);
+        CHECK(!grid.styledRow(Row(2)).has_value());
+        CHECK(!grid.compactASCIIRow(Row(2)).has_value());
+        CHECK_EQ(grid.rowContentWidth(Row(2)), 10);
+        for (int column = 0; column < 10; ++column)
+            CHECK(std::memcmp(grid.cellAt(Row(2), Column(column)), &tinted, sizeof(Cell)) == 0);
+    }
+}
+
 TEST(shortASCIIPrefixesDoNotCompactLongerRecycledRows)
 {
     for (const auto screen : { ScreenMode::Primary, ScreenMode::Alternate }) {

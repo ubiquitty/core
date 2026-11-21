@@ -1207,6 +1207,31 @@ private:
     ///   - source: One borrowed byte per column, from the first.
     /// - Returns: Whether the row was replaced; `false` leaves it untouched.
     [[nodiscard]] bool didReplaceCellsWithCompactASCIIRun(int slot, int row, int lastColumn, const Cell& cellTemplate, const char* source);
+    /// Writes one printable ASCII cell into a compact row as a byte and an id.
+    ///
+    /// A line padded to the last column takes that column as a single cell,
+    /// and a compact row stays compact under it. The cell's pen, link and
+    /// attributes must be ones the styled table names, and it must not be
+    /// half of a wider glyph.
+    ///
+    /// - Parameters:
+    ///   - slot: The physical row in the active screen.
+    ///   - row: The logical row for mutation tracking.
+    ///   - column: The visible column written.
+    ///   - cell: The cell to store.
+    /// - Returns: Whether the cell was stored; `false` leaves the row as it was.
+    [[nodiscard]] bool didWriteStyledASCIICell(int slot, int row, int column, const Cell& cell);
+    /// Holds a row of cells as bytes and template ids again, when that is
+    /// exactly what it holds.
+    ///
+    /// Every cell must be printable ASCII under a pen, link and attributes
+    /// the styled table names, or the default blank, and nothing past the
+    /// row's width may differ from the blank. The row's content, generation
+    /// and hints are unchanged.
+    ///
+    /// - Parameter slot: The physical row in the active screen.
+    /// - Returns: Whether the row is styled now; `false` leaves it untouched.
+    [[nodiscard]] bool didRecompactCellsAsStyledASCII(int slot);
     /// Writes a known-different cell after compact storage has been excluded.
     ///
     /// The caller validates bounds and expands compact storage before entering.

@@ -579,6 +579,70 @@ static inline void fillStyledIDs(std::uint16_t* ids, int count, std::uint16_t id
     std::memcpy(ids + count - idsAWord, &pattern, sizeof pattern);
 }
 
+bool CellGrid::didWriteStyledASCIICell(int slot, int row, int column, const Cell& cell)
+{
+    if (m_rowState[m_activeIndex][slot].storage == RowStorage::Cells || slot == m_deferredBlankSlot[m_activeIndex] || cell.codePoint < 0x20 || cell.codePoint > 0x7E
+        || cellPen(cell).attributes.containsAny(multicellHalves))
+        return false;
+    const char byte = static_cast<char>(cell.codePoint);
+    return writeStyledASCIIRun(slot, row, column, column, cell, &byte);
+}
+
+bool CellGrid::didRecompactCellsAsStyledASCII(int slot)
+{
+    auto& state = m_rowState[m_activeIndex][slot];
+    if (state.storage != RowStorage::Cells || slot == m_deferredBlankSlot[m_activeIndex])
+        return false;
+    // A styled row's width is within the row, and its ids name templates in
+    // the table, which the first template asked of it makes.
+    const auto blankID = state.filled >= 0 && state.filled <= m_columns ? styledTemplateID(m_defaultBlank) : std::nullopt;
+    if (!blankID)
+        return false;
+    Cell* backing = m_rowPtrs[m_activeIndex][slot];
+    const int filled = state.filled;
+    // A styled row holds nothing past its width, and a fixed-width resize
+    // can keep cells there.
+    if (firstDifferingCell(backing, filled, m_columns - 1, m_defaultBlank) != m_columns)
+        return false;
+    std::array<std::uint8_t, maxColumns> text;
+    std::array<std::uint16_t, maxColumns> ids;
+    Cell previousKey = m_defaultBlank;
+    std::uint16_t previousID = *blankID;
+    for (int column = 0; column < filled; ++column) {
+        const Cell& cell = backing[column];
+        // A byte of zero expands to the default blank, so a blank that
+        // carries anything else, an erase in a colour, stays a cell.
+        if (cell.codePoint == 0) {
+            if (!cellEqual(cell, m_defaultBlank))
+                return false;
+            text[static_cast<std::size_t>(column)] = 0;
+            ids[static_cast<std::size_t>(column)] = 0;
+            continue;
+        }
+        if (cell.codePoint - 0x20u > 0x7Eu - 0x20u)
+            return false;
+        // Neighbours mostly share a pen, and a cell like the one before it
+        // takes its id without a lookup.
+        Cell key = cell;
+        key.codePoint = 0;
+        if (!cellEqual(key, previousKey)) {
+            const auto id = styledTemplateID(key);
+            if (!id)
+                return false;
+            previousKey = key;
+            previousID = *id;
+        }
+        text[static_cast<std::size_t>(column)] = static_cast<std::uint8_t>(cell.codePoint);
+        ids[static_cast<std::size_t>(column)] = previousID;
+    }
+    // Read whole before the bytes and ids are stored over the cells.
+    std::memcpy(backing, text.data(), static_cast<std::size_t>(filled));
+    std::memcpy(styledIDs(backing), ids.data(), static_cast<std::size_t>(filled) * sizeof(std::uint16_t));
+    state.storage = RowStorage::StyledASCII;
+    state.compactBlankStart = unknownCompactBlankStart;
+    return true;
+}
+
 bool CellGrid::didReplaceCellsWithCompactASCIIRun(int slot, int row, int lastColumn, const Cell& cellTemplate, const char* source)
 {
     auto& state = m_rowState[m_activeIndex][slot];
@@ -1150,6 +1214,8 @@ void CellGrid::setCell(Row r, Column c, const Cell& cell)
         if (writeCompactASCIIRun(slot, ri, ci, ci, cell, &byte))
             return;
     }
+    if (didWriteStyledASCIICell(slot, ri, ci, cell))
+        return;
     Cell* rowPtr = rowPtrAtSlot(m_activeIndex, slot);
     // Idempotent: identical write is a no-op, doesn't touch shadow
     // tracking.
@@ -1189,7 +1255,8 @@ void CellGrid::setCellKnownDiff(Row r, Column c, const Cell& cell)
         setCellKnownDiffCompact(r, c, cell);
         return;
     }
-    // A styled row takes single cells as cells.
+    if (didWriteStyledASCIICell(slot, ri, ci, cell))
+        return;
     materializeCompactRow(m_activeIndex, slot);
     setCellKnownDiffOrdinary(r, c, cell);
 }
@@ -1205,6 +1272,8 @@ inline void CellGrid::setCellKnownDiffCompact(Row r, Column c, const Cell& cell)
         if (writeCompactASCIIRun(slot, ri, ci, ci, cell, &byte, CompactWriteComparison::KnownDifferent))
             return;
     }
+    if (didWriteStyledASCIICell(slot, ri, ci, cell))
+        return;
     materializeCompactRow(m_activeIndex, slot);
     setCellKnownDiffOrdinary(r, c, cell);
 }
@@ -1577,6 +1646,16 @@ void CellGrid::writeRun(Row r, Column firstColumnValue, const Cell& tmpl, std::s
         // A run from the first column that reaches the end of what the row
         // holds leaves nothing of the row but itself.
         if (lo == 0 && hi + 1 >= m_rowState[m_activeIndex][slot].filled && didReplaceCellsWithCompactASCIIRun(slot, ri, hi, tmpl, src))
+            return;
+        // A row a program rewrites in place, a progress line or a status
+        // line, stays cells once anything made it so. A styled row pays a
+        // template lookup a run where a row of cells pays a compare a cell,
+        // so only a run from the first column across half the row or more
+        // makes a row that holds only ASCII under pens the styled table
+        // names bytes and ids again; an editor's rows, rewritten in short
+        // runs under changing pens, stay cells.
+        if (lo == 0 && 2 * (hi + 1) >= m_columns && m_rowState[m_activeIndex][slot].storage == RowStorage::Cells && didRecompactCellsAsStyledASCII(slot)
+            && writeStyledASCIIRun(slot, ri, lo, hi, tmpl, src))
             return;
     }
     materializeCompactRow(m_activeIndex, slot);
@@ -3113,8 +3192,13 @@ void CellGrid::scrollFullViewportUpOneWithBlank(const Cell& blank, bool blankDef
         m_rowOrigin[m_activeIndex] = 0;
 
     const int bottomSlot = physicalRowSlot(m_activeIndex, m_rows - 1);
-    if (!blankDefault)
-        materializeCompactRow(m_activeIndex, bottomSlot);
+    // A blank in a colour needs cells and covers every column, so a compact
+    // row's bytes are not expanded only to be stored over.
+    if (RowState& departing = m_rowState[m_activeIndex][bottomSlot]; !blankDefault && departing.storage != RowStorage::Cells) {
+        assert(bottomSlot != m_deferredBlankSlot[m_activeIndex]);
+        departing.storage = RowStorage::Cells;
+        departing.compactBlankStart = unknownCompactBlankStart;
+    }
     Cell* row = m_rowPtrs[m_activeIndex][bottomSlot];
     int& filled = m_rowState[m_activeIndex][bottomSlot].filled;
     if (blankDefault && m_rowState[m_activeIndex][bottomSlot].storage != RowStorage::Cells) {
