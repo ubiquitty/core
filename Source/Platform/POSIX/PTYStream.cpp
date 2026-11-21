@@ -339,6 +339,13 @@ public:
         // and a megabyte that arrives at once is over before a larger
         // share of it has been handed on.
         return 32 * 1024;
+#elif defined(__APPLE__)
+        // A read here returns the kilobyte the output queue holds, so this
+        // is sixteen of them arriving without a pause. Left to the pass's
+        // own budget, the first megabyte of every burst was read and parsed
+        // a kilobyte at a time on one thread: half of a two-megabyte burst,
+        // which then took half as long again as the pipeline needs.
+        return 16 * 1024;
 #else
         return PollableByteStream::burstHandOverBytes();
 #endif
