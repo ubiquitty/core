@@ -113,12 +113,13 @@ TEST(testAChunkedTransferReleasesItsChunkBufferOnceComplete)
 
 TEST(testAnAbandonedChunkedTransferReleasesItsChunkBuffer)
 {
+    // A PNG is accumulated whole, for the worker that decodes it.
     Ubiquitty::Terminal t;
     prepare(t);
     const std::string payload = oneMebibyteOfPixels();
     constexpr std::size_t block = 4096;
     for (std::size_t offset = 0; offset + block < payload.size(); offset += block)
-        feed(t, apc(offset == 0 ? "a=t,f=32,s=512,v=512,i=11,q=2,m=1" : "m=1", payload.substr(offset, block)));
+        feed(t, apc(offset == 0 ? "a=t,f=100,i=11,q=2,m=1" : "m=1", payload.substr(offset, block)));
     REQUIRE(t.images.kittyChunkActive);
     REQUIRE(t.images.kittyChunk.capacity > Ubiquitty::Kitty::maxRetainedAPCCapacity);
 
@@ -126,6 +127,25 @@ TEST(testAnAbandonedChunkedTransferReleasesItsChunkBuffer)
     feed(t, "\033_Ga=d,d=a,q=2\033\\");
     CHECK(!t.images.kittyChunkActive);
     CHECK(t.images.kittyChunk.capacity <= Ubiquitty::Kitty::maxRetainedAPCCapacity);
+}
+
+TEST(testAnAbandonedRawTransferReleasesItsPixels)
+{
+    // Raw pixels are decoded as their blocks arrive, into a buffer the size
+    // of the image the opening block describes, and nothing is accumulated.
+    Ubiquitty::Terminal t;
+    prepare(t);
+    const std::string payload = oneMebibyteOfPixels();
+    constexpr std::size_t block = 4096;
+    for (std::size_t offset = 0; offset + block < payload.size(); offset += block)
+        feed(t, apc(offset == 0 ? "a=t,f=32,s=512,v=512,i=12,q=2,m=1" : "m=1", payload.substr(offset, block)));
+    REQUIRE(t.images.kittyChunkActive);
+    REQUIRE(t.images.kittyChunkDecode.isActive && t.images.kittyChunkDecode.pixels != nullptr);
+    CHECK(t.images.kittyChunk.capacity <= Ubiquitty::Kitty::maxRetainedAPCCapacity);
+
+    feed(t, "\033_Ga=d,d=a,q=2\033\\");
+    CHECK(!t.images.kittyChunkActive);
+    CHECK(!t.images.kittyChunkDecode.isActive && t.images.kittyChunkDecode.pixels == nullptr);
 }
 
 TEST(testALargeSixelReleasesItsAccumulatorOnceComplete)

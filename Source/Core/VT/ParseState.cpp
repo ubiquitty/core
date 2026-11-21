@@ -56,6 +56,7 @@ void resetKittyBuffers(Ubiquitty::Terminal* t)
     t->images.kittyAPCOverflow = false;
     t->images.kittyChunk.reset();
     t->images.kittyChunkActive = false;
+    t->images.kittyChunkDecode = {};
     if (t->parser.parseState == ParserState::APC || t->parser.parseState == ParserState::DCS)
         t->parser.parseState = ParserState::Ground;
 }

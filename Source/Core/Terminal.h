@@ -1056,6 +1056,9 @@ struct Terminal {
         Ubiquitty::ByteBuffer kittyChunk;
         bool kittyChunkActive {};
         Ubiquitty::Kitty::GraphicsControl kittyChunkControl {};
+        // The open transfer's pixels, when it is decoded as its blocks arrive
+        // rather than accumulated in kittyChunk.
+        Ubiquitty::Kitty::ChunkDecode kittyChunkDecode;
         // DECSIXEL. Parser accumulates payload bytes between DCS ... q and ST/BEL into
         // sixelAccumulatorBuffer, then decodes to RGBA and places through the unified image model.
         // sixelOriginRow/Column snapshot the cursor at sixel start (the image anchors there).

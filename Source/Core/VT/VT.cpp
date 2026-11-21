@@ -4849,10 +4849,8 @@ static void actAPCEnd(Ubiquitty::Terminal& t, uint8_t)
     // finish later, under a reopened gate, without the blocks dropped here.
     const uint8_t introducer = t.images.kittyAPC.length > 0 ? static_cast<uint8_t>(t.images.kittyAPC.data[0]) : 0;
     if (!Ubiquitty::OSC::apcAllowed(t, introducer)) {
-        if (introducer == 'G') {
-            t.images.kittyChunkActive = false;
-            t.images.kittyChunk.clearReleasingAbove(Ubiquitty::Kitty::maxRetainedAPCCapacity);
-        }
+        if (introducer == 'G')
+            Ubiquitty::Kitty::abandonChunkedTransfer(t);
         t.images.kittyAPC.clearReleasingAbove(Ubiquitty::Kitty::maxRetainedAPCCapacity);
         return;
     }

@@ -1073,12 +1073,29 @@ static std::expected<ExtractedBytes, const char*> kittyResolveTransport(Ubiquitt
     return std::unexpected("ENOTSUP:unsupported transport");
 }
 
+// The byte length of a raw-pixel transmit's pixels, from its geometry, or the
+// reply that refuses the geometry.
+static std::expected<uint32_t, const char*> kittyRawPixelLength(const Ubiquitty::Kitty::GraphicsControl& c)
+{
+    if (!(c.format == 24 || c.format == 32) || c.width <= 0 || c.height <= 0)
+        return std::unexpected("EINVAL:missing image geometry");
+    // The stored image carries its dimensions in sixteen bits, so a dimension
+    // past that range is refused where the sender gets an answer — a cast at
+    // the store would wrap it into a small image whose pixel length disagrees
+    // with its geometry.
+    if (c.width > 0xFFFF || c.height > 0xFFFF)
+        return std::unexpected("EINVAL:image too large");
+    const uint32_t bytesPerPixel = c.format == 32 ? 4 : 3;
+    if (static_cast<uint32_t>(c.width) > Ubiquitty::Image::maxDecodedImageBytes / bytesPerPixel || static_cast<uint32_t>(c.height) > Ubiquitty::Image::maxDecodedImageBytes / (static_cast<uint32_t>(c.width) * bytesPerPixel))
+        return std::unexpected("EINVAL:image too large");
+    return static_cast<uint32_t>(c.width) * static_cast<uint32_t>(c.height) * bytesPerPixel;
+}
+
+static bool kittyStoreRawPixels(Ubiquitty::Terminal& t, const Ubiquitty::Kitty::GraphicsControl* c, std::expected<ExtractedBytes, const char*> extracted, uint32_t expected, TransmitDisplay transmitDisplay);
+
 static bool kittyStoreDirectImage(Ubiquitty::Terminal& t, const Ubiquitty::Kitty::GraphicsControl* c, std::span<const char> payload, TransmitDisplay transmitDisplay)
 {
-    uint32_t bytesPerPixel;
     uint32_t expected;
-    unsigned char* pixels;
-    Image::TerminalImage* image;
     int pngWidth = 0;
     int pngHeight = 0;
     int pngFormat = 0;
@@ -1130,32 +1147,18 @@ static bool kittyStoreDirectImage(Ubiquitty::Terminal& t, const Ubiquitty::Kitty
         }
         Ubiquitty::noteDecodeSubmitted(t, *q);
         // Suppress -Wunused-variable for the locals the async path leaves unfilled.
-        (void)image;
-        (void)pixels;
         (void)pngPixelLength;
         (void)pngWidth;
         (void)pngHeight;
         (void)pngFormat;
         return true;
     }
-    if (!(c->format == 24 || c->format == 32) || c->width <= 0 || c->height <= 0) {
-        kittyRespond(t, c, "EINVAL:missing image geometry");
+    const std::expected<uint32_t, const char*> pixelLength = kittyRawPixelLength(*c);
+    if (!pixelLength) {
+        kittyRespond(t, c, pixelLength.error());
         return false;
     }
-    // The stored image carries its dimensions in sixteen bits, so a dimension
-    // past that range is refused where the sender gets an answer — a cast at
-    // the store would wrap it into a small image whose pixel length disagrees
-    // with its geometry.
-    if (c->width > 0xFFFF || c->height > 0xFFFF) {
-        kittyRespond(t, c, "EINVAL:image too large");
-        return false;
-    }
-    bytesPerPixel = (c->format == 32) ? 4UL : 3UL;
-    if (static_cast<uint32_t>(c->width) > Ubiquitty::Image::maxDecodedImageBytes / bytesPerPixel || static_cast<uint32_t>(c->height) > Ubiquitty::Image::maxDecodedImageBytes / (static_cast<uint32_t>(c->width) * bytesPerPixel)) {
-        kittyRespond(t, c, "EINVAL:image too large");
-        return false;
-    }
-    expected = static_cast<uint32_t>(c->width) * static_cast<uint32_t>(c->height) * bytesPerPixel;
+    expected = *pixelLength;
     // Direct-pixel + zlib + base64-direct transport takes the TaskQueue path.
     // Other transports (t=f) keep the direct path because the file read touches
     // the fs on the parse thread.
@@ -1191,26 +1194,28 @@ static bool kittyStoreDirectImage(Ubiquitty::Terminal& t, const Ubiquitty::Kitty
             return false;
         }
         Ubiquitty::noteDecodeSubmitted(t, *q);
-        (void)image;
-        (void)pixels;
         return true;
     }
-    {
-        auto extracted = kittyResolveTransport(t, c, payload, static_cast<int>(expected), TempFileUnlink::Consume);
-        if (!extracted) {
-            kittyRespond(t, c, extracted.error());
-            return false;
-        }
-        KittyBytes owned = std::move(extracted->bytes);
-        if (extracted->length != static_cast<int>(expected)) {
-            kittyRespond(t, c, "EINVAL:payload size mismatch");
-            return false;
-        }
-        // The image adopts the buffer; releasing here is what makes that a
-        // transfer rather than a pointer into memory this scope frees.
-        pixels = owned.release();
+    return kittyStoreRawPixels(t, c, kittyResolveTransport(t, c, payload, static_cast<int>(expected), TempFileUnlink::Consume), expected, transmitDisplay);
+}
+
+// Stores a raw-pixel transmit's extracted pixels, as a new image or in place
+// of the one its id names, and answers the sender: a direct payload decoded
+// whole, a file's contents, or a chunked transfer decoded as it arrived.
+static bool kittyStoreRawPixels(Ubiquitty::Terminal& t, const Ubiquitty::Kitty::GraphicsControl* c, std::expected<ExtractedBytes, const char*> extracted, uint32_t expected, TransmitDisplay transmitDisplay)
+{
+    if (!extracted) {
+        kittyRespond(t, c, extracted.error());
+        return false;
     }
-    image = kittyFindImage(t, c);
+    if (extracted->length != static_cast<int>(expected)) {
+        kittyRespond(t, c, "EINVAL:payload size mismatch");
+        return false;
+    }
+    // The image adopts the buffer; releasing here is what makes that a
+    // transfer rather than a pointer into memory this scope frees.
+    unsigned char* pixels = extracted->bytes.release();
+    Image::TerminalImage* image = kittyFindImage(t, c);
     if (!image)
         image = Image::allocateSlot(t);
     else {
@@ -1840,6 +1845,112 @@ static void kittyProcessComplete(Ubiquitty::Terminal& t, Ubiquitty::Kitty::Graph
     }
 }
 
+// Starts decoding a chunked transfer as its blocks arrive, when it is one that
+// can be: raw pixels, uncompressed, sent directly, under a geometry the store
+// accepts. Every other transfer, and one whose pixels cannot be allocated, is
+// accumulated and decoded whole, which answers what this would refuse.
+static void kittyBeginChunkDecode(ChunkDecode& decode, const GraphicsControl& opener)
+{
+    decode = {};
+    if ((opener.action != 't' && opener.action != 'T') || (opener.transport != 'd' && opener.transport != 0) || opener.compression != 0)
+        return;
+    const std::expected<uint32_t, const char*> pixelLength = kittyRawPixelLength(opener);
+    if (!pixelLength)
+        return;
+    decode.pixels.reset(static_cast<unsigned char*>(std::malloc(*pixelLength)));
+    if (!decode.pixels)
+        return;
+    decode.expectedLength = static_cast<int>(*pixelLength);
+    decode.isActive = true;
+}
+
+// Decodes characters that lie on the payload's four-character grid into the
+// transfer's pixels.
+static void kittyDecodeChunkRun(ChunkDecode& decode, std::string_view characters)
+{
+    if (characters.empty() || decode.fault == ChunkDecode::Fault::Malformed)
+        return;
+    // Padding ends a payload: a group after it is malformed here as it is
+    // anywhere but at the end of a payload decoded whole.
+    if (decode.hasSeenPadding) {
+        decode.fault = ChunkDecode::Fault::Malformed;
+        return;
+    }
+    decode.hasSeenPadding = characters.back() == '=';
+    const std::size_t capacity = Ubiquitty::Codec::base64DecodedCapacity(characters);
+    if (decode.fault == ChunkDecode::Fault::TooLarge || capacity > static_cast<std::size_t>(decode.expectedLength - decode.decodedLength)) {
+        // Past the geometry, the rest is decoded only to learn whether it is
+        // malformed, which the sender is told ahead of its length.
+        std::vector<char> discarded(capacity);
+        decode.fault = Ubiquitty::Codec::base64Decode(characters, discarded) ? ChunkDecode::Fault::TooLarge : ChunkDecode::Fault::Malformed;
+        return;
+    }
+    const auto decoded = Ubiquitty::Codec::base64Decode(characters, { reinterpret_cast<char*>(decode.pixels.get()) + decode.decodedLength, capacity });
+    if (!decoded) {
+        decode.fault = ChunkDecode::Fault::Malformed;
+        return;
+    }
+    decode.decodedLength += static_cast<int>(decoded->size());
+}
+
+// Whether a block is the transfer's last.
+enum class ChunkBlock : uint8_t {
+    More,
+    Final
+};
+
+// Decodes one block of a transfer decoded as it arrives. The characters past
+// the block's last whole group wait for the next block; the final block's
+// close the payload, as the final group of a payload decoded whole does.
+//
+// Returns false when the payload received passes `maxAPCCapacity`, the
+// refusal an accumulated payload meets at the same block.
+static bool kittyDecodeChunkBlock(ChunkDecode& decode, std::span<const char> payload, ChunkBlock block)
+{
+    if (payload.size() > static_cast<std::size_t>(Ubiquitty::Kitty::maxAPCCapacity - decode.encodedLength))
+        return false;
+    decode.encodedLength += static_cast<int>(payload.size());
+    std::string_view rest(payload.data(), payload.size());
+    if (decode.carryLength > 0) {
+        const std::size_t taken = std::min<std::size_t>(static_cast<std::size_t>(4 - decode.carryLength), rest.size());
+        std::copy_n(rest.data(), taken, decode.carry.data() + decode.carryLength);
+        decode.carryLength += static_cast<int>(taken);
+        rest.remove_prefix(taken);
+        if (decode.carryLength < 4 && block == ChunkBlock::More)
+            return true;
+        kittyDecodeChunkRun(decode, { decode.carry.data(), static_cast<std::size_t>(decode.carryLength) });
+        decode.carryLength = 0;
+    }
+    const std::size_t grid = block == ChunkBlock::Final ? rest.size() : rest.size() / 4 * 4;
+    kittyDecodeChunkRun(decode, rest.substr(0, grid));
+    rest.remove_prefix(grid);
+    std::copy_n(rest.data(), rest.size(), decode.carry.data());
+    decode.carryLength = static_cast<int>(rest.size());
+    return true;
+}
+
+// The pixels of a transfer decoded as it arrived, or the reply decoding its
+// whole payload at the end gives. The decode state is left empty.
+static std::expected<ExtractedBytes, const char*> kittyFinishChunkDecode(ChunkDecode& decode)
+{
+    ChunkDecode finished = std::move(decode);
+    decode = {};
+    if (finished.encodedLength == 0 || finished.fault == ChunkDecode::Fault::Malformed)
+        return std::unexpected("EINVAL:invalid payload");
+    if (finished.fault == ChunkDecode::Fault::TooLarge)
+        return std::unexpected("EINVAL:payload too large");
+    if (finished.decodedLength == 0)
+        return std::unexpected("EINVAL:invalid payload");
+    return ExtractedBytes { std::move(finished.pixels), finished.decodedLength };
+}
+
+void abandonChunkedTransfer(Ubiquitty::Terminal& t)
+{
+    t.images.kittyChunkActive = false;
+    t.images.kittyChunk.clearReleasingAbove(Ubiquitty::Kitty::maxRetainedAPCCapacity);
+    t.images.kittyChunkDecode = {};
+}
+
 // The protocol gives a continuation block only `m` and `q` (and `a=f` again on
 // an animation frame's blocks); `i` and `p` are accepted on the final block
 // because clients restate them there. A different action, or a key describing
@@ -1878,10 +1989,8 @@ void dispatch(Ubiquitty::Terminal& t)
     // would leave the dead sender's images drawn and the next transfer would be
     // appended to pixels nobody finishes. The abandoned data is dropped and the
     // command runs as sent.
-    if (t.images.kittyChunkActive && kittyBlockOpensCommand(t.images.kittyChunkControl, ctrl)) {
-        t.images.kittyChunkActive = false;
-        t.images.kittyChunk.clearReleasingAbove(Ubiquitty::Kitty::maxRetainedAPCCapacity);
-    }
+    if (t.images.kittyChunkActive && kittyBlockOpensCommand(t.images.kittyChunkControl, ctrl))
+        abandonChunkedTransfer(t);
     // A direct transmit/query (a=t/T/q with t=d) needs its data after a ';'; with
     // no separator it's a framing error, not a size mismatch. Excludes control-only
     // actions, chunk openers (m=1), and chunk finalizes, which may omit the ';'.
@@ -1894,10 +2003,13 @@ void dispatch(Ubiquitty::Terminal& t)
             t.images.kittyChunk.length = 0;
             t.images.kittyChunkControl = ctrl;
             t.images.kittyChunkActive = true;
+            kittyBeginChunkDecode(t.images.kittyChunkDecode, ctrl);
         }
-        if (!t.images.kittyChunk.append({ payload, static_cast<std::size_t>(payloadLength) }, Ubiquitty::Kitty::maxAPCCapacity)) {
-            t.images.kittyChunkActive = false;
-            t.images.kittyChunk.clearReleasingAbove(Ubiquitty::Kitty::maxRetainedAPCCapacity);
+        const bool didTakeBlock = t.images.kittyChunkDecode.isActive
+            ? kittyDecodeChunkBlock(t.images.kittyChunkDecode, { payload, static_cast<std::size_t>(payloadLength) }, ChunkBlock::More)
+            : t.images.kittyChunk.append({ payload, static_cast<std::size_t>(payloadLength) }, Ubiquitty::Kitty::maxAPCCapacity);
+        if (!didTakeBlock) {
+            abandonChunkedTransfer(t);
             kittyRespond(t, &ctrl, "EINVAL:chunk too large");
         }
         return;
@@ -1914,6 +2026,22 @@ void dispatch(Ubiquitty::Terminal& t)
         }
         if (ctrl.quiet)
             merged.quiet = ctrl.quiet;
+        if (t.images.kittyChunkDecode.isActive) {
+            if (!kittyDecodeChunkBlock(t.images.kittyChunkDecode, { payload, static_cast<std::size_t>(payloadLength) }, ChunkBlock::Final)) {
+                abandonChunkedTransfer(t);
+                kittyRespond(t, &merged, "EINVAL:chunk too large");
+                return;
+            }
+            t.images.kittyChunkActive = false;
+            // The geometry is the opener's, which a continuation block cannot
+            // restate, and the opener's was accepted when the decode began.
+            const std::expected<uint32_t, const char*> pixelLength = kittyRawPixelLength(merged);
+            (void)kittyStoreRawPixels(t, &merged, pixelLength ? kittyFinishChunkDecode(t.images.kittyChunkDecode) : std::unexpected(pixelLength.error()),
+                pixelLength.value_or(0), merged.action == 'T' ? TransmitDisplay::TransmitAndDisplay : TransmitDisplay::TransmitOnly);
+            t.images.kittyChunkDecode = {};
+            Ubiquitty::Kitty::drainAsyncDecodes(&t);
+            return;
+        }
         if (!t.images.kittyChunk.append({ payload, static_cast<std::size_t>(payloadLength) }, Ubiquitty::Kitty::maxAPCCapacity)) {
             t.images.kittyChunkActive = false;
             t.images.kittyChunk.clearReleasingAbove(Ubiquitty::Kitty::maxRetainedAPCCapacity);

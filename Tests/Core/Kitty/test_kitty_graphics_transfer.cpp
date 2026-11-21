@@ -341,6 +341,116 @@ TEST(testChunkedImageRetainsTheDefaultRGBAFormat)
     CHECK(imageWithID(t, 12345) == nullptr);
 }
 
+namespace {
+
+/// What a transfer left behind: the outcome the terminal replied with, and the
+/// pixels it stored under the transfer's id, if any.
+struct TransferResult {
+    std::string reply;
+    std::vector<std::uint8_t> pixels;
+    bool isStored = false;
+
+    bool operator==(const TransferResult&) const = default;
+};
+
+/// Reads a transfer's result under `imageID`, and deletes the image so the next
+/// transfer starts from none.
+TransferResult takeTransferResult(Ubiquitty::Terminal& t, std::uint32_t imageID)
+{
+    TransferResult result;
+    char outputBuffer[512];
+    const int written = UbiquittyTest::drain(t, outputBuffer);
+    const std::string all(outputBuffer, static_cast<std::size_t>(written));
+    const std::size_t semicolon = all.find(';');
+    const std::size_t end = all.find("\033\\", semicolon == std::string::npos ? 0 : semicolon);
+    if (semicolon != std::string::npos && end != std::string::npos)
+        result.reply = all.substr(semicolon + 1, end - semicolon - 1);
+    if (const auto* image = imageWithID(t, imageID)) {
+        result.isStored = true;
+        result.pixels.assign(image->pixels, image->pixels + image->pixelLength);
+    }
+    feed(t, apc("a=d,q=2,d=I,i=" + std::to_string(imageID), ""));
+    (void)UbiquittyTest::drain(t, outputBuffer);
+    return result;
+}
+
+} // namespace
+
+TEST(testAChunkedRawTransferDecodesAsItsPayloadDoesWhole)
+{
+    // A chunked transfer of raw pixels is decoded block by block as it
+    // arrives, on the four-character grid of the whole payload, carrying the
+    // characters a block ends between groups to the next. Wherever the blocks
+    // are cut, the result has to be the one the same payload sent as one block
+    // gives: the same pixels, or the same refusal.
+    //
+    // The payloads are a padded and an unpadded image, payloads short and
+    // long of the geometry, and malformed ones: a byte outside the alphabet at
+    // the start, inside and at the end, padding in the middle, a space, a
+    // final group of one character, a group after the padding, and nothing.
+    Ubiquitty::Terminal t;
+    Ubiquitty::resize(t, 10, 20, Ubiquitty::Modes::ReflowMode::Fixed);
+    Ubiquitty::hardReset(t);
+
+    const std::string padded = base64(makeRGBA(2, 2));
+    REQUIRE(padded.size() == 24 && padded.ends_with("=="));
+    const std::string unpadded = padded.substr(0, 22);
+    const auto withByte = [&](std::size_t at, char byte) {
+        std::string payload = padded;
+        payload[at] = byte;
+        return payload;
+    };
+    const std::vector<std::string> payloads {
+        padded,
+        unpadded,
+        base64(makeRGBA(3, 1)),
+        base64(makeRGBA(5, 1)),
+        base64(makeRGBA(4, 4)),
+        withByte(0, '!'),
+        withByte(9, '*'),
+        withByte(21, '-'),
+        withByte(10, '='),
+        withByte(13, ' '),
+        unpadded + "A",
+        padded + "AAAA",
+        unpadded.substr(0, 20) + "=" + unpadded.substr(20),
+        "",
+    };
+    constexpr std::uint32_t imageID = 61;
+    const std::string keys = "a=T,f=32,s=2,v=2,i=" + std::to_string(imageID);
+    int compared = 0;
+    for (const std::string& payload : payloads) {
+        feed(t, apc(keys, payload));
+        Ubiquitty::drainAsyncDecodes(t);
+        const TransferResult whole = takeTransferResult(t, imageID);
+        // Every cut into two blocks and into three, an empty block included.
+        for (std::size_t first = 0; first <= payload.size(); ++first) {
+            for (std::size_t second = first; second <= payload.size(); ++second) {
+                for (const bool isThreeBlocks : { false, true }) {
+                    if (!isThreeBlocks && second != first)
+                        continue;
+                    feed(t, apc(keys + ",m=1", payload.substr(0, first)));
+                    CHECK_MSG(t.images.kittyChunkDecode.isActive, "a raw transfer is decoded as it arrives");
+                    if (isThreeBlocks)
+                        feed(t, apc("m=1", payload.substr(first, second - first)));
+                    feed(t, apc("", payload.substr(second)));
+                    Ubiquitty::drainAsyncDecodes(t);
+                    CHECK(!t.images.kittyChunkActive);
+                    const TransferResult chunked = takeTransferResult(t, imageID);
+                    CHECK_MSG(chunked == whole,
+                        (payload + " cut at " + std::to_string(first) + "," + std::to_string(second) + ": " + chunked.reply + " against " + whole.reply).c_str());
+                    ++compared;
+                }
+            }
+        }
+    }
+    CHECK(compared > 1000);
+    // The control: the image itself does install, so the comparisons above
+    // include stored pixels and not only refusals.
+    feed(t, apc(keys, padded));
+    CHECK(takeTransferResult(t, imageID).isStored);
+}
+
 TEST(testRawPixelsOutliveReusedTransferBuffers)
 {
     // An uncompressed transfer installs the buffer its payload decoded into,
