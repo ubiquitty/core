@@ -19,6 +19,7 @@
 
 #include "Core/TerminalOperations.h"
 
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -93,6 +94,68 @@ TEST(testTextRunChunkingComparisonSeesADifference)
     const std::vector<std::uint32_t> one = feedInChunks("\xC3\xA0\xC3\xA9", 4);
     const std::vector<std::uint32_t> other = feedInChunks("\xC3\xA0\xC3\xAE", 4);
     CHECK(!(one == other));
+}
+
+namespace {
+
+// Every cell whole, pen and marks included, and where the cursor stands.
+std::vector<Ubiquitty::Cell> feedCellsInChunks(std::string_view bytes, int chunkSize, int& cursorX, int& cursorY)
+{
+    Ubiquitty::Terminal t;
+    Ubiquitty::hardReset(t);
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        const std::size_t take = std::min(static_cast<std::size_t>(chunkSize), bytes.size() - offset);
+        Ubiquitty::processBytes(&t, bytes.substr(offset, take));
+        offset += take;
+    }
+    std::vector<Ubiquitty::Cell> cells;
+    for (int row = 0; row < t.rows; ++row) {
+        for (int column = 0; column < t.columns; ++column) {
+            const Ubiquitty::Cell* c = UbiquittyTest::cell(t, row, column);
+            cells.push_back(c ? *c : Ubiquitty::Cell {});
+        }
+    }
+    cursorX = t.screens.active->cursorX;
+    cursorY = t.screens.active->cursorY;
+    return cells;
+}
+
+} // namespace
+
+// A narrow pictograph with VS15 is text presentation at its own width. Fed
+// whole, a closed one is placed in a batch; fed a byte at a time, each is
+// placed glyph by glyph. The cells, presentation and selector included, and
+// the cursor must be the same, across a wrap, beside VS16 forms, and where
+// another mark, a VS16 that widens it, or the end of the input leaves the
+// cluster more than the pictograph and its selector.
+TEST(testTextPresentedPictographsPlaceTheSameCellsWholeOrSplit)
+{
+    std::string line;
+    for (int index = 0; index < 50; ++index)
+        line += index % 2 ? "\xE2\x98\x81\xEF\xB8\x8E" : "\xE2\x98\x8E\xEF\xB8\x8F"; // cloud VS15, telephone VS16
+    const std::string cases[] = {
+        line,
+        "\xE2\x99\xA0\xEF\xB8\x8E\xE2\x99\xA3\xEF\xB8\x8Ex", // spade, club, then ASCII
+        "\xE2\x98\x81\xEF\xB8\x8E\xCC\x81\xE2\x99\xA5\xEF\xB8\x8E", // a mark behind the selector
+        "\xE2\x98\x81\xEF\xB8\x8E\xEF\xB8\x8Fx", // VS16 behind VS15 widens it
+        "\xE2\x99\xA6\xEF\xB8\x8E", // the input ends on the cluster
+    };
+    for (const std::string& text : cases) {
+        int wholeX = 0, wholeY = 0;
+        const std::vector<Ubiquitty::Cell> whole = feedCellsInChunks(text, static_cast<int>(text.size()), wholeX, wholeY);
+        for (const int chunkSize : { 1, 4, 7 }) {
+            int splitX = 0, splitY = 0;
+            const std::vector<Ubiquitty::Cell> split = feedCellsInChunks(text, chunkSize, splitX, splitY);
+            CHECK_EQ(split.size(), whole.size());
+            bool isSame = split.size() == whole.size();
+            for (std::size_t index = 0; isSame && index < whole.size(); ++index)
+                isSame = std::memcmp(&split[index], &whole[index], sizeof(Ubiquitty::Cell)) == 0;
+            CHECK(isSame);
+            CHECK_EQ(splitX, wholeX);
+            CHECK_EQ(splitY, wholeY);
+        }
+    }
 }
 
 UBIQUITTY_TEST_MAIN()

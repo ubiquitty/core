@@ -8936,8 +8936,11 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
 // Assemble already-decoded, width-stable clusters into a row span. The caller
 // has established a grapheme boundary before the first code point. Narrow
 // pictographic and keycap bases retain the character path because later marks
-// can widen them. An adjacent VS16 establishes a pictographic cluster's width.
-// A Prepend's following base must establish its width through scalar placement.
+// can widen them, with one exception: a narrow pictograph whose cluster is
+// itself and VS15 alone, with a code point that does not join it behind it in
+// the batch, is text presentation at its own width, and nothing can follow to
+// widen it. An adjacent VS16 establishes a pictographic cluster's width. A
+// Prepend's following base must establish its width through scalar placement.
 [[gnu::always_inline]] static inline int emitClusterSpan(Ubiquitty::Terminal& t, std::span<const uint32_t> codePoints, GraphicCapture tailCapture)
 {
     auto* screen = t.screens.active;
@@ -8971,10 +8974,14 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
             && codePoints[consumed + 1] == Ubiquitty::Unicode::Width::variationSelector16;
         const int width = hasWideSelector ? 2
                                           : Ubiquitty::Unicode::Width::cellsForWidthClass(Ubiquitty::Unicode::detail::PropWidthField::get(properties), t.ambiguousWidth);
+        const bool isNarrowPictograph = width == 1 && isPictographic;
+        const bool hasTextSelector = isNarrowPictograph && consumed + 1 < codePoints.size()
+            && codePoints[consumed + 1] == Ubiquitty::Unicode::Width::variationSelector15;
         if (!Ubiquitty::Unicode::isGraphemeRelevant(base)
             || Ubiquitty::Unicode::isGraphemePrepend(base)
             || (width != 1 && width != 2)
-            || (width == 1 && (isPictographic || Ubiquitty::Unicode::isKeycapBase(base)))
+            || (isNarrowPictograph && !hasTextSelector)
+            || (width == 1 && Ubiquitty::Unicode::isKeycapBase(base))
             || cellCount + width > writableColumns)
             break;
         bool isEmoji = (properties & Ubiquitty::Unicode::detail::PropEmojiPresentationField::mask) != 0;
@@ -8994,6 +9001,10 @@ template<GraphicCapture Capture> static int emitTextRun(Ubiquitty::Terminal& t, 
             }
             ++end;
         }
+        // The selector must be all that joins the base, and the cluster closed
+        // by a code point in the batch: a mark behind it could still widen it.
+        if (isNarrowPictograph && (end != consumed + 2 || end >= codePoints.size()))
+            break;
         auto& lead = cells.constructAt(static_cast<std::size_t>(cellCount), cellTemplate);
         lead.codePoint = base;
         Ubiquitty::cellSetPenAttributes(lead, attributes | (width == 2 ? VT::AttributeSet { VT::Attribute::Wide } : VT::AttributeSet {}) | (isEmoji ? VT::AttributeSet { VT::Attribute::Emoji } : VT::AttributeSet {}));
