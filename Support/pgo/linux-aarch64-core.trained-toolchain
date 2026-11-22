@@ -1,8 +1,8 @@
 {
   "format": 1,
-  "image": "sha256:970750184610997bcdf906334283befab0ef64edfdd151587af40d49720a1ba5",
-  "recipe": "f49e7c678723",
+  "image": "sha256:4ba923f59770c2cab06ceb6a2fc8efded7c152ba3656b796bab961f1df487d61",
+  "recipe": "c7eb8710c869",
   "compiler": "Ubuntu clang version 22.1.2 (1ubuntu1)",
   "target": "aarch64-unknown-linux-gnu",
-  "profileSha256": "d9a733919647b7307aaf22c92c76bb999dc21e48dd80721c0255b215c1c488fd"
+  "profileSha256": "cc33e09c426976c21b26634d05de4c541e2742aaaebe9fecc91d31d6459c8ee8"
 }
