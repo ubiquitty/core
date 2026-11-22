@@ -1015,6 +1015,14 @@ void TerminalRuntime::finishDrainPass(DrainHost& host, DrainOutcome& outcome)
         // case: the count is fresh in this outcome, and nothing else would
         // publish the table before the next due snapshot.
         publishUserDefinedKeys(*m_term);
+        // A frontend reads the colours when this pass's delivery tells it the
+        // screen changed, and the held snapshot is published only by the next
+        // due pass or the burst's end, which for a writer that has paused is
+        // as far off as the reader's quiet timers run: seconds, for a process
+        // the system throttles. Colours moved outside an update ride ahead of
+        // the snapshot, as the colours an update's close leaves do.
+        if (!m_term->modes.syncOutput && m_term->paletteEpoch != m_coherentColorsEpoch)
+            publishCoherentColors(*m_term);
     }
     outcome.columns = snap.columns;
     outcome.rows = snap.rows;

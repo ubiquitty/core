@@ -1288,6 +1288,53 @@ TEST(testAQueryThatEndsAPipelinedBurstIsAnsweredBeforeTheNextNap)
     paused.runtime.close();
 }
 
+// A program that closes an update and then moves the background, and pauses,
+// has its last pass delivered with that background published: a frontend
+// reads the colours when a delivery tells it the screen changed, and the
+// update's close published a snapshot a moment before, so the pass's own
+// snapshot falls inside the publish floor. The burst stays open behind the
+// pause, as it does for as long as a throttled process's timers take.
+TEST(testAPipelinedPassThatMovesTheBackgroundDeliversItPublished)
+{
+    std::string burst = "\033[?2026h";
+    constexpr std::string_view line = "0123456789abcdefghijklmnopqrstuvwxyz\r\n";
+    while (burst.size() < 32 * 1024)
+        burst += line;
+    burst += "\033[?2026l\033]11;rgb:0e/0d/0c\a";
+    PausedBurst paused(burst, 4096);
+    REQUIRE(paused.isReady);
+    IngestLoop loop(paused.runtime, paused.host);
+    struct Watch {
+        TerminalRuntime& runtime;
+        std::uint64_t burstBytes;
+        std::uint64_t deliveredBytes = 0;
+        std::atomic<std::uint32_t> backgroundAtLastBytes { UINT32_MAX };
+    } watch { paused.runtime, burst.size() };
+    loop.setDeliverHook(
+        [](void* context, const DrainOutcome& outcome, std::uint32_t) {
+            auto& observed = *static_cast<Watch*>(context);
+            observed.deliveredBytes += static_cast<std::uint64_t>(outcome.bytesDrained);
+            if (observed.deliveredBytes < observed.burstBytes || observed.backgroundAtLastBytes.load(std::memory_order_relaxed) != UINT32_MAX)
+                return;
+            const Ubiquitty::ColorRGBA background = observed.runtime.link().coherentColors.read().colors.background;
+            observed.backgroundAtLastBytes.store(static_cast<std::uint32_t>(background.red << 16 | background.green << 8 | background.blue), std::memory_order_release);
+        },
+        &watch);
+    (void)loop.prepare();
+    loop.adoptFloodEndpoint(std::move(paused.floodEndpoint));
+    std::jthread ingest([&loop, &paused] { loop.run(paused.loopEndpoint->handle()); });
+
+    for (int waited = 0; waited < 10000 && watch.backgroundAtLastBytes.load(std::memory_order_acquire) == UINT32_MAX; ++waited)
+        ::usleep(1000);
+    CHECK_MSG(loop.floodBurstCount() == 1, "the burst rode the pipeline and is still open");
+    CHECK_MSG(watch.backgroundAtLastBytes.load() == 0x0e0d0c,
+        std::format("the delivery of the last bytes found background {:06x} published", watch.backgroundAtLastBytes.load()).c_str());
+    loop.requestStop();
+    loop.raiseWake();
+    ingest.join();
+    paused.runtime.close();
+}
+
 // The pipeline carries any burst past its transport's hand-over, and most of
 // those are a screen redrawn or a listing printed: a frame shows each whole,
 // and a frontend that paced its frames for one would hold the redraw back for
