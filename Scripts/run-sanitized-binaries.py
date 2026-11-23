@@ -25,6 +25,7 @@ class Test:
     serial: bool
     resources: frozenset
     processors: int
+    launcher: tuple = ()
 
 
 def selected_tests(build, names, jobs):
@@ -38,18 +39,32 @@ def selected_tests(build, names, jobs):
         binary = build / "Tests" / name
         if not binary.is_file() or not os.access(binary, os.X_OK):
             raise RuntimeError(f"selected binary is missing or not executable: {binary}")
+        resolved_binary = binary.resolve()
         matches = [entry for entry in entries
                    if re.fullmatch(re.escape(name) + r"([.][0-9]+)?", entry["name"])]
         serial = not matches
         resources = set()
         processors = 1
+        launchers = set()
         for entry in matches:
+            command = entry.get("command", [])
+            for index, argument in enumerate(command):
+                if Path(argument).is_absolute() and Path(argument).resolve() == resolved_binary:
+                    # Keep CTest's process launcher, but run the whole binary
+                    # once rather than retaining an individual shard's args.
+                    launchers.add(tuple(command[:index]))
+                    break
+            else:
+                raise RuntimeError(f"CTest command does not name the selected binary: {name}")
             properties = {row["name"]: row["value"] for row in entry.get("properties", [])}
             serial |= str(properties.get("RUN_SERIAL", False)).lower() in ("true", "1", "on")
             locks = properties.get("RESOURCE_LOCK", [])
             resources.update(locks.split(";") if isinstance(locks, str) else locks)
             processors = max(processors, int(properties.get("PROCESSORS", 1)))
-        tests.append(Test(name, binary, serial, frozenset(resources), min(jobs, processors)))
+        if len(launchers) > 1:
+            raise RuntimeError(f"CTest launchers disagree across the binary's entries: {name}")
+        launcher = next(iter(launchers), ())
+        tests.append(Test(name, binary, serial, frozenset(resources), min(jobs, processors), launcher))
     return tests
 
 
@@ -98,8 +113,8 @@ def run_tests(tests, logs, jobs):
                 stream = (logs / f"sanitized-{test.name}.log").open("w")
                 try:
                     child = subprocess.Popen(
-                        ["bash", "-c", 'source "$1"; ubq_run_bounded 300 "$2"',
-                         "sanitized-case", str(bounded), str(test.binary)],
+                        ["bash", "-c", 'source "$1"; shift; ubq_run_bounded 300 "$@"',
+                         "sanitized-case", str(bounded), *test.launcher, str(test.binary)],
                         stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
                 except BaseException:
                     stream.close()

@@ -775,6 +775,47 @@ sys.exit(23 if invalid else 17 if name=='test_failure' else 0)
             for name in names:
                 self.assertTrue((root / "logs" / f"sanitized-{name}.log").is_file())
 
+    def testTheCTestLauncherWrapsTheWholeBinaryOnce(self):
+        if shutil.which("ctest") is None:
+            self.skipTest("ctest is required")
+        with tempfile.TemporaryDirectory(prefix="sanitized launcher ") as directory:
+            root = Path(directory)
+            build = root / "build"
+            (build / "Tests").mkdir(parents=True)
+            events = root / "events"
+            binary = build / "Tests/test_launched"
+            binary.write_text("#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\n"
+                              "assert len(sys.argv)==1\n"
+                              "assert os.environ['ASAN_OPTIONS']=='detect_leaks=0'\n"
+                              "assert os.environ['UBSAN_OPTIONS']=='halt_on_error=1'\n"
+                              f"with Path({str(events)!r}).open('a') as stream: stream.write('whole binary\\n')\n")
+            binary.chmod(0o755)
+            launcher = root / "presentation launcher.py"
+            launcher.write_text("import subprocess,sys\nfrom pathlib import Path\n"
+                                f"with Path({str(events)!r}).open('a') as stream: stream.write('launcher\\n')\n"
+                                "sys.exit(subprocess.run(sys.argv[1:]).returncode)\n")
+            listing = build / "CTestTestfile.cmake"
+            entries = [f'add_test(test_launched.{shard} "{sys.executable}" "{launcher}" "{binary}" --shard {shard}/2)'
+                       for shard in range(2)]
+            listing.write_text("\n".join(entries))
+            actualBinary = binary.with_name("actual-binary")
+            binary.rename(actualBinary)
+            binary.symlink_to(actualBinary)
+            discovered = json.loads(subprocess.check_output(
+                ["ctest", "--test-dir", str(build), "--show-only=json-v1"], text=True))
+            self.assertEqual(discovered["tests"][0]["command"],
+                             [sys.executable, str(launcher), str(binary), "--shard", "0/2"])
+            environment = {**os.environ, "ASAN_OPTIONS": "detect_leaks=0", "UBSAN_OPTIONS": "halt_on_error=1"}
+            checked = self.runDriver(build, root / "logs", ["test_launched"], env=environment)
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+            self.assertEqual(events.read_text().splitlines(), ["launcher", "whole binary"])
+
+            listing.write_text(entries[0] + "\n" + entries[1].replace(f'"{binary}"', f'extra "{binary}"'))
+            rejected = self.runDriver(build, root / "rejected-logs", ["test_launched"], env=environment)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("CTest launchers disagree", rejected.stderr)
+            self.assertEqual(events.read_text().splitlines(), ["launcher", "whole binary"])
+
     def testInterruptionStopsTheBoundedChild(self):
         if shutil.which("ctest") is None:
             self.skipTest("ctest is required")
