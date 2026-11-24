@@ -118,7 +118,7 @@ class BuildPrerequisiteTests(unittest.TestCase):
             properties = {item["name"]: item["value"] for item in presentation["properties"]}
             self.assertTrue(properties.get("RUN_SERIAL"), "The coalescing fixture must run without competing tests")
             self.assertIn("timing", properties["RESOURCE_LOCK"])
-            for name in ("shell_adopt_fd_cli", "shell_adopt_handoff_time"):
+            for name in ("shell_adopt_fd_cli", "shell_adopt_handoff_time", "shell_adopt_session", "shell_pane_facts_attachments"):
                 properties = {item["name"]: item["value"] for item in entries[name]["properties"]}
                 self.assertEqual(properties["TIMEOUT"], 600)
                 self.assertTrue(properties.get("RUN_SERIAL"), f"{name} must retain its production silence deadlines without competing tests")

@@ -907,6 +907,13 @@ function(ubq_schedule_run_tests_stanzas driver)
     list(APPEND shell_adopt_handoff_time_RESOURCE_LOCK timing)
     set(shell_adopt_fd_cli_RUN_SERIAL TRUE)
     list(APPEND shell_adopt_fd_cli_RESOURCE_LOCK timing)
+    # Every stanza that commits a real shell through LocalAdoptionFixture
+    # waits on the same deadlines: pane_facts_attachments missed its Commit
+    # beside the host soak and the host upgrade, as adopt_handoff_time had.
+    set(shell_adopt_session_RUN_SERIAL TRUE)
+    list(APPEND shell_adopt_session_RESOURCE_LOCK timing)
+    set(shell_pane_facts_attachments_RUN_SERIAL TRUE)
+    list(APPEND shell_pane_facts_attachments_RESOURCE_LOCK timing)
     set(shell_tmux_control_stress_RUN_SERIAL TRUE)
     list(APPEND shell_tmux_control_stress_RESOURCE_LOCK timing)
 
