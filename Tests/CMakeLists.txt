@@ -903,6 +903,8 @@ function(ubq_schedule_run_tests_stanzas driver)
     list(APPEND shell_sync_output_e2e_RESOURCE_LOCK timing)
     # The real adoption sender keeps its production silence deadlines. A
     # competing test must not consume the time in which its daemon can answer.
+    set(shell_adopt_handoff_time_RUN_SERIAL TRUE)
+    list(APPEND shell_adopt_handoff_time_RESOURCE_LOCK timing)
     set(shell_adopt_fd_cli_RUN_SERIAL TRUE)
     list(APPEND shell_adopt_fd_cli_RESOURCE_LOCK timing)
     set(shell_tmux_control_stress_RUN_SERIAL TRUE)

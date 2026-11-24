@@ -39,7 +39,10 @@ int main()
         }
         Ubiquitty::termFlushScrollLane(*owner->terminal);
         if (!fixture.adopt(*owner)) {
-            std::fprintf(stderr, "adopt_handoff_time: FAIL — %d history lines lacked exact Committed evidence\n", lines);
+            const auto* attempt = owner->result.attempt.get();
+            const int rejection = attempt && attempt->rejection() ? static_cast<int>(*attempt->rejection()) : -1;
+            std::fprintf(stderr, "adopt_handoff_time: FAIL — %d history lines lacked exact Committed evidence (body %zu bytes, elapsed %lld ms, ownership %u, attempt %d, rejection %d)\n",
+                lines, owner->frozen.size, static_cast<long long>(owner->elapsed.count()), static_cast<unsigned>(owner->result.ownership), attempt != nullptr, rejection);
             return 1;
         }
         std::printf("adopt_handoff_time: %d lines, %.1f MiB, %lld ms, session %u\n", lines,

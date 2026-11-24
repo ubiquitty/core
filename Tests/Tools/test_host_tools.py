@@ -118,6 +118,11 @@ class BuildPrerequisiteTests(unittest.TestCase):
             properties = {item["name"]: item["value"] for item in presentation["properties"]}
             self.assertTrue(properties.get("RUN_SERIAL"), "The coalescing fixture must run without competing tests")
             self.assertIn("timing", properties["RESOURCE_LOCK"])
+            for name in ("shell_adopt_fd_cli", "shell_adopt_handoff_time"):
+                properties = {item["name"]: item["value"] for item in entries[name]["properties"]}
+                self.assertEqual(properties["TIMEOUT"], 600)
+                self.assertTrue(properties.get("RUN_SERIAL"), f"{name} must retain its production silence deadlines without competing tests")
+                self.assertIn("timing", properties["RESOURCE_LOCK"])
             consumers = subprocess.check_output(
                 [str(ROOT / "Scripts/run-tests.sh"), "--list-host-binary-stanzas"],
                 cwd=ROOT, text=True).splitlines()
