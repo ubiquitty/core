@@ -215,7 +215,7 @@ constexpr Clock::duration cadenceBound = (isCoreInstrumented ? 9 : 2) * refreshI
 // Core holds the lock longer. A sanitized Core's hold is the one the wait
 // bound below allows ten milliseconds, and a decision that waits it is held to
 // the same: at four, the Apple sanitized battery failed a 5.4 ms decision.
-constexpr Clock::duration frameDecisionBound = isCoreInstrumented ? 10ms : isCoreOptimized ? 1ms : 4ms;
+constexpr Clock::duration frameDecisionBound = isCoreInstrumented ? 10ms : (isCoreOptimized ? 1ms : 4ms);
 // The longest a frontend call may wait. A wait for the model lock lasts the
 // owner's current hold, which an unoptimized or instrumented Core makes
 // several times as long as the shipping build does, a whole-grid capture
