@@ -961,6 +961,17 @@ AgentSession::RunResult AgentSession::runCommandWithExit(const std::string& comm
                 return { .completion = RunCompletion::CommandDone, .capture = std::move(output), .exitStatus = exitStatus, .cursor = cursor, .inputDelivery = std::nullopt };
             }
             if (!m_hasMarkedPrompt && !didStart) {
+                // Takes in a foreground report: a program that took the
+                // terminal holds the run open until the shell has it back.
+                const auto noteForeground = [&](std::chrono::steady_clock::time_point now) {
+                    if (m_foregroundGeneration == foregroundGeneration)
+                        return false;
+                    foregroundGeneration = m_foregroundGeneration;
+                    lastChange = now;
+                    if (!m_foregroundIsShell)
+                        childGeneration = foregroundGeneration;
+                    return true;
+                };
                 const auto now = std::chrono::steady_clock::now();
                 std::string current = screenText();
                 if (current != previous) {
@@ -968,15 +979,27 @@ AgentSession::RunResult AgentSession::runCommandWithExit(const std::string& comm
                     lastChange = now;
                     previous = std::move(current);
                 }
-                if (m_foregroundGeneration != foregroundGeneration) {
-                    foregroundGeneration = m_foregroundGeneration;
-                    lastChange = now;
-                    if (!m_foregroundIsShell)
-                        childGeneration = foregroundGeneration;
-                }
+                (void)noteForeground(now);
                 const bool hasChildReturned = !childGeneration || foregroundGeneration != *childGeneration;
-                if (sawChange && m_foregroundIsShell && hasChildReturned && now - lastChange >= std::chrono::milliseconds(500))
-                    return { .completion = RunCompletion::Settled, .capture = captureScreen(), .exitStatus = std::nullopt, .cursor = cursor, .inputDelivery = std::nullopt };
+                if (sawChange && m_foregroundIsShell && hasChildReturned && now - lastChange >= std::chrono::milliseconds(500)) {
+                    // The host reports the foreground when it next probes,
+                    // and a program that prints nothing after its echo makes
+                    // no frame that would probe it; under load that report
+                    // can trail a quiet screen past the window above, and
+                    // the shell reads as back before it ever left. A host
+                    // listing probes every pane before it answers, so the
+                    // shell is confirmed in front by a reading taken now.
+                    // A listing the host does not answer leaves the reading
+                    // the window above already had; past the deadline, the
+                    // run has timed out.
+                    if (!listHost(boundedWaitMilliseconds(answerWaitMilliseconds())) && !boundedWaitMilliseconds(INT_MAX))
+                        return incomplete();
+                    const auto confirmed = std::chrono::steady_clock::now();
+                    if (noteForeground(confirmed))
+                        continue;
+                    if (m_foregroundIsShell)
+                        return { .completion = RunCompletion::Settled, .capture = captureScreen(), .exitStatus = std::nullopt, .cursor = cursor, .inputDelivery = std::nullopt };
+                }
             }
             if (!pump(boundedWaitMilliseconds(500)))
                 return incomplete();
