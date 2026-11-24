@@ -3325,6 +3325,39 @@ TEST(testBytesAfterAnImageKeepTheirOrderBehindItsDecode)
     }
 }
 
+// A frontend's own feed waits out the decode its image starts, and parses every
+// byte behind it: the Welcome screen is fed this way into a pane whose ingest
+// loop decodes on a worker, and its headline, tagline and buttons follow the
+// icon. A feed that took the fenced parse's zero for "all consumed" dropped
+// them, leaving the icon alone with the cursor still above it for the prompt.
+TEST(testAFedImageKeepsTheBytesBehindItWhileTheLoopDecodesOnAWorker)
+{
+    std::array<int, 2> pipe {};
+    REQUIRE(::pipe(pipe.data()) == 0);
+    SessionHandle handle;
+    TerminalSession& session = *handle.session;
+    session.start(24, 80);
+    REQUIRE(session.adoptStream(std::make_unique<Ubiquitty::PAL::PrefilledStream>(Ubiquitty::PAL::UnixFileDescriptor(pipe[0]))).has_value());
+    REQUIRE(session.startIngest());
+    // The loop moves decodes onto a worker before its first pass, so a byte
+    // it has parsed says the feed below meets a worker decode.
+    const std::string_view ready = "ready\r\n";
+    REQUIRE(::write(pipe[1], ready.data(), ready.size()) == static_cast<ssize_t>(ready.size()));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (readScreen(session).rows[0].rfind("ready", 0) != 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    REQUIRE_MSG(readScreen(session).rows[0].rfind("ready", 0) == 0, "premise: the loop is parsing");
+
+    const std::string fed = kittyImage(makeNoisePNG(512, 512), "q=2,C=1") + "headline\r\nbuttons";
+    session.feedBytes({ fed.data(), fed.size() });
+    const ScreenText screen = readScreen(session);
+    ::close(pipe[1]);
+    REQUIRE(watchUntilExit(session, 30000).exited);
+    CHECK_EQ(screen.placements, 1);
+    CHECK_MSG(screen.rows[1].rfind("headline", 0) == 0, screen.rows[1].c_str());
+    CHECK_MSG(screen.rows[2].rfind("buttons", 0) == 0, screen.rows[2].c_str());
+}
+
 // The flood pipeline stops a bite at an image too, and the bytes the ring
 // already holds behind it are parsed after it, every one in order.
 TEST(testAnImageInsideAFloodKeepsTheBytesBehindItInOrder)

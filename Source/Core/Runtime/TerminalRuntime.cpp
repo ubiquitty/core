@@ -361,6 +361,14 @@ FeedResult TerminalRuntime::feedChunkUpToSyncClear(std::span<const char> bytes)
     result.reachedSyncClear = stoppedAtSyncClear;
     if (stoppedAtSyncClear)
         noteSyncClearParsed();
+    if (consumed <= 0 && isDecodeFenced()) {
+        // A decode fences the parse, so nothing was consumed and the bytes are
+        // all still owed. Saying so is what lets the caller wait the decode out
+        // and feed them; the guard below would report them consumed and lose
+        // every byte behind an image, as it lost the Welcome screen's text.
+        result.consumed = 0;
+        return result;
+    }
     if (consumed > 0 && consumed < length) {
         // Stopped early: at reply pressure the queued replies are drained here
         // so the caller's next feed cannot overflow the reply buffer.
