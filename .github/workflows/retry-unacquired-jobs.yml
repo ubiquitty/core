@@ -1,0 +1,71 @@
+# Copyright (C) 2026 Stanislav Yaglo
+# SPDX-License-Identifier: Apache-2.0
+
+name: Retry jobs no runner took
+
+# A macOS job waits for an `xcode-27` runner, and the pool is shared by every
+# repository's batteries. When Core's, the Kit's and this repository's Apple
+# jobs queue together, one of them can wait out GitHub's acquisition limit and
+# end `cancelled` with "The job was not acquired by Runner of type hosted even
+# after multiple attempts" — no runner, no step, nothing tested. The run's
+# required `CI` check then reads as a failure that says nothing about the code.
+#
+# This asks for that run's failed jobs again, which queues the unacquired ones
+# for a runner once more, and `CI` with them. It does so only when every job
+# that did not succeed is one no runner took (or `CI`, the summary that fails
+# because of them): a job that ran and failed is a verdict, and is never
+# retried here, so a flaky test stays visible rather than being re-rolled.
+# A run is asked again at most `MAX_ATTEMPTS` times in all.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: write
+
+jobs:
+  retry:
+    name: Retry jobs no runner took
+    # GitHub-hosted, like every job; see the runner note at the top of ci.yml.
+    # The run's own code is never checked out: this reads its jobs and asks
+    # for a re-run, so a pull request's workflow change cannot reach the token.
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' ||
+      github.event.workflow_run.conclusion == 'cancelled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Re-run the jobs no runner took
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          MAX_ATTEMPTS: "4"
+        run: |
+          # A job no runner took is cancelled with no runner and no step. The
+          # summary, `CI`, fails whenever a job it needs did not succeed, so it
+          # follows the others and is re-run with them; it is not a verdict.
+          jobs=$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs?per_page=100" \
+            --jq '.jobs[] | select(.conclusion != "success" and .conclusion != "skipped" and .name != "CI")
+                  | if .conclusion == "cancelled" and (.runner_name // "") == "" and (.steps | length) == 0
+                    then "unacquired \(.name)" else "ran \(.name) (\(.conclusion))" end')
+          printf '%s\n' "$jobs" | sed -n 's/^unacquired /retry-unacquired: no runner took /p'
+          unacquired=$(printf '%s\n' "$jobs" | grep -c '^unacquired ' || true)
+          verdicts=$(printf '%s\n' "$jobs" | sed -n 's/^ran //p' | paste -sd ';' -)
+          if [ "$unacquired" -eq 0 ]; then
+            echo "retry-unacquired: every unsuccessful job ran; nothing to retry"
+            exit 0
+          fi
+          if [ -n "$verdicts" ]; then
+            echo "::notice title=retry-unacquired::not retrying run $RUN_ID: these jobs ran and did not succeed: $verdicts"
+            exit 0
+          fi
+          if [ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ]; then
+            echo "::error title=retry-unacquired::run $RUN_ID found no runner in $ATTEMPT attempts; re-run it by hand once the macOS pool is free"
+            exit 1
+          fi
+          gh api -X POST "repos/$REPOSITORY/actions/runs/$RUN_ID/rerun-failed-jobs" >/dev/null
+          echo "retry-unacquired: asked run $RUN_ID for attempt $((ATTEMPT + 1)) of $MAX_ATTEMPTS"
